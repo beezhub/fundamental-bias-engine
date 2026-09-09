@@ -275,10 +275,11 @@ class BasePillar(ABC):
     ) -> float | None:
         """Z-score the latest value of a series against its own history.
 
-        Used where a cross-sectional comparison is meaningless. A Japanese trade
-        balance in billions of yen and a Canadian one in billions of dollars
-        cannot be ranked against each other, but each can be ranked against its
-        own five-year record, and those two ranks are comparable.
+        Used where a cross-sectional comparison is meaningless. The positioning
+        pillar is the live case: how crowded the yen is against how crowded the
+        Australian dollar is says nothing, because the two contracts have
+        different natural ranges, but how crowded each is against its own record
+        says a great deal, and those two readings are comparable.
 
         The standard deviation uses ``ddof=1`` here, the opposite of
         `cross_sectional_z`: the observed history is a sample of the process, not
