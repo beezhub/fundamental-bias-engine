@@ -112,18 +112,29 @@ class TradeRecord:
         target: Take-profit level as originally planned.
         units: Position size in base-currency units.
         lots: Same size in the broker's lots.
-        risk_amount: Money at risk in the account currency if the stop fills, in
-            ZAR. Should land within 1-2% of ``account_balance_at_entry``.
-        risk_fraction: ``risk_amount / account_balance_at_entry``, stored
-            explicitly so a breach of the band is visible without arithmetic.
+        risk_amount: Money actually at risk in ZAR if the stop fills. Populate
+            this from ``PositionSize.realised_risk_amount``, never from
+            ``PositionSize.risk_amount``, which is the intended figure before
+            the lot size was rounded down. The two differ on almost every trade
+            at this account size, routinely by 10% or more, and the realised one
+            is what was on the book. Should land within 1-2% of
+            ``account_balance_at_entry``.
+        risk_fraction: ``risk_amount / account_balance_at_entry``, using the
+            realised figure above. Stored explicitly so a breach of the band is
+            visible without arithmetic.
         account_balance_at_entry: Balance the size was derived from.
         account_currency: Denomination of every money figure here, ``"ZAR"``.
         outcome_zar: Realised profit or loss in the account currency, net of
             spread and commission. Negative for a loss. ``None`` while open.
-        r_multiple: ``outcome_zar / risk_amount``. The only comparable measure
-            of a result across different position sizes and account balances: a
-            +2R on a R2,000 account and a +2R on a R20,000 account are the same
-            trade well executed. ``None`` while open.
+        r_multiple: ``outcome_zar / risk_amount``, and therefore divided by the
+            REALISED risk. The only comparable measure of a result across
+            different position sizes and account balances: a +2R on a R2,000
+            account and a +2R on a R20,000 account are the same trade well
+            executed. Dividing by the intended risk instead inflates every
+            R-multiple by the rounding ratio, and since these numbers are the
+            sole input to `evaluate`, that error would flatter the model rather
+            than the trader and would be invisible in the output. ``None`` while
+            open.
         setup: Name of the technical setup taken, from the plan's own
             vocabulary, e.g. ``"channel_bounce"``, ``"trendline_break_retest"``,
             ``"double_bottom_neckline"``.
@@ -308,8 +319,17 @@ def evaluate(records: Sequence[TradeRecord]) -> Mapping[Conviction, ConvictionSt
     enough to justify risking twice as much on HIGH as on LOW. If HIGH does not
     outperform LOW over a reasonable sample, that claim is false, the ladder is
     actively harmful because it puts more money on the worse trades, and the
-    correct response is to re-weight the pillars or flatten the ladder to a
-    fixed 1% until the model earns the difference back.
+    correct response is to re-weight the pillars or flatten the ladder until the
+    model earns the difference back. Flatten it by lowering
+    ``RiskConfig.risk_per_trade_max`` toward ``risk_per_trade_min``, not by
+    editing `risk.CONVICTION_BAND_POSITION`: the ladder interpolates across the
+    configured band, so narrowing the band narrows every rung together and
+    nothing ends up clamped.
+
+    ``hit_rate`` by bucket carries a second load. It is the evidence for or
+    against `risk.MIN_REWARD_TO_RISK`, whose shape assumes hit rate rises with
+    conviction. A flat or inverted hit rate refutes that assumption, and the
+    reward ladder should then collapse to a single minimum for every trade.
 
     Sample size caveat, which must be stated wherever these numbers are shown:
     at five trades a week, a bucket needs months to say anything. Thirty closed
@@ -340,8 +360,10 @@ def discipline_flags(records: Sequence[TradeRecord]) -> Sequence[DisciplineFlag]
     Revenge trading:
         A new entry opened within `REVENGE_WINDOW_MINUTES` of a losing trade
         closing. Flagged more strongly when the new trade is in the same pair as
-        the loss, or is larger than the trade that lost, both of which are the
-        classic shape of trying to win it straight back.
+        the loss, or carries a larger ``risk_amount`` than the trade that lost,
+        both of which are the classic shape of trying to win it straight back.
+        Compare realised risk against realised risk, since that is what both
+        records hold.
 
     Overtrading:
         More than `OVERTRADING_TRADES_PER_WEEK` entries in any rolling seven-day
