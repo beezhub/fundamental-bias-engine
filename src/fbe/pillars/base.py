@@ -31,29 +31,7 @@ __all__ = [
     "MIN_CROSS_SECTION",
     "MIN_COMPONENT_WEIGHT",
     "DEFAULT_PUBLICATION_LAG_DAYS",
-    "RESTANDARDISATION_WINDOW_RUNS",
-    "MIN_RESTANDARDISATION_RUNS",
 ]
-
-
-RESTANDARDISATION_WINDOW_RUNS: int = 60
-"""Recent runs the re-standardisation divisor is estimated over.
-
-Roughly a quarter of daily runs. The quantity being estimated is the correlation
-structure between a pillar's own sub-indicators, which is a slow macro property,
-so the window wants to be long enough that a fortnight of unusual data cannot
-move it and short enough to follow a genuine change in how the components relate.
-
-Belongs in `ScoringConfig` beside the other tunables; it lives here until that
-field exists.
-"""
-
-MIN_RESTANDARDISATION_RUNS: int = 20
-"""Runs of history required before the rolling divisor is used at all.
-
-Below this the median is estimated from too few points to beat the run's own
-standard deviation, so the pillar falls back to run-local and says so.
-"""
 
 
 DEFAULT_PUBLICATION_LAG_DAYS: Mapping[Frequency, int] = {
@@ -506,11 +484,14 @@ class BasePillar(ABC):
                 join the history for later runs.
 
         Returns:
-            ``(divisor, path)``, where ``path`` is ``"rolling"`` or
-            ``"run_local"`` and belongs in ``PillarScore.notes``. A score computed
-            under the fallback is not on the same scale as one computed under the
-            rolling estimate, so a report that does not say which was used is
-            hiding the one fact needed to compare two runs.
+            ``(divisor, path)``, where ``path`` is ``"rolling"`` when the median
+            of the last ``ScoringConfig.restandardisation_window_runs`` runs was
+            used and ``"run_local"`` when there were fewer than
+            ``ScoringConfig.min_restandardisation_runs`` of them and ``run_sd``
+            was used instead. The path belongs in ``PillarScore.notes``: a score
+            computed under the fallback is not on the same scale as one computed
+            under the rolling estimate, so a report that does not say which was
+            used is hiding the one fact needed to compare two runs.
 
         Why the divisor is estimated from history rather than from this run.
         Every component is already forced to unit standard deviation
@@ -547,8 +528,8 @@ class BasePillar(ABC):
 
         """
         usable = [s for s in self.blend_sd_history if s > 1e-9]
-        window = usable[-RESTANDARDISATION_WINDOW_RUNS:]
-        if len(window) >= MIN_RESTANDARDISATION_RUNS:
+        window = usable[-self.config.restandardisation_window_runs :]
+        if len(window) >= self.config.min_restandardisation_runs:
             return median(window), "rolling"
         return float(run_sd), "run_local"
 
