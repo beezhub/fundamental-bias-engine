@@ -70,7 +70,7 @@ class EmploymentPillar(BasePillar):
 
     name = PillarName.EMPLOYMENT
     requires: Sequence[str] = ("unemployment_rate", "employment_chg")
-    headline_component = "unemployment_6m"
+    headline_component = "unemployment_chg_6m"
 
     @property
     def component_weights(self) -> Mapping[str, float]:
@@ -118,13 +118,32 @@ class EmploymentPillar(BasePillar):
             asof: Run date.
 
         Returns:
-            ``{currency: {component: value}}``. ``unemployment_6m`` is in
-            percentage points with the sign already flipped, so a positive value
-            means unemployment fell. ``employment_trend`` is an annualised
-            percent of the employment level.
+            ``{currency: {component: value}}`` over three keys, two of which
+            carry sub-weight:
+
+                ``unemployment_6m``: the six-month change in percentage points
+                with the sign already flipped, so a positive value means
+                unemployment fell. Weighted.
+
+                ``employment_trend``: an annualised percent of the employment
+                level. Weighted.
+
+                ``unemployment_chg_6m``: the same six-month change in percentage
+                points with its natural published sign, so a positive value means
+                unemployment rose. Report-only, no sub-weight, and it exists
+                solely to fill `headline_component`.
 
         The sign flip on unemployment is the single flip in this pillar and is
         applied here, once, never again downstream.
+
+        Why the unflipped copy exists. ``PillarScore.raw`` is contracted to be
+        the pillar's headline number in its natural unit, and a report shows it
+        so a reader can check the reasoning. Putting the flipped value there
+        prints ``+0.3`` beside a currency whose unemployment rate rose 0.3 points,
+        which reads as good news about a bad number. The flip is a modelling
+        step and belongs to the score; ``raw`` should show what the statistics
+        office published. This is the same device the positioning and risk
+        pillars use to report a readable quantity alongside a derived one.
 
         With the components weighted equally at 0.50, either one missing leaves
         exactly `MIN_COMPONENT_WEIGHT` present, which is on the boundary rather

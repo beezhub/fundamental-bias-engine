@@ -41,6 +41,10 @@ should be cut. Coverage is the fraction of pillar weight that had usable data.
 Cell is `composite(base) - composite(quote)` read along the row: positive means
 the row currency is fundamentally stronger than the column currency.
 
+{# Cells arrive from fbe.report._grid already oriented for the row they sit in,
+   mirrored halves included. Print cell.spread as it stands: negating anything
+   here would double-invert the lower triangle. #}
+
 | base \ quote |{% for quote in grid %} {{ quote }} |{% endfor %}
 |---|{% for quote in grid %}---:|{% endfor %}
 {% for base, row in grid.items() -%}
@@ -59,9 +63,10 @@ Ranked by conviction then by the width of the spread:
 
 {% if not report.shortlist %}
 Nothing cleared the conviction and blocker filters today. That is a result, not
-a gap: the plan's edge comes from being selective, and a day with no
-fundamental disagreement wide enough to trade is a day to leave the platform
-closed.
+a gap. The plan calls for being selective and for avoiding low-certainty
+setups, so a day with no fundamental disagreement wide enough to trade is a day
+to leave the platform closed. Whether being this selective pays has not been
+measured.
 {% else %}
 {% for idea in report.shortlist %}
 ### {{ loop.index }}. {{ idea.bias.pair }}, {{ idea.bias.direction.value }}, {{ idea.bias.conviction.value }} conviction
@@ -74,13 +79,22 @@ Spread {{ '%+.2f' | format(idea.bias.spread) }}
 {{ idea.rationale }}
 
 {% if idea.size -%}
-Sizing at {{ '%.1f%%' | format(idea.size.risk_fraction * 100) }} risk:
+Sizing at {{ '%.1f%%' | format(idea.size.risk_fraction * 100) }} intended risk:
 {{ '%.2f' | format(idea.size.lots) }} lots
 ({{ '%.0f' | format(idea.size.units) }} units) for a
-{{ '%.1f' | format(idea.size.stop_distance_pips) }} pip stop, risking
-{{ idea.size.account_currency }} {{ '%.2f' | format(idea.size.risk_amount) }}
-of a {{ idea.size.account_currency }}
+{{ '%.1f' | format(idea.size.stop_distance_pips) }} pip stop, against a
+{{ idea.size.account_currency }}
 {{ '%.2f' | format(idea.size.account_balance) }} balance.
+
+Actually at risk after the lot step is rounded down:
+{{ idea.size.account_currency }}
+{{ '%.2f' | format(idea.size.realised_risk_amount) }}
+({{ '%.2f%%' | format(idea.size.realised_risk_amount / idea.size.account_balance * 100) }}
+of balance), against an intended {{ idea.size.account_currency }}
+{{ '%.2f' | format(idea.size.risk_amount) }}. The realised figure is the one to
+check before placing the order, and the one an R-multiple is measured against.
+Notional {{ idea.size.account_currency }}
+{{ '%.2f' | format(idea.size.notional) }}.
 {%- for warning in idea.size.warnings %}
 - Size warning: {{ warning }}
 {%- endfor %}

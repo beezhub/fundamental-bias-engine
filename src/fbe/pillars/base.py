@@ -23,9 +23,37 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 
 from fbe.config import ScoringConfig
-from fbe.types import Observation, PillarName, PillarScore
+from fbe.types import Frequency, Observation, PillarName, PillarScore
 
-__all__ = ["BasePillar", "MIN_CROSS_SECTION", "MIN_COMPONENT_WEIGHT"]
+__all__ = [
+    "BasePillar",
+    "MIN_CROSS_SECTION",
+    "MIN_COMPONENT_WEIGHT",
+    "DEFAULT_PUBLICATION_LAG_DAYS",
+]
+
+
+DEFAULT_PUBLICATION_LAG_DAYS: Mapping[Frequency, int] = {
+    Frequency.DAILY: 1,
+    Frequency.WEEKLY: 7,
+    Frequency.MONTHLY: 45,
+    Frequency.QUARTERLY: 120,
+    Frequency.IRREGULAR: 45,
+}
+"""Assumed gap between a period starting and its number being published.
+
+Used only when an observation has no ``released_at``, to decide whether a
+historical run could have seen it. The values are measured from ``period``, which
+is the first day of the period described, so the monthly figure of 45 days covers
+a month elapsing plus the usual two-week statistical lag, and the quarterly
+figure of 120 days covers a quarter elapsing plus a month.
+
+They are deliberately generous. An assumed lag that is too long costs a backtest
+a little realism at the margin; one that is too short manufactures profit out of
+numbers nobody had, and that error flatters rather than penalises, so it survives
+review. Where a source can supply a real ``released_at``, it should, and this
+table should never be reached.
+"""
 
 
 MIN_CROSS_SECTION: int = 3
@@ -136,9 +164,11 @@ class BasePillar(ABC):
                 the full set is passed because normalisation is cross-sectional
                 and a pillar cannot judge one currency without seeing the rest.
             currencies: The universe to score, normally `universe.G10`.
-            asof: The date the run represents. Observations with a ``period``
-                after this date are ignored, so a historical run reproduces
-                what was knowable at the time.
+            asof: The date the run represents. Only observations that were
+                published on or before this date are used, so a historical run
+                reproduces what was knowable at the time. Publication, not
+                period: see `_extract` for the rule and for why the distinction
+                is the difference between a backtest and a fiction.
 
         Returns:
             One `PillarScore` per currency, keyed by ISO code.
@@ -158,13 +188,53 @@ class BasePillar(ABC):
         Args:
             observations: The full observation set for the run.
             currencies: The universe to score.
-            asof: Run date. Observations dated after it are dropped.
+            asof: Run date. Observations not yet published as of this date are
+                dropped, per the visibility rule below.
 
         Returns:
             ``{currency: {indicator: observations}}``, each inner sequence
-            sorted by ``period`` ascending and de-duplicated to the highest
-            ``revision`` per period. Currencies with nothing usable map to an
-            empty inner mapping rather than being omitted.
+            sorted by ``period`` ascending and reduced to one observation per
+            period, the newest vintage that existed at ``asof``. Currencies with
+            nothing usable map to an empty inner mapping rather than being
+            omitted.
+
+        The visibility rule, which every implementation must apply. An
+        observation counts only if it had been published by ``asof``:
+
+            ``released_at`` present: visible when
+            ``released_at.date() <= asof``. This is the real answer, and sources
+            should supply it wherever they can.
+
+            ``released_at`` absent: visible when
+            ``period + DEFAULT_PUBLICATION_LAG_DAYS[frequency] <= asof``. An
+            assumption, not a fact, and the run should record in
+            ``PillarScore.notes`` how many of its inputs were admitted this way,
+            because that count is how much of the result rests on a guess.
+
+        Filtering on ``period`` instead is the mistake this rule exists to
+        prevent, and it stays invisible until a backtest is run. US Q1 GDP has a
+        period of 1 January and is published on about 25 April. A run dated 15
+        April that filters on period keeps it, and scores the middle of April
+        using a number that will not exist for another ten days. Every pillar
+        here consumes lagged macro, so the error is systematic rather than
+        occasional, and it always flatters: the engine appears to anticipate data
+        it was in fact reading off the answer sheet.
+
+        The vintage rule, which is the same mistake wearing different clothes.
+        Where a source republishes a period, take the highest ``revision`` among
+        the observations visible at ``asof``, not the highest ``revision``
+        outright, breaking ties on the later ``released_at``. A run dated June
+        2020 must see the March 2020 payrolls as first estimated in April 2020,
+        not as revised in 2024. `Observation.released_at` and
+        `Observation.revision` exist on the contract for precisely this, and a
+        consumer that ignores them quietly turns a backtest into a description of
+        the past written with hindsight.
+
+        A live run, where ``asof`` is today, is unaffected by any of this:
+        everything published is visible and the newest vintage is the only
+        vintage. The rule costs nothing now and is the difference between an
+        honest and a flattering number later, which is why it belongs in the
+        specification rather than in a Phase 6 to-do.
 
         """
 
@@ -380,11 +450,14 @@ class BasePillar(ABC):
         instead, because past that point the surviving components are being
         asked to speak for the ones that are absent.
 
-        A component present for only part of the cross-section is dropped for
-        everyone, not just for the currencies missing it. A z-score computed
-        across four currencies is on a different scale from one computed across
-        eight, and blending the two silently rescales the pillar. The growth
-        pillar's PMI gap is the live case.
+        A component present for only part of the cross-section is z-scored
+        across the currencies that have it, and the currencies that do not
+        renormalise around its absence. Be aware of what that costs: a z-score
+        computed across four currencies sits on a different scale from one across
+        eight, so the two groups are being ranked against different yardsticks on
+        that component. The growth pillar's PMI gap is the live case and carries
+        the discussion; the alternative, dropping the component for everyone,
+        throws away the best series in a pillar whenever one country is missing.
 
         """
         raise NotImplementedError

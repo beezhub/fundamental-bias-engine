@@ -60,6 +60,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "TEMPLATE_NAME",
+    "SIDECAR_FORMAT",
     "CurrencyChange",
     "PairChange",
     "ReportDiff",
@@ -78,6 +79,11 @@ report renders the same from a checkout and from an installed wheel."""
 FILENAME_FORMAT = "bias-{asof:%Y-%m-%d}.md"
 """Dated filename. Sorting the directory by name sorts it by date, which is
 what makes ``--compare last`` a directory listing rather than a database."""
+
+SIDECAR_FORMAT = "bias-{asof:%Y-%m-%d}.json"
+"""The serialised `fbe.types.BiasReport` written beside every Markdown report.
+Same stem, so the two are found together and lost together. ``--compare`` reads
+this, never the Markdown, which keeps the report layout free to change."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,10 +183,10 @@ def build_context(
         report: The `fbe.types.BiasReport` itself.
         diff: The `ReportDiff` against the baseline run, or ``None``.
         config: The `fbe.config.Config` behind the run, for the weights table.
-        grid: ``grid[base][quote]`` giving the `fbe.types.PairBias` for that
-            ordered cell, or ``None`` where the pair is not quoted that way.
-            Filled on both sides of the diagonal with the sign flipped, since a
-            matrix that is only half populated is unreadable.
+        grid: ``grid[base][quote]`` from `_grid`, already oriented so that
+            every cell reads along its row. Templates render ``cell.spread``,
+            ``cell.direction`` and ``cell.conviction`` exactly as they find
+            them and never negate or relabel anything themselves.
         pillar_order: `fbe.types.PillarName` values in display order, heaviest
             weight first, so the columns that drive the score come first.
         currencies: Currency scores sorted strongest to weakest.
@@ -237,19 +243,32 @@ def write_report(
     config: Config | None = None,
     overwrite: bool = True,
 ) -> Path:
-    """Render a report and write it to a dated file.
+    """Render a report and write both the Markdown and its JSON sidecar.
+
+    Two files per run, sharing a stem: ``bias-YYYY-MM-DD.md`` from
+    `FILENAME_FORMAT` and ``bias-YYYY-MM-DD.json`` from `SIDECAR_FORMAT`. The
+    Markdown is for a reader. The sidecar is the serialised `BiasReport`, and it
+    is the only thing `load_report` and therefore ``--compare last`` can read.
+
+    Writing the Markdown alone is a silent failure, not a loud one: every run
+    still succeeds, ``--compare last`` still finds a report, and the
+    "what changed since the last run" section is empty forever with nothing
+    raising to say why. Write both files or write neither. Both are governed by
+    ``overwrite`` together, so a run can never leave a report whose sidecar
+    belongs to a different run.
 
     Args:
         report: The run to render.
         out_dir: Directory to write into. Created if missing.
         diff: Optional diff against the previous run.
         config: Optional effective config.
-        overwrite: When false, refuse to replace an existing file for the same
-            as-of date. A second run on the same day normally should overwrite,
-            because the later run saw more data.
+        overwrite: When false, refuse to replace either existing file for the
+            same as-of date. A second run on the same day normally should
+            overwrite, because the later run saw more data.
 
     Returns:
-        Path to the written file.
+        Path to the Markdown file. The sidecar sits beside it with the same
+        stem and a ``.json`` suffix; `load_report` accepts either path.
 
     Raises:
         NotImplementedError: Always, until rendering lands.
@@ -327,13 +346,44 @@ def diff_reports(previous: BiasReport, current: BiasReport) -> ReportDiff:
 
 
 def _grid(pairs: Sequence[PairBias]) -> Mapping[str, Mapping[str, PairBias | None]]:
-    """Lay the pair list out as a base against quote grid.
+    """Lay the pair list out as a base against quote grid, oriented per row.
+
+    A run holds 28 pairs in market convention, and the grid has 56 populated
+    cells. Half of them are therefore mirrors, and this function is the single
+    place that produces them. Both templates read a cell raw, so anything not
+    inverted here is displayed inverted: the reader is told to read along the
+    row, and a mirrored cell that still holds the market-convention values says
+    the opposite of what the row header claims. That inverts the whole lower
+    triangle of the matrix and the heatmap colour with it, while every number
+    on screen stays plausible.
+
+    For the cell at ``grid[X][Y]`` where the market quotes ``YX``, derive a new
+    `fbe.types.PairBias` from the convention row:
+
+    * ``spread`` negated.
+    * ``base`` and ``quote`` swapped, so ``base == X`` and ``quote == Y``.
+    * ``base_score`` and ``quote_score`` swapped with them, so the cell still
+      satisfies ``spread == base_score - quote_score``.
+    * ``pair`` rewritten as ``X + Y``. This is a display string for the cell it
+      sits in and is deliberately not market convention. Mirrored cells are for
+      reading the grid and must never reach the ranked list, the shortlist, the
+      journal or anything that places an order; those all take pairs from
+      ``report.pairs``, which stays in convention.
+    * ``direction`` inverted, long to short and short to long. Neutral is
+      unchanged, since neutral has no side to invert.
+    * ``conviction``, ``agreement``, ``asof``, ``tradeable`` and ``blockers``
+      unchanged. How strongly the model holds a view, and whether a release
+      blocks it, do not depend on which way round the pair is written.
+
+    The diagonal is ``None``: a currency has no bias against itself.
 
     Args:
-        pairs: Pair biases from one run.
+        pairs: Pair biases from one run, in market convention.
 
     Returns:
-        ``grid[base][quote]``, populated on both sides of the diagonal.
+        ``grid[base][quote]`` in `fbe.universe.G10` order on both axes, every
+        off-diagonal cell oriented so a positive ``spread`` means the row
+        currency is the fundamentally stronger of the two.
 
     Raises:
         NotImplementedError: Always, until rendering lands.

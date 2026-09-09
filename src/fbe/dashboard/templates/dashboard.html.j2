@@ -254,8 +254,11 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
               {% if cell is none %}
               <td class="diag"></td>
               {% else %}
+              {#- Cells come from fbe.report._grid already oriented for their
+                  row, mirrored halves included: spread negated, legs swapped,
+                  direction inverted. Colour and label them as they stand. -#}
               <td class="num {{ view.heat(cell.spread) }}"
-                  title="{{ cell.pair }} {{ cell.direction.value }}, {{ cell.conviction.value }} conviction">
+                  title="{{ cell.base }} vs {{ cell.quote }}: {{ cell.direction.value }} {{ cell.base }}, {{ cell.conviction.value }} conviction">
                 {{ '%+.1f' | format(cell.spread) }}
               </td>
               {% endif %}
@@ -308,12 +311,18 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
       </p>
       <p>{{ idea.rationale }}</p>
       {% if idea.size %}
+      {#- realised_risk_amount is what the rounded lot size actually exposes,
+          so it leads. The intended figure follows for the comparison. -#}
       <p class="meta num">
-        {{ '%.2f' | format(idea.size.lots) }} lots at
-        {{ '%.1f%%' | format(idea.size.risk_fraction * 100) }} risk,
+        {{ '%.2f' | format(idea.size.lots) }} lots on a
+        {{ '%.1f' | format(idea.size.stop_distance_pips) }} pip stop,
+        risking {{ idea.size.account_currency }}
+        {{ '%.2f' | format(idea.size.realised_risk_amount) }}
+        ({{ '%.2f%%' | format(idea.size.realised_risk_amount / idea.size.account_balance * 100) }}
+        of balance) against an intended
+        {{ '%.1f%%' | format(idea.size.risk_fraction * 100) }} or
         {{ idea.size.account_currency }}
-        {{ '%.2f' | format(idea.size.risk_amount) }} on a
-        {{ '%.1f' | format(idea.size.stop_distance_pips) }} pip stop
+        {{ '%.2f' | format(idea.size.risk_amount) }}
       </p>
       {% endif %}
       {% if idea.blackout_until %}

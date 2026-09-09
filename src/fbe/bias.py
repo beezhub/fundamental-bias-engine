@@ -242,10 +242,22 @@ def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:
     """Return the share of pillar weight pointing the way the headline does.
 
     Args:
-        base_leg: The base currency's aggregate score, with its pillars. Named
-            for the leg rather than for the score to keep it distinct from
-            ``PairBias.base_score``, which is a bare float.
-        quote_leg: The quote currency's aggregate score, with its pillars.
+        base_leg: The base currency's aggregate score, with its pillars, whose
+            `PillarScore.weight` values must already carry the staleness penalty
+            from `scoring.apply_staleness_penalty`. Named for the leg rather than
+            for the score to keep it distinct from ``PairBias.base_score``, which
+            is a bare float.
+        quote_leg: The quote currency's aggregate score, on the same terms.
+
+    The post-penalty requirement is not a formality. ``w_pair`` is built from
+    ``PillarScore.weight``, which holds the configured weight before the penalty
+    is applied and the effective weight after it. Handed unpenalised scores this
+    function still returns a plausible-looking number, computed as though every
+    pillar were fresh, and the stale-leg discount disappears from the agreement
+    fraction without any error being raised. A pair whose euro leg is running on
+    two-month-old growth data would then report the same agreement as one whose
+    data landed this morning, and the conviction ladder would take it at face
+    value.
 
     Returns:
         A value in ``[0.0, 1.0]``. ``0.0`` when no pillar is considered, which
