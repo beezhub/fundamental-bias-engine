@@ -83,6 +83,11 @@ class BasePillar(ABC):
     the one component a human would quote when asked to justify the call, and
     `compute` copies that component's pre-normalisation value into ``raw`` so
     the report can show it. It has no effect on the arithmetic.
+
+    The named component does not have to appear in `component_weights`. A pillar
+    whose blended components are all derived quantities may emit an extra
+    report-only component from `_transform` purely to fill this field, which is
+    what the positioning and risk pillars do.
     """
 
     def __init__(self, config: ScoringConfig | None = None) -> None:

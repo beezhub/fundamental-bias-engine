@@ -87,7 +87,29 @@ class ScoringConfig:
     min_agreement: float = 0.60
     """Fraction of pillars that must point the same way for anything above
     low conviction."""
+    staleness_full_days: int = 15
+    """Inputs newer than this carry full weight. Past it the freshness factor
+    decays linearly to zero at ``max_staleness_days``, rather than falling off
+    a cliff, so a series does not swing a score the day it crosses a boundary."""
     max_staleness_days: int = 45
+    max_dispersion: float = 1.20
+    """Standard deviation across a currency's pillar scores above which
+    conviction is demoted. High dispersion means the pillars disagree, and a
+    composite that averages a strong disagreement is not the same evidence as
+    a composite built from consensus."""
+    min_coverage: float = 0.60
+    """Fraction of pillar weight that must have usable data for a pair to be
+    tradeable at all. Below this the composite is extrapolated from too little
+    to act on."""
+    coverage_demotion: float = 0.80
+    """Coverage below this demotes conviction without blocking the trade."""
+    max_cost_ratio: float = 0.05
+    """Ceiling on spread cost as a share of the expected move over the
+    horizon. Above it the broker takes too much of the edge to bother."""
+    horizon_days: int = 10
+    """The horizon the bias is meant to describe. Fundamental repricing runs
+    slower than the 1h and 4h charts the entry is timed on, which is why bias
+    is a filter and a size modifier rather than a trigger."""
     """Inputs older than this stop counting toward pillar coverage."""
 
 

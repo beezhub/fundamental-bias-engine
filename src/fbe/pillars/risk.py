@@ -184,8 +184,12 @@ class RiskPillar(BasePillar):
             asof: Run date.
 
         Returns:
-            ``{currency: {"risk_response": value}}``. The value is
-            ``-risk_beta_relative * stress * damping(stress)``, unitless.
+            ``{currency: {"risk_response": value, "stress": stress}}``.
+            ``risk_response`` is ``-risk_beta_relative * stress *
+            damping(stress)``, unitless, and is the only component carrying
+            sub-weight. ``stress`` is the shared regime score, identical across
+            all eight currencies, carried so `headline_component` can report it
+            and so `classify` can label the run; it takes no part in the blend.
 
         Missing data: if either global series is unusable the whole pillar
         returns ``None`` for every currency and the scorer drops 0.10 of weight

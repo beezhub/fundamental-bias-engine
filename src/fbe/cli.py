@@ -71,16 +71,20 @@ script or a cron job without parsing output:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
 from fbe.types import Conviction, Direction
 
-__all__ = ["app", "journal_app"]
+if TYPE_CHECKING:
+    from fbe.config import Config
+
+__all__ = ["app", "journal_app", "GlobalOptions"]
 
 EXIT_OK = 0
 """Everything worked."""
@@ -90,6 +94,22 @@ EXIT_UNUSABLE = 1
 
 EXIT_BLOCKED = 3
 """A guard rule refused the request. Not an error, a decision."""
+
+
+@dataclass(frozen=True, slots=True)
+class GlobalOptions:
+    """The global flags, parked on the Typer context for every command.
+
+    Attributes:
+        config_path: Value of ``--config``, or ``None`` for the default lookup.
+        offline: Value of ``--offline``.
+        verbose: Repeat count of ``-v``.
+
+    """
+
+    config_path: Path | None = None
+    offline: bool = False
+    verbose: int = 0
 
 
 class OutputFormat(StrEnum):
@@ -174,28 +194,52 @@ def main(
         ),
     ] = 0,
 ) -> None:
-    """Resolve global options and stash the effective config on the context.
+    """Capture the global flags onto the Typer context.
 
-    Every command reads its config from ``ctx.obj`` rather than loading it
-    again, so one run of the CLI has exactly one config digest. Commands that
+    Only capture happens here. Loading the config is deferred to
+    `_effective_config` so that ``fbe <command> --help`` stays usable when the
+    config file is broken or missing: a tool you cannot ask for help is a poor
+    tool to debug with.
+
+    Args:
+        ctx: Typer context. The parsed flags are attached to ``ctx.obj``.
+        config: Optional path to a config YAML overriding the defaults.
+        offline: When true, force `fbe.config.DataConfig.offline`.
+        verbose: Repeat count for ``-v``, mapped to a logging level.
+
+    """
+    ctx.obj = GlobalOptions(config_path=config, offline=offline, verbose=verbose)
+
+
+def _effective_config(ctx: typer.Context) -> Config:
+    """Resolve the effective config once per run and cache it on the context.
+
+    Every command reads its config through here rather than loading it again,
+    so one invocation of the CLI has exactly one config digest. Commands that
     write a report record that digest, which is what makes an old report
     reproducible.
 
     Args:
-        ctx: Typer context. The resolved `fbe.config.Config` is attached to
-            ``ctx.obj``.
-        config: Optional path to a config YAML overriding the defaults.
-        offline: When true, force `fbe.config.DataConfig.offline`.
-        verbose: Repeat count for ``-v``, mapped to a logging level.
+        ctx: Typer context carrying a `GlobalOptions` in ``ctx.obj``.
+
+    Returns:
+        The effective `fbe.config.Config`, with ``--offline`` applied.
 
     Raises:
         NotImplementedError: Always, until the config layer lands.
 
     """
-    raise NotImplementedError("fbe.cli.main is scaffolded, not implemented")
+    raise NotImplementedError("fbe.cli._effective_config is scaffolded")
 
 
-@app.command()
+@app.command(
+    help=(
+        "Check config, credentials, cache and source reachability. Run this "
+        "first when the output looks wrong: it answers the four questions "
+        "behind almost every bad run, in order, and prints a verdict per "
+        "check."
+    ),
+)
 def doctor(
     ctx: typer.Context,
     timeout: Annotated[
@@ -255,7 +299,13 @@ def doctor(
     raise NotImplementedError("fbe.cli.doctor is scaffolded, not implemented")
 
 
-@app.command()
+@app.command(
+    help=(
+        "Pull fresh data from the sources into the local cache. Kept separate "
+        "from scoring, so a failed fetch at 07:00 leaves yesterday's cache "
+        "intact and still scoreable."
+    ),
+)
 def refresh(
     ctx: typer.Context,
     source: Annotated[
@@ -313,7 +363,13 @@ def refresh(
     raise NotImplementedError("fbe.cli.refresh is scaffolded, not implemented")
 
 
-@app.command()
+@app.command(
+    help=(
+        "Rank the G10 currencies by composite score, strongest first, with "
+        "dispersion across pillars and data coverage. Add --pillars for the "
+        "seven scores behind each composite."
+    ),
+)
 def score(
     ctx: typer.Context,
     asof: Annotated[
@@ -380,7 +436,13 @@ def score(
     raise NotImplementedError("fbe.cli.score is scaffolded, not implemented")
 
 
-@app.command()
+@app.command(
+    help=(
+        "Show the pair matrix and the ranked directional calls. A pair bias "
+        "is the difference between two currency scores: --ranked sorts by the "
+        "width of that difference, --matrix lays it out base against quote."
+    ),
+)
 def bias(
     ctx: typer.Context,
     asof: Annotated[
@@ -472,7 +534,13 @@ def bias(
     raise NotImplementedError("fbe.cli.bias is scaffolded, not implemented")
 
 
-@app.command()
+@app.command(
+    help=(
+        "List upcoming releases and the blackout windows they create, so "
+        "'avoid high-impact news' has clock times and affected pairs "
+        "attached. The morning routine step."
+    ),
+)
 def calendar(
     ctx: typer.Context,
     hours: Annotated[
@@ -553,7 +621,13 @@ def calendar(
     raise NotImplementedError("fbe.cli.calendar is scaffolded, not implemented")
 
 
-@app.command()
+@app.command(
+    help=(
+        "Size a proposed trade from its stop distance, inside the plan's 1-2% "
+        "risk band. Entry and stop are named options because two bare numbers "
+        "on a command line are easy to transpose."
+    ),
+)
 def size(
     ctx: typer.Context,
     pair: Annotated[
@@ -664,7 +738,13 @@ def size(
     raise NotImplementedError("fbe.cli.size is scaffolded, not implemented")
 
 
-@app.command()
+@app.command(
+    help=(
+        "Render the full dated Markdown report into the reports directory, "
+        "including the diff against the previous run. This is the audit "
+        "trail."
+    ),
+)
 def report(
     ctx: typer.Context,
     asof: Annotated[
@@ -726,7 +806,12 @@ def report(
     raise NotImplementedError("fbe.cli.report is scaffolded, not implemented")
 
 
-@app.command()
+@app.command(
+    help=(
+        "Build the self-contained HTML dashboard: one file, no external "
+        "assets, laid out for a phone during the session."
+    ),
+)
 def dashboard(
     ctx: typer.Context,
     asof: Annotated[
@@ -785,7 +870,13 @@ def dashboard(
     raise NotImplementedError("fbe.cli.dashboard is scaffolded, not implemented")
 
 
-@journal_app.command("add")
+@journal_app.command(
+    "add",
+    help=(
+        "Record one trade in the journal. The day's bias, conviction and "
+        "config digest for that pair are attached automatically."
+    ),
+)
 def journal_add(
     ctx: typer.Context,
     pair: Annotated[
@@ -881,7 +972,14 @@ def journal_add(
     raise NotImplementedError("fbe.cli.journal_add is scaffolded, not implemented")
 
 
-@journal_app.command("review")
+@journal_app.command(
+    "review",
+    help=(
+        "Summarise journalled trades against the plan and the engine: which "
+        "followed the plan, and which followed the bias. Different failures "
+        "with different fixes."
+    ),
+)
 def journal_review(
     ctx: typer.Context,
     days: Annotated[
