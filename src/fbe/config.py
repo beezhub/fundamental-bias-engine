@@ -79,6 +79,21 @@ class ScoringConfig:
     """Scores are clipped to +/- this before weighting, so one runaway pillar
     cannot carry a currency on its own."""
     lookback_years: int = 5
+    restandardisation_window_runs: int = 60
+    """How many recent runs the blend divisor is estimated over. A pillar built
+    from several sub-indicators blends down to a standard deviation below one,
+    so it must be rescaled or it speaks more quietly than its weight says. What
+    that rescaling tracks is the correlation between a pillar's own components,
+    which moves on a macro-regime timescale, so the window wants to outlast a
+    fortnight of odd data without being blind to a real change. Roughly a
+    quarter of daily runs."""
+    min_restandardisation_runs: int = 20
+    """Runs of history required before the rolling divisor engages. Below this
+    a run divides by its own cross-sectional standard deviation instead, which
+    is recorded on the score because the two are not on the same scale. The
+    fallback is deliberately the weaker option: dividing by the current run
+    amplifies a pillar exactly when its own components disagree, which is when
+    it has earned less influence rather than more."""
     """History used for time-series normalisation where a pillar needs it."""
     min_spread_low: float = 0.75
     """Score spread below which a pair is called neutral."""
