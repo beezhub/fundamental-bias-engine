@@ -1,0 +1,407 @@
+# Risk and execution
+
+This is the operator's document. It covers how a bias becomes a ticket: what to
+risk, how many units that is, which trades the limits refuse, when to stand
+aside for news, and what to write down afterwards.
+
+The engine never sends an order. It produces a directional lean and a size. The
+entry stays where the trading plan puts it, on the trendline or channel touch on
+the 1h and 4h charts.
+
+Everything here assumes the plan's account: R2,000, ZAR denominated, 1-2% risk
+per trade, which is R20 at 1% and R40 at 2%.
+
+---
+
+## 1. Why pip value is the hard part
+
+The account is in rand. The tradeable universe is 28 G10 crosses. Not one of
+them has ZAR on either leg.
+
+That means every position's risk is created in a foreign currency and has to be
+carried back to rand before it can be compared to the R20-R40 band. A EURUSD
+position earns and loses in dollars. A USDJPY position earns and loses in yen.
+Neither is directly comparable to a rand risk budget.
+
+There are three cases in general, and this account is always in the third.
+
+| Case | Example | Conversion |
+|---|---|---|
+| Quote currency is the account currency | USD account, EURUSD | None needed |
+| Account currency is the base of the pair | USD account, USDJPY | Divide by the pair's own price |
+| Account currency is in neither leg | **ZAR account, any G10 cross** | Multiply by a third rate: quote currency to ZAR |
+
+The third case needs market data the pair itself does not supply. If that rate
+is missing, `pip_value` raises `MissingRateError`. It does not fall back to 1.0,
+it does not reuse a stale rate, it does not carry forward the last successful
+conversion.
+
+The reason is worth being blunt about. A wrong conversion factor produces no
+visible symptom. The size function still returns a number, the ticket still
+fills, the stop still sits exactly where the chart said it should. The only
+thing that changes is how much money is at risk, and nothing on the screen
+reports it. Treating a missing USDZAR as 1.0 would size roughly eighteen times
+too large, turning a 1% trade into an 18% trade, on every trade, until someone
+noticed. A loud failure that refuses to size the trade is the only acceptable
+behaviour.
+
+---
+
+## 2. Position sizing, worked with real numbers
+
+The formula, in one line:
+
+```
+units = risk_amount / (stop_distance_in_pips x ZAR value of one pip per unit)
+```
+
+Rates used in both examples, which you must replace with live rates:
+
+* USDZAR = 18.50
+* USDJPY = 155.00
+* Contract size = 100,000 units per standard lot
+
+### Example A: EURUSD long, 1% risk
+
+Setup: price has broken above a descending trendline on the 4h and retested.
+Entry 1.0850, stop 1.0825, just beyond the retested line. Target 1.0925 at the
+prior swing high.
+
+1. **Risk amount.** R2,000 x 0.01 = **R20.00**
+2. **Stop distance.** (1.0850 - 1.0825) / 0.0001 = **25.0 pips**
+3. **Pip value per unit.** The quote currency is USD, so one pip on one unit is
+   0.0001 USD. Convert to rand at USDZAR:
+   0.0001 x 18.50 = **R0.00185 per pip per unit**
+4. **Units.** 20.00 / (25.0 x 0.00185) = 20.00 / 0.04625 = **432.4 units**
+5. **Lots.** 432.4 / 100,000 = **0.0043 lots**
+
+Now the broker gets a say. If the minimum is 0.01 lots, which is 1,000 units,
+this trade **cannot be taken**. Not "round up to the minimum": at 1,000 units
+the same 25 pip stop costs 1,000 x 0.00185 x 25 = **R46.25**, which is 2.3% of
+the account and outside the plan's band entirely.
+
+If the broker offers 0.001 nano lots, which is 100 units, round **down** to 400
+units. Realised risk: 400 x 0.00185 x 25 = **R18.50**. Inside the band, below
+the R20 target, which is the correct direction to miss in.
+
+6. **Reward to risk.** (1.0925 - 1.0850) / (1.0850 - 1.0825) = 0.0075 / 0.0025 =
+   **3.0R**. Clears the 2.5R minimum required at LOW conviction.
+
+### Example B: USDJPY short, 2% risk
+
+Setup: price rejected the upper channel line on the 4h with a bearish engulfing
+bar. Entry 155.00, stop 155.30, just beyond the channel. Target 154.10 at the
+lower channel line.
+
+1. **Risk amount.** R2,000 x 0.02 = **R40.00**
+2. **Stop distance.** (155.30 - 155.00) / 0.01 = **30.0 pips**. Note the pip
+   size: JPY pairs are quoted to two decimals, so a pip is 0.01, not 0.0001.
+3. **Pip value per unit.** This is the conversion leg, shown explicitly. One pip
+   on one unit is 0.01 JPY. Rand per yen is not quoted directly, so derive it:
+
+   ```
+   JPY to ZAR = USDZAR / USDJPY = 18.50 / 155.00 = 0.119355 rand per yen
+   ```
+
+   Then: 0.01 x 0.119355 = **R0.00119355 per pip per unit**
+4. **Units.** 40.00 / (30.0 x 0.00119355) = 40.00 / 0.0358065 = **1,117.1 units**
+5. **Lots.** 1,117.1 / 100,000 = **0.0112 lots**
+
+At a 0.01 lot minimum, round down to 1,000 units. Realised risk:
+1,000 x 0.00119355 x 30 = **R35.81**, which is 1.79% of the account. Inside the
+band. **This trade is tradeable at a standard micro-lot broker and the EURUSD
+trade above was not.**
+
+At a 0.001 nano-lot minimum, round down to 1,100 units. Realised risk:
+1,100 x 0.00119355 x 30 = **R39.39**, closer to the R40 target.
+
+6. **Reward to risk.** (155.00 - 154.10) / (155.30 - 155.00) = 0.90 / 0.30 =
+   **3.0R**.
+
+### Why the two examples differ
+
+A yen pip is worth less per unit than a dollar pip, about R0.0012 against
+R0.0019 here. Less value per pip means more units for the same rand risk, and
+more units clears a broker minimum that fewer units does not.
+
+The practical consequence on this account: **JPY-quoted pairs size larger and
+are the ones most likely to be tradeable.** That is a mechanical fact about
+quoting conventions, not a view on the yen, and it should not be mistaken for a
+reason to prefer those pairs on merit.
+
+### Rounding is always down
+
+Never nearest, never up. On a R2,000 account the gap between one micro lot and
+two is a doubling of risk, not a rounding error. Rounding down costs a few cents
+of expected profit and keeps the rule intact.
+
+---
+
+## 3. Conviction to size ladder
+
+Conviction modulates size. It does not gate entry, except at NONE.
+
+| Conviction | Risk fraction | On R2,000 | Minimum reward to risk |
+|---|---|---|---|
+| HIGH | 2.0% | R40.00 | 1.5R |
+| MEDIUM | 1.5% | R30.00 | 2.0R |
+| LOW | 1.0% | R20.00 | 2.5R |
+| NONE | no trade | R0 | no trade |
+
+Two things about this table.
+
+**Size rises with conviction, and the reward requirement falls.** They run in
+opposite directions on purpose. When the fundamental case is strong the hit rate
+carries the expectancy, so a 1.5R target is enough. When the case is thin the
+trade has to pay more when it works, because it will work less often.
+
+**LOW conviction is still a trade.** Refusing everything below HIGH sounds
+disciplined and is not: it would leave the account idle for weeks and push you
+toward taking marginal setups out of boredom, which is the overtrading the plan
+warns about. A LOW conviction pair with a clean channel touch is a 1% trade.
+
+NONE means the engine has no view. There is no bias layer to add to the chart,
+so there is no trade this system is entitled to an opinion on.
+
+---
+
+## 4. Limits, and what each one is for
+
+`check_limits` returns the reasons a trade is refused, not a yes or no, because
+each limit means something different about what to do next.
+
+| Limit | Default | What it is actually protecting |
+|---|---|---|
+| Max concurrent positions | 3 | Attention, not capital. The plan runs on 1h and 4h charts managed by hand. A fourth open ticket is where management degrades and stops get moved. |
+| Max correlated exposure | 4% per currency | Long EURUSD and long GBPUSD is one short-USD bet wearing two tickets. Both lose together on any dollar rally. Counting them as two independent 1% trades understates the real exposure by half. |
+| Max daily loss | 4% (R80) | Revenge trading, given a number. When it bites, the session is over. Realised losses only: an open trade sitting underwater is not yet evidence of anything. |
+| Drawdown pause | 10% (R200 from peak) | The model, not the trader. A drawdown this deep on a fundamental bias engine more likely means the weights are wrong than that variance was unkind. Stop and review before resizing. |
+
+On correlated exposure, the full risk of a position is attributed to **both** of
+its legs, not split between them. A pair trade genuinely does stake the whole
+amount on each leg's behaviour. This is conservative and it will occasionally
+overstate a genuinely hedged book. On a R2,000 account that is the right error
+to make.
+
+---
+
+## 5. Blackout policy
+
+The plan says avoid trading during high-impact news. The guard makes it
+checkable.
+
+**Window: 30 minutes before a release, 60 minutes after.**
+
+The asymmetry is deliberate. Thirty minutes before covers the pre-positioning
+drift and the liquidity thinning. Sixty minutes after is longer because **the
+first move is frequently wrong.** Price spikes on the headline, then reverses as
+the detail is read, the revisions are noticed and the algorithmic flow unwinds.
+Entering on the spike means entering at the worst price of the hour, in the
+direction about to fail. Standing aside through the reversal, not just through
+the release, is the whole point.
+
+**Either leg blocks the pair.** A EUR event blocks EURUSD regardless of what the
+dollar is doing. The euro is half the price. Checking only the quote currency is
+the easy mistake, because the quote currency is where the pips are, and it would
+leave every EUR, GBP, AUD and NZD release unguarded on exactly the dollar pairs
+the plan trades most.
+
+**The ten categories from the plan** are encoded in `HIGH_IMPACT_KEYWORDS` and
+matched against event titles, on top of whatever impact rating the feed
+publishes: NFP, interest rate decisions, GDP, CPI and PPI, retail sales, UK and
+Canada employment, trade balance, central bank speeches and press conferences,
+FOMC minutes and ECB accounts, geopolitical events and summits. Feeds mislabel.
+An unscheduled ECB remark tagged medium impact still moves a pair forty pips.
+The keyword match catches those.
+
+### Holding through an event is a different decision
+
+Entering into a window and holding through one are not the same choice, and the
+guard treats them separately.
+
+Declining an entry is free. The setup either survives the window or it does not,
+and skipping it costs a missed trade.
+
+Exiting is not free. Closing to dodge a release pays the spread twice, abandons
+a stop placed on structure, and gives up the trade's remaining expectancy on the
+strength of an event that might not touch it. A rule that flattens everything
+before every high-impact print bleeds the account through costs alone.
+
+The distinction is buffer:
+
+* **Up more than about 1R:** the position can survive an adverse spike. Manage
+  it with the plan's own tools. Take partial profit at the nearest support or
+  resistance, or pull the trailing stop in.
+* **At or below breakeven:** no buffer. A spike through a structural stop is
+  precisely the loss the news rule exists to prevent. Close it and re-enter
+  after the window if the setup survives.
+
+This connects to the plan's time-based exit. A trade that has stalled and is
+drifting toward a scheduled release is not waiting for its thesis, it is waiting
+for a coin flip. The stall and the approaching event are the same signal.
+
+---
+
+## 6. Journal
+
+Storage is `data/journal/trades.jsonl`, one JSON object per line, append-only.
+
+JSONL rather than a spreadsheet because a crash damages one line instead of the
+file, there is no cell to fat-finger and no formula to break, it diffs and
+versions cleanly, and it holds the nested bias snapshot natively. A record
+cannot be quietly edited after a bad week, which matters when the file is
+evidence about your own discipline. Export to CSV when you want to look at it.
+That is a viewing format, not a storage format.
+
+Corrections are appended with the same `trade_id`. Readers keep the last line
+per id and the superseded line stays in the file.
+
+### What each record holds
+
+**Execution:** `trade_id`, `pair`, `direction`, `opened_at`, `closed_at`,
+`entry`, `exit_price`, `stop`, `target`, `units`, `lots`, `broker`.
+
+**Risk:** `risk_amount` and `risk_fraction` in ZAR,
+`account_balance_at_entry`, `account_currency`.
+
+**Outcome:** `outcome_zar` net of costs, and `r_multiple`. R multiples are the
+only comparable measure across different sizes and balances. A +2R on R2,000 and
+a +2R on R20,000 are the same trade well executed.
+
+**Technicals:** `setup` (`channel_bounce`, `trendline_break_retest`,
+`double_bottom_neckline`), `timeframe` (`1h` or `4h`), and `exit_reason`, which
+is one of the plan's five exits: `target`, `stop`, `trailing_stop`, `partial`,
+`structure_break`, `time_exit`. Grouping by `exit_reason` is how you find out
+whether the time-based exit saves money or cuts winners short.
+
+**The bias snapshot, which is the part that cannot be reconstructed later:**
+`base_score`, `quote_score`, `spread_score`, `conviction`, `base_pillars` and
+`quote_pillars` (all seven pillar scores for each leg), and `config_digest`.
+
+Reconstructing that after the fact is impossible. Macro series get revised, the
+cross-sectional normalisation depends on the whole universe on that day, and the
+weights may have changed since. A snapshot at entry is the only version that is
+true. Without it there is no way to ever answer whether the model said anything
+useful, and the weights stay wherever they were first guessed, forever.
+
+**Discipline:** `agreed_with_bias` and `blackout_checked`.
+
+### Weekly review routine
+
+Run this once a week, at the same time, away from the market.
+
+1. Load the week's records.
+2. Run `evaluate`. Read expectancy by conviction bucket. **Expectancy should
+   rise from LOW through MEDIUM to HIGH.** If it does not, the conviction model
+   is wrong, and the ladder is actively harmful because it is putting more money
+   on the worse trades. The response is to re-weight the pillars or flatten the
+   ladder to a fixed 1% until the model earns the difference back.
+3. Check sample size before believing any of it. At five trades a week, thirty
+   closed trades per bucket is roughly where a difference in expectancy becomes
+   worth acting on. Below that the report is a record, not evidence. Reading it
+   as evidence is how a working model gets tuned into a broken one.
+4. Run `discipline_flags`. Read every revenge, overtrading and against-bias flag
+   without arguing with it.
+5. Group by `exit_reason`. Which exit is making money and which is leaking it.
+6. Group by `setup`. Which technical patterns actually work for you.
+7. Count the overrides, the trades where `agreed_with_bias` is false. If they
+   consistently beat the model, the model is the problem. If they consistently
+   lose, the discipline is.
+8. Write the conclusion into the `notes` of the trades it applies to.
+
+---
+
+## 7. The account size constraint, stated honestly
+
+At R2,000 with R20 at risk and a channel stop 25 pips wide, several G10 crosses
+size below any retail broker's minimum lot. Example A above is one of them.
+
+This is not a defect to engineer around. It is arithmetic. The available
+responses are:
+
+1. **Trade fewer pairs.** Concentrate on the pairs that do size cleanly at this
+   balance, which on a micro-lot account skews toward JPY-quoted pairs and the
+   tighter-spread majors.
+2. **Wait for setups with tighter stops.** A stop 15 pips beyond a 1h trendline
+   sizes larger than one 40 pips beyond a 4h channel. This must not become an
+   excuse to place stops closer than structure justifies.
+3. **Confirm whether your broker offers 0.001 nano lots.** That single fact
+   changes which pairs are tradeable more than anything else in this document.
+4. **Grow the account.** The constraint dissolves on its own above roughly
+   R10,000.
+
+The response that is not available is taking the minimum lot anyway. That
+silently converts a 1% trade into a 2-4% trade, and at that point the plan has
+stopped being a plan.
+
+**Broker values must be confirmed.** `DEFAULT_BROKER` in `src/fbe/risk.py` holds
+typical retail figures, not a quote from any specific broker. Read `min_lot`,
+`lot_step` and `contract_size` off your broker's contract specification, place
+one minimum-size trade to confirm, then replace the constant. Sample the spreads
+from your own terminal during the hours you actually trade.
+
+---
+
+## 8. Pre-trade checklist
+
+Run this before every ticket. It takes about two minutes.
+
+**Bias, from the engine**
+
+- [ ] Pair is on today's shortlist with a direction and a conviction.
+- [ ] Conviction is not NONE.
+- [ ] `tradeable` is true and `blockers` is empty.
+- [ ] Spread score is meaningful, not a rounding difference between two flat
+      currencies.
+
+**News**
+
+- [ ] `is_blacked_out` is false for the pair, right now.
+- [ ] No high-impact event on **either** leg within the next few hours that would
+      catch the trade mid-flight.
+- [ ] If something is scheduled, note `blackout_until` and decide now what
+      happens to the position when it arrives.
+
+**Technical, your own rules**
+
+- [ ] Trendline or channel drawn from at least two significant swings.
+- [ ] Price is **at** the line, not chasing it from halfway across the channel.
+- [ ] Confirmation is present: engulfing bar, hammer, doji, or a retest of a
+      broken line.
+- [ ] The 4h agrees with the 1h. If they disagree, there is no trade.
+- [ ] Your technical direction matches the engine's bias. If it does not, you can
+      still take it, but mark `agreed_with_bias` false so it is counted
+      separately.
+
+**Levels**
+
+- [ ] Stop is just beyond the opposite side of the channel or the key line.
+      Structure decides the stop. The account does not.
+- [ ] Target is at a real support or resistance level, not a round pip count.
+- [ ] Reward to risk clears the minimum for this conviction: 1.5R HIGH, 2.0R
+      MEDIUM, 2.5R LOW.
+
+**Size**
+
+- [ ] `position_size` run with the **current** USDZAR rate, not this morning's.
+- [ ] `warnings` is empty. If the size is below the broker minimum, the trade
+      does not happen. Do not round up.
+- [ ] Realised risk after rounding down is between R20 and R40.
+
+**Limits**
+
+- [ ] `check_limits` returns an empty list.
+- [ ] Fewer than 3 positions open.
+- [ ] No currency leg exceeds 4% total exposure once this trade is added.
+- [ ] Not down 4% or more on the day.
+- [ ] Not in a 10% drawdown from peak.
+
+**Record**
+
+- [ ] Journal entry written at entry, with the bias snapshot, before you walk
+      away from the screen.
+- [ ] Time-based exit decided now: how long does this trade get before a stall
+      closes it.
+
+If any box is unchecked, there is no trade. The best trades are often the ones
+you did not take.

@@ -1,0 +1,189 @@
+{# Markdown bias report.
+
+   Context is built by fbe.report.build_context: report, diff, config, grid,
+   pillar_order, currencies, pairs. Keep the section order in step with the
+   docstring in fbe/report.py and with the dashboard template, so the two views
+   never tell different stories. #}
+# FX fundamental bias, {{ report.asof.strftime('%Y-%m-%d') }}
+
+| | |
+|---|---|
+| As of | {{ report.asof.strftime('%Y-%m-%d') }} |
+| Generated | {{ report.generated_at.strftime('%Y-%m-%d %H:%M %Z') }} |
+| Config digest | `{{ report.config_digest }}` |
+| Universe | {{ currencies | length }} currencies, {{ pairs | length }} pairs |
+| Shortlist | {{ report.shortlist | length }} idea(s) |
+{% if config %}
+Pillar weights:
+{% for pillar in pillar_order %}
+{{ pillar.value }} {{ '%.2f' | format(config.scoring.weights[pillar]) }}{{ ", " if not loop.last }}
+{%- endfor %}
+{% endif %}
+
+Directional bias only. Entries and exits stay with the trendline and channel
+rules on the 1h and 4h charts.
+
+## 1. Currency ranking
+
+Composite is the weighted pillar score on the -3 to +3 band. Dispersion is the
+spread across pillars: high dispersion means the pillars disagree and conviction
+should be cut. Coverage is the fraction of pillar weight that had usable data.
+
+| # | CCY | Composite | Dispersion | Coverage |{% for pillar in pillar_order %} {{ pillar.value[:4] }} |{% endfor %}
+|---:|---|---:|---:|---:|{% for pillar in pillar_order %}---:|{% endfor %}
+{% for score in currencies -%}
+| {{ score.rank }} | {{ score.currency }} | {{ '%+.2f' | format(score.composite) }} | {{ '%.2f' | format(score.dispersion) }} | {{ '%.0f%%' | format(score.coverage * 100) }} |
+{%- for pillar in pillar_order %} {{ '%+.2f' | format(score.pillars[pillar].score) if pillar in score.pillars else '.' }} |{% endfor %}
+{% endfor %}
+
+## 2. Pair matrix
+
+Cell is `composite(base) - composite(quote)` read along the row: positive means
+the row currency is fundamentally stronger than the column currency.
+
+| base \ quote |{% for quote in grid %} {{ quote }} |{% endfor %}
+|---|{% for quote in grid %}---:|{% endfor %}
+{% for base, row in grid.items() -%}
+| **{{ base }}** |{% for quote, cell in row.items() %} {{ '%+.2f' | format(cell.spread) if cell else '-' }} |{% endfor %}
+{% endfor %}
+
+Ranked by conviction then by the width of the spread:
+
+| Pair | Dir | Conviction | Spread | Base | Quote | Agreement | Tradeable |
+|---|---|---|---:|---:|---:|---:|---|
+{% for bias in pairs -%}
+| {{ bias.pair }} | {{ bias.direction.value }} | {{ bias.conviction.value }} | {{ '%+.2f' | format(bias.spread) }} | {{ '%+.2f' | format(bias.base_score) }} | {{ '%+.2f' | format(bias.quote_score) }} | {{ '%.0f%%' | format(bias.agreement * 100) }} | {{ 'yes' if bias.tradeable else bias.blockers | join(', ') }} |
+{% endfor %}
+
+## 3. Tradeable shortlist
+
+{% if not report.shortlist %}
+Nothing cleared the conviction and blocker filters today. That is a result, not
+a gap: the plan's edge comes from being selective, and a day with no
+fundamental disagreement wide enough to trade is a day to leave the platform
+closed.
+{% else %}
+{% for idea in report.shortlist %}
+### {{ loop.index }}. {{ idea.bias.pair }}, {{ idea.bias.direction.value }}, {{ idea.bias.conviction.value }} conviction
+
+Spread {{ '%+.2f' | format(idea.bias.spread) }}
+({{ idea.bias.base }} {{ '%+.2f' | format(idea.bias.base_score) }} against
+{{ idea.bias.quote }} {{ '%+.2f' | format(idea.bias.quote_score) }}),
+{{ '%.0f%%' | format(idea.bias.agreement * 100) }} of pillars agree.
+
+{{ idea.rationale }}
+
+{% if idea.size -%}
+Sizing at {{ '%.1f%%' | format(idea.size.risk_fraction * 100) }} risk:
+{{ '%.2f' | format(idea.size.lots) }} lots
+({{ '%.0f' | format(idea.size.units) }} units) for a
+{{ '%.1f' | format(idea.size.stop_distance_pips) }} pip stop, risking
+{{ idea.size.account_currency }} {{ '%.2f' | format(idea.size.risk_amount) }}
+of a {{ idea.size.account_currency }}
+{{ '%.2f' | format(idea.size.account_balance) }} balance.
+{%- for warning in idea.size.warnings %}
+- Size warning: {{ warning }}
+{%- endfor %}
+{%- else -%}
+No size attached. Run `fbe size {{ idea.bias.pair }} --entry ... --stop ...`
+once the chart gives an entry.
+{%- endif %}
+
+{% if idea.blackout_until -%}
+Stand aside until {{ idea.blackout_until.strftime('%Y-%m-%d %H:%M %Z') }}: a
+high-impact release touches one of the legs before then.
+{%- endif %}
+{% if idea.bias.blockers -%}
+Blockers: {{ idea.bias.blockers | join('; ') }}
+{%- endif %}
+{% endfor %}
+{% endif %}
+
+## 4. Calendar and blackouts
+
+{% if not report.events %}
+No qualifying events in the horizon.
+{% else %}
+| When | CCY | Event | Impact | Forecast | Previous |
+|---|---|---|---|---:|---:|
+{% for event in report.events | sort(attribute='scheduled_for') -%}
+| {{ event.scheduled_for.strftime('%a %d %b %H:%M %Z') }} | {{ event.currency }} | {{ event.title }} | {{ event.impact }} | {{ event.forecast or '-' }} | {{ event.previous or '-' }} |
+{% endfor %}
+
+The plan says to stand aside around high-impact news. Each event above expands
+into a blackout window using the configured minutes either side; pairs touched
+by an active window are marked not tradeable in section 2.
+{% endif %}
+
+## 5. Data coverage and warnings
+
+{% if not report.warnings %}
+No warnings. Every pillar had data inside its staleness limit.
+{% else %}
+{% for warning in report.warnings -%}
+- {{ warning }}
+{% endfor %}
+
+Coverage below 100% on a currency means part of its pillar weight had no usable
+data and the composite is an extrapolation from a partial picture. Treat a thin
+call as a low-conviction call regardless of the spread it produces.
+{% endif %}
+
+## 6. What changed since the last run
+
+{% if not diff %}
+No baseline report to compare against. This is the first run, or `--compare
+none` was passed.
+{% elif diff.config_changed %}
+The config digest changed since {{ diff.previous_asof.strftime('%Y-%m-%d') }}.
+Score movements below are not comparable: re-weighting the pillars moves every
+currency at once, and reading that as a market move is the fastest way to talk
+yourself into a trade that is not there. Re-run the previous date on the current
+config for a like-for-like comparison.
+{% else %}
+Against {{ diff.previous_asof.strftime('%Y-%m-%d') }}:
+
+{% if diff.currencies %}
+| CCY | Then | Now | Delta | Rank |
+|---|---:|---:|---:|---|
+{% for change in diff.currencies -%}
+| {{ change.currency }} | {{ '%+.2f' | format(change.previous_composite) if change.previous_composite is not none else 'n/a' }} | {{ '%+.2f' | format(change.current_composite) if change.current_composite is not none else 'n/a' }} | {{ '%+.2f' | format(change.delta) if change.delta is not none else 'n/a' }} | {{ change.previous_rank or '-' }} to {{ change.current_rank or '-' }} |
+{% endfor %}
+{% endif %}
+
+{% if diff.pairs %}
+Direction and conviction moves:
+
+{% for change in diff.pairs -%}
+- {{ change.pair }}: {{ change.previous_direction.value if change.previous_direction else 'n/a' }} to {{ change.current_direction.value if change.current_direction else 'n/a' }}, {{ change.previous_conviction.value if change.previous_conviction else 'n/a' }} to {{ change.current_conviction.value if change.current_conviction else 'n/a' }}{{ ' (flip)' if change.flipped }}
+{% endfor %}
+{% endif %}
+
+{% if diff.shortlist_added %}
+Entered the shortlist: {{ diff.shortlist_added | join(', ') }}
+{% endif %}
+{% if diff.shortlist_removed %}
+Left the shortlist:
+{% for pair, reason in diff.shortlist_removed -%}
+- {{ pair }}: {{ reason }}
+{% endfor %}
+{% endif %}
+{% if diff.new_warnings %}
+New warnings:
+{% for warning in diff.new_warnings -%}
+- {{ warning }}
+{% endfor %}
+{% endif %}
+{% if diff.resolved_warnings %}
+Resolved since last run:
+{% for warning in diff.resolved_warnings -%}
+- {{ warning }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+---
+
+Config digest `{{ report.config_digest }}`. Reproduce this report with
+`fbe report --asof {{ report.asof.strftime('%Y-%m-%d') }} --config <the config
+that carries this digest>`.

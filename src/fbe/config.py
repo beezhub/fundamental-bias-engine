@@ -15,10 +15,21 @@ from typing import Mapping
 
 from fbe.types import PillarName
 
-__all__ = ["RiskConfig", "ScoringConfig", "DataConfig", "Config", "load_config"]
+__all__ = [
+    "REPO_ROOT",
+    "DATA_DIR",
+    "RiskConfig",
+    "ScoringConfig",
+    "DataConfig",
+    "Config",
+    "load_config",
+]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "data"
+"""Root of the on-disk data tree. Exported because the journal and the cache
+both resolve their own paths beneath it rather than each guessing at the
+repository layout."""
 
 
 @dataclass(frozen=True, slots=True)

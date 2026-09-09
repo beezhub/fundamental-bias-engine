@@ -17,3 +17,5 @@ data/cache/*
 data/reports/*
 !data/reports/.gitkeep
 .DS_Store
+data/journal/*
+!data/journal/.gitkeep
