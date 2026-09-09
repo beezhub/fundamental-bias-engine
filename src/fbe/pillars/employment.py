@@ -20,14 +20,13 @@ class EmploymentPillar(BasePillar):
     """Score the direction of unemployment and the momentum of hiring.
 
     Components and sub-weights:
-        ``unemployment_6m`` (0.55): the six-month change in the unemployment
+        ``unemployment_6m`` (0.50): the six-month change in the unemployment
             rate in percentage points, multiplied by ``-1``. Six months rather
             than one because the unemployment rate is a slow, heavily smoothed
             series and a single month of change is mostly survey noise.
-        ``employment_trend`` (0.45): the three-month average of
-            ``employment_change``, z-scored against that currency's own history
-            over ``ScoringConfig.lookback_years`` before it reaches the
-            cross-section.
+        ``employment_trend`` (0.50): the three-month average change in
+            ``employment_chg``, expressed as an annualised percent of the
+            employment level.
 
     Why no level component. Unemployment levels across the G10 measure labour
     market institutions rather than the cycle. Japan sits near 2.5% and the euro
@@ -35,34 +34,42 @@ class EmploymentPillar(BasePillar):
     ranks their hiring and firing law, which does not trade. The cycle lives
     entirely in the change, so only the change is scored.
 
-    Why ``employment_change`` is normalised against its own history first. The
-    series is published in raw counts and the counts are not comparable: a US
-    payrolls print is in the hundreds of thousands and a New Zealand quarterly
-    employment change is in the thousands. Z-scoring each currency against its
-    own record converts every one of them into "strong or weak for this country",
-    which is the quantity that can then be ranked across countries. This is the
-    same two-step used by the external pillar.
+    Why hiring is expressed as an annualised percent. The underlying series is
+    published in raw counts and the counts are not comparable: a US payrolls
+    print is in the hundreds of thousands and a New Zealand quarterly employment
+    change is in the thousands. Dividing by the employment level and annualising
+    turns both into "the labour force grew at this rate", which is directly
+    comparable across the cross-section and needs no per-currency rebasing before
+    the z-score. Doing it in the units rather than through a second normalisation
+    step also keeps the number readable in a report: 1.3% annualised hiring means
+    something to a person, and a time-series z-score of 1.3 does not.
 
     Sign rule: positive means the labour market is tightening relative to the
     others, which is currency-positive through the expected policy path. The
     inversion on ``unemployment_6m`` is the only sign flip in the pillar: a
     falling unemployment rate is a rising score.
 
-    Known failure modes: the participation trap. Unemployment can fall because
-    people stop looking for work, which this pillar reads as strength when it is
-    the opposite. ``employment_trend`` is the partial guard, since a
+    Known failure modes: employment lags the cycle. By the time the unemployment
+    rate has turned, the rate market has usually finished repricing, so the
+    pillar tends to confirm what the monetary pillar already said rather than
+    adding information, which is why it carries only 0.10.
+
+    Then the participation trap. Unemployment can fall because people stop
+    looking for work, which this pillar reads as strength when it is the
+    opposite. ``employment_trend`` is the partial guard, since a
     participation-driven fall shows no hiring behind it, and the two components
     disagreeing is itself informative: it lands as elevated ``dispersion`` on the
-    `CurrencyScore` and cuts conviction downstream. The second failure mode is
-    frequency. Australia and New Zealand publish employment quarterly while the
-    US publishes monthly, so ``periods=3`` means three months for one currency
-    and nine for another. The pillar states the horizon in months and the
-    extractor is responsible for resampling to a common monthly grid before
-    differencing.
+    `CurrencyScore` and cuts conviction downstream.
+
+    Last, frequency. Australia and New Zealand publish employment quarterly while
+    the US publishes monthly, so a fixed number of periods means different spans
+    of time for different currencies. The pillar states its horizons in months
+    and the extractor is responsible for resampling to a common monthly grid
+    before differencing.
     """
 
     name = PillarName.EMPLOYMENT
-    requires: Sequence[str] = ("unemployment_rate", "employment_change")
+    requires: Sequence[str] = ("unemployment_rate", "employment_chg")
     headline_component = "unemployment_6m"
 
     @property
@@ -70,10 +77,12 @@ class EmploymentPillar(BasePillar):
         """Return the sub-weights used to blend this pillar's components.
 
         Returns:
-            ``{component: weight}`` summing to 1.0.
+            ``{component: weight}`` summing to 1.0, matching section 3.4 of
+            ``docs/scoring-spec.md``. The two components are weighted equally
+            because neither guards against the other's failure mode on its own.
 
         """
-        return {"unemployment_6m": 0.55, "employment_trend": 0.45}
+        return {"unemployment_6m": 0.50, "employment_trend": 0.50}
 
     def _extract(
         self,
@@ -81,7 +90,7 @@ class EmploymentPillar(BasePillar):
         currencies: Sequence[str],
         asof: date,
     ) -> Mapping[str, Mapping[str, Sequence[Observation]]]:
-        """Pull the unemployment rate and employment change per currency.
+        """Pull the unemployment rate and the hiring series per currency.
 
         Args:
             observations: Full observation set for the run.
@@ -111,12 +120,19 @@ class EmploymentPillar(BasePillar):
         Returns:
             ``{currency: {component: value}}``. ``unemployment_6m`` is in
             percentage points with the sign already flipped, so a positive value
-            means unemployment fell. ``employment_trend`` is unitless, being a
-            time-series z-score.
+            means unemployment fell. ``employment_trend`` is an annualised
+            percent of the employment level.
 
-        Either component missing leaves the other below `MIN_COMPONENT_WEIGHT`
-        for ``employment_trend`` alone, so a currency without an unemployment
-        series is scored as missing rather than on hiring alone.
+        The sign flip on unemployment is the single flip in this pillar and is
+        applied here, once, never again downstream.
+
+        With the components weighted equally at 0.50, either one missing leaves
+        exactly `MIN_COMPONENT_WEIGHT` present, which is on the boundary rather
+        than under it, so a currency with one of the two series is still scored
+        on that series alone. That is the intended behaviour: half of this pillar
+        is better than none of a 0.10-weight pillar, and the missing half shows
+        up as neither a coverage nor a dispersion signal, which is worth knowing
+        when reading such a run.
 
         """
         raise NotImplementedError

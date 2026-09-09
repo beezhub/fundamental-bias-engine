@@ -21,26 +21,24 @@ class ExternalPillar(BasePillar):
     """Score the current account, the trade trend, and terms of trade.
 
     Components and sub-weights:
-        ``current_account`` (0.40): the latest current account balance,
-            z-scored against that currency's own history over
-            ``ScoringConfig.lookback_years``.
-        ``trade_trend`` (0.30): the trailing twelve-month sum of
-            ``trade_balance``, also z-scored against its own history. The
-            twelve-month sum is used rather than the monthly print because trade
-            data is violently seasonal and the sum removes the seasonality and
-            the monthly noise in one step.
-        ``terms_of_trade`` (0.30): the three-month percent change in the
-            commodity index tied to ``CurrencyMeta.commodity_link``.
+        ``current_account_gdp`` (0.40): the current account balance as a percent
+            of GDP, taken as a level. Positive is a surplus.
+        ``trade_trend`` (0.30): the three-month change in the trade balance, also
+            as a percent of GDP. The change rather than the level, because the
+            level is largely structural and already known, while the direction of
+            travel is what reprices.
+        ``terms_of_trade`` (0.30): the three-month return on the commodity tied
+            to ``CurrencyMeta.commodity_link``, in percent.
 
-    Why the first two are normalised against their own history first. These
-    series are published in domestic units and on wildly different scales:
-    billions of yen, billions of euro, and in some vintages a percentage of GDP.
+    Why everything is scaled by GDP rather than normalised against its own
+    history. These balances are published in domestic units and on wildly
+    different scales: billions of yen, billions of euro, billions of dollars.
     Ranking them raw across the cross-section would rank the size of the
-    economies. Z-scoring each against its own five-year record converts them
-    into "wide or narrow for this country", and those are comparable. The
-    resulting time-series z-scores are then z-scored cross-sectionally by the
-    shared normaliser, which is the same two-step the employment pillar uses on
-    ``employment_change``.
+    economies. Expressing them as a share of GDP puts all eight on one scale
+    directly, which is both comparable and readable: a current account of -3.3%
+    of GDP means something to a person in a way a time-series z-score of -1.2
+    does not. It also keeps the pillar to a single normalisation step, so the
+    cross-sectional z is measuring what it appears to measure.
 
     Terms of trade and the five currencies without a commodity link. Only CAD,
     AUD and NZD carry a ``commodity_link``, respectively crude oil, iron ore and
@@ -48,12 +46,13 @@ class ExternalPillar(BasePillar):
     not as ``None``. That is a modelling statement rather than a convenience: a
     zero says their export basket is diversified enough that no single commodity
     complex drives their terms of trade, so the commodity impulse on them this
-    quarter is neutral. Marking it missing instead would say something different
-    and worse, that the component could not be measured, and would trigger the
-    renormalisation machinery for five of the eight currencies every single run.
+    quarter is genuinely neutral. Marking it missing instead would say something
+    different and worse, that the component could not be measured, and it would
+    leave the z-score to be computed across three currencies, which on three
+    points is not a z-score.
 
-    The cost of that choice, stated so it can be reconciled: with five of eight
-    values pinned at zero, the cross-sectional standard deviation of this
+    The cost of that choice, stated so it can be read correctly: with five of
+    eight values pinned at zero, the cross-sectional standard deviation of this
     component is compressed, and the three commodity currencies land further from
     the mean than the underlying commodity move alone would justify. The effect
     is to amplify the terms-of-trade signal for CAD, AUD and NZD relative to the
@@ -77,22 +76,23 @@ class ExternalPillar(BasePillar):
 
     name = PillarName.EXTERNAL
     requires: Sequence[str] = (
+        "current_account_gdp",
         "trade_balance",
-        "current_account",
-        "commodity_index",
+        "commodity_price",
     )
-    headline_component = "current_account"
+    headline_component = "current_account_gdp"
 
     @property
     def component_weights(self) -> Mapping[str, float]:
         """Return the sub-weights used to blend this pillar's components.
 
         Returns:
-            ``{component: weight}`` summing to 1.0.
+            ``{component: weight}`` summing to 1.0, matching section 3.5 of
+            ``docs/scoring-spec.md``.
 
         """
         return {
-            "current_account": 0.40,
+            "current_account_gdp": 0.40,
             "trade_trend": 0.30,
             "terms_of_trade": 0.30,
         }
@@ -111,11 +111,11 @@ class ExternalPillar(BasePillar):
             asof: Run date; later periods are dropped.
 
         Returns:
-            ``{currency: {indicator: observations}}``. ``commodity_index``
+            ``{currency: {indicator: observations}}``. ``commodity_price``
             observations are keyed by commodity complex in
             ``Observation.meta``, not by currency, so the extractor routes each
-            index to the currencies whose ``commodity_link`` names it. A
-            currency with no link gets no ``commodity_index`` entry.
+            series to the currencies whose ``commodity_link`` names it. A
+            currency with no link gets no ``commodity_price`` entry.
 
         """
         raise NotImplementedError
@@ -125,21 +125,23 @@ class ExternalPillar(BasePillar):
         extracted: Mapping[str, Mapping[str, Sequence[Observation]]],
         asof: date,
     ) -> Mapping[str, Mapping[str, float | None]]:
-        """Build the two normalised balances and the terms-of-trade change.
+        """Build the two GDP-scaled balances and the terms-of-trade return.
 
         Args:
             extracted: Output of `_extract`.
             asof: Run date.
 
         Returns:
-            ``{currency: {component: value}}``. ``current_account`` and
-            ``trade_trend`` are unitless time-series z-scores.
-            ``terms_of_trade`` is a percent change, and is ``0.0`` rather than
-            ``None`` for currencies whose ``commodity_link`` is ``None``.
+            ``{currency: {component: value}}``. ``current_account_gdp`` is a
+            level in percent of GDP and ``trade_trend`` a three-month change in
+            percent of GDP. ``terms_of_trade`` is a three-month percent return,
+            and is ``0.0`` rather than ``None`` for currencies whose
+            ``commodity_link`` is ``None``.
 
         A currency missing both balances holds only 0.30 of the sub-weight,
         which is under `MIN_COMPONENT_WEIGHT`, so it is scored as missing rather
-        than on a commodity move alone.
+        than on a commodity move alone. Since terms of trade is never missing,
+        that is the only route to an absent external pillar.
 
         """
         raise NotImplementedError

@@ -192,14 +192,16 @@ class CotSource(BaseDataSource):
         Args:
             config: Effective `DataConfig`. No credential is needed; the
                 Socrata endpoints are open.
+
         """
         super().__init__(config)
 
     def available(self) -> bool:
-        """True always, since the endpoints need no credential.
+        """Report availability, which is always true: the endpoints need no key.
 
         Returns:
             Whether this source can be used on this run.
+
         """
         raise NotImplementedError
 
@@ -225,6 +227,7 @@ class CotSource(BaseDataSource):
 
         Raises:
             SourceError: On repeated request failure or an unparseable body.
+
         """
         raise NotImplementedError
 
@@ -233,6 +236,7 @@ class CotSource(BaseDataSource):
 
         Returns:
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
+
         """
         raise NotImplementedError
 
@@ -256,6 +260,7 @@ class CotSource(BaseDataSource):
 
         Raises:
             SourceError: On repeated request failure.
+
         """
         raise NotImplementedError
 
@@ -280,6 +285,7 @@ class CotSource(BaseDataSource):
 
         Returns:
             ``(report_date, net_position)`` pairs for the dollar.
+
         """
         raise NotImplementedError
 
@@ -294,5 +300,6 @@ class CotSource(BaseDataSource):
 
         Raises:
             SourceError: On repeated request failure.
+
         """
         raise NotImplementedError

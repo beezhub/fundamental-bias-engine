@@ -167,17 +167,19 @@ class FredSource(BaseDataSource):
         Args:
             config: Effective `DataConfig`. ``fred_api_key`` must be set for
                 the source to report itself available.
+
         """
         super().__init__(config)
 
     def available(self) -> bool:
-        """True when an API key is configured, or when running offline.
+        """Report whether an API key is configured, or the run is offline.
 
         Offline runs read the cache, which needs no key. That is what makes a
         cached run reproducible on a machine that has never had one.
 
         Returns:
             Whether this source can be used on this run.
+
         """
         raise NotImplementedError
 
@@ -202,6 +204,7 @@ class FredSource(BaseDataSource):
 
         Raises:
             SourceError: On repeated request failure or an unparseable body.
+
         """
         raise NotImplementedError
 
@@ -210,6 +213,7 @@ class FredSource(BaseDataSource):
 
         Returns:
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
+
         """
         raise NotImplementedError
 
@@ -238,6 +242,7 @@ class FredSource(BaseDataSource):
 
         Raises:
             SourceError: On repeated request failure or an unparseable body.
+
         """
         raise NotImplementedError
 
@@ -256,6 +261,7 @@ class FredSource(BaseDataSource):
 
         Raises:
             SourceError: On repeated request failure.
+
         """
         raise NotImplementedError
 
@@ -275,5 +281,6 @@ class FredSource(BaseDataSource):
 
         Raises:
             SourceError: On repeated request failure.
+
         """
         raise NotImplementedError

@@ -22,37 +22,45 @@ class GrowthPillar(BasePillar):
     """Score relative activity from GDP, surveys, output and consumption.
 
     Components and sub-weights:
-        ``gdp_yoy`` (0.25): headline real GDP year on year, in percent.
-        ``pmi_level`` (0.20): manufacturing PMI less 50, in index points, so the
-            component is signed at the expansion boundary rather than at the
-            cross-sectional mean.
-        ``pmi_trend`` (0.10): three-month change in the manufacturing PMI.
-        ``industrial_production_yoy`` (0.20): in percent.
-        ``retail_sales_yoy`` (0.25): in percent. Consumption carries as much as
-            GDP because it is monthly and GDP is not, so it is where a turn
-            shows up first.
+        ``gdp_yoy`` (0.30): headline real GDP year on year, in percent. The
+            lagging but comprehensive measure.
+        ``pmi_composite`` (0.30): the composite PMI level, in index points. The
+            leading survey, and the only forward-looking series in the pillar.
+        ``indpro_yoy`` (0.20): industrial production year on year, in percent.
+        ``retail_sales_yoy`` (0.20): in percent.
+
+    The mix is one lagging and comprehensive measure, one leading survey, and two
+    coincident hard-data series. The composite PMI is used rather than the
+    manufacturing series alone because manufacturing is a small and shrinking
+    share of most G10 economies, and a composite that includes services is a
+    better read on the activity that actually sets the policy path.
 
     Sign rule: positive means faster activity than the rest of the universe, and
     therefore a strong currency. No component is inverted.
 
-    The PMI coverage gap. The manufacturing PMI is the most useful series in this
+    The PMI coverage gap. The composite PMI is the most useful series in this
     pillar, being monthly, forward-looking and released within days of month end,
     and it is the one series here with no free and consistent G10-wide source.
-    The US ISM index is public; the S&P Global national PMIs are licensed and
-    published only in headline form. So ``pmi_manufacturing`` arrives through the
+    The US ISM indices are public; the S&P Global national PMIs are licensed and
+    published only in headline form. So ``pmi_composite`` arrives through the
     manual drop at ``DataConfig.manual_dir`` for whichever currencies the trader
     has filled in, and is simply absent for the rest.
 
-    The fallback is deliberate and slightly counter-intuitive: if the PMI is
-    missing for any currency in the cross-section, both PMI components are
-    dropped for every currency, not just for the ones that lack it. A z-score
-    computed across four currencies sits on a different scale from one computed
-    across eight, and blending the two would quietly rescale the pillar and hand
-    an advantage to whichever currencies happened to be in the smaller sample.
-    The remaining three components renormalise over 0.70 of the sub-weight, which
-    clears `MIN_COMPONENT_WEIGHT`, so the pillar keeps running on GDP, industrial
-    production and retail sales. Filling the manual PMI file improves the pillar;
-    leaving it empty does not break it.
+    The fallback, per section 3.3 of ``docs/scoring-spec.md``: where the PMI is
+    missing for a currency, that currency's sub-weights renormalise across the
+    remaining three, which hold 0.70 between them and clear
+    `MIN_COMPONENT_WEIGHT`. Coverage is unaffected, because the pillar still has
+    data. The engine must not substitute a proxy silently. Filling the manual PMI
+    file improves the pillar; leaving it empty does not break it.
+
+    One caveat to hold in mind when reading a run with partial PMI coverage. The
+    PMI z-score is computed across whichever currencies have the series, so a
+    cross-section of four sits on a different scale from one of eight, and the
+    currencies inside the smaller sample are being ranked against a different
+    yardstick from the ones outside it. The effect is second-order at a 0.30
+    sub-weight inside a 0.15 pillar, and the alternative, dropping the component
+    for everyone, throws away the best series in the pillar whenever one country
+    is missing. Filling the manual file for all eight removes the question.
 
     Known failure modes: GDP is quarterly and lands one to two months after the
     quarter closes, so in the worst case this component describes activity that
@@ -67,8 +75,8 @@ class GrowthPillar(BasePillar):
     name = PillarName.GROWTH
     requires: Sequence[str] = (
         "gdp_yoy",
-        "industrial_production_yoy",
-        "pmi_manufacturing",
+        "pmi_composite",
+        "indpro_yoy",
         "retail_sales_yoy",
     )
     headline_component = "gdp_yoy"
@@ -78,16 +86,15 @@ class GrowthPillar(BasePillar):
         """Return the sub-weights used to blend this pillar's components.
 
         Returns:
-            ``{component: weight}`` summing to 1.0, with 0.30 in the two PMI
-            components that may be dropped wholesale.
+            ``{component: weight}`` summing to 1.0, matching section 3.3 of
+            ``docs/scoring-spec.md``.
 
         """
         return {
-            "gdp_yoy": 0.25,
-            "pmi_level": 0.20,
-            "pmi_trend": 0.10,
-            "industrial_production_yoy": 0.20,
-            "retail_sales_yoy": 0.25,
+            "gdp_yoy": 0.30,
+            "pmi_composite": 0.30,
+            "indpro_yoy": 0.20,
+            "retail_sales_yoy": 0.20,
         }
 
     def _extract(
@@ -105,8 +112,8 @@ class GrowthPillar(BasePillar):
 
         Returns:
             ``{currency: {indicator: observations}}``, sorted by period
-            ascending. ``pmi_manufacturing`` is expected to be absent for most
-            currencies and its absence is not an error.
+            ascending. ``pmi_composite`` may be absent for some currencies and
+            its absence is not an error.
 
         """
         raise NotImplementedError
@@ -116,21 +123,22 @@ class GrowthPillar(BasePillar):
         extracted: Mapping[str, Mapping[str, Sequence[Observation]]],
         asof: date,
     ) -> Mapping[str, Mapping[str, float | None]]:
-        """Build the growth components, dropping PMI if coverage is partial.
+        """Take the newest print of each activity series.
 
         Args:
             extracted: Output of `_extract`.
             asof: Run date.
 
         Returns:
-            ``{currency: {component: value}}``. ``pmi_level`` and ``pmi_trend``
-            are set to ``None`` for every currency when any currency in the
-            cross-section lacks a PMI observation inside
-            ``ScoringConfig.max_staleness_days``, so the drop is all or nothing.
+            ``{currency: {component: value}}``. ``pmi_composite`` is the index
+            level; the other three are year-on-year percentages. A currency with
+            no PMI inside ``ScoringConfig.max_staleness_days`` returns ``None``
+            for that component only and is renormalised over the remaining 0.70.
 
-        The three year-on-year components are taken as published; they are
-        already in comparable percent units so they need no per-currency
-        rebasing before the cross-sectional z-score.
+        All four components are levels, taken as published. The three
+        year-on-year series are already in comparable percent units and the PMI
+        is a diffusion index on a common scale, so none of them needs
+        per-currency rebasing before the cross-sectional z-score.
 
         """
         raise NotImplementedError

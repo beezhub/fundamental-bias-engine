@@ -129,13 +129,19 @@ data/
              Lifetime is DataConfig.cache_ttl_hours. Safe to delete at any time.
   manual/    Hand-maintained CSV inputs for series with no free API. Committed,
              because losing them means re-keying them by hand.
-  reports/   Generated BiasReport JSON and rendered HTML. Git-ignored except .gitkeep.
-             Output only. Nothing reads from here except the dashboard.
+  reports/   Dated BiasReport JSON and rendered Markdown. Committed on purpose:
+             they are the audit trail, and --compare reads the previous run.
 ```
 
-Anything written to `cache/` or `reports/` must be reproducible from source
-data plus config. If deleting `data/` loses information, that information was
-in the wrong place, and it belongs in `data/manual/` or in the journal.
+Anything written to `cache/` must be reproducible from source data plus
+config, and is safe to delete at any time. `reports/` is the exception and is
+committed, because a report is precisely what cannot be reproduced later: macro
+series get revised, cross-sectional scores depend on the rest of the universe
+on the day, and the weights may have changed since. Re-running last week's date
+does not recover last week's call.
+
+If deleting `data/cache/` loses information, that information was in the wrong
+place, and it belongs in `data/manual/`, in `reports/`, or in the journal.
 
 ## Standing instruction on claims
 

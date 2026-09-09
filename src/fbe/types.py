@@ -128,8 +128,13 @@ class PillarScore:
             universe for this run.
         score: ``z`` clipped and rescaled to the engine's ``-3..+3`` band. This
             is the only field the aggregator consumes.
-        weight: The weight this pillar carries in the composite, echoed here so
-            a report can reproduce the arithmetic without re-reading config.
+        weight: The weight this pillar carries in the composite. A pillar emits
+            its configured weight; the staleness penalty then returns a copy
+            with this field scaled by the freshness factor, and every consumer
+            downstream (composite, coverage, dispersion, agreement) reads the
+            scaled value. So the field means configured weight before the
+            penalty and effective weight after it, and anything reproducing the
+            arithmetic must say which stage its inputs came from.
         staleness_days: Age of the newest input. Feeds the freshness penalty.
         inputs: Observations the pillar consumed, for audit and for the
             "show your working" section of the report.
@@ -215,13 +220,41 @@ class CalendarEvent:
 
 @dataclass(frozen=True, slots=True)
 class PositionSize:
-    """Output of the risk module: how much to trade, in units the broker takes."""
+    """Output of the risk module: how much to trade, in units the broker takes.
+
+    Every money field on this dataclass is in ``account_currency``. There are no
+    exceptions, including ``notional``, which therefore needs the same
+    conversion leg as the risk figures rather than being left as
+    ``units * entry`` in the quote currency. A mixed-unit money field on a
+    ticket is the kind of error that reads as plausible: on a ZAR account it
+    would understate a dollar-quoted position by the USDZAR rate, roughly
+    seventeen-fold, in the one number shown for leverage awareness.
+
+    Attributes:
+        risk_fraction: The intended fraction of balance at risk, inside the
+            plan's 1-2% band.
+        risk_amount: The intended money at risk, ``account_balance *
+            risk_fraction``, before the size is rounded to a whole lot step.
+        realised_risk_amount: What is actually at risk once ``lots`` has been
+            rounded down. This is always at or below ``risk_amount`` and it is
+            the figure the trader is really exposed to, so it is the one the
+            pre-trade check reads and the one the journal must record. An
+            R-multiple computed against the intended figure is overstated by
+            the rounding ratio, which on a small account is routinely 10% or
+            more, and that number is the sole input to the conviction
+            calibration the whole model is meant to be judged on.
+        notional: Face value of the position in ``account_currency``.
+        warnings: Soft failures. The module never silently adjusts anything; it
+            sizes what was asked for and says what is wrong with it.
+
+    """
 
     pair: str
     account_currency: str
     account_balance: float
     risk_fraction: float
     risk_amount: float
+    realised_risk_amount: float
     entry: float
     stop: float
     stop_distance_pips: float

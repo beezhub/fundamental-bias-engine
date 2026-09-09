@@ -176,11 +176,12 @@ class PricesSource(BaseDataSource):
 
         Args:
             config: Effective `DataConfig`. No credential is needed.
+
         """
         super().__init__(config)
 
     def available(self) -> bool:
-        """True when the Stooq CSV endpoint answers with CSV rather than HTML.
+        """Report whether the Stooq endpoint answers with CSV rather than HTML.
 
         The check is deliberately about the response shape, not about
         reachability. Stooq's anti-bot layer returns HTTP 200 with a challenge
@@ -189,6 +190,7 @@ class PricesSource(BaseDataSource):
 
         Returns:
             Whether this source can be used on this run.
+
         """
         raise NotImplementedError
 
@@ -215,6 +217,7 @@ class PricesSource(BaseDataSource):
         Raises:
             SourceError: On repeated request failure, or when the response is
                 the anti-bot challenge rather than CSV.
+
         """
         raise NotImplementedError
 
@@ -223,6 +226,7 @@ class PricesSource(BaseDataSource):
 
         Returns:
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
+
         """
         raise NotImplementedError
 
@@ -249,6 +253,7 @@ class PricesSource(BaseDataSource):
                 blocked request with HTTP 200 and an HTML challenge, so the
                 parser must reject anything whose first line is not the
                 ``Date,Open,High,Low,Close,Volume`` header.
+
         """
         raise NotImplementedError
 
@@ -265,5 +270,6 @@ class PricesSource(BaseDataSource):
             result themselves: `FRED_SPOT_SERIES` already normalises FRED's
             mixed quoting directions, and a second inversion downstream is how
             a bias ends up backwards.
+
         """
         raise NotImplementedError

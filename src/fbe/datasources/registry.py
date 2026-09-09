@@ -540,10 +540,7 @@ CORE_CPI_YOY = IndicatorSpec(
             "index",
             Frequency.MONTHLY,
             transform="yoy",
-            note=(
-                "Eurostat HICP excluding energy, food, alcohol and tobacco; "
-                "current"
-            ),
+            note=("Eurostat HICP excluding energy, food, alcohol and tobacco; current"),
         ),
         "GBP": _fred(
             "CPGRLE01GBM659N",
@@ -1306,6 +1303,7 @@ def series_for(indicator: str, currency: str) -> SeriesRef | None:
         KeyError: If ``indicator`` is not a registered indicator key. An
             unknown indicator is a programming error, not missing data, so it
             fails loudly rather than returning ``None``.
+
     """
     spec = INDICATORS[indicator]
     return spec.series.get(currency.upper())
@@ -1320,6 +1318,7 @@ def indicators_for_pillar(pillar: PillarName) -> tuple[str, ...]:
     Returns:
         Indicator keys, which a `Pillar` implementation can use directly as its
         ``requires`` sequence.
+
     """
     return tuple(key for key, spec in INDICATORS.items() if spec.pillar is pillar)
 
@@ -1340,6 +1339,7 @@ def coverage_report() -> Mapping[str, float]:
 
     Returns:
         Indicator key to fraction in ``0.0..1.0``.
+
     """
     report: dict[str, float] = {}
     for key, spec in INDICATORS.items():

@@ -19,6 +19,7 @@ __all__ = [
     "MOMENTUM_PEAK_Z",
     "SIGN_FLIP_Z",
     "CONTRARIAN_SLOPE",
+    "CONTRARIAN_CAP",
 ]
 
 
@@ -31,15 +32,28 @@ to fading it."""
 
 CONTRARIAN_SLOPE: float = 1.5
 """Slope of the contrarian branch beyond `SIGN_FLIP_Z`, in score-band units per
-unit of positioning z. At 1.5 the branch reaches ``ScoringConfig.score_clip``
-(3.0) at ``|p| = 4.0``, which is where the pillar stops getting louder."""
+unit of positioning z."""
+
+CONTRARIAN_CAP: float = 2.0
+"""Largest magnitude the contrarian branch may reach, hit at ``|p| = 3.33``.
+
+Deliberately short of ``ScoringConfig.score_clip`` (3.0). The other five
+cross-sectional pillars are z-scores over an eight-name universe, where the
+arithmetic maximum is ``sqrt(7) = 2.65`` and blended sub-indicators land nearer
+1.5 in practice, so a pillar allowed to reach 3.0 would be the loudest voice in
+the model at its extreme. This is the pillar with the weakest data behind it, so
+the clip is left as what it is elsewhere in the engine, a backstop against data
+errors, rather than becoming a routine operating point for CFTC futures data.
+"""
 
 
 class PositioningPillar(BasePillar):
     """Score CFTC futures positioning with a non-monotonic response.
 
-    The single component is ``cot_net_position`` expressed as a share of open
-    interest in percent, then z-scored against that currency's own history over
+    The single component is ``cot_net_pct_oi``, net non-commercial positioning
+    as a share of open interest in percent, computed by the data source as
+    ``(non_commercial_long - non_commercial_short) / open_interest`` and
+    z-scored against that currency's own history over
     ``ScoringConfig.lookback_years``. The share is used rather than the raw
     contract count because open interest itself trends over years, and a net long
     of 100,000 contracts means one thing in a market of 200,000 and something
@@ -57,23 +71,27 @@ class PositioningPillar(BasePillar):
         reading tapers back to zero. The trade is getting crowded, so the flow
         stops being evidence.
 
-        ``|p| > 2.0``: ``f = -sign(p) * 1.5 * (|p| - 2.0)``. The sign has flipped
-        and the pillar now fades the crowd with increasing force, reaching the
-        ``-3.0`` clip at ``|p| = 4.0`` and going no further.
+        ``|p| > 2.0``: ``f = -sign(p) * min(1.5 * (|p| - 2.0), 2.0)``. The sign
+        has flipped and the pillar now fades the crowd with increasing force
+        until it saturates at magnitude `CONTRARIAN_CAP` when ``|p|`` reaches
+        3.33, and goes no further however extreme positioning becomes.
 
-    Properties worth asserting in tests: continuous at both joins, magnitude 1.0
-    from either side at ``|p| = 1.0`` and 0.0 from either side at ``|p| = 2.0``;
-    odd about zero; peak confirming magnitude 1.0 at ``|p| = 1.0``; sign change
-    at ``|p| = 2.0``; the clip reached at ``|p| = 4.0``.
+    Properties worth asserting in tests: continuous at both joins and at the
+    saturation point, magnitude 1.0 from either side at ``|p| = 1.0`` and 0.0
+    from either side at ``|p| = 2.0``; odd about zero; peak confirming magnitude
+    1.0 at ``|p| = 1.0``; sign change at ``|p| = 2.0``; magnitude 2.0 from
+    ``|p| = 3.33`` upward, never reaching the ``3.0`` clip.
 
     The sign flips at ``|p| = 2.0``, where the function passes through zero, so
     the flip is continuous: a currency sitting on the boundary cannot jump from a
     large positive score to a large negative one on one week's data. The
-    confirming branch peaks at 1.0 while the contrarian branch runs to 3.0, so
-    the pillar is three times as loud when it disagrees with a crowded consensus
-    as when it agrees with a moderate one. That asymmetry is deliberate: a
-    crowded position is a fact about who is left to buy, which is firmer evidence
-    than a comfortable position, which is only evidence that a trade is working.
+    confirming branch peaks at 1.0 while the contrarian branch runs to 2.0, so
+    the pillar is twice as loud when it disagrees with a crowded consensus as
+    when it agrees with a moderate one. That asymmetry is deliberate: a crowded
+    position is a fact about who is left to buy, which is firmer evidence than a
+    comfortable position, which is only evidence that a trade is working. The
+    saturation is what keeps the asymmetry from running away; see
+    `CONTRARIAN_CAP`.
 
     Why crowded positioning is a risk signal, not a direction signal. A two
     standard deviation net long says the people who wanted to be long already
@@ -124,7 +142,7 @@ class PositioningPillar(BasePillar):
     """
 
     name = PillarName.POSITIONING
-    requires: Sequence[str] = ("cot_net_position", "cot_open_interest")
+    requires: Sequence[str] = ("cot_net_pct_oi",)
     headline_component = "net_share"
 
     @property
@@ -147,10 +165,10 @@ class PositioningPillar(BasePillar):
                 history is too short to z-score.
 
         Returns:
-            The response, unbounded here and clipped onto the score band by
-            `clip_and_scale`, or ``None`` when ``p`` is ``None``. Positive
-            supports a long, negative fades the crowd. See the class docstring
-            for the branch definitions and the reasoning.
+            The response, bounded to ``[-2.0, +2.0]`` by `CONTRARIAN_CAP`, or
+            ``None`` when ``p`` is ``None``. Positive supports a long, negative
+            fades the crowd. See the class docstring for the branch definitions
+            and the reasoning.
 
         """
         if p is None:
@@ -161,7 +179,8 @@ class PositioningPillar(BasePillar):
             return float(p)
         if magnitude <= SIGN_FLIP_Z:
             return sign * (SIGN_FLIP_Z - magnitude)
-        return -sign * CONTRARIAN_SLOPE * (magnitude - SIGN_FLIP_Z)
+        excess = CONTRARIAN_SLOPE * (magnitude - SIGN_FLIP_Z)
+        return -sign * min(excess, CONTRARIAN_CAP)
 
     def _extract(
         self,
@@ -169,7 +188,7 @@ class PositioningPillar(BasePillar):
         currencies: Sequence[str],
         asof: date,
     ) -> Mapping[str, Mapping[str, Sequence[Observation]]]:
-        """Pull the COT net position and open interest history per currency.
+        """Pull the share-of-open-interest history per currency.
 
         Args:
             observations: Full observation set for the run.
@@ -177,16 +196,13 @@ class PositioningPillar(BasePillar):
             asof: Run date; later report dates are dropped.
 
         Returns:
-            ``{currency: {indicator: observations}}`` covering at least
+            ``{currency: {"cot_net_pct_oi": observations}}`` covering at least
             ``ScoringConfig.lookback_years`` of weekly reports, since the
             time-series z-score needs the history and not just the latest print.
 
-        If the registry publishes ``cot_net_position`` already divided by open
-        interest, ``cot_open_interest`` will be absent and is not required. The
-        extractor detects which form it has from ``Observation.unit``,
-        ``"percent"`` for the normalised form and ``"contracts"`` for the raw
-        count. This is the one contract this pillar needs the data source owner
-        to confirm.
+        The key carries its own normalisation: ``cot_net_pct_oi`` arrives already
+        divided by open interest, in percent, so this pillar never sees a raw
+        contract count and never has to guess which form it was handed.
 
         """
         raise NotImplementedError

@@ -58,7 +58,7 @@ Seven stages. Each is a pure function of the previous stage plus config.
 | 1 | Collection | Source APIs and cached files | `Observation` records | `fbe.datasources` |
 | 2 | Transformation | `Observation` records | One raw number per sub-indicator per currency | Each pillar |
 | 3 | Cross-sectional normalisation | Raw sub-indicator values across 8 currencies | Sub-indicator z-scores | Each pillar |
-| 4 | Pillar blend and clip | Sub-indicator z-scores plus sub-weights | `PillarScore` with `raw`, `z`, `score` | Each pillar |
+| 4 | Blend, re-standardise, clip | Sub-indicator z-scores plus sub-weights | `PillarScore` with `raw`, `z`, `score` | Each pillar |
 | 5 | Weighting and aggregation | 7 `PillarScore` per currency plus weights, staleness | `CurrencyScore` with `composite`, `coverage`, `dispersion` | Scorer |
 | 6 | Pair spread | 8 `CurrencyScore` | `spread` per cross | Bias layer |
 | 7 | Direction, conviction, filters | `spread`, agreement, coverage, calendar, cost | `PairBias` | Bias layer |
@@ -107,20 +107,72 @@ Two pillars are exceptions, and they are exceptions for stated reasons:
 Both exceptions produce values on the same `-3 .. +3` band as the other five
 pillars and are clipped identically.
 
-### 2.3 Stage 4: blend and clip
+### 2.3 Stage 4: blend, re-standardise, clip
 
 For a pillar with sub-indicators `j` carrying sub-weights `u_j` that sum to 1.0:
 
-    z_pillar(c) = sum over available j of ( u_j' * z_j(c) )
+    blend(c)    = sum over available j of ( u_j' * z_j(c) )
+    z_pillar(c) = ( blend(c) - mean(blend) ) / sd(blend)
     score(c)    = clip(z_pillar(c), score_clip)
 
 where `u_j'` is `u_j` renormalised over the sub-indicators actually available for
-currency `c`. If a currency has no sub-indicator available for a pillar, the
-pillar is absent for that currency and contributes nothing to coverage.
+currency `c`, and `mean` and `sd` are taken across the currencies that have this
+pillar at all.
+
+**Why the blend is re-standardised.** Averaging several imperfectly correlated
+z-scores shrinks the variance of the result. Two sub-indicators that agree
+perfectly blend to something with a standard deviation of 1.0; two that are
+unrelated blend to something nearer 0.7. So a pillar built from five components
+arrives systematically quieter than a pillar built from one, purely as an
+artefact of how many series it happens to draw on.
+
+Left uncorrected this silently reweights the model. MONETARY at a stated weight
+of 0.30 would contribute less than that, and POSITIONING at 0.10, being a single
+component, would contribute more, whatever `ScoringConfig` says. The weights in
+section 3 are meant to be the whole of the model's opinion about relative
+importance, and they can only be that if every pillar reaches the aggregator on
+the same scale. The re-standardisation pass puts each pillar's cross-sectional
+standard deviation at exactly 1.0 before weighting, so the declared weights are
+the operative ones.
+
+Section 7.1 shows the size of the effect on real numbers: the blended MONETARY
+column has a standard deviation of 0.7001 and is scaled up by a factor of 1.43,
+while the two-component INFLATION column has a standard deviation of 0.9711 and
+is barely touched at 1.03. Without the pass, MONETARY would have spoken roughly
+39% more quietly than INFLATION relative to their declared weights.
+
+Two implementation notes. When every currency has full sub-indicator coverage the
+blend's mean is exactly 0 by construction, since each `z_j` has mean 0 and the
+sub-weights sum to 1, so the pass reduces to a division by `sd(blend)`. The mean
+is only non-zero when per-currency sub-weight renormalisation differs across
+currencies, so subtract it anyway rather than relying on the special case. And
+`sd(blend) < 1e-9` is handled exactly as in section 1.3: every score becomes 0.
+
+The pass applies only to the five cross-sectionally normalised pillars.
+POSITIONING and RISK are excluded for the reasons in section 2.2: both are
+already constructed on the score band in units that mean something, and
+re-standardising them would destroy that meaning. In particular it would force
+POSITIONING to have a non-zero spread across currencies even in a run where
+nothing is crowded, which is the opposite of what that pillar is for.
+
+**Minimum available sub-weight.** A currency must hold at least half of a
+pillar's total sub-weight for that pillar to be scored:
+
+    MIN_COMPONENT_WEIGHT = 0.5
+    if sum of u_j over available j  <  MIN_COMPONENT_WEIGHT:
+        the pillar is absent for that currency
+
+Renormalising is a reasonable repair for one missing series out of four. It is
+not a reasonable repair for three missing out of four, where it stops being a
+repair and becomes an assertion that the one surviving series speaks for the
+whole pillar. Below the floor the honest output is absence, which flows into
+coverage (section 4.2) and is visible in the report, rather than a confident
+number resting on a fragment. If a currency has no sub-indicator at all for a
+pillar, the pillar is likewise absent and contributes nothing to coverage.
 
 `PillarScore.raw` carries the pillar's headline number in natural units, for the
-report. `PillarScore.z` carries `z_pillar` before clipping. `PillarScore.score`
-is what the aggregator consumes.
+report. `PillarScore.z` carries `z_pillar` after re-standardisation and before
+clipping. `PillarScore.score` is what the aggregator consumes.
 
 ## 3. Pillar specifications
 
@@ -332,7 +384,7 @@ input, so the function is specified explicitly rather than described:
 
     f(p) = p                          for |p| <= 1.0     (momentum-confirming)
     f(p) = sign(p) * (2.0 - |p|)      for 1.0 < |p| <= 2.0  (fading)
-    f(p) = -sign(p) * 1.5 * (|p| - 2.0)   for |p| > 2.0  (contrarian)
+    f(p) = -sign(p) * min( 1.5 * (|p| - 2.0), 2.0 )   for |p| > 2.0  (contrarian)
 
     score(c) = clip(f(p(c)), score_clip)
 
@@ -342,8 +394,31 @@ Properties an implementer should assert in tests:
   `|p| = 2.0` both give 0.0.
 - Odd: `f(-p) = -f(p)`. There is no long or short asymmetry.
 - Peak magnitude of 1.0 in the momentum region, reached at `|p| = 1.0`.
-- Crosses zero at `|p| = 2.0` and turns against the crowd beyond it, reaching the
-  clip at `|p| = 4.0`.
+- Crosses zero at `|p| = 2.0` and turns against the crowd beyond it, saturating
+  at magnitude **2.0**, reached at `|p| = 2 + 2/1.5 = 3.33`. Beyond that the
+  score does not grow.
+
+**Why the contrarian branch saturates below the clip.** The cap is 2.0 rather
+than the `score_clip` of 3.0, and the difference matters. The five
+cross-sectionally normalised pillars have an arithmetic maximum of `sqrt(7)`,
+about 2.65, on an eight-currency universe, and after blending imperfectly
+correlated sub-indicators they land nearer 1.2 to 1.8 in practice. Section 7.1
+has the MONETARY pillar topping out at +1.62 in a run with a wide rate spread.
+
+An uncapped contrarian branch reaches 1.5 at `|p| = 3.0`, which is not a rare
+COT reading over a five-year window, and 3.0 at `|p| = 4.0`. That would make
+POSITIONING the only pillar in the model able to saturate the band, and it is the
+pillar with the weakest data behind it: futures only, one exchange only, a
+Tuesday snapshot published on Friday, and silent on the EUR crosses entirely. At
+`|p| = 3.4` a 0.10-weight pillar would contribute more to a composite than the
+0.30-weight MONETARY pillar does at a typical reading, which inverts the weights
+the model declares.
+
+The clip is meant to be what section 1.2 and `ScoringConfig.score_clip` describe:
+a backstop against a data error, not a routine operating point for the least
+reliable input in the model. Capping the branch at 2.0 leaves positioning able to
+argue forcefully at a genuine extreme while keeping it inside the range the rest
+of the model occupies.
 
 The reading in plain terms: mild positioning in a direction supports that
 direction; positioning above one standard deviation stops helping; positioning
@@ -607,7 +682,8 @@ currencies followed to a pair conclusion.
 
 Published scores are rounded to two decimals, and every later step in this
 section uses those rounded values, so the arithmetic below can be reproduced with
-a calculator.
+a calculator. The re-standardisation pass of section 2.3 is applied to the five
+cross-sectionally normalised pillars and its effect is shown explicitly.
 
 ### 7.1 MONETARY, in full
 
@@ -638,15 +714,32 @@ Blending with sub-weights 0.15 / 0.25 / 0.20 / 0.25 / 0.15, for USD:
 
     0.15*(+1.165) + 0.25*(+1.104) + 0.20*(+1.148) + 0.25*(+1.148) + 0.15*(+1.124)
     = 0.17475 + 0.27600 + 0.22960 + 0.28700 + 0.16860
-    = +1.13595  ->  published as +1.14
+    = +1.13595
 
-Same procedure for the rest:
+Same blend for the rest of the universe:
 
 | | USD | EUR | GBP | JPY | CHF | CAD | AUD | NZD |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| MONETARY score | +1.14 | -0.37 | +0.79 | -0.22 | -0.98 | -0.35 | +0.60 | -0.61 |
+| blended | +1.136 | -0.375 | +0.793 | -0.220 | -0.977 | -0.354 | +0.603 | -0.607 |
 
-Note JPY at -0.22 despite having by far the fastest-rising 2-year yield in the
+Now the re-standardisation pass of section 2.3. Every currency has all five
+sub-indicators, so the blended column has a mean of exactly 0 and the pass
+reduces to a division by its standard deviation:
+
+    sd(blend) = 0.7001
+    USD: +1.13595 / 0.7001 = +1.6227  ->  published as +1.62
+
+This is the effect the pass exists to correct, and MONETARY is where it is
+largest in this run. Five sub-indicators that agree in direction but not in
+detail blend down to a standard deviation of 0.70, so before scaling, the pillar
+carrying 0.30 of the model's weight was speaking about 30% more quietly than its
+weight implies. Section 7.2 shows the other end of the range.
+
+| | USD | EUR | GBP | JPY | CHF | CAD | AUD | NZD |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| MONETARY score | +1.62 | -0.54 | +1.13 | -0.31 | -1.40 | -0.51 | +0.86 | -0.87 |
+
+Note JPY at -0.31 despite having by far the fastest-rising 2-year yield in the
 set. The two momentum terms score +1.459 and +1.528, the highest in the universe,
 but the level terms and a real policy rate of -2.30% pull it back to slightly
 negative. This is the pillar working as designed: direction of travel matters,
@@ -679,7 +772,24 @@ Headline deviation: mean +0.4500, sd 0.5362. Core deviation: mean +0.6250, sd
 
 | | USD | EUR | GBP | JPY | CHF | CAD | AUD | NZD |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| INFLATION score | +0.92 | -0.54 | +1.76 | +0.11 | -1.53 | -0.34 | +0.43 | -0.81 |
+| blended | +0.921 | -0.538 | +1.761 | +0.107 | -1.528 | -0.341 | +0.428 | -0.811 |
+
+Here `sd(blend) = 0.9711`, so re-standardisation scales by 1.03 and changes
+almost nothing:
+
+| | USD | EUR | GBP | JPY | CHF | CAD | AUD | NZD |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| INFLATION score | +0.95 | -0.55 | +1.81 | +0.11 | -1.57 | -0.35 | +0.44 | -0.84 |
+
+The contrast with MONETARY is the point. Two sub-indicators that measure nearly
+the same thing, headline and core inflation against the same target, barely
+diversify each other, so their blend keeps almost all of its variance. Five
+sub-indicators spanning policy rates, yields, two momentum windows and a real
+rate diversify a great deal, so their blend loses 30% of its. The scaling
+factors differ, 1.03 against 1.43, precisely because the pillars differ in how
+much internal disagreement they contain. Skipping the pass would have handed
+INFLATION an advantage over MONETARY that neither the data nor the config
+intended.
 
 ### 7.3 GROWTH, EMPLOYMENT, EXTERNAL
 
@@ -710,11 +820,11 @@ with the sub-weights in section 3):
 
 Resulting scores:
 
-| | USD | EUR | GBP | JPY | CHF | CAD | AUD | NZD |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| GROWTH | +1.49 | -0.73 | -0.01 | -0.34 | -0.17 | +0.46 | +0.88 | -1.58 |
-| EMPLOYMENT | +0.58 | +0.45 | -0.67 | +0.50 | +0.41 | -0.71 | +1.07 | -1.63 |
-| EXTERNAL | -0.60 | +0.47 | -0.39 | +0.69 | +0.71 | -1.11 | +1.04 | -0.81 |
+| Pillar | `sd(blend)` | scaling | USD | EUR | GBP | JPY | CHF | CAD | AUD | NZD |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| GROWTH | 0.8907 | 1.12 | +1.67 | -0.82 | -0.01 | -0.38 | -0.19 | +0.51 | +0.99 | -1.77 |
+| EMPLOYMENT | 0.8450 | 1.18 | +0.69 | +0.54 | -0.79 | +0.59 | +0.48 | -0.84 | +1.26 | -1.93 |
+| EXTERNAL | 0.7669 | 1.30 | -0.78 | +0.61 | -0.51 | +0.90 | +0.93 | -1.45 | +1.36 | -1.06 |
 
 The unemployment column is sign-flipped inside EMPLOYMENT, which is why JPY, the
 only country whose unemployment rate fell, scores positively on that term.
@@ -738,6 +848,10 @@ positioning has stopped adding to it. JPY at `p = -2.40` is past the contrarian
 boundary and scores **+0.60**, a positive contribution to a currency the model
 otherwise dislikes, computed as `-(-1) * 1.5 * (2.40 - 2.00) = +0.60`. That is
 the pillar doing the one job it exists to do.
+
+No currency in this run reaches the contrarian saturation point of `|p| = 3.33`,
+so the cap added in section 3.6 does not bind on any of these values. The most
+extreme reading, JPY at `|p| = 2.40`, sits well inside it.
 
 ### 7.5 RISK
 
@@ -765,28 +879,28 @@ A mild but real risk-off. Then `score = 2.0 * R * risk_beta = -1.25 * risk_beta`
 
 | Currency | MON 0.30 | INF 0.15 | GRO 0.15 | EMP 0.10 | EXT 0.10 | POS 0.10 | RSK 0.10 | coverage | composite | dispersion | rank |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| USD | +1.14 | +0.92 | +1.49 | +0.58 | -0.60 | +0.10 | +0.62 | 1.000 | **+0.7735** | 0.6005 | 1 |
-| AUD | +0.60 | +0.43 | +0.88 | +1.07 | +1.04 | +0.70 | -1.12 | 1.000 | +0.5455 | 0.5928 | 2 |
-| GBP | +0.79 | +1.76 | -0.01 | -0.67 | -0.39 | +0.40 | -0.38 | 1.000 | +0.3955 | 0.7655 | 3 |
-| JPY | -0.22 | +0.11 | -0.34 | +0.50 | +0.69 | +0.60 | +1.12 | 1.000 | **+0.1905** | 0.4811 | 4 |
-| EUR | -0.37 | -0.54 | -0.73 | +0.45 | +0.47 | -0.60 | -0.12 | 1.000 | -0.2815 | 0.4065 | 5 |
-| CAD | -0.35 | -0.34 | +0.46 | -0.71 | -1.11 | -0.80 | -0.50 | 1.000 | -0.3990 | 0.4350 | 6 |
-| CHF | -0.98 | -1.53 | -0.17 | +0.41 | +0.71 | -0.90 | +0.88 | 1.000 | -0.4390 | 0.8225 | 7 |
-| NZD | -0.61 | -0.81 | -1.58 | -1.63 | -0.81 | +0.70 | -1.00 | 0.950 | **-0.8158** | 0.6487 | 8 |
+| USD | +1.62 | +0.95 | +1.67 | +0.69 | -0.78 | +0.10 | +0.62 | 1.000 | **+0.9420** | 0.7756 | 1 |
+| AUD | +0.86 | +0.44 | +0.99 | +1.26 | +1.36 | +0.70 | -1.12 | 1.000 | +0.6925 | 0.6607 | 2 |
+| GBP | +1.13 | +1.81 | -0.01 | -0.79 | -0.51 | +0.40 | -0.38 | 1.000 | +0.4810 | 0.8729 | 3 |
+| JPY | -0.31 | +0.11 | -0.38 | +0.59 | +0.90 | +0.60 | +1.12 | 1.000 | **+0.1875** | 0.5426 | 4 |
+| EUR | -0.54 | -0.55 | -0.82 | +0.54 | +0.61 | -0.60 | -0.12 | 1.000 | -0.3245 | 0.4819 | 5 |
+| CAD | -0.51 | -0.35 | +0.51 | -0.84 | -1.45 | -0.80 | -0.50 | 1.000 | -0.4880 | 0.5168 | 6 |
+| CHF | -1.40 | -1.57 | -0.19 | +0.48 | +0.93 | -0.90 | +0.88 | 1.000 | -0.5450 | 0.9665 | 7 |
+| NZD | -0.87 | -0.84 | -1.77 | -1.93 | -1.06 | +0.70 | -1.00 | 0.950 | **-0.9774** | 0.7056 | 8 |
 
 **USD composite**, all pillars fresh so `coverage = 1.000`:
 
-    0.30*(+1.14) + 0.15*(+0.92) + 0.15*(+1.49) + 0.10*(+0.58)
-      + 0.10*(-0.60) + 0.10*(+0.10) + 0.10*(+0.62)
-    = +0.3420 +0.1380 +0.2235 +0.0580 -0.0600 +0.0100 +0.0620
-    = +0.7735 ,  divided by coverage 1.000  ->  +0.7735
+    0.30*(+1.62) + 0.15*(+0.95) + 0.15*(+1.67) + 0.10*(+0.69)
+      + 0.10*(-0.78) + 0.10*(+0.10) + 0.10*(+0.62)
+    = +0.4860 +0.1425 +0.2505 +0.0690 -0.0780 +0.0100 +0.0620
+    = +0.9420 ,  divided by coverage 1.000  ->  +0.9420
 
 **JPY composite**, also fully covered:
 
-    0.30*(-0.22) + 0.15*(+0.11) + 0.15*(-0.34) + 0.10*(+0.50)
-      + 0.10*(+0.69) + 0.10*(+0.60) + 0.10*(+1.12)
-    = -0.0660 +0.0165 -0.0510 +0.0500 +0.0690 +0.0600 +0.1120
-    = +0.1905  ->  +0.1905
+    0.30*(-0.31) + 0.15*(+0.11) + 0.15*(-0.38) + 0.10*(+0.59)
+      + 0.10*(+0.90) + 0.10*(+0.60) + 0.10*(+1.12)
+    = -0.0930 +0.0165 -0.0570 +0.0590 +0.0900 +0.0600 +0.1120
+    = +0.1875  ->  +0.1875
 
 **NZD composite**, demonstrating the staleness discount. New Zealand's external
 data is 30 days old, so for that pillar `phi = (45 - 30) / (45 - 15) = 0.500` and
@@ -795,14 +909,14 @@ data is 30 days old, so for that pillar `phi = (45 - 30) / (45 - 15) = 0.500` an
     coverage = 0.30 + 0.15 + 0.15 + 0.10 + 0.050 + 0.10 + 0.10 = 0.950
 
     weighted sum
-    = 0.300*(-0.61) + 0.150*(-0.81) + 0.150*(-1.58) + 0.100*(-1.63)
-      + 0.050*(-0.81) + 0.100*(+0.70) + 0.100*(-1.00)
-    = -0.1830 -0.1215 -0.2370 -0.1630 -0.0405 +0.0700 -0.1000
-    = -0.7750
+    = 0.300*(-0.87) + 0.150*(-0.84) + 0.150*(-1.77) + 0.100*(-1.93)
+      + 0.050*(-1.06) + 0.100*(+0.70) + 0.100*(-1.00)
+    = -0.2610 -0.1260 -0.2655 -0.1930 -0.0530 +0.0700 -0.1000
+    = -0.9285
 
-    composite = -0.7750 / 0.950 = -0.8158
+    composite = -0.9285 / 0.950 = -0.9774
 
-Renormalising matters here: without the division the composite would read -0.775,
+Renormalising matters here: without the division the composite would read -0.929,
 understating New Zealand's weakness purely because one pillar was old. The stale
 pillar was itself negative, so discounting it moved the composite the other way
 and the renormalisation put it back. Coverage of 0.950 is then carried forward to
@@ -810,19 +924,20 @@ the conviction tests.
 
 **NZD dispersion**, with `w_tilde(p) = w_eff(p) / 0.950`:
 
-    (0.300/0.950)*(-0.61 +0.8158)^2 = 0.3158 * 0.04235 = 0.013374
-    (0.150/0.950)*(-0.81 +0.8158)^2 = 0.1579 * 0.00003 = 0.000005
-    (0.150/0.950)*(-1.58 +0.8158)^2 = 0.1579 * 0.58400 = 0.092211
-    (0.100/0.950)*(-1.63 +0.8158)^2 = 0.1053 * 0.66293 = 0.069782
-    (0.050/0.950)*(-0.81 +0.8158)^2 = 0.0526 * 0.00003 = 0.000002
-    (0.100/0.950)*(+0.70 +0.8158)^2 = 0.1053 * 2.29763 = 0.241856
-    (0.100/0.950)*(-1.00 +0.8158)^2 = 0.1053 * 0.03393 = 0.003572
+    (0.300/0.950)*(-0.87 +0.9774)^2 = 0.3158 * 0.01153 = 0.003640
+    (0.150/0.950)*(-0.84 +0.9774)^2 = 0.1579 * 0.01887 = 0.002979
+    (0.150/0.950)*(-1.77 +0.9774)^2 = 0.1579 * 0.62822 = 0.099200
+    (0.100/0.950)*(-1.93 +0.9774)^2 = 0.1053 * 0.90745 = 0.095527
+    (0.050/0.950)*(-1.06 +0.9774)^2 = 0.0526 * 0.00682 = 0.000359
+    (0.100/0.950)*(+0.70 +0.9774)^2 = 0.1053 * 2.81368 = 0.296165
+    (0.100/0.950)*(-1.00 +0.9774)^2 = 0.1053 * 0.00051 = 0.000054
 
-    sum = 0.420802 ,  dispersion = sqrt(0.420802) = 0.6487
+    sum = 0.497924 ,  dispersion = sqrt(0.497924) = 0.7056
 
 Under the 1.20 threshold, so no dispersion demotion. Most of that dispersion is
 the POSITIONING pillar at +0.70 arguing against a currency every other pillar
-dislikes, which is exactly the disagreement the metric is meant to surface.
+dislikes: that single term supplies 0.296 of the 0.498 total, which is exactly
+the disagreement the metric is meant to surface.
 
 ### 7.7 Pairs
 
@@ -831,15 +946,15 @@ convention (the precedence order puts NZD ahead of USD and USD ahead of JPY).
 
 **NZDUSD**
 
-    spread = composite(NZD) - composite(USD) = -0.8158 - 0.7735 = -1.5893
+    spread = composite(NZD) - composite(USD) = -0.9774 - 0.9420 = -1.9194
 
 | Pillar | NZD | USD | difference | agrees with a negative spread? | `w_pair` |
 | --- | --- | --- | --- | --- | --- |
-| MONETARY | -0.61 | +1.14 | -1.75 | yes | 0.300 |
-| INFLATION | -0.81 | +0.92 | -1.73 | yes | 0.150 |
-| GROWTH | -1.58 | +1.49 | -3.07 | yes | 0.150 |
-| EMPLOYMENT | -1.63 | +0.58 | -2.21 | yes | 0.100 |
-| EXTERNAL | -0.81 | -0.60 | -0.21 | yes | 0.075 |
+| MONETARY | -0.87 | +1.62 | -2.49 | yes | 0.300 |
+| INFLATION | -0.84 | +0.95 | -1.79 | yes | 0.150 |
+| GROWTH | -1.77 | +1.67 | -3.44 | yes | 0.150 |
+| EMPLOYMENT | -1.93 | +0.69 | -2.62 | yes | 0.100 |
+| EXTERNAL | -1.06 | -0.78 | -0.28 | yes | 0.075 |
 | POSITIONING | +0.70 | +0.10 | +0.60 | no | 0.100 |
 | RISK | -1.00 | +0.62 | -1.62 | yes | 0.100 |
 
@@ -850,11 +965,11 @@ stale data on that pillar.
     agreeing   = 0.975 - 0.100 = 0.875
     agreement  = 0.875 / 0.975 = 0.8974
 
-Conviction: `abs(-1.5893) = 1.5893`, which is at or above `min_spread_medium`
+Conviction: `abs(-1.9194) = 1.9194`, which is at or above `min_spread_medium`
 (1.50) and below `min_spread_high` (2.50), so the base tier is **MEDIUM**. Then
 the demotion tests: agreement 0.8974 is above 0.60, so no cap; `min(coverage)` is
-0.950, above 0.80, so no demotion; `max(dispersion)` is `max(0.6487, 0.6005) =
-0.6487`, under 1.20, so no demotion; no high-impact event for either leg in the
+0.950, above 0.80, so no demotion; `max(dispersion)` is `max(0.7056, 0.7756) =
+0.7756`, under 1.20, so no demotion; no high-impact event for either leg in the
 next 24 hours, and no blackout window is active. Conviction stays **MEDIUM**.
 
 Cost filter: typical dealing spread 1.8 pips, 20-day ATR 62 pips.
@@ -865,8 +980,8 @@ Cost filter: typical dealing spread 1.8 pips, 20-day ATR 62 pips.
 Well under 0.05, so it passes.
 
     PairBias(pair="NZDUSD", base="NZD", quote="USD",
-             spread=-1.5893, direction=SHORT, conviction=MEDIUM,
-             base_score=-0.8158, quote_score=+0.7735,
+             spread=-1.9194, direction=SHORT, conviction=MEDIUM,
+             base_score=-0.9774, quote_score=+0.9420,
              agreement=0.8974, tradeable=True, blockers=())
 
 In words: short New Zealand dollar against US dollar. Six of seven pillars agree,
@@ -875,58 +990,93 @@ counts against the trade. This is the model's best idea in the run.
 
 **USDJPY**
 
-    spread = +0.7735 - 0.1905 = +0.5830
+    spread = +0.9420 - 0.1875 = +0.7545
 
 | Pillar | USD | JPY | difference | agrees with a positive spread? | `w_pair` |
 | --- | --- | --- | --- | --- | --- |
-| MONETARY | +1.14 | -0.22 | +1.36 | yes | 0.300 |
-| INFLATION | +0.92 | +0.11 | +0.81 | yes | 0.150 |
-| GROWTH | +1.49 | -0.34 | +1.83 | yes | 0.150 |
-| EMPLOYMENT | +0.58 | +0.50 | +0.08 | yes | 0.100 |
-| EXTERNAL | -0.60 | +0.69 | -1.29 | no | 0.100 |
+| MONETARY | +1.62 | -0.31 | +1.93 | yes | 0.300 |
+| INFLATION | +0.95 | +0.11 | +0.84 | yes | 0.150 |
+| GROWTH | +1.67 | -0.38 | +2.05 | yes | 0.150 |
+| EMPLOYMENT | +0.69 | +0.59 | +0.10 | yes | 0.100 |
+| EXTERNAL | -0.78 | +0.90 | -1.68 | no | 0.100 |
 | POSITIONING | +0.10 | +0.60 | -0.50 | no | 0.100 |
 | RISK | +0.62 | +1.12 | -0.50 | no | 0.100 |
 
     agreement = 0.700 / 1.000 = 0.7000
 
-Conviction: `abs(+0.5830) = 0.5830`, below `min_spread_low` (0.75), so the base
-tier is **NONE** and `Direction` is forced to `NEUTRAL`. The agreement of 0.70
-never gets used, because the spread never reached a tier that could be demoted.
+Conviction: `abs(+0.7545) = 0.7545`, which clears `min_spread_low` (0.75) by
+0.0045 and falls short of `min_spread_medium`, so the base tier is **LOW** and
+the direction is `LONG`. Agreement of 0.7000 is above `min_agreement`, so no cap
+applies, though a cap to LOW would have changed nothing here. Coverage is 1.000
+on both legs and `max(dispersion) = max(0.7756, 0.5426) = 0.7756`, so no
+demotion.
 
-This is the right answer and it is worth stating why. The rate story strongly
-favours the dollar. But Japan is running a current account surplus, speculative
-positioning is at a two-and-a-half sigma short, and the mild risk-off is
-supporting the yen. Three real forces are pushing back on the carry story, and
-the model's honest conclusion is that it does not have a view on USDJPY this
-week. Roughly two thirds of the 28 crosses should land here in a typical run.
+This pair is the model's most instructive result, for two reasons.
+
+**It is a genuine disagreement, not a strong view.** The rate story strongly
+favours the dollar: MONETARY contributes +1.93 of the difference and GROWTH
++2.05. But Japan is running a current account surplus, speculative positioning is
+at a two-and-a-half sigma short, and the mild risk-off is supporting the yen.
+Three of the seven pillars, carrying 0.30 of the weight between them, point the
+other way. The composite is the residual after that argument, and a residual of
+0.75 on a band that runs to 3.0 is a weak claim. LOW is the correct label and the
+`docs/risk-and-execution.md` ladder correctly makes it the smallest position with
+the highest reward requirement.
+
+**It sits on a threshold, and thresholds are conventions.** A spread of 0.7545
+against a cutoff of 0.75 is decided by less than half a hundredth of a band unit.
+Nothing about this pair is meaningfully different from one scoring 0.7450 and
+being called NONE. That is a real weakness of bucketing a continuous quantity,
+it is recorded as open question 8, and the practical defence is already in the
+plan: the pre-trade checklist in `docs/risk-and-execution.md` asks whether the
+spread score is meaningful rather than a rounding difference between two nearly
+flat currencies. Here it is a rounding difference, and a trader who treats this
+LOW as barely distinguishable from no view is reading the model correctly.
+
+For a clean NONE in the same run, take EURCAD, both legs of which are in the
+matrix above: `spread = -0.3245 - (-0.4880) = +0.1635`, far inside the neutral
+band, so `Conviction.NONE` and `Direction.NEUTRAL`. Roughly two thirds of the 28
+crosses should land there in a typical run.
 
 **NZDJPY**
 
-    spread = -0.8158 - 0.1905 = -1.0063
+    spread = -0.9774 - 0.1875 = -1.1649
 
 Every pillar except POSITIONING points the same way as the spread, giving the
 same agreement as NZDUSD: `0.875 / 0.975 = 0.8974`. Base tier from
-`abs(-1.0063) = 1.0063`, which sits between 0.75 and 1.50, so **LOW**. No
+`abs(-1.1649) = 1.1649`, which sits between 0.75 and 1.50, so **LOW**. No
 demotion applies. Cost: dealing spread 3.2 pips against a 20-day ATR of 88 pips,
 so `expected_move = 88 * 3.1623 = 278.28` and `cost_ratio = 3.2 / 278.28 =
 0.0115`. Passes.
 
     PairBias(pair="NZDJPY", base="NZD", quote="JPY",
-             spread=-1.0063, direction=SHORT, conviction=LOW,
+             spread=-1.1649, direction=SHORT, conviction=LOW,
              agreement=0.8974, tradeable=True, blockers=())
 
-Note the relationship between the three results, because it is the relative-value
-logic made concrete. NZDUSD and NZDJPY are the same New Zealand view expressed
-against two different funding currencies, and the second is weaker only because
-the yen is itself the fourth-strongest currency in the run rather than the
-strongest. Taking both is not two trades, it is one short-NZD position at double
-size, which is precisely what `RiskConfig.max_correlated_exposure` exists to
-prevent. The correct book here holds one of them.
+Now look at the three results together, because this is the relative-value logic
+made concrete and it is the most useful thing in the example.
+
+NZDUSD and NZDJPY are the same New Zealand view expressed against two different
+funding currencies, and the second is weaker only because the yen is itself the
+fourth-strongest currency in the run rather than the strongest. Taking both is
+not two trades, it is one short-NZD position at roughly double size.
+
+The third result makes it sharper. USDJPY LONG is long dollar and short yen.
+NZDJPY SHORT is short New Zealand dollar and long yen. Held together the yen legs
+cancel and what remains is long USD against short NZD, which is NZDUSD SHORT, the
+position the model already rates MEDIUM on its own. Three tickets, two of them
+LOW conviction and carrying a dealing cost each, reconstruct one position that
+was available directly at a better tier and a tighter spread.
+
+This is what `RiskConfig.max_correlated_exposure` exists to catch and what the
+"running a book" section of `docs/methodology.md` is about. The correct book here
+holds NZDUSD and nothing else.
 
 ### 7.8 What the trader receives
 
-Shortlist for the run: NZDUSD short at MEDIUM, NZDJPY short at LOW, with a note
-that they share the NZD leg. Nothing else clears `min_spread_low`.
+Shortlist for the run: NZDUSD short at MEDIUM, NZDJPY short at LOW and USDJPY
+long at LOW, with a note that the three collapse into a single short-NZD,
+long-USD exposure and that only one of them should be held.
 
 The engine stops there. It has produced no entry price, no target, and no time.
 The trader now looks at the NZDUSD 4-hour chart, and if and only if there is an
@@ -1006,8 +1156,16 @@ An implementer should assert, at minimum:
 - All scores lie within `+/- score_clip` after clipping.
 - Cross-sectional z-scores over a run have mean 0 and population sd 1, to within
   floating point tolerance, for any sub-indicator with full coverage.
+- Every pillar's `z` has cross-sectional mean 0 and population standard deviation
+  1 after the re-standardisation pass of section 2.3, for the five pillars that
+  use it, and the pass is **not** applied to POSITIONING or RISK.
+- A pillar is absent for a currency holding less than `MIN_COMPONENT_WEIGHT`
+  (0.5) of that pillar's sub-weight, and that absence lowers coverage rather than
+  producing a score.
 - `f(p)` in POSITIONING is continuous at `|p| = 1.0` and `|p| = 2.0`, is odd, and
   has the sign changes stated in section 3.6.
+- `f(p)` saturates at magnitude 2.0 from `|p| = 3.33` upward, so it never reaches
+  `score_clip`. `abs(f(p)) <= 2.0` for every finite `p`.
 - With `R = 0`, every RISK score is exactly 0.
 - `spread(base, quote) == -spread(quote, base)` for every pair, and the
   composites are transitive by construction.
@@ -1026,10 +1184,38 @@ in code without updating this section.
 1. **Inflation credibility.** Section 3.2 assumes above-target inflation is
    currency-positive through the policy channel. When a central bank is credibly
    ignoring an overshoot the sign inverts, and the model has no switch for this.
-   A candidate fix is to gate the INFLATION sign on the sign of the 3-month
-   change in the 2-year yield, which would let the rate market decide whether the
-   bank is expected to respond. That adds a conditional, and conditionals are
-   what section 5 of the methodology warns against. Unresolved.
+   The idea behind any fix is to let the rate market decide whether the bank is
+   expected to respond, rather than assuming it will.
+
+   **Candidate: a front-end response gate.** Define a gate from the same
+   3-month change in the 2-year yield that MONETARY already consumes:
+
+       g = clip( yield_2y_chg_3m / 0.10pp , 1.0 )       , so g is in -1 .. +1
+
+   A **positive** inflation gap is then scored `gap * g`, and a **negative** gap
+   is left ungated and stays currency-negative. In words: inflation above target
+   only helps the currency to the extent the front end is actually repricing
+   toward a response, and if the front end is repricing the other way the same
+   overshoot counts against the currency. Inflation below target is
+   currency-negative either way, since a bank undershooting its target has no
+   reason to tighten regardless of what the curve is doing. The rule pivots
+   continuously at `gap = 0`, where both branches give 0, so there is no jump at
+   the target.
+
+   The gate is attractive because it answers the question with a series already
+   in the model rather than a new data dependency, and because it degrades
+   gracefully: at `g = 0`, a flat front end, inflation simply stops contributing
+   instead of contributing the wrong sign.
+
+   **It is not in the pillar.** Section 3.2 stands as written, with headline at
+   0.40 and core at 0.60 and no gate. Two reasons. It adds a conditional, and
+   conditionals are exactly what the methodology's section on separating
+   fundamentals from technicals warns about: `0.10pp` is a free parameter, and
+   the pivot rule is a second one. And the real policy rate term already inside
+   MONETARY captures part of the same effect, since a tolerated overshoot shows
+   up as a falling real rate, so the gate would partly double-count something the
+   model already sees. Recorded here as the leading candidate, to be taken up
+   with the sub-weight question in item 2 rather than on its own.
 
 2. **Sub-weights are undefended.** The seven pillar weights are argued for. The
    sub-weights inside each pillar (0.15 / 0.25 / 0.20 / 0.25 / 0.15 in MONETARY,

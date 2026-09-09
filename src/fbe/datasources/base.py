@@ -117,6 +117,7 @@ class BaseDataSource(ABC):
         Args:
             config: The effective `DataConfig`, which carries the cache
                 directory, the TTL, the offline flag and any API key.
+
         """
         self.config = config
 
@@ -131,6 +132,7 @@ class BaseDataSource(ABC):
 
         Returns:
             True when the source is usable.
+
         """
         raise NotImplementedError
 
@@ -159,6 +161,7 @@ class BaseDataSource(ABC):
         Raises:
             SourceError: If the source is configured but could not be reached
                 or returned something unreadable.
+
         """
         raise NotImplementedError
 
@@ -173,6 +176,7 @@ class BaseDataSource(ABC):
 
         Returns:
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
+
         """
         raise NotImplementedError
 
@@ -199,6 +203,7 @@ class BaseDataSource(ABC):
         Raises:
             SourceError: On exhausted retries, or when ``offline`` is set and
                 the cache holds nothing for this request.
+
         """
         raise NotImplementedError
 
@@ -224,6 +229,7 @@ class BaseDataSource(ABC):
 
         Returns:
             A filesystem-safe cache key.
+
         """
         raise NotImplementedError
 
@@ -251,5 +257,6 @@ class BaseDataSource(ABC):
 
         Returns:
             A populated `Observation`.
+
         """
         raise NotImplementedError

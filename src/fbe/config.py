@@ -105,12 +105,12 @@ class ScoringConfig:
     """Coverage below this demotes conviction without blocking the trade."""
     max_cost_ratio: float = 0.05
     """Ceiling on spread cost as a share of the expected move over the
-    horizon. Above it the broker takes too much of the edge to bother."""
+    horizon. Above it the spread consumes too much of the move to be worth
+    trading, whatever the bias says."""
     horizon_days: int = 10
     """The horizon the bias is meant to describe. Fundamental repricing runs
     slower than the 1h and 4h charts the entry is timed on, which is why bias
     is a filter and a size modifier rather than a trigger."""
-    """Inputs older than this stop counting toward pillar coverage."""
 
 
 @dataclass(frozen=True, slots=True)

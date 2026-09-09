@@ -22,23 +22,28 @@ class MonetaryPillar(BasePillar):
 
     Components and sub-weights:
         ``policy_rate`` (0.15): the current target rate in percent.
-        ``yield_2y`` (0.15): the two-year government yield in percent, which
-            prices the whole expected path rather than today's setting.
-        ``yield_2y_1m`` (0.25): one-month change in the two-year yield, in
-            percentage points.
-        ``yield_2y_3m`` (0.30): three-month change in the two-year yield.
+        ``yield_2y`` (0.25): the two-year government yield in percent.
+        ``yield_2y_chg_1m`` (0.20): one-month change in the two-year yield, in
+            basis points.
+        ``yield_2y_chg_3m`` (0.25): three-month change in the two-year yield, in
+            basis points.
         ``real_policy_rate`` (0.15): ``policy_rate - cpi_yoy``, in percentage
             points. A high nominal rate against high inflation is not a strong
             currency, it is a central bank behind the curve.
 
-    Why the change terms outweigh the levels, 0.55 against 0.45: the level of
-    the carry is public, stable, and has been in the price for months, so it
-    discriminates poorly across a cross-section that moves slowly. What moves a
-    pair is the revision to the expected path, and the front-end yield is the
-    cleanest observable proxy for that revision. The three-month change carries
-    more than the one-month because a single month is dominated by whichever
-    meeting or payroll print happened to land inside it, while a quarter of
-    front-end movement is a repricing.
+    How to read the weighting. The instinct is to split these into levels and
+    changes and argue about which should dominate, but that miscategorises the
+    two-year yield. The 2y is not a backward-looking level: it is the market's
+    expectation of the policy path, already priced, so 0.25 on it is not a vote
+    for levels over direction of travel. The genuinely backward-looking term is
+    the policy rate, which is what the central bank has already done, and it
+    carries the joint-lowest weight at 0.15. Between them the 2y level and its
+    two changes hold 0.70 of the pillar, and all three are statements about the
+    expected path rather than the current setting.
+
+    The three-month change carries more than the one-month because a single
+    month is dominated by whichever meeting or payroll print happened to land
+    inside it, while a quarter of front-end movement is a repricing.
 
     Sign rule: positive means a higher or a rising rate path relative to the
     other seven currencies, and therefore a strong currency. All five components
@@ -56,23 +61,29 @@ class MonetaryPillar(BasePillar):
     """
 
     name = PillarName.MONETARY
-    requires: Sequence[str] = ("policy_rate", "yield_2y", "cpi_yoy")
-    headline_component = "yield_2y_3m"
+    requires: Sequence[str] = (
+        "policy_rate",
+        "yield_2y",
+        "yield_2y_chg_1m",
+        "yield_2y_chg_3m",
+        "cpi_yoy",
+    )
+    headline_component = "yield_2y_chg_3m"
 
     @property
     def component_weights(self) -> Mapping[str, float]:
         """Return the sub-weights used to blend this pillar's components.
 
         Returns:
-            ``{component: weight}`` summing to 1.0, with the two change terms
-            holding 0.55 between them.
+            ``{component: weight}`` summing to 1.0, matching section 3.1 of
+            ``docs/scoring-spec.md``.
 
         """
         return {
             "policy_rate": 0.15,
-            "yield_2y": 0.15,
-            "yield_2y_1m": 0.25,
-            "yield_2y_3m": 0.30,
+            "yield_2y": 0.25,
+            "yield_2y_chg_1m": 0.20,
+            "yield_2y_chg_3m": 0.25,
             "real_policy_rate": 0.15,
         }
 
@@ -82,7 +93,7 @@ class MonetaryPillar(BasePillar):
         currencies: Sequence[str],
         asof: date,
     ) -> Mapping[str, Mapping[str, Sequence[Observation]]]:
-        """Pull policy rate, two-year yield and headline CPI per currency.
+        """Pull the rate, yield, yield-change and CPI series per currency.
 
         Args:
             observations: Full observation set for the run.
@@ -90,14 +101,17 @@ class MonetaryPillar(BasePillar):
             asof: Run date; later periods are dropped.
 
         Returns:
-            ``{currency: {indicator: observations}}`` for the three indicators
-            in `requires`, each sorted by period ascending.
+            ``{currency: {indicator: observations}}`` for the five indicators in
+            `requires`, each sorted by period ascending.
 
-        The two-year yield is daily, so ``yield_2y`` is resampled to month-end
-        before it reaches `momentum`. Differencing raw daily observations would
-        make a one-month change mean "twenty-one business days back from
-        whichever day this series last updated", which is not comparable across
-        currencies with different holiday calendars.
+        The two change series arrive from the registry as their own keys rather
+        than being differenced here, so the definition of "one month back" lives
+        in one place. That matters because the two-year yield is daily and the
+        currencies keep different holiday calendars: differencing raw daily
+        observations locally would make a one-month change mean "twenty-one
+        business days back from whichever day this series last updated", which is
+        not comparable across the cross-section. Where the registry supplies only
+        the level, the extractor resamples to month-end before differencing.
 
         """
         raise NotImplementedError
@@ -115,14 +129,15 @@ class MonetaryPillar(BasePillar):
 
         Returns:
             ``{currency: {component: value}}`` over the components named in
-            `component_weights`.
+            `component_weights`. Units differ between components, which is why
+            each is z-scored separately before the blend.
 
         Component construction:
-            ``policy_rate`` and ``yield_2y`` are the newest values as published.
-            ``yield_2y_1m`` and ``yield_2y_3m`` are `momentum` over the
-            month-end series at one and three periods.
-            ``real_policy_rate`` is the newest policy rate less the newest
-            headline CPI year on year. Headline rather than core is used here
+            ``policy_rate`` and ``yield_2y`` are the newest values as published,
+            in percent. ``yield_2y_chg_1m`` and ``yield_2y_chg_3m`` are the
+            newest published changes in basis points. ``real_policy_rate`` is
+            the newest policy rate less the newest headline CPI year on year, in
+            percentage points. Headline rather than core is used here
             because the deposit rate a saver compares against is the one that
             includes food and fuel; the core measure earns its place in the
             inflation pillar, where the question is what the central bank will
