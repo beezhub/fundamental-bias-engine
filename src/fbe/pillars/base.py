@@ -232,6 +232,18 @@ class BasePillar(ABC):
         Returns:
             One `PillarScore` per currency, keyed by ISO code.
 
+        Two things must reach ``PillarScore.notes`` on every run, because neither
+        is recoverable from the numbers afterwards. First, which path
+        `blend_divisor` took, ``"rolling"`` or ``"run_local"``: scores computed
+        under the fallback are not on the same scale as scores computed under the
+        rolling estimate, and a reader comparing two runs needs to know which they
+        are holding. Second, how many inputs were admitted by the assumed
+        publication lag rather than a real ``released_at``, which is how much of
+        the run rests on `DEFAULT_PUBLICATION_LAG_DAYS` rather than on fact.
+
+        The run's own blend standard deviation should also be returned to the
+        caller for storage, since it is the next run's history.
+
         """
         raise NotImplementedError
 
