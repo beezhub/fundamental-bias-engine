@@ -8,7 +8,7 @@ on a phone with one bar of signal.
 
 Publishing constraints
 ----------------------
-The output is intended to be published as an Artifact on claude.ai, and that
+The output is intended to be published as a hosted artifact page, and that
 sandbox enforces the following. They are not style preferences: a violation
 fails silently at view time, leaving a blank panel rather than an error.
 

@@ -484,7 +484,7 @@ so nothing is carried by colour alone.
 
 ### Publishing constraints
 
-The file is built to be published as an Artifact on claude.ai and opened on a
+The file is built to be published as a hosted artifact page and opened on a
 phone. That sandbox enforces the following, and a violation fails silently at
 view time, leaving a blank panel rather than an error.
 `fbe.dashboard.build.check_constraints` checks the rendered output and
