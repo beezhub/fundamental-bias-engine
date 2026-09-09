@@ -33,8 +33,8 @@ Units convention used throughout:
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence
 
 from fbe.config import RiskConfig
 from fbe.types import Conviction, PositionSize
@@ -167,6 +167,7 @@ class Broker:
             and on Sunday reopen.
         commission_per_lot: Round-turn commission per standard lot in the
             account currency, 0.0 on a spread-only account.
+
     """
 
     name: str
@@ -258,6 +259,7 @@ def pip_size(pair: str) -> float:
         being a dollar. Pairs quoted to five or three decimals by the broker
         show fractional pips (points); a pip is still the fourth or second
         decimal and this function reports the pip, not the point.
+
     """
     _, quote = split_pair(pair.upper())
     return JPY_PIP_SIZE if quote == "JPY" else STANDARD_PIP_SIZE
@@ -324,6 +326,7 @@ def convert_rate(
             rate on the chosen route is zero, negative or not finite. A
             non-positive rate is corrupt data, not a small number, and must not
             be inverted or multiplied through.
+
     """
     raise NotImplementedError
 
@@ -380,6 +383,7 @@ def pip_value(
     Raises:
         MissingRateError: Propagated from `convert_rate` when no route exists.
         ValueError: If ``units`` is negative or ``pair`` is malformed.
+
     """
     raise NotImplementedError
 
@@ -499,6 +503,7 @@ def position_size(
         MissingRateError: Propagated from `pip_value` or `convert_rate` when the
             ZAR conversion route is missing. Sizing without it is not possible
             and must not be approximated.
+
     """
     raise NotImplementedError
 
@@ -531,6 +536,7 @@ def risk_fraction_for(conviction: Conviction, config: RiskConfig) -> float:
         ValueError: If ``config.risk_per_trade_min`` exceeds
             ``risk_per_trade_max``, which would make the interpolation run
             backwards and quietly return a fraction outside the band.
+
     """
     raise NotImplementedError
 
@@ -564,6 +570,7 @@ def reward_to_risk(entry: float, stop: float, target: float) -> float:
         It also measures the PLANNED trade. The realised R-multiple in the
         journal is computed against ``realised_risk_amount`` and will differ
         wherever rounding moved the size.
+
     """
     raise NotImplementedError
 
@@ -581,6 +588,7 @@ def min_acceptable_rr(conviction: Conviction) -> float:
 
     Returns:
         The minimum acceptable ratio. Infinite for `Conviction.NONE`.
+
     """
     raise NotImplementedError
 
@@ -626,6 +634,7 @@ def correlated_exposure(
         Mapping of ISO currency code to total risk fraction of the account, for
         every currency appearing in at least one open position. Currencies with
         no exposure are absent rather than present with 0.0.
+
     """
     raise NotImplementedError
 
@@ -678,5 +687,6 @@ def check_limits(
     Returns:
         Human-readable reasons for refusal, one per breached limit, in the order
         listed above. Empty list means every limit passed.
+
     """
     raise NotImplementedError

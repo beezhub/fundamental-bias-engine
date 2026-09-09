@@ -267,7 +267,7 @@ Stop distance    38.0 pips
 Pip value        ZAR 0.00176 per unit  (USDZAR 17.60)
 Unrounded        448.6 units
 Lots             0.004       (400 units, rounded down to the 0.001 step)
-Risk at risk     ZAR 26.75   =  1.34% of balance
+At risk          ZAR 26.75   =  1.34% of balance
 Notional         ZAR 7,638
 
 Warnings

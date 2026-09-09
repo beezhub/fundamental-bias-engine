@@ -29,6 +29,7 @@ from fbe.types import CalendarEvent
 
 __all__ = [
     "HIGH_IMPACT_KEYWORDS",
+    "TIGHTEN_BUFFER_R",
     "OpenPositionAction",
     "is_high_impact",
     "blackout_windows",
@@ -138,17 +139,38 @@ is not close. Tighten a category only after seeing it block something real.
 """
 
 
+TIGHTEN_BUFFER_R: float = 1.0
+"""Open profit, in R, at or above which a position may be held into a window.
+
+The threshold has to be a number rather than a judgement, because it is used in
+the one place this module tells the owner to close a live trade, and "roughly
+1R" resolves differently at 0.5R depending on who is reading it and how the
+week has gone.
+
+1.0R is chosen because it is the point at which the position can absorb a full
+stop-distance move against it and still be at breakeven. That is the size of
+adverse move a high-impact release routinely produces, so it is the buffer that
+makes holding a defensible decision rather than a hopeful one. It is a
+threshold, not a measurement: revisit it once `journal.evaluate` can group
+outcomes by ``exit_reason`` and show what holding through windows has actually
+cost or saved.
+
+The comparison is inclusive. Exactly 1.0R is TIGHTEN, below it is FLATTEN.
+"""
+
+
 class OpenPositionAction(StrEnum):
     """What to do with a position that is already open as an event approaches.
 
     Attributes:
-        HOLD: The event does not warrant intervention. Manage the trade on the
-            chart as normal.
-        TIGHTEN: The event is inside the window and the position is in profit.
-            Consider the plan's partial-profit or trailing-stop rules to reduce
-            what is exposed to the spike, without abandoning the trade.
-        FLATTEN: The event is inside the window and the position is not carrying
-            enough buffer to survive a normal spike. Close it and re-enter after
+        HOLD: No high-impact event on either leg has a window containing the
+            decision time. Manage the trade on the chart as normal.
+        TIGHTEN: The decision time is inside a window and open profit is at or
+            above `TIGHTEN_BUFFER_R`. The position has enough buffer to survive
+            a normal spike, so apply the plan's partial-profit or trailing-stop
+            rules to reduce what is exposed, without abandoning the trade.
+        FLATTEN: The decision time is inside a window and open profit is below
+            `TIGHTEN_BUFFER_R`. Not enough buffer. Close it and re-enter after
             the window if the setup survives.
 
     """
@@ -309,12 +331,19 @@ def action_for_open_position(
     might not touch it. A rule that flattens every position before every
     high-impact print will bleed the account through costs alone.
 
-    So the guard distinguishes them, and the distinction is buffer. A position
-    already up more than roughly 1R has room to survive an adverse spike and can
-    be managed with the plan's own tools: take partial profit at the nearest
-    support or resistance, or pull the trailing stop in. A position at or below
-    breakeven has no buffer, and a spike through a structural stop is exactly
-    the loss the plan's news rule exists to prevent, so it is closed.
+    So the guard distinguishes them, and the distinction is buffer, measured
+    against `TIGHTEN_BUFFER_R`. The rule has exactly two branches inside a
+    window and no gap between them:
+
+        * ``unrealised_r >= TIGHTEN_BUFFER_R`` returns TIGHTEN. The position can
+          absorb a full stop-distance spike and still be at breakeven, so manage
+          it with the plan's own tools: take partial profit at the nearest
+          support or resistance, or pull the trailing stop in.
+        * ``unrealised_r < TIGHTEN_BUFFER_R`` returns FLATTEN. That includes a
+          position in modest profit, not only one at or below breakeven. A trade
+          up 0.5R with a rate decision ten minutes out has less than half a stop
+          of cover, and a spike through a structural stop is exactly the loss
+          the plan's news rule exists to prevent.
 
     This also connects to the plan's time-based exit. A trade that has stalled
     and is drifting toward a scheduled release is not a trade waiting for its
@@ -328,8 +357,11 @@ def action_for_open_position(
             moment the next window opens.
         events: Calendar events on either leg.
         config: Supplies the blackout minutes.
-        unrealised_r: Open profit in R multiples, positive for profit. 0.0 means
-            breakeven and, absent better information, is treated as no buffer.
+        unrealised_r: Open profit in R multiples, positive for profit, measured
+            against the position's ``realised_risk_amount`` so it matches what
+            the journal will later record. Defaults to 0.0, which is breakeven
+            and falls below `TIGHTEN_BUFFER_R`, so a caller that does not track
+            open profit gets the conservative answer.
 
     Returns:
         ``(action, reason)``. The reason is ``None`` only for
