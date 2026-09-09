@@ -435,7 +435,10 @@ class BasePillar(ABC):
 
         Args:
             component_z: ``{component: {currency: z}}``, each component already
-                z-scored across the cross-section.
+                z-scored across the cross-section. Components absent from
+                ``weights`` are ignored, which is how a pillar carries a
+                report-only value through `_transform` for
+                `headline_component` without letting it into the arithmetic.
             weights: Sub-weights per component. Defaults to
                 `component_weights`.
 

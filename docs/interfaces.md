@@ -70,6 +70,10 @@ first: bad config, missing key, stale cache, dead source.
 
 ## Command reference
 
+Every console block below is illustrative. The numbers show the shape and
+wording of the output, not measured results: nothing in this project has been
+validated against out-of-sample returns yet.
+
 ### `fbe doctor`
 
 Checks, in order: `Config.validate` problems such as pillar weights that do not
@@ -191,6 +195,14 @@ Reading down the USD column shows every other currency losing to it. That is
 the moment to notice the trade is the dollar, not the pair, and to pick the leg
 with the best chart rather than the widest spread.
 
+A run holds 28 pairs in market convention and the grid has 56 populated cells,
+so half of them are mirrors. `fbe.report._grid` builds them: spread negated,
+legs swapped, direction inverted, conviction unchanged. Both renderers print
+what they are given. That arithmetic lives in one function on purpose, because
+a mirrored cell left in convention still shows a plausible number under the
+wrong row header, and the error would be invisible in exactly the half of the
+grid nobody double-checks.
+
 ### `fbe calendar`
 
 Each event is expanded into a window using the configured minutes either side,
@@ -250,18 +262,28 @@ $ fbe size EURUSD --entry 1.0850 --stop 1.0888
 EURUSD short, medium conviction (engine agrees)
 
 Balance          ZAR 2,000.00
-Risk             1.5%  =  ZAR 30.00
+Intended risk    1.5%  =  ZAR 30.00
 Stop distance    38.0 pips
 Pip value        ZAR 0.00176 per unit  (USDZAR 17.60)
-Units            448         (0.004 standard lots)
-Notional         ZAR 8,554
+Unrounded        448.6 units
+Lots             0.004       (400 units, rounded down to the 0.001 step)
+Risk at risk     ZAR 26.75   =  1.34% of balance
+Notional         ZAR 7,638
 
 Warnings
-  Below the usual 0.01 lot broker minimum. The smallest size most brokers
-  accept, 1,000 units, risks ZAR 66.88 on this stop, which is 3.3% of the
-  balance and outside the plan's 1-2% band. Either find a wider account, a
-  tighter stop, or skip the trade.
+  Lot rounding cuts the risk by 11%. Size and R-multiples are measured on
+  ZAR 26.75, not ZAR 30.00.
+  If your broker's step is 0.01 lots, the smallest size it accepts is 1,000
+  units, which risks ZAR 66.88 on this stop, 3.3% of balance and outside the
+  plan's 1-2% band. Skip the trade rather than break the band.
 ```
+
+Two risk figures, and the second one is the real one. `risk_amount` is what the
+1-2% rule intends; `realised_risk_amount` is what the position exposes once the
+lot size is rounded down to a step the broker accepts. On an R2,000 account that
+gap is routinely 10% or more, and an R-multiple measured against the intended
+figure is overstated by exactly that ratio. Every money field on the ticket,
+`Notional` included, is in the account currency.
 
 ```console
 $ fbe size USDJPY --entry 147.20 --stop 147.90
@@ -326,7 +348,8 @@ engine, the ones taken against the plan, or neither.
 $ fbe journal add EURUSD -d short -e 1.0850 -s 1.0888 -x 1.0791 \
     --lots 0.004 --setup trendline-break-retest --followed-plan \
     -m "Waited for the retest instead of chasing the break."
-Recorded EURUSD short, +59.0 pips, +1.55R, ZAR +46.50.
+Recorded EURUSD short, +59.0 pips, ZAR +41.54, +1.55R.
+R measured against the realised risk of ZAR 26.75, not the intended ZAR 30.00.
 Engine that day: short, medium conviction, spread -2.31. Aligned.
 ```
 
@@ -350,7 +373,8 @@ $ fbe journal review --days 7
 7 days to 2026-09-09: 6 trades, 5 closed, 1 open
 
 Closed P&L        ZAR +38.20      Win rate  60%      Average  +0.41R
-Largest loss      ZAR -23.10      Largest win  ZAR +46.50
+Largest loss      ZAR -23.20      Largest win  ZAR +41.54
+R-multiples are measured against realised risk, after lot rounding.
 
 Followed the plan   4 trades   ZAR +61.40   avg +0.92R
 Broke the plan      1 trade    ZAR -23.20   avg -1.16R
@@ -363,9 +387,14 @@ The single plan break was the single worst trade of the week.
 
 ## The report
 
-`fbe report` writes `data/reports/bias-YYYY-MM-DD.md` plus a JSON sidecar with
-the same stem. The Markdown is for reading; the sidecar is what `--compare`
-reads back, so the layout of the Markdown never becomes load-bearing.
+`fbe report` writes two files per run: `data/reports/bias-YYYY-MM-DD.md` and
+`data/reports/bias-YYYY-MM-DD.json`. The Markdown is for reading. The JSON is
+the serialised `BiasReport` and is the only thing `--compare` reads back, so the
+layout of the Markdown never becomes load-bearing.
+
+Both files are written or neither is. Writing the Markdown alone fails silently:
+every run succeeds, `--compare last` still finds a report, and the what-changed
+section is empty forever with nothing raising to say why.
 
 Sections, in order:
 
@@ -393,9 +422,11 @@ pillars changes every future call, and without the historical files there is no
 way to tell whether the model improved or simply started agreeing with a
 different set of trades.
 
-Note for whoever wires this up: `data/reports/` is currently listed in
-`.gitignore`, so the history is not being kept yet. Either relax that rule or
-point `--out` at a directory that is tracked.
+`data/reports/` is committed for this reason, as `CLAUDE.md` sets out. A report
+is precisely what cannot be reproduced later: macro series get revised,
+cross-sectional scores depend on the rest of the universe on the day, and the
+weights may have changed since. Re-running last week's date does not recover
+last week's call.
 
 ### Why the diff is its own section
 
@@ -525,7 +556,7 @@ view time, leaving a blank panel rather than an error.
 | `src/fbe/templates/report.md.j2` | The report template. |
 | `src/fbe/dashboard/build.py` | Dashboard rendering and the constraint check. |
 | `src/fbe/dashboard/templates/dashboard.html.j2` | The dashboard template. |
-| `data/reports/` | Dated Markdown reports, JSON sidecars and built dashboards. |
+| `data/reports/` | Dated Markdown reports, their JSON sidecars and built dashboards. Committed. |
 
 Templates ship inside the package rather than at the repo root, so a report
 renders identically from a checkout and from an installed wheel.

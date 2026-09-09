@@ -719,6 +719,12 @@ def size(
     pair whose bias points the other way, comes back as a warning attached to
     the `fbe.types.PositionSize` rather than being silently applied.
 
+    The ticket prints both risk figures and leads with
+    `fbe.types.PositionSize.realised_risk_amount`, what the lot size actually
+    exposes once it is rounded down to a whole step. On an account this small
+    the rounding gap is routinely 10% or more, and the intended figure is the
+    one that is never actually at risk.
+
     Args:
         ctx: Typer context carrying the effective config.
         pair: Pair in market convention.
@@ -950,6 +956,10 @@ def journal_add(
     digest are attached automatically. That is the point: months later the
     journal should be able to answer whether the losing trades were the ones
     taken against the engine, the ones taken against the plan, or neither.
+
+    R-multiples are recorded against the realised risk of the position rather
+    than the intended risk, so the number the review reports is the one the
+    account actually took.
 
     Args:
         ctx: Typer context carrying the effective config.

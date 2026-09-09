@@ -51,7 +51,11 @@ Single column, top to bottom in the order the trading day needs it:
 3. The 28-pair bias matrix as a heatmap, base down the rows and quote across
    the columns, cell colour by spread. Diverging scale centred on zero with a
    neutral grey midpoint, so a near-zero cell reads as "no view" rather than as
-   a weak signal.
+   a weak signal. Cells arrive from `fbe.report._grid` already oriented for the
+   row they sit in, mirrored halves included, so ``view.heat`` colours the
+   spread exactly as given. Re-deriving or negating a mirrored cell here would
+   invert the lower triangle twice over, and every number on screen would still
+   look plausible.
 4. Shortlist as cards, one per `fbe.types.TradeIdea`: pair, direction,
    conviction, the reasoning, the size if one is attached, and the blackout if
    there is one. Cards rather than a table because this is the part that gets

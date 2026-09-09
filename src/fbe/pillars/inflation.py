@@ -115,7 +115,13 @@ class InflationPillar(BasePillar):
 
         Returns:
             ``{currency: {component: value}}`` in percentage points, positive
-            above target.
+            above target. Both values are plain differences against the target,
+            with nothing else applied to them, which is what lets ``cpi_gap``
+            serve as `headline_component` and reach a report as
+            ``PillarScore.raw``. A reader seeing ``+0.9`` there is seeing
+            inflation nine tenths of a point above the bank's own target, and
+            ``notes`` should carry the level and the target alongside it so the
+            number can be checked.
 
         Each currency's target comes from ``universe.meta(currency)``, so a
         currency outside the scored universe raises rather than silently

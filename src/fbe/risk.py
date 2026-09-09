@@ -15,8 +15,8 @@ returns a number, the ticket still fills, the stop still sits where the chart
 says it should. The account simply risks the wrong amount on every trade,
 silently, for as long as the error survives. A conversion factor that is out by
 the USDZAR rate turns a 1% risk into an 18% risk. That is the single most
-damaging bug this project could ship, and it is the reason `pip_value` refuses
-to guess: a missing rate raises rather than defaulting to 1.0.
+damaging bug this project could ship, and it is the reason `convert_rate`
+refuses to guess: a missing leg raises rather than defaulting to 1.0.
 
 Units convention used throughout:
     * ``units`` are units of the BASE currency. 100,000 units of EURUSD is one
@@ -24,16 +24,17 @@ Units convention used throughout:
     * ``lots`` are ``units / contract_size`` for the broker in question.
     * ``pip_size`` is the price increment one pip represents, in the QUOTE
       currency.
-    * ``risk_amount`` and every other money figure exposed to the caller are in
-      the account currency, ZAR.
+    * Every money figure on `PositionSize`, including ``notional``, is in the
+      account currency. `PositionSize` states this as a contract and this module
+      is bound by it: nothing leaves here quoted in a foreign currency.
     * All rates are quoted market convention, base first: ``"USDZAR"`` means
       ZAR per USD.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Mapping, Sequence
 
 from fbe.config import RiskConfig
 from fbe.types import Conviction, PositionSize
@@ -44,10 +45,12 @@ __all__ = [
     "DEFAULT_BROKER",
     "JPY_PIP_SIZE",
     "STANDARD_PIP_SIZE",
-    "CONVICTION_RISK_FRACTION",
+    "CONVERSION_PIVOT",
+    "CONVICTION_BAND_POSITION",
     "MIN_REWARD_TO_RISK",
     "MissingRateError",
     "pip_size",
+    "convert_rate",
     "pip_value",
     "position_size",
     "risk_fraction_for",
@@ -65,20 +68,44 @@ JPY_PIP_SIZE: float = 0.01
 """One pip for a JPY-quoted pair, which the market quotes to two decimals."""
 
 
-CONVICTION_RISK_FRACTION: Mapping[Conviction, float] = {
-    Conviction.HIGH: 0.02,
-    Conviction.MEDIUM: 0.015,
-    Conviction.LOW: 0.01,
-    Conviction.NONE: 0.0,
+CONVERSION_PIVOT: str = "USD"
+"""Currency used as the middle leg when no direct conversion rate exists.
+
+USD, because it is the one currency that has a liquid quoted leg against every
+G10 currency AND against ZAR. A retail feed can be relied on for USDZAR and for
+the seven G10 dollar pairs; it cannot be relied on for ZARJPY or ZARCHF, which
+are not quoted anywhere the owner will be looking. Pivoting through the dollar
+is therefore not a fallback, it is the normal route for this account.
+"""
+
+
+CONVICTION_BAND_POSITION: Mapping[Conviction, float | None] = {
+    Conviction.HIGH: 1.0,
+    Conviction.MEDIUM: 0.5,
+    Conviction.LOW: 0.0,
+    Conviction.NONE: None,
 }
-"""Conviction to risk fraction, inside the plan's 1-2% band.
+"""Where each conviction level sits inside the configured risk band.
+
+Deliberately expressed as a position in ``[0, 1]`` rather than as a fraction of
+balance. The band's endpoints live in `RiskConfig.risk_per_trade_min` and
+``risk_per_trade_max``, and hardcoding 0.01 and 0.02 here would duplicate them
+and then drift from them. The drift has a concrete failure: an owner in
+drawdown follows the advice in `journal.evaluate` and lowers
+``risk_per_trade_max`` to 0.015, a hardcoded ladder still asks for 0.02, and
+every high-conviction setup comes back clamped and carrying a warning that the
+pre-trade checklist reads as a refusal. Deriving the ladder means changing the
+band changes the ladder with it, which is what the owner intended when they
+changed the band.
+
+With the defaults of 1% and 2% this reproduces the intended ladder exactly:
+HIGH 2%, MEDIUM 1.5%, LOW 1%.
 
 Conviction modulates size, it does not gate entry. A LOW conviction pair with a
 clean channel touch is still a trade, taken at the bottom of the band. The
 alternative, refusing everything below HIGH, would leave a small account idle
 for weeks at a time and push the owner toward the overtrading the plan warns
-about. NONE maps to 0.0, which means no trade at all: the engine has no view,
-so there is no bias layer to add to the chart.
+about. NONE maps to ``None``, meaning no position exists at any size.
 """
 
 
@@ -88,13 +115,26 @@ MIN_REWARD_TO_RISK: Mapping[Conviction, float] = {
     Conviction.LOW: 2.5,
     Conviction.NONE: float("inf"),
 }
-"""Minimum reward-to-risk a setup must offer before it is worth taking.
+"""Minimum reward-to-risk a setup must offer, by conviction. A prior, not a finding.
 
-The ladder runs the opposite way to size, on purpose. When the fundamental case
-is strong the hit rate carries the expectancy, so a 1.5R target is enough. When
-the case is thin the trade has to pay more when it works, because it will work
-less often. NONE is infinite, which is the arithmetic way of saying no target
-justifies a trade the engine cannot support.
+The ladder rises as conviction falls, which is the opposite direction to size.
+The assumption behind it is that hit rate rises with conviction, so a
+high-conviction trade can be profitable at a nearer target while a
+low-conviction trade has to pay more on the occasions it works.
+
+That assumption is untested. It is exactly the relationship `journal.evaluate`
+exists to measure, and by that function's own standard it needs roughly 30
+closed trades per conviction bucket before it can be believed. Until then these
+numbers are a starting position chosen because it is the conservative one: if
+the assumption is wrong, requiring MORE reward on the trades the model is least
+sure of costs missed trades rather than lost money.
+
+What would confirm it: ``ConvictionStats.hit_rate`` rising from LOW through
+MEDIUM to HIGH across buckets of adequate size. What would refute it: hit rate
+flat or inverted across buckets. If it is refuted, this ladder has no basis and
+should collapse to a single minimum applied to every trade, and
+`CONVICTION_BAND_POSITION` should be reviewed at the same time, since it rests
+on the same untested claim.
 """
 
 
@@ -127,7 +167,6 @@ class Broker:
             and on Sunday reopen.
         commission_per_lot: Round-turn commission per standard lot in the
             account currency, 0.0 on a spread-only account.
-
     """
 
     name: str
@@ -191,7 +230,7 @@ the hours they actually trade, not taken from a marketing page.
 
 
 class MissingRateError(LookupError):
-    """Raised when a rate needed to convert risk into the account currency is absent.
+    """Raised when a rate needed to convert into the account currency is absent.
 
     This exists as its own exception type so callers cannot swallow it by
     accident alongside an ordinary ``KeyError``. Converting at an assumed rate
@@ -219,10 +258,74 @@ def pip_size(pair: str) -> float:
         being a dollar. Pairs quoted to five or three decimals by the broker
         show fractional pips (points); a pip is still the fourth or second
         decimal and this function reports the pip, not the point.
-
     """
     _, quote = split_pair(pair.upper())
     return JPY_PIP_SIZE if quote == "JPY" else STANDARD_PIP_SIZE
+
+
+def convert_rate(
+    from_currency: str,
+    to_currency: str,
+    rates: Mapping[str, float],
+    pivot: str = CONVERSION_PIVOT,
+) -> float:
+    """Units of ``to_currency`` per one unit of ``from_currency``.
+
+    Every money conversion in this module goes through here, so this is the one
+    place the lookup rule is defined. Multiply an amount in ``from_currency`` by
+    the returned factor to get the amount in ``to_currency``.
+
+    Resolution order, first match wins:
+        0. Identity. ``from_currency == to_currency`` returns 1.0 without
+           touching ``rates``. This is the only circumstance in which this
+           module ever produces a factor of 1.0.
+        1. Direct, quoted as ``f"{from}{to}"``. Return the rate as is. For USD
+           to ZAR that is ``rates["USDZAR"]``, so R18.50 per dollar.
+        2. Direct, quoted inverted as ``f"{to}{from}"``. Return ``1 / rate``.
+           For ZAR to USD that is ``1 / rates["USDZAR"]``.
+        3. Two hops through ``pivot``, tried only when neither direct form is
+           present. Resolve ``from -> pivot`` by rules 0 to 2 and ``pivot -> to``
+           by rules 0 to 2, then multiply the two factors. No third hop is
+           attempted: if a two-hop route through the dollar cannot be built, the
+           rate set is not fit for sizing this trade.
+
+    The pivot is not an edge case on this account, it is the normal path. JPY to
+    ZAR is the worked example. A feed that supplies ``{"USDZAR": 18.50,
+    "USDJPY": 155.00}``, which is exactly what the pre-trade checklist asks for,
+    has no ``JPYZAR`` and no ``ZARJPY``. Rules 1 and 2 both miss. Rule 3
+    resolves JPY to USD as ``1 / 155.00`` and USD to ZAR as ``18.50``, giving
+    ``18.50 / 155.00 = 0.119355`` rand per yen. Without rule 3 every JPY cross
+    would raise, and those are the pairs most likely to be tradeable at this
+    account size, so the guard would refuse precisely the trades the account can
+    actually take.
+
+    Failure is loud and it stays loud. If no route exists, raise
+    `MissingRateError` naming both currencies, the pivot tried, and the keys
+    that were looked for. Do not return 1.0, do not substitute a stale rate, do
+    not reuse the last successful conversion, do not silently widen the search
+    to a second pivot. A wrong factor produces no visible symptom: the ticket
+    fills, the stop sits where the chart put it, and only the amount of money at
+    risk is wrong. An exception is recoverable in seconds; a silent factor error
+    survives until the account is gone.
+
+    Args:
+        from_currency: ISO code of the amount being converted.
+        to_currency: ISO code to convert into, normally the account currency.
+        rates: Current mid rates keyed by market-convention pair string.
+            Staleness matters: a rate from last week is a wrong rate, and the
+            caller is responsible for freshness.
+        pivot: Middle currency for rule 3. Defaults to `CONVERSION_PIVOT`.
+
+    Returns:
+        A strictly positive multiplier.
+
+    Raises:
+        MissingRateError: If no direct or single-pivot route exists, or if any
+            rate on the chosen route is zero, negative or not finite. A
+            non-positive rate is corrupt data, not a small number, and must not
+            be inverted or multiplied through.
+    """
+    raise NotImplementedError
 
 
 def pip_value(
@@ -235,35 +338,32 @@ def pip_value(
 
     The calculation always starts the same way. One pip on ``units`` of the base
     currency is worth ``units * pip_size(pair)`` in the QUOTE currency. The work
-    is carrying that quote-currency amount back to the account currency, and
-    there are exactly three cases.
+    is carrying that quote-currency amount back to the account currency, which
+    is a single call to `convert_rate` from the quote currency to
+    ``account_currency``. In full:
 
-    Case 1, quote currency equals account currency. No conversion. A USD account
-    trading EURUSD gets ``units * 0.0001`` USD per pip directly. This is the
-    case every textbook example uses and the case this account is never in.
+        ``units * pip_size(pair) * convert_rate(quote, account_currency, rates)``
+
+    The three cases in the literature all fall out of that one line, and it is
+    worth knowing which one this account is in:
+
+    Case 1, quote currency equals account currency. `convert_rate` returns 1.0
+    by identity. A USD account trading EURUSD gets ``units * 0.0001`` USD per
+    pip. This is the case every textbook example uses and the case this account
+    is never in.
 
     Case 2, the account currency is the BASE of the pair. A USD account trading
-    USDJPY earns pips in yen, and one USD buys ``rate`` yen, so the pip value is
-    ``units * pip_size / rate`` where ``rate`` is the pair's own current price.
-    The pair's price is the conversion rate, which is why this case needs no
-    extra market data but does need the live price rather than the entry price.
+    USDJPY needs JPY to USD, which rule 2 resolves as the reciprocal of the
+    pair's own current price. Note this uses the live price, not the entry
+    price, so pip value drifts as the pair moves.
 
     Case 3, the account currency appears nowhere in the pair. This is the ZAR
     case and it is every trade this engine will ever produce, because no G10
-    cross has a ZAR leg. A third rate is required: the QUOTE currency against
-    ZAR. Compute ``units * pip_size`` in the quote currency, then multiply by
-    ZAR per unit of quote currency. For USDJPY on a ZAR account that means
-    finding JPY to ZAR, which is normally derived as ``USDZAR / USDJPY``.
-
-    Rate lookup and its failure mode:
-        ``rates`` is keyed by market-convention pair string, so ``"USDZAR"``
-        holds ZAR per USD. To convert currency ``X`` into ``account_currency``
-        ``A``, look for ``f"{X}{A}"`` and multiply, or ``f"{A}{X}"`` and divide.
-        If neither key is present, raise `MissingRateError`. Do not fall back to
-        1.0, do not fall back to a cached rate of unknown age, do not fall back
-        to the last successful conversion. A silently wrong pip value breaks the
-        1-2% rule on every subsequent trade and leaves no trace in the output.
-        Refusing to size the trade is loud, immediate, and recoverable.
+    cross has a ZAR leg. For a dollar-quoted pair rule 1 resolves it directly
+    from USDZAR. For every other quote currency, including all seven JPY
+    crosses, rule 3 pivots through the dollar. See `convert_rate` for the worked
+    JPY example and for the failure behaviour, which is to raise rather than
+    guess.
 
     Args:
         pair: Pair being traded, e.g. ``"USDJPY"``.
@@ -271,19 +371,15 @@ def pip_value(
             the solve inside `position_size`. Must be non-negative; direction is
             carried by the entry and stop, not by the sign of the size.
         account_currency: ISO code the account is denominated in, ``"ZAR"`` here.
-        rates: Current mid rates keyed by pair string. Must include whatever
-            conversion leg the case above requires. Staleness matters: a rate
-            from last week is a wrong rate, and the caller is responsible for
-            freshness.
+        rates: Current mid rates keyed by pair string, sufficient for the route
+            `convert_rate` needs.
 
     Returns:
         Value of one pip in ``account_currency``, always positive.
 
     Raises:
-        MissingRateError: If the conversion leg is absent from ``rates``, or is
-            present but zero or negative.
+        MissingRateError: Propagated from `convert_rate` when no route exists.
         ValueError: If ``units`` is negative or ``pair`` is malformed.
-
     """
     raise NotImplementedError
 
@@ -297,7 +393,7 @@ def position_size(
     risk_fraction: float | None = None,
     broker: Broker = DEFAULT_BROKER,
 ) -> PositionSize:
-    """Size a position so the stop costs exactly the planned fraction of the account.
+    """Size a position so the stop costs the planned fraction of the account.
 
     This is the function the whole plan turns on. The plan's rule is not "trade
     a fixed lot with a sensible stop", it is "let the chart place the stop, then
@@ -310,10 +406,12 @@ def position_size(
            supplied, which is the conservative reading of the plan's 1-2% band.
            Clamp it to ``[risk_per_trade_min, risk_per_trade_max]`` and add a
            warning if the caller asked for something outside that band, rather
-           than honouring it.
-        2. ``risk_amount = config.account_balance * risk_fraction``. On the
-           plan's R2,000 that is R20 at 1% and R40 at 2%, matching the figures
-           the owner wrote down.
+           than honouring it. Callers should source this from
+           `risk_fraction_for`, which derives from the same config and therefore
+           never trips the clamp.
+        2. ``risk_amount = config.account_balance * risk_fraction``. This is the
+           INTENDED risk, before rounding. On the plan's R2,000 that is R20 at
+           1% and R40 at 2%, matching the figures the owner wrote down.
         3. ``stop_distance_pips = abs(entry - stop) / pip_size(pair)``. Absolute
            value: a long has the stop below and a short has it above, and the
            distance is the same quantity either way.
@@ -324,8 +422,31 @@ def position_size(
         6. ``lots = units / broker.contract_size``, then round DOWN to the
            nearest multiple of ``broker.lot_step``, then recompute ``units``
            from the rounded lots so the two fields never disagree.
-        7. ``notional = units * entry``, the face value of the position in the
-           quote currency. Reported for leverage awareness, not used in sizing.
+        7. ``realised_risk_amount = units * stop_distance_pips * value_per_pip``,
+           recomputed from the ROUNDED units. See below.
+        8. ``notional``: face value, in the ACCOUNT currency. ``units * entry``
+           gives face value in the quote currency, so it must then be carried
+           back through the same conversion leg as the risk figures:
+           ``units * entry * convert_rate(quote, config.account_currency,
+           rates)``. `PositionSize` requires every money field to be in the
+           account currency and names this one explicitly. Leaving it in the
+           quote currency would understate a dollar-quoted position roughly
+           eighteen-fold on this account, in the single number shown for
+           leverage awareness, and it would read as plausible while doing it.
+           Reported for leverage awareness only, never used in sizing.
+
+    Why ``realised_risk_amount`` is separate from ``risk_amount``:
+        Rounding down protects the cap but it leaves intended and actual risk
+        different, and it is the actual figure that matters twice. The pre-trade
+        check confirms the trade sits inside the R20-R40 band, and that has to
+        be checked against what is really at risk. The journal divides the
+        outcome by it to get an R-multiple, and an R-multiple computed against
+        the intended figure is overstated by the rounding ratio. On the worked
+        USDJPY example that ratio is R35.81 against R40.00, so every R-multiple
+        in the journal would read about 10.5% high, and those R-multiples are
+        the sole input to the conviction calibration the whole model is judged
+        on. Both the checklist and the journal read
+        ``realised_risk_amount``. Neither reads ``risk_amount``.
 
     Rounding is always downward. Never nearest, never upward. Rounding up
     breaches the risk cap by construction, and on a small account the breach is
@@ -343,10 +464,11 @@ def position_size(
           honest response is to trade fewer pairs, wait for setups with tighter
           stops, or grow the account. The one response that is not available is
           to take the minimum lot anyway: that silently converts a 1% trade into
-          a 2-4% trade and the plan stops being a plan.
-        * Rounding down moved the realised risk more than a stated tolerance
-          below the intended risk, so the owner knows the trade is smaller than
-          the ladder implies.
+          a 2-4% trade and the plan stops being a plan. Return zero units, zero
+          lots and a zero ``realised_risk_amount`` alongside the warning.
+        * ``realised_risk_amount`` more than a stated tolerance below
+          ``risk_amount``, so the owner knows the trade is materially smaller
+          than the ladder implies.
         * Stop distance below roughly twice the pair's typical spread, from
           ``broker.typical_spread_pips``. A stop that tight is inside the noise
           the broker itself creates.
@@ -360,7 +482,8 @@ def position_size(
         stop: Stop price, placed just beyond the opposite side of the channel or
             the key trendline as the plan requires.
         config: Risk limits, supplying account currency, balance and the band.
-        rates: Current rates including the ZAR conversion leg. See `pip_value`.
+        rates: Current rates including whatever route the ZAR conversion needs.
+            See `convert_rate`.
         risk_fraction: Explicit fraction of balance to risk, normally from
             `risk_fraction_for`. Defaults to ``config.risk_per_trade_min``.
         broker: Execution constraints. Defaults to `DEFAULT_BROKER`, whose
@@ -373,29 +496,41 @@ def position_size(
         why a pair on the shortlist has no ticket behind it.
 
     Raises:
-        MissingRateError: Propagated from `pip_value` when the ZAR conversion
-            leg is missing. Sizing without it is not possible and must not be
-            approximated.
-
+        MissingRateError: Propagated from `pip_value` or `convert_rate` when the
+            ZAR conversion route is missing. Sizing without it is not possible
+            and must not be approximated.
     """
     raise NotImplementedError
 
 
-def risk_fraction_for(conviction: Conviction) -> float:
-    """Map a conviction level to the fraction of balance to risk.
+def risk_fraction_for(conviction: Conviction, config: RiskConfig) -> float:
+    """Fraction of balance to risk at this conviction, derived from the configured band.
 
-    Reads `CONVICTION_RISK_FRACTION`. Kept as a function rather than exposing
-    the mapping directly so the ladder can later account for consecutive
-    losses, drawdown state, or a reduced-size return after a pause, without
-    every call site changing.
+    Reads `CONVICTION_BAND_POSITION` for the level's position in ``[0, 1]`` and
+    interpolates across the configured band:
+
+        ``risk_per_trade_min + position * (risk_per_trade_max -
+        risk_per_trade_min)``
+
+    The band is never hardcoded here. `config` is a required argument precisely
+    so that lowering ``risk_per_trade_max``, which `journal.evaluate` explicitly
+    advises doing when the conviction ladder fails to earn its keep, moves the
+    whole ladder down with it instead of leaving the top rung outside the band
+    and clamped.
 
     Args:
         conviction: The engine's conviction on the pair.
+        config: Risk limits supplying the band endpoints.
 
     Returns:
-        A fraction in ``[0.01, 0.02]``, or ``0.0`` for `Conviction.NONE`, which
-        the caller must treat as no trade rather than as a tiny trade.
+        A fraction inside ``[risk_per_trade_min, risk_per_trade_max]``, or
+        ``0.0`` for `Conviction.NONE`, which the caller must treat as no trade
+        rather than as a tiny trade.
 
+    Raises:
+        ValueError: If ``config.risk_per_trade_min`` exceeds
+            ``risk_per_trade_max``, which would make the interpolation run
+            backwards and quietly return a fraction outside the band.
     """
     raise NotImplementedError
 
@@ -426,6 +561,9 @@ def reward_to_risk(entry: float, stop: float, target: float) -> float:
         channel usually is not. Sanity-check the target against structure before
         trusting the number this returns.
 
+        It also measures the PLANNED trade. The realised R-multiple in the
+        journal is computed against ``realised_risk_amount`` and will differ
+        wherever rounding moved the size.
     """
     raise NotImplementedError
 
@@ -433,15 +571,16 @@ def reward_to_risk(entry: float, stop: float, target: float) -> float:
 def min_acceptable_rr(conviction: Conviction) -> float:
     """Minimum reward-to-risk required for a trade at this conviction.
 
-    Reads `MIN_REWARD_TO_RISK`. See that constant for why the requirement rises
-    as conviction falls.
+    Reads `MIN_REWARD_TO_RISK`. That constant records what the ladder assumes
+    and what evidence would confirm or refute it; the assumption is currently
+    untested, so treat the returned number as a working threshold rather than a
+    calibrated one.
 
     Args:
         conviction: The engine's conviction on the pair.
 
     Returns:
         The minimum acceptable ratio. Infinite for `Conviction.NONE`.
-
     """
     raise NotImplementedError
 
@@ -460,10 +599,16 @@ def correlated_exposure(
 
     Method:
         For each position, split its pair into base and quote. Attribute the
-        position's risk fraction (``risk_amount / account_balance``) to BOTH
-        legs. Sum per currency. The resulting map is compared leg by leg
-        against ``RiskConfig.max_correlated_exposure``, which defaults to 4%,
-        or two full-size trades pointing the same way.
+        position's realised risk fraction (``realised_risk_amount /
+        account_balance``) to BOTH legs. Sum per currency. The resulting map is
+        compared leg by leg against ``RiskConfig.max_correlated_exposure``,
+        which defaults to 4%, or two full-size trades pointing the same way.
+
+        Realised rather than intended, for the same reason the checklist reads
+        realised: what is on the book is what can be lost, and after rounding
+        down that is reliably less than what was asked for. Using the intended
+        figure would refuse trades on exposure the account does not actually
+        carry.
 
     Attributing the full risk to both legs rather than splitting it in half is
     deliberate and conservative. A pair trade genuinely does put the whole stake
@@ -474,13 +619,13 @@ def correlated_exposure(
 
     Args:
         open_positions: Positions currently live. Each supplies its own pair,
-            risk amount and account balance, so no external state is needed.
+            realised risk amount and account balance, so no external state is
+            needed.
 
     Returns:
         Mapping of ISO currency code to total risk fraction of the account, for
         every currency appearing in at least one open position. Currencies with
         no exposure are absent rather than present with 0.0.
-
     """
     raise NotImplementedError
 
@@ -533,6 +678,5 @@ def check_limits(
     Returns:
         Human-readable reasons for refusal, one per breached limit, in the order
         listed above. Empty list means every limit passed.
-
     """
     raise NotImplementedError

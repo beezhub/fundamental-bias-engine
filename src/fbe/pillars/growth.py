@@ -69,7 +69,16 @@ class GrowthPillar(BasePillar):
     heavily revised, so a single print can move the cross-sectional ranking and
     then be revised away. And the year-on-year framing lags by construction: a
     recovery that began three months ago still shows a negative year-on-year
-    rate, which is why ``pmi_trend`` is in the mix at all.
+    rate, which is why the survey is in the mix at all and why it carries as much
+    weight as GDP.
+
+    Two more, from section 3.3 of ``docs/scoring-spec.md``. The staleness
+    discount handles the age of a GDP print but not its revision risk, which is a
+    separate and unmeasured exposure. And strong growth is currency-positive
+    through the policy channel and currency-negative through the import channel,
+    since a fast-growing economy sucks in imports and widens its trade deficit.
+    This pillar models only the first, and the external pillar is where the
+    second would show up, several months later.
     """
 
     name = PillarName.GROWTH
