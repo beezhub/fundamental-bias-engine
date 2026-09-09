@@ -14,8 +14,9 @@ htmlcov/
 config.yaml
 data/cache/*
 !data/cache/.gitkeep
-data/reports/*
-!data/reports/.gitkeep
+# Reports are the audit trail, so they are tracked on purpose. A bias call
+# you cannot re-read a week later is worthless, and the diff between two
+# runs is often more informative than either run alone.
 .DS_Store
 data/journal/*
 !data/journal/.gitkeep
