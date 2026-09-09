@@ -1,62 +1,74 @@
 """Canonical indicator registry: the map from indicator keys to real series IDs.
 
 This module is the single place where the engine's vocabulary meets the outside
-world's. Pillars ask for ``cpi_yoy`` for ``"AUD"``; the registry says that means
-FRED series ``CPALTT01AUQ659N``, in percent, quarterly, already expressed as a
-year-on-year growth rate. Every data source translates into these keys before
-returning `Observation`s, so no pillar ever sees a vendor identifier.
+world's. Pillars ask for ``yield_2y`` for ``"CAD"``; the registry says that
+means Bank of Canada Valet series ``BD.CDN.2YR.DQ.YLD``, in percent, daily,
+as published. Every data source translates into these keys before returning
+`Observation`s, so no pillar ever sees a vendor identifier.
 
 Why this file is worth reading carefully
 ----------------------------------------
 A wrong series ID does not raise. It silently scores a currency off the wrong
 number, and the error surfaces months later as an unexplained run of losses.
 Every ID below was checked against the live source before being written down.
-``SeriesRef.verified`` records that check, and ``SeriesRef.note`` records the
-last observation the source actually held at verification time.
+``SeriesRef.verified`` records that check and ``SeriesRef.last_observed``
+records the newest observation the source actually held when it was made.
 
-What ``verified`` means
------------------------
-``verified=True`` means the identifier was confirmed to exist and to return
-observations from the named source. It does **not** mean the series is current.
-Several families on FRED still resolve but stopped updating; those carry the
-last observation date in ``note``. Read the note before trusting the ref.
+Freshness is a first-class fact here, not a comment
+---------------------------------------------------
+An identifier that resolves is not the same as an identifier that updates. FRED
+in particular is full of series that answer happily and stopped publishing in
+2024 or 2025. `coverage_report` is therefore freshness-aware by default: a ref
+counts toward coverage only if it was verified, is not manual, and its
+``last_observed`` falls inside the indicator's ``max_staleness_days``. The old
+identifier-only count is still available as `identifier_coverage`, clearly
+named so nobody reaches for it by accident.
 
-The state of free G10 macro data, honestly
-------------------------------------------
-FRED is excellent for the United States and thin everywhere else, and the
-thinness is not uniform:
+``max_staleness_days`` lives on the `IndicatorSpec` because the registry is
+where the release calendar is known. A quarterly balance-of-payments figure
+cannot be 45 days old and a daily bond yield should never be, and only this
+module knows which is which.
 
-* Interest rates travel well. The OECD ``IRLTLT01`` (10-year government bond)
-  and ``IRSTCI01`` (overnight call money) families are current for most of the
-  G10, two to three months behind.
-* Prices do not. FRED's entire OECD-sourced CPI complex, both the index levels
-  (``...CPIALLMINMEI``) and the year-on-year rates (``CPALTT01...``,
-  ``CPGRLE01...``), stopped updating in March or April 2025. Outside the dollar
-  and the euro, the engine has no free, current inflation print. This is the
-  single largest gap in the registry and the main reason the manual source
-  exists.
-* Trade balances travel well: ``XTNTVA01...M667S`` is current for all eight.
-* Current account balances are current only to late 2024 across the board.
-* PMIs are absent entirely. S&P Global and ISM license those indices, so no
-  free API carries them. Every PMI ref below is manual by necessity, not by
-  oversight.
-* The euro area is a special case. Eurostat feeds FRED with current HICP, but
-  the euro-area aggregates for unemployment, employment, retail sales,
-  industrial production, trade and the current account all stopped between 2022
-  and 2023. Where that happens the registry falls back to the German national
-  series as the euro-area proxy and says so in the note. Germany is roughly a
-  third of euro-area GDP, so this is a real approximation, not a free lunch.
+Where the data comes from, and why not all from one place
+----------------------------------------------------------
+FRED is the widest single free source and is still the backbone, but it mirrors
+the OECD with a long and uneven delay, and it carries no non-US front-end
+yields at all. Two additions fix most of that:
 
-Two-year yields outside the United States are simply not on FRED in any form.
-That matters, because the front end of the curve is where rate expectations
-live and rate expectations are what move G10 FX. Treat the manual refs for
-``yield_2y`` as load-bearing, not optional.
+* **The OECD's own SDMX API** carries current data where FRED's mirror of the
+  same OECD material is frozen. FRED's CPI complex stops in March or April
+  2025; the OECD API serves the same countries through July or August 2026. It
+  also runs two months ahead of FRED on policy rates, 10-year yields and share
+  price indices. Anywhere this registry used to point at a frozen FRED OECD
+  series, it now points at the OECD directly.
+* **National central banks and debt offices** publish their own curves, free
+  and without a key. That is where the 2-year yields come from: Bank of Canada,
+  the ECB Data Portal, Japan's Ministry of Finance, the Bank of England and the
+  Reserve Bank of Australia between them cover six of the eight.
+
+What is still missing, stated plainly
+--------------------------------------
+* **CHF and NZD 2-year yields.** The SNB publishes a Confederation spot curve
+  and the endpoint is verified, but the cube stopped at 2025-07-31 while the
+  rest of the SNB portal stayed current. The RBNZ and New Zealand Debt
+  Management both refuse automated requests outright. Both are manual.
+* **PMIs**, all eight. Licensed by S&P Global and ISM, on no free API.
+* **Current account**, all eight. The FRED family stopped at 2024Q4 and no free
+  replacement was found. The staleness allowance below is set to what a
+  quarterly balance-of-payments release honestly justifies, which means the
+  frozen series correctly fails it rather than being waved through.
+* **Industrial production** for CHF, AUD and NZD, and the euro-area aggregate.
+* **Euro-area aggregates** for several indicators, where the registry
+  substitutes German national series and says so in the note.
+
+Verification date for everything below: 2026-09-09.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import date
 
 from fbe.types import Frequency, PillarName
 from fbe.universe import G10
@@ -66,16 +78,31 @@ __all__ = [
     "INDICATORS",
     "IndicatorSpec",
     "SeriesRef",
+    "SOURCE_BOC",
+    "SOURCE_BOE",
     "SOURCE_CFTC",
+    "SOURCE_ECB",
     "SOURCE_FRED",
     "SOURCE_MANUAL",
+    "SOURCE_MOF_JP",
+    "SOURCE_OECD",
+    "SOURCE_RBA",
+    "SOURCE_SNB",
     "SOURCE_STOOQ",
     "TRANSFORMS",
+    "VERIFIED_ON",
     "coverage_report",
+    "identifier_coverage",
     "indicators_for_pillar",
     "series_for",
+    "stale_refs",
 ]
 
+
+VERIFIED_ON = date(2026, 9, 9)
+"""When every identifier below was last checked against its live source. The
+``last_observed`` dates are as at this date, so freshness computed against a
+much later ``asof`` is measuring the age of this file as much as the data."""
 
 GLOBAL = "GLOBAL"
 """Pseudo-currency for cross-market series such as VIX. Matches the convention
@@ -83,9 +110,24 @@ GLOBAL = "GLOBAL"
 one economy, is filed under ``"GLOBAL"`` rather than duplicated eight times."""
 
 SOURCE_FRED = "fred"
+SOURCE_OECD = "oecd"
 SOURCE_CFTC = "cftc"
 SOURCE_STOOQ = "stooq"
 SOURCE_MANUAL = "manual"
+SOURCE_BOC = "boc"
+SOURCE_ECB = "ecb"
+SOURCE_MOF_JP = "mof_jp"
+SOURCE_BOE = "boe"
+SOURCE_RBA = "rba"
+SOURCE_SNB = "snb"
+
+CURVE_SOURCES: frozenset[str] = frozenset(
+    {SOURCE_BOC, SOURCE_ECB, SOURCE_MOF_JP, SOURCE_BOE, SOURCE_RBA, SOURCE_SNB}
+)
+"""The central bank and debt office sources, all served by
+`fbe.datasources.curves`. Grouped because they share one thing that matters:
+each publishes only its own country, so none of them can ever be a fallback for
+another, and losing one is losing a currency rather than degrading a series."""
 
 TRANSFORMS: tuple[str, ...] = (
     "level",
@@ -104,7 +146,8 @@ counts to a single signed number.
 
 The hint lives here rather than in the pillar because the choice is a property
 of the series, not of the question being asked: ``CPIAUCSL`` is an index and
-``NZLGDPRQPSMEI`` is already a growth rate, and only the registry knows which.
+the OECD's ``GY`` transformation is already a growth rate, and only the
+registry knows which.
 """
 
 
@@ -113,11 +156,11 @@ class SeriesRef:
     """One source's identifier for one indicator for one currency.
 
     Attributes:
-        source: Short source key matching a `DataSource.name`, one of
-            ``"fred"``, ``"cftc"``, ``"stooq"`` or ``"manual"``.
-        series_id: The source's own identifier. For FRED this is the series ID.
-            For the CFTC it is the six-digit CFTC contract market code. For
-            manual entries it is the key the operator writes in the YAML file.
+        source: Short source key matching a `DataSource.name`.
+        series_id: The source's own identifier. FRED uses a series ID, the CFTC
+            a six-digit contract market code, the OECD a ``flow/key`` pair, the
+            curve sources whatever their own API takes. `fbe.datasources.curves`
+            and `fbe.datasources.oecd` document how each is composed.
         unit: Unit of the published value, echoed onto every `Observation`.
         frequency: How often the source publishes this particular series. This
             is authoritative and may differ from the parent `IndicatorSpec`,
@@ -126,12 +169,14 @@ class SeriesRef:
         transform: One of `TRANSFORMS`, describing what the source must do to
             the published number to produce the canonical indicator.
         verified: True when this identifier was confirmed against the live
-            source. False marks a ref that could not be checked, which for this
-            registry always means the data is not freely available and an
-            operator must supply it by hand.
-        note: Free text. By convention it records the last observation the
-            source held at verification time, and any caveat about what the
-            series actually measures.
+            source on `VERIFIED_ON`. False marks a ref that could not be
+            checked, which in this registry means either that no free source
+            exists or that the source refused an automated request.
+        last_observed: Newest observation the source held on `VERIFIED_ON`.
+            ``None`` means freshness could not be established, which
+            `coverage_report` treats as not fresh. This is the field that stops
+            a frozen series from counting as coverage.
+        note: Free text: what the series actually measures, and any caveat.
 
     """
 
@@ -141,7 +186,30 @@ class SeriesRef:
     frequency: Frequency
     transform: str = "level"
     verified: bool = True
+    last_observed: date | None = None
     note: str = ""
+
+    @property
+    def fetchable(self) -> bool:
+        """True when a machine can retrieve this without an operator typing it."""
+        return self.verified and self.source != SOURCE_MANUAL
+
+    def stale_on(self, asof: date, max_staleness_days: int) -> bool:
+        """Say whether this ref's newest observation is too old to use.
+
+        Args:
+            asof: The date to age against.
+            max_staleness_days: The indicator's allowance.
+
+        Returns:
+            True when the ref is stale, including when ``last_observed`` is
+            unknown. Unknown freshness counts as stale on purpose: an
+            unverifiable number should not quietly earn a currency a score.
+
+        """
+        if self.last_observed is None:
+            return True
+        return (asof - self.last_observed).days > max_staleness_days
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +227,23 @@ class IndicatorSpec:
             published.
         frequency: The indicator's typical release frequency across the
             universe. Per-currency reality lives on each `SeriesRef`.
+        max_staleness_days: How old this indicator's newest observation may be
+            and still count. Set per indicator rather than globally because the
+            release calendar differs by an order of magnitude across this
+            table: a 2-year yield stale by a week means the feed broke, while a
+            quarterly balance-of-payments figure is routinely five months old
+            on the day it is most current. This overrides
+            `ScoringConfig.max_staleness_days` for this indicator.
+
+            Each value is derived from the publication cadence, never from what
+            the data happens to need: it is the age of the newest print on the
+            day before the next one is due, which is the period length, plus
+            the statistics office's lag, plus one more period. A quarterly
+            series stamped at the start of its quarter therefore earns about
+            270 days and a lagging monthly series about 180. Setting an
+            allowance higher than the cadence justifies, so that a frozen
+            series passes, converts a visible gap into an invisible one and is
+            the single easiest way to make this whole registry lie.
         description: What the number means and why the pillar wants it.
         series: Per-currency refs. A currency absent from this mapping has no
             source at all for this indicator, which is different from having a
@@ -170,39 +255,30 @@ class IndicatorSpec:
     pillar: PillarName
     unit: str
     frequency: Frequency
+    max_staleness_days: int
     description: str
     series: Mapping[str, SeriesRef] = field(default_factory=dict)
 
 
-def _fred(
+def _ref(
+    source: str,
     series_id: str,
     unit: str,
     frequency: Frequency,
+    last_observed: date | None,
     transform: str = "level",
     note: str = "",
     verified: bool = True,
 ) -> SeriesRef:
-    """Build a FRED `SeriesRef`. Exists only to keep the tables below readable."""
+    """Build a `SeriesRef`. Exists only to keep the tables below readable."""
     return SeriesRef(
-        source=SOURCE_FRED,
+        source=source,
         series_id=series_id,
         unit=unit,
         frequency=frequency,
         transform=transform,
         verified=verified,
-        note=note,
-    )
-
-
-def _cftc(series_id: str, note: str = "") -> SeriesRef:
-    """Build a CFTC `SeriesRef` for a currency futures contract market code."""
-    return SeriesRef(
-        source=SOURCE_CFTC,
-        series_id=series_id,
-        unit="contracts",
-        frequency=Frequency.WEEKLY,
-        transform="net_position",
-        verified=True,
+        last_observed=last_observed,
         note=note,
     )
 
@@ -215,9 +291,10 @@ def _manual(
 ) -> SeriesRef:
     """Build a manual `SeriesRef`.
 
-    Manual refs are always ``verified=False``. The flag is not a comment on the
-    operator's typing: it records that no free machine-readable source was
-    found, which is the fact a coverage report needs to surface.
+    Manual refs are always unverified with no ``last_observed``. Neither flag
+    comments on the operator's typing: together they record that no free
+    machine-readable source was found, which is the fact a coverage report
+    needs to surface.
     """
     return SeriesRef(
         source=SOURCE_MANUAL,
@@ -226,23 +303,38 @@ def _manual(
         frequency=frequency,
         transform="level",
         verified=False,
+        last_observed=None,
+        note=note,
+    )
+
+
+def _cftc(series_id: str, last_observed: date, note: str = "") -> SeriesRef:
+    """Build a CFTC `SeriesRef` for a currency futures contract market code."""
+    return SeriesRef(
+        source=SOURCE_CFTC,
+        series_id=series_id,
+        unit="contracts",
+        frequency=Frequency.WEEKLY,
+        transform="net_position",
+        verified=True,
+        last_observed=last_observed,
         note=note,
     )
 
 
 # Recurring notes, written once so the tables stay scannable and so a change of
 # fact is a change in one place.
-_OECD_CPI_FROZEN = (
-    "FRED's OECD CPI complex stopped updating in 2025-03/04; no free current "
-    "series exists for this currency"
-)
 _EA_AGGREGATE_DEAD = (
-    "euro-area aggregate on FRED stopped updating; German national series used "
-    "as the euro-area proxy"
+    "euro-area aggregate stopped updating; German national series used as the "
+    "euro-area proxy"
 )
 _PMI_LICENSED = (
     "PMIs are licensed by S&P Global and ISM and are on no free API; operator "
     "enters the headline print by hand"
+)
+_OECD_FRESHER = (
+    "taken from the OECD API rather than FRED's mirror of the same OECD "
+    "material, which runs two months behind"
 )
 
 
@@ -251,67 +343,84 @@ POLICY_RATE = IndicatorSpec(
     pillar=PillarName.MONETARY,
     unit="percent",
     frequency=Frequency.DAILY,
+    max_staleness_days=75,
     description=(
         "The central bank's target rate, or the overnight rate that tracks it. "
         "The level matters less than where it sits relative to the rest of the "
         "G10, which is the whole premise of a relative-value framework."
     ),
     series={
-        "USD": _fred(
+        "USD": _ref(
+            SOURCE_FRED,
             "DFEDTARU",
             "percent",
             Frequency.DAILY,
-            note="fed funds target range upper limit; current",
+            date(2026, 9, 9),
+            note="fed funds target range upper limit, published daily",
         ),
-        "EUR": _fred(
+        "EUR": _ref(
+            SOURCE_FRED,
             "ECBDFR",
             "percent",
             Frequency.DAILY,
-            note="ECB deposit facility rate, the effective policy rate; current",
+            date(2026, 9, 9),
+            note="ECB deposit facility rate, the effective policy rate",
         ),
-        "GBP": _fred(
-            "IUDSOIA",
+        "GBP": _ref(
+            SOURCE_BOE,
+            "IUDBEDR",
             "percent",
             Frequency.DAILY,
+            date(2026, 9, 1),
             note=(
-                "SONIA, not Bank Rate itself, but it tracks Bank Rate within a "
-                "few basis points; current"
+                "Bank Rate itself from the Bank of England database, which "
+                "replaces the earlier SONIA proxy"
             ),
         ),
-        "JPY": _fred(
-            "IRSTCI01JPM156N",
+        "JPY": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/JPN.M.IRSTCI.PA......",
             "percent",
             Frequency.MONTHLY,
-            note="call money rate, monthly average; last observation 2026-06",
+            date(2026, 8, 1),
+            note=f"uncollateralised overnight call rate; {_OECD_FRESHER}",
         ),
-        "CHF": _fred(
-            "IRSTCI01CHM156N",
+        "CHF": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/CHE.M.IRSTCI.PA......",
             "percent",
             Frequency.MONTHLY,
+            date(2026, 8, 1),
             note=(
-                "DISCONTINUED, last observation 2024-03; use the manual SNB "
-                "policy rate entry instead"
+                "SARON-area overnight rate. Closes a real gap: FRED's "
+                "IRSTCI01CHM156N stopped at 2024-03."
             ),
         ),
-        "CAD": _fred(
-            "IRSTCI01CAM156N",
+        "CAD": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/CAN.M.IRSTCI.PA......",
             "percent",
             Frequency.MONTHLY,
-            note="overnight money market rate; last observation 2026-06",
+            date(2026, 8, 1),
+            note=f"overnight money market rate; {_OECD_FRESHER}",
         ),
-        "AUD": _fred(
-            "IRSTCI01AUM156N",
+        "AUD": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/AUS.M.IRSTCI.PA......",
             "percent",
             Frequency.MONTHLY,
-            note="interbank overnight cash rate; last observation 2026-06",
+            date(2026, 8, 1),
+            note=f"interbank overnight cash rate; {_OECD_FRESHER}",
         ),
-        "NZD": _fred(
-            "IRSTCI01NZM156N",
+        "NZD": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/NZL.M.IRSTCI.PA......",
             "percent",
             Frequency.MONTHLY,
+            date(2026, 8, 1),
             note=(
-                "DISCONTINUED, last observation 2024-12; use the manual RBNZ "
-                "OCR entry instead"
+                "overnight interbank rate. Closes a real gap: FRED's "
+                "IRSTCI01NZM156N stopped at 2024-12."
             ),
         ),
     },
@@ -323,62 +432,99 @@ YIELD_2Y = IndicatorSpec(
     pillar=PillarName.MONETARY,
     unit="percent",
     frequency=Frequency.DAILY,
+    max_staleness_days=10,
     description=(
         "Two-year government bond yield, the market's own forecast of where "
         "policy goes next. The 2y differential is the strongest single "
-        "fundamental driver of a G10 pair over a multi-week horizon, which "
-        "makes the seven missing legs below the registry's most expensive gap."
+        "fundamental driver of a G10 pair over a multi-week horizon, and the "
+        "monetary pillar derives most of its sub-weight from it, so a missing "
+        "leg here costs a currency the heaviest pillar in the model."
     ),
     series={
-        "USD": _fred(
+        "USD": _ref(
+            SOURCE_FRED,
             "DGS2",
             "percent",
             Frequency.DAILY,
-            note="Treasury constant maturity; current",
+            date(2026, 9, 8),
+            note="Treasury constant maturity",
         ),
-        "EUR": _manual(
-            "yield_2y",
+        "EUR": _ref(
+            SOURCE_ECB,
+            "YC/B.U2.EUR.4F.G_N_A.SV_C_YM.SR_2Y",
             "percent",
             Frequency.DAILY,
-            "German 2y Schatz; no 2y series for any non-US G10 issuer exists "
-            "on FRED, verified by search. Source from the Bundesbank or a "
-            "broker terminal and enter by hand.",
+            date(2026, 9, 8),
+            note=(
+                "euro-area AAA government spot curve, 2-year point, Svensson "
+                "fit. AAA issuers only, so this is close to the Bund and does "
+                "not carry periphery spread."
+            ),
         ),
-        "GBP": _manual(
-            "yield_2y",
+        "GBP": _ref(
+            SOURCE_BOE,
+            "GLC_NOMINAL_SPOT_SHORT/2.0",
             "percent",
             Frequency.DAILY,
-            "2y gilt; see the EUR note, no free FRED series exists",
+            date(2026, 9, 8),
+            note=(
+                "UK nominal spot curve, 2-year point, from the yield curve "
+                "archive. Read from sheet '3. spot, short end', the column "
+                "whose header maturity is 2.0 years. Needs a spreadsheet "
+                "reader, unlike every other source here."
+            ),
         ),
-        "JPY": _manual(
-            "yield_2y",
+        "JPY": _ref(
+            SOURCE_MOF_JP,
+            "2Y",
             "percent",
             Frequency.DAILY,
-            "2y JGB; see the EUR note, no free FRED series exists",
+            date(2026, 9, 8),
+            note=(
+                "JGB par yield, 2-year column of the Ministry of Finance CSV. "
+                "The current-month file and the full history are separate "
+                "downloads; both are needed."
+            ),
         ),
         "CHF": _manual(
             "yield_2y",
             "percent",
             Frequency.DAILY,
-            "2y Swiss Confederation; see the EUR note",
+            "the SNB publishes a Confederation spot curve and the endpoint is "
+            "verified (cube 'rendoblid', dimension '2J'), but it stopped at "
+            "2025-07-31 while the rest of the SNB portal stayed current. No "
+            "free replacement found. Enter by hand or accept that the Swiss "
+            "franc runs the monetary pillar without a front end.",
         ),
-        "CAD": _manual(
-            "yield_2y",
+        "CAD": _ref(
+            SOURCE_BOC,
+            "BD.CDN.2YR.DQ.YLD",
             "percent",
             Frequency.DAILY,
-            "2y Government of Canada; see the EUR note",
+            date(2026, 9, 8),
+            note="Government of Canada 2-year benchmark bond yield",
         ),
-        "AUD": _manual(
-            "yield_2y",
+        "AUD": _ref(
+            SOURCE_RBA,
+            "FCMYGBAG2D",
             "percent",
             Frequency.DAILY,
-            "2y Australian Commonwealth Government Bond; see the EUR note",
+            date(2026, 9, 2),
+            note=(
+                "Australian Government 2-year bond, interpolated, from RBA "
+                "statistical table F2"
+            ),
         ),
         "NZD": _manual(
             "yield_2y",
             "percent",
             Frequency.DAILY,
-            "2y New Zealand Government Bond; see the EUR note",
+            "the RBNZ publishes 2-year government bond yields in table B2, but "
+            "rbnz.govt.nz, nzdmo.govt.nz and debtmanagement.treasury.govt.nz "
+            "all refuse automated requests with HTTP 403. Not verified, not "
+            "wired in. This may be an environment block rather than a policy "
+            "one, so it is worth retrying from another network before "
+            "accepting the manual route.",
         ),
     },
 )
@@ -389,63 +535,77 @@ YIELD_10Y = IndicatorSpec(
     pillar=PillarName.MONETARY,
     unit="percent",
     frequency=Frequency.MONTHLY,
+    max_staleness_days=75,
     description=(
         "Ten-year benchmark government bond yield. Slower than the 2y and less "
-        "directly tied to policy, but it is the one rate with clean, current "
-        "coverage across all eight currencies, so it carries the monetary "
-        "pillar wherever the front end is missing."
+        "directly tied to policy, but it has clean, current coverage across "
+        "all eight, so it carries the monetary pillar for the two currencies "
+        "whose front end is missing."
     ),
     series={
-        "USD": _fred(
+        "USD": _ref(
+            SOURCE_FRED,
             "DGS10",
             "percent",
             Frequency.DAILY,
-            note="Treasury constant maturity, daily; current",
+            date(2026, 9, 8),
+            note="Treasury constant maturity, daily",
         ),
-        "EUR": _fred(
-            "IRLTLT01DEM156N",
+        "EUR": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/DEU.M.IRLT.PA......",
             "percent",
             Frequency.MONTHLY,
-            note=(
-                "10y Bund, the euro-area benchmark; the EZ aggregate "
-                "IRLTLT01EZM156N lags further. Last observation 2026-06."
-            ),
+            date(2026, 8, 1),
+            note=f"10y Bund, the euro-area benchmark; {_OECD_FRESHER}",
         ),
-        "GBP": _fred(
-            "IRLTLT01GBM156N",
+        "GBP": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/GBR.M.IRLT.PA......",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 8, 1),
+            note=_OECD_FRESHER,
         ),
-        "JPY": _fred(
-            "IRLTLT01JPM156N",
+        "JPY": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/JPN.M.IRLT.PA......",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 8, 1),
+            note=_OECD_FRESHER,
         ),
-        "CHF": _fred(
-            "IRLTLT01CHM156N",
+        "CHF": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/CHE.M.IRLT.PA......",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 8, 1),
+            note=_OECD_FRESHER,
         ),
-        "CAD": _fred(
-            "IRLTLT01CAM156N",
+        "CAD": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/CAN.M.IRLT.PA......",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 8, 1),
+            note=_OECD_FRESHER,
         ),
-        "AUD": _fred(
-            "IRLTLT01AUM156N",
+        "AUD": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/AUS.M.IRLT.PA......",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 8, 1),
+            note=_OECD_FRESHER,
         ),
-        "NZD": _fred(
-            "IRLTLT01NZM156N",
+        "NZD": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/NZL.M.IRLT.PA......",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 8, 1),
+            note=_OECD_FRESHER,
         ),
     },
 )
@@ -456,62 +616,83 @@ CPI_YOY = IndicatorSpec(
     pillar=PillarName.INFLATION,
     unit="percent",
     frequency=Frequency.MONTHLY,
+    max_staleness_days=200,
     description=(
         "Headline consumer price inflation, year on year. The inflation pillar "
         "scores the gap to each central bank's target rather than the raw "
         "print, so `CurrencyMeta.inflation_target` is the other half of this "
-        "input."
+        "input. Coverage here was two of eight until the OECD's own API "
+        "replaced FRED's frozen mirror."
     ),
     series={
-        "USD": _fred(
+        "USD": _ref(
+            SOURCE_FRED,
             "CPIAUCSL",
             "index",
             Frequency.MONTHLY,
+            date(2026, 7, 1),
             transform="yoy",
-            note="CPI-U all items, seasonally adjusted index; current",
+            note="CPI-U all items, seasonally adjusted index, from the BLS",
         ),
-        "EUR": _fred(
+        "EUR": _ref(
+            SOURCE_FRED,
             "CP0000EZ19M086NEST",
             "index",
             Frequency.MONTHLY,
+            date(2026, 7, 1),
             transform="yoy",
-            note="Eurostat HICP all items, euro area 19; current",
+            note="Eurostat HICP all items, euro area 19, a true bloc aggregate",
         ),
-        "GBP": _fred(
-            "CPALTT01GBM659N",
+        "GBP": _ref(
+            SOURCE_OECD,
+            "DSD_PRICES@DF_PRICES_ALL/GBR.M.N.CPI.PA._T.N.GY",
             "percent",
             Frequency.MONTHLY,
-            note=f"DISCONTINUED, last observation 2025-03. {_OECD_CPI_FROZEN}",
+            date(2026, 7, 1),
+            note="national CPI, growth over one year. FRED's mirror froze at 2025-03.",
         ),
-        "JPY": _fred(
-            "CPALTT01JPM659N",
+        "JPY": _ref(
+            SOURCE_OECD,
+            "DSD_PRICES_COICOP2018@DF_PRICES_C2018_ALL/JPN.M.N.CPI.PA._T.N.GY",
             "percent",
             Frequency.MONTHLY,
-            note=f"DISCONTINUED, last observation 2021-06. {_OECD_CPI_FROZEN}",
+            date(2026, 7, 1),
+            note=(
+                "Japan sits in the COICOP 2018 dataflow, not the 1999 one. "
+                "FRED's mirror froze at 2021-06, a five-year hole."
+            ),
         ),
-        "CHF": _fred(
-            "CPALTT01CHM659N",
+        "CHF": _ref(
+            SOURCE_OECD,
+            "DSD_PRICES_COICOP2018@DF_PRICES_C2018_ALL/CHE.M.N.CPI.PA._T.N.GY",
             "percent",
             Frequency.MONTHLY,
-            note=f"DISCONTINUED, last observation 2025-04. {_OECD_CPI_FROZEN}",
+            date(2026, 8, 1),
+            note="COICOP 2018 dataflow. FRED's mirror froze at 2025-04.",
         ),
-        "CAD": _fred(
-            "CPALTT01CAM659N",
+        "CAD": _ref(
+            SOURCE_OECD,
+            "DSD_PRICES@DF_PRICES_ALL/CAN.M.N.CPI.PA._T.N.GY",
             "percent",
             Frequency.MONTHLY,
-            note=f"DISCONTINUED, last observation 2025-03. {_OECD_CPI_FROZEN}",
+            date(2026, 7, 1),
+            note="national CPI. FRED's mirror froze at 2025-03.",
         ),
-        "AUD": _fred(
-            "CPALTT01AUQ659N",
+        "AUD": _ref(
+            SOURCE_OECD,
+            "DSD_PRICES@DF_PRICES_ALL/AUS.Q.N.CPI.PA._T.N.GY",
             "percent",
             Frequency.QUARTERLY,
-            note=f"DISCONTINUED, last observation 2025-01. {_OECD_CPI_FROZEN}",
+            date(2026, 4, 1),
+            note="quarterly by publication, not by choice; 2026Q2",
         ),
-        "NZD": _fred(
-            "CPALTT01NZQ659N",
+        "NZD": _ref(
+            SOURCE_OECD,
+            "DSD_PRICES@DF_PRICES_ALL/NZL.Q.N.CPI.PA._T.N.GY",
             "percent",
             Frequency.QUARTERLY,
-            note=f"DISCONTINUED, last observation 2023-07. {_OECD_CPI_FROZEN}",
+            date(2026, 4, 1),
+            note="quarterly; 2026Q2. FRED's mirror froze at 2023Q3.",
         ),
     },
 )
@@ -522,62 +703,83 @@ CORE_CPI_YOY = IndicatorSpec(
     pillar=PillarName.INFLATION,
     unit="percent",
     frequency=Frequency.MONTHLY,
+    max_staleness_days=200,
     description=(
         "Consumer prices excluding food and energy, year on year. Central banks "
         "react to this more than to the headline, so it leads policy and "
         "therefore leads the currency."
     ),
     series={
-        "USD": _fred(
+        "USD": _ref(
+            SOURCE_FRED,
             "CPILFESL",
             "index",
             Frequency.MONTHLY,
+            date(2026, 7, 1),
             transform="yoy",
-            note="CPI-U less food and energy, SA index; current",
+            note="CPI-U less food and energy, seasonally adjusted index",
         ),
-        "EUR": _fred(
+        "EUR": _ref(
+            SOURCE_FRED,
             "00XEFDEZ19M086NEST",
             "index",
             Frequency.MONTHLY,
+            date(2026, 7, 1),
             transform="yoy",
-            note=("Eurostat HICP excluding energy, food, alcohol and tobacco; current"),
+            note="Eurostat HICP excluding energy, food, alcohol and tobacco",
         ),
-        "GBP": _fred(
-            "CPGRLE01GBM659N",
+        "GBP": _ref(
+            SOURCE_OECD,
+            "DSD_PRICES@DF_PRICES_ALL/GBR.M.N.CPI.PA._TXCP01_NRG.N.GY",
             "percent",
             Frequency.MONTHLY,
-            note=f"DISCONTINUED, last observation 2025-03. {_OECD_CPI_FROZEN}",
+            date(2026, 7, 1),
+            note="all items less food and energy",
         ),
-        "JPY": _fred(
-            "CPGRLE01JPM659N",
+        "JPY": _ref(
+            SOURCE_OECD,
+            "DSD_PRICES_COICOP2018@DF_PRICES_C2018_ALL/JPN.M.N.CPI.PA._TXCP01_NRG.N.GY",
             "percent",
             Frequency.MONTHLY,
-            note=f"DISCONTINUED, last observation 2021-06. {_OECD_CPI_FROZEN}",
+            date(2026, 7, 1),
+            note="COICOP 2018 dataflow",
         ),
-        "CHF": _fred(
-            "CPGRLE01CHM659N",
+        "CHF": _ref(
+            SOURCE_OECD,
+            "DSD_PRICES_COICOP2018@DF_PRICES_C2018_N_TXCP01_NRG"
+            "/CHE.M.N.CPI.PA._TXCP01_NRG.N.GY",
             "percent",
             Frequency.MONTHLY,
-            note=f"DISCONTINUED, last observation 2025-04. {_OECD_CPI_FROZEN}",
+            date(2026, 8, 1),
+            note=(
+                "the only Swiss core series found anywhere free: it is absent "
+                "from both general price dataflows and lives in the dedicated "
+                "core flow"
+            ),
         ),
-        "CAD": _fred(
-            "CPGRLE01CAM659N",
+        "CAD": _ref(
+            SOURCE_OECD,
+            "DSD_PRICES_COICOP2018@DF_PRICES_C2018_ALL/CAN.M.N.CPI.PA._TXCP01_NRG.N.GY",
             "percent",
             Frequency.MONTHLY,
-            note=f"DISCONTINUED, last observation 2025-03. {_OECD_CPI_FROZEN}",
+            date(2026, 7, 1),
+            note="COICOP 2018 dataflow; the 1999 flow has no Canadian core",
         ),
-        "AUD": _fred(
-            "CPGRLE01AUQ659N",
+        "AUD": _ref(
+            SOURCE_OECD,
+            "DSD_PRICES@DF_PRICES_ALL/AUS.Q.N.CPI.PA._TXCP01_NRG.N.GY",
             "percent",
             Frequency.QUARTERLY,
-            note=f"DISCONTINUED, last observation 2025-01. {_OECD_CPI_FROZEN}",
+            date(2026, 4, 1),
+            note="2026Q2. Not the RBA's trimmed mean, which is its preferred cut.",
         ),
-        "NZD": _manual(
-            "core_cpi_yoy",
+        "NZD": _ref(
+            SOURCE_OECD,
+            "DSD_PRICES@DF_PRICES_ALL/NZL.Q.N.CPI.PA._TXCP01_NRG.N.GY",
             "percent",
             Frequency.QUARTERLY,
-            "no core CPI series for New Zealand on FRED; the RBNZ sectoral "
-            "factor model estimate is the usual substitute",
+            date(2026, 4, 1),
+            note="2026Q2. Not the RBNZ sectoral factor model estimate.",
         ),
     },
 )
@@ -588,68 +790,85 @@ GDP_YOY = IndicatorSpec(
     pillar=PillarName.GROWTH,
     unit="percent",
     frequency=Frequency.QUARTERLY,
+    max_staleness_days=270,
     description=(
         "Real GDP growth, year on year. Slow and heavily revised, so it anchors "
         "the growth pillar rather than driving it. Full G10 coverage, which is "
         "rare enough in this registry to be worth stating."
     ),
     series={
-        "USD": _fred(
+        "USD": _ref(
+            SOURCE_FRED,
             "GDPC1",
             "billions_chained_usd",
             Frequency.QUARTERLY,
+            date(2026, 4, 1),
             transform="yoy",
-            note="real GDP, SAAR chained 2017 dollars; last observation 2026Q2",
+            note="real GDP, SAAR chained 2017 dollars; 2026Q2",
         ),
-        "EUR": _fred(
+        "EUR": _ref(
+            SOURCE_FRED,
             "CLVMNACSCAB1GQEA19",
             "millions_chained_eur",
             Frequency.QUARTERLY,
+            date(2026, 4, 1),
             transform="yoy",
-            note="Eurostat real GDP, euro area 19; last observation 2026Q2",
+            note="Eurostat real GDP, euro area 19, a true bloc aggregate; 2026Q2",
         ),
-        "GBP": _fred(
+        "GBP": _ref(
+            SOURCE_FRED,
             "NGDPRSAXDCGBQ",
             "millions_chained_gbp",
             Frequency.QUARTERLY,
+            date(2026, 4, 1),
             transform="yoy",
-            note="last observation 2026Q2",
+            note="2026Q2",
         ),
-        "JPY": _fred(
+        "JPY": _ref(
+            SOURCE_FRED,
             "JPNRGDPEXP",
             "billions_chained_jpy",
             Frequency.QUARTERLY,
+            date(2026, 4, 1),
             transform="yoy",
-            note="real GDP by expenditure; last observation 2026Q2",
+            note="real GDP by expenditure; 2026Q2",
         ),
-        "CHF": _fred(
+        "CHF": _ref(
+            SOURCE_FRED,
             "CLVMNACSCAB1GQCH",
             "millions_chained_chf",
             Frequency.QUARTERLY,
+            date(2026, 4, 1),
             transform="yoy",
-            note="last observation 2026Q2",
+            note="2026Q2",
         ),
-        "CAD": _fred(
+        "CAD": _ref(
+            SOURCE_FRED,
             "NGDPRSAXDCCAQ",
             "millions_chained_cad",
             Frequency.QUARTERLY,
+            date(2026, 4, 1),
             transform="yoy",
-            note="last observation 2026Q2",
+            note="2026Q2",
         ),
-        "AUD": _fred(
+        "AUD": _ref(
+            SOURCE_FRED,
             "NGDPRSAXDCAUQ",
             "millions_chained_aud",
             Frequency.QUARTERLY,
+            date(2026, 4, 1),
             transform="yoy",
-            note="last observation 2026Q2",
+            note="2026Q2",
         ),
-        "NZD": _fred(
+        "NZD": _ref(
+            SOURCE_FRED,
             "NZLGDPRQPSMEI",
             "percent",
             Frequency.QUARTERLY,
+            date(2026, 1, 1),
             note=(
                 "already published as a year-on-year growth rate, so no "
-                "transform; last observation 2026Q1"
+                "transform; 2026Q1"
             ),
         ),
     },
@@ -661,66 +880,82 @@ UNEMPLOYMENT_RATE = IndicatorSpec(
     pillar=PillarName.EMPLOYMENT,
     unit="percent",
     frequency=Frequency.MONTHLY,
+    max_staleness_days=270,
     description=(
         "Harmonised unemployment rate. Compared cross-sectionally against the "
         "rest of the G10 and against its own recent trend, since the level that "
         "counts as full employment differs by country."
     ),
     series={
-        "USD": _fred(
+        "USD": _ref(
+            SOURCE_FRED,
             "UNRATE",
             "percent",
             Frequency.MONTHLY,
-            note="BLS headline U-3; current, roughly one month behind",
+            date(2026, 8, 1),
+            note="BLS headline U-3, roughly one month behind",
         ),
-        "EUR": _fred(
+        "EUR": _ref(
+            SOURCE_FRED,
             "LRHUTTTTDEM156S",
             "percent",
             Frequency.MONTHLY,
+            date(2026, 6, 1),
             note=(
-                f"German harmonised rate. {_EA_AGGREGATE_DEAD} "
-                "(LRHUTTTTEZM156S last observation 2023-01). "
-                "Last observation 2026-06."
+                f"German harmonised rate. {_EA_AGGREGATE_DEAD}: "
+                "LRHUTTTTEZM156S stopped at 2023-01."
             ),
         ),
-        "GBP": _fred(
+        "GBP": _ref(
+            SOURCE_FRED,
             "LRHUTTTTGBM156S",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-04",
+            date(2026, 4, 1),
+            note="",
         ),
-        "JPY": _fred(
+        "JPY": _ref(
+            SOURCE_FRED,
             "LRHUTTTTJPM156S",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 6, 1),
+            note="",
         ),
-        "CHF": _fred(
+        "CHF": _ref(
+            SOURCE_FRED,
             "LRUN64TTCHQ156S",
             "percent",
             Frequency.QUARTERLY,
+            date(2026, 1, 1),
             note=(
                 "quarterly ILO rate, aged 15-64; Switzerland publishes no "
-                "monthly harmonised rate on FRED. Last observation 2026Q1."
+                "monthly harmonised rate on FRED. 2026Q1."
             ),
         ),
-        "CAD": _fred(
+        "CAD": _ref(
+            SOURCE_FRED,
             "LRHUTTTTCAM156S",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-07",
+            date(2026, 7, 1),
+            note="",
         ),
-        "AUD": _fred(
+        "AUD": _ref(
+            SOURCE_FRED,
             "LRHUTTTTAUM156S",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 6, 1),
+            note="",
         ),
-        "NZD": _fred(
+        "NZD": _ref(
+            SOURCE_FRED,
             "LRHUTTTTNZQ156S",
             "percent",
             Frequency.QUARTERLY,
-            note="quarterly by publication, not by choice; last observation 2026Q2",
+            date(2026, 4, 1),
+            note="quarterly by publication; 2026Q2",
         ),
     },
 )
@@ -731,6 +966,7 @@ EMPLOYMENT_CHANGE = IndicatorSpec(
     pillar=PillarName.EMPLOYMENT,
     unit="persons",
     frequency=Frequency.MONTHLY,
+    max_staleness_days=270,
     description=(
         "Change in the number of people employed. The flow, not the stock: a "
         "falling unemployment rate driven by people leaving the labour force is "
@@ -738,65 +974,76 @@ EMPLOYMENT_CHANGE = IndicatorSpec(
         "what separates them."
     ),
     series={
-        "USD": _fred(
+        "USD": _ref(
+            SOURCE_FRED,
             "PAYEMS",
             "thousands_of_persons",
             Frequency.MONTHLY,
+            date(2026, 8, 1),
             transform="diff",
-            note=(
-                "total nonfarm payrolls; the differenced level is the NFP "
-                "headline. Current."
-            ),
+            note="total nonfarm payrolls; the differenced level is the NFP headline",
         ),
         "EUR": _manual(
             "employment_change",
             "persons",
             Frequency.QUARTERLY,
             "no live euro-area or German employment level on FRED "
-            "(LFEMTTTTEZQ647S last observation 2022-10); take the Eurostat "
-            "quarterly employment release by hand",
+            "(LFEMTTTTEZQ647S stopped at 2022-10); take the Eurostat quarterly "
+            "employment release by hand",
         ),
-        "GBP": _fred(
+        "GBP": _ref(
+            SOURCE_FRED,
             "LFEMTTTTGBQ647S",
             "persons",
             Frequency.QUARTERLY,
+            date(2026, 1, 1),
             transform="diff",
-            note="last observation 2026Q1",
+            note="2026Q1",
         ),
-        "JPY": _fred(
+        "JPY": _ref(
+            SOURCE_FRED,
             "LFEMTTTTJPM647S",
             "persons",
             Frequency.MONTHLY,
+            date(2026, 6, 1),
             transform="diff",
-            note="last observation 2026-06",
+            note="",
         ),
-        "CHF": _fred(
+        "CHF": _ref(
+            SOURCE_FRED,
             "LFEMTTTTCHQ647S",
             "persons",
             Frequency.QUARTERLY,
+            date(2026, 1, 1),
             transform="diff",
-            note="last observation 2026Q1",
+            note="2026Q1",
         ),
-        "CAD": _fred(
+        "CAD": _ref(
+            SOURCE_FRED,
             "LFEMTTTTCAM647S",
             "persons",
             Frequency.MONTHLY,
+            date(2026, 7, 1),
             transform="diff",
-            note="last observation 2026-07",
+            note="",
         ),
-        "AUD": _fred(
+        "AUD": _ref(
+            SOURCE_FRED,
             "LFEMTTTTAUM647S",
             "persons",
             Frequency.MONTHLY,
+            date(2026, 6, 1),
             transform="diff",
-            note="last observation 2026-06",
+            note="",
         ),
-        "NZD": _fred(
+        "NZD": _ref(
+            SOURCE_FRED,
             "LFEMTTTTNZQ647S",
             "persons",
             Frequency.QUARTERLY,
+            date(2026, 4, 1),
             transform="diff",
-            note="last observation 2026Q2",
+            note="2026Q2",
         ),
     },
 )
@@ -807,69 +1054,82 @@ RETAIL_SALES_YOY = IndicatorSpec(
     pillar=PillarName.GROWTH,
     unit="percent",
     frequency=Frequency.MONTHLY,
+    max_staleness_days=270,
     description=(
         "Retail trade volume, year on year. The fastest read on household "
         "demand, and the growth pillar's main monthly input given that GDP "
         "arrives quarterly and late."
     ),
     series={
-        "USD": _fred(
+        "USD": _ref(
+            SOURCE_FRED,
             "USASLRTTO01GYSAM",
             "percent",
             Frequency.MONTHLY,
+            date(2026, 5, 1),
             note=(
                 "OECD retail volume growth, chosen over the fresher US-only "
-                "RSAFS so the eight legs are measured the same way. Last "
-                "observation 2026-05."
+                "RSAFS so the eight legs are measured the same way"
             ),
         ),
-        "EUR": _fred(
+        "EUR": _ref(
+            SOURCE_FRED,
             "DEUSLRTTO01GYSAM",
             "percent",
             Frequency.MONTHLY,
-            note=(
-                f"{_EA_AGGREGATE_DEAD} (EA19SLRTTO01GYSAM last observation "
-                "2023-10). Last observation 2026-05."
-            ),
+            date(2026, 5, 1),
+            note=f"{_EA_AGGREGATE_DEAD}: EA19SLRTTO01GYSAM stopped at 2023-10.",
         ),
-        "GBP": _fred(
+        "GBP": _ref(
+            SOURCE_FRED,
             "GBRSLRTTO01GYSAM",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 6, 1),
+            note="",
         ),
-        "JPY": _fred(
+        "JPY": _ref(
+            SOURCE_FRED,
             "JPNSLRTTO01GYSAM",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-05",
+            date(2026, 5, 1),
+            note="",
         ),
-        "CHF": _fred(
+        "CHF": _ref(
+            SOURCE_FRED,
             "CHESLRTTO01GYSAM",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-05",
+            date(2026, 5, 1),
+            note="",
         ),
-        "CAD": _fred(
+        "CAD": _ref(
+            SOURCE_FRED,
             "CANSLRTTO01GYSAM",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-04",
+            date(2026, 4, 1),
+            note="",
         ),
-        "AUD": _fred(
+        "AUD": _ref(
+            SOURCE_FRED,
             "SLRTTO01AUQ659S",
             "percent",
             Frequency.QUARTERLY,
+            date(2025, 4, 1),
             note=(
-                "DISCONTINUED, last observation 2025Q2; Australia has no live "
-                "retail series on FRED"
+                "DISCONTINUED at 2025Q2. Australia has no live retail series "
+                "on FRED and none was found on the OECD API either."
             ),
         ),
-        "NZD": _fred(
+        "NZD": _ref(
+            SOURCE_FRED,
             "SLRTTO01NZQ659S",
             "percent",
             Frequency.QUARTERLY,
-            note="last observation 2026Q1",
+            date(2026, 1, 1),
+            note="2026Q1",
         ),
     },
 )
@@ -880,6 +1140,7 @@ INDUSTRIAL_PRODUCTION_YOY = IndicatorSpec(
     pillar=PillarName.GROWTH,
     unit="percent",
     frequency=Frequency.MONTHLY,
+    max_staleness_days=180,
     description=(
         "Industrial production, year on year. Coverage here is the worst of the "
         "growth inputs: four of eight are live. Weight it accordingly, or the "
@@ -887,35 +1148,43 @@ INDUSTRIAL_PRODUCTION_YOY = IndicatorSpec(
         "rather than the countries that happen to be growing."
     ),
     series={
-        "USD": _fred(
+        "USD": _ref(
+            SOURCE_FRED,
             "USAPRINTO01GYSAM",
             "percent",
             Frequency.MONTHLY,
+            date(2026, 6, 1),
             note=(
                 "OECD basis for cross-country comparability; INDPRO is the "
-                "fresher US-only alternative. Last observation 2026-06."
+                "fresher US-only alternative"
             ),
         ),
-        "EUR": _fred(
+        "EUR": _ref(
+            SOURCE_FRED,
             "DEUPRINTO01GYSAM",
             "percent",
             Frequency.MONTHLY,
+            date(2023, 12, 1),
             note=(
-                f"DISCONTINUED, last observation 2023-12. {_EA_AGGREGATE_DEAD}, "
-                "and the German proxy has now stopped too"
+                f"DISCONTINUED at 2023-12. {_EA_AGGREGATE_DEAD}, and the "
+                "German proxy has now stopped too."
             ),
         ),
-        "GBP": _fred(
+        "GBP": _ref(
+            SOURCE_FRED,
             "GBRPRINTO01GYSAM",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-05",
+            date(2026, 5, 1),
+            note="",
         ),
-        "JPY": _fred(
+        "JPY": _ref(
+            SOURCE_FRED,
             "JPNPRINTO01GYSAM",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-05",
+            date(2026, 5, 1),
+            note="",
         ),
         "CHF": _manual(
             "industrial_production_yoy",
@@ -923,11 +1192,13 @@ INDUSTRIAL_PRODUCTION_YOY = IndicatorSpec(
             Frequency.QUARTERLY,
             "no Swiss industrial production series on FRED in any live form",
         ),
-        "CAD": _fred(
+        "CAD": _ref(
+            SOURCE_FRED,
             "CANPRINTO01GYSAM",
             "percent",
             Frequency.MONTHLY,
-            note="last observation 2026-04",
+            date(2026, 4, 1),
+            note="",
         ),
         "AUD": _manual(
             "industrial_production_yoy",
@@ -950,6 +1221,7 @@ PMI_MANUFACTURING = IndicatorSpec(
     pillar=PillarName.GROWTH,
     unit="index",
     frequency=Frequency.MONTHLY,
+    max_staleness_days=45,
     description=(
         "Manufacturing purchasing managers' index, 50 being the expansion line. "
         "The best leading indicator in the growth pillar and the one with zero "
@@ -967,67 +1239,83 @@ TRADE_BALANCE = IndicatorSpec(
     pillar=PillarName.EXTERNAL,
     unit="usd",
     frequency=Frequency.MONTHLY,
+    max_staleness_days=150,
     description=(
         "Merchandise trade balance in US dollars, seasonally adjusted. Already "
         "currency-converted by the source, so the eight legs are directly "
         "comparable without an FX step. Full, current G10 coverage."
     ),
     series={
-        "USD": _fred(
+        "USD": _ref(
+            SOURCE_FRED,
             "XTNTVA01USM667S",
             "usd",
             Frequency.MONTHLY,
+            date(2026, 6, 1),
             note=(
                 "OECD basis for comparability; BOPGSTB is the fresher US-only "
-                "goods and services balance. Last observation 2026-06."
+                "goods and services balance"
             ),
         ),
-        "EUR": _fred(
+        "EUR": _ref(
+            SOURCE_FRED,
             "XTNTVA01DEM667S",
             "usd",
             Frequency.MONTHLY,
+            date(2026, 5, 1),
             note=(
-                f"{_EA_AGGREGATE_DEAD} (XTNTVA01EZM667S last observation "
-                "2022-12). Germany runs a structural surplus larger than the "
-                "bloc's, so this proxy flatters the euro. Last observation "
-                "2026-05."
+                f"{_EA_AGGREGATE_DEAD}: XTNTVA01EZM667S stopped at 2022-12. "
+                "Germany runs a structural surplus larger than the bloc's, so "
+                "this proxy flatters the euro."
             ),
         ),
-        "GBP": _fred(
+        "GBP": _ref(
+            SOURCE_FRED,
             "XTNTVA01GBM667S",
             "usd",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 6, 1),
+            note="",
         ),
-        "JPY": _fred(
+        "JPY": _ref(
+            SOURCE_FRED,
             "XTNTVA01JPM667S",
             "usd",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 6, 1),
+            note="",
         ),
-        "CHF": _fred(
+        "CHF": _ref(
+            SOURCE_FRED,
             "XTNTVA01CHM667S",
             "usd",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 6, 1),
+            note="",
         ),
-        "CAD": _fred(
+        "CAD": _ref(
+            SOURCE_FRED,
             "XTNTVA01CAM667S",
             "usd",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 6, 1),
+            note="",
         ),
-        "AUD": _fred(
+        "AUD": _ref(
+            SOURCE_FRED,
             "XTNTVA01AUM667S",
             "usd",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 6, 1),
+            note="",
         ),
-        "NZD": _fred(
+        "NZD": _ref(
+            SOURCE_FRED,
             "XTNTVA01NZM667S",
             "usd",
             Frequency.MONTHLY,
-            note="last observation 2026-06",
+            date(2026, 6, 1),
+            note="",
         ),
     },
 )
@@ -1038,66 +1326,46 @@ CURRENT_ACCOUNT = IndicatorSpec(
     pillar=PillarName.EXTERNAL,
     unit="percent_of_gdp",
     frequency=Frequency.QUARTERLY,
+    max_staleness_days=210,
     description=(
         "Current account balance as a share of GDP. A structural measure of "
-        "whether a currency is financed by the world or financing it. It moves "
-        "slowly, which is fortunate, because every leg below stopped updating "
-        "in late 2024."
+        "whether a currency is financed by the world or financing it."
     ),
     series={
-        "USD": _fred(
-            "USAB6BLTT02STSAQ",
+        code: _ref(
+            SOURCE_FRED,
+            series_id,
             "percent_of_gdp",
             Frequency.QUARTERLY,
-            note="last observation 2024Q4 across the whole family",
-        ),
-        "EUR": _fred(
-            "DEUB6BLTT02STSAQ",
-            "percent_of_gdp",
-            Frequency.QUARTERLY,
+            date(2024, 10, 1),
             note=(
-                f"{_EA_AGGREGATE_DEAD} (EA19B6BLTT02STSAQ last observation "
-                "2022Q4). Last observation 2024Q4."
+                "DISCONTINUED at 2024Q4, as is every leg of this family. No "
+                "free replacement was found: the OECD API's balance of "
+                "payments dataflows cover trade in services and merchandise, "
+                "not the quarterly current account balance."
             ),
-        ),
-        "GBP": _fred(
-            "GBRB6BLTT02STSAQ",
-            "percent_of_gdp",
-            Frequency.QUARTERLY,
-            note="last observation 2024Q4",
-        ),
-        "JPY": _fred(
-            "JPNB6BLTT02STSAQ",
-            "percent_of_gdp",
-            Frequency.QUARTERLY,
-            note="last observation 2024Q4",
-        ),
-        "CHF": _fred(
-            "CHEB6BLTT02STSAQ",
-            "percent_of_gdp",
-            Frequency.QUARTERLY,
-            note="last observation 2024Q4",
-        ),
-        "CAD": _fred(
-            "CANB6BLTT02STSAQ",
-            "percent_of_gdp",
-            Frequency.QUARTERLY,
-            note="last observation 2024Q4",
-        ),
-        "AUD": _fred(
-            "AUSB6BLTT02STSAQ",
-            "percent_of_gdp",
-            Frequency.QUARTERLY,
-            note="last observation 2024Q4",
-        ),
-        "NZD": _fred(
-            "NZLB6BLTT02STSAQ",
-            "percent_of_gdp",
-            Frequency.QUARTERLY,
-            note="last observation 2024Q4",
-        ),
+        )
+        for code, series_id in (
+            ("USD", "USAB6BLTT02STSAQ"),
+            ("EUR", "DEUB6BLTT02STSAQ"),
+            ("GBP", "GBRB6BLTT02STSAQ"),
+            ("JPY", "JPNB6BLTT02STSAQ"),
+            ("CHF", "CHEB6BLTT02STSAQ"),
+            ("CAD", "CANB6BLTT02STSAQ"),
+            ("AUD", "AUSB6BLTT02STSAQ"),
+            ("NZD", "NZLB6BLTT02STSAQ"),
+        )
     },
 )
+"""The 210-day allowance is what a quarterly balance-of-payments release
+honestly justifies: the quarter has to end, the statistics office needs about
+two months, and the next quarter is then already half over. It is deliberately
+not set high enough to let the frozen 2024Q4 data through. Setting it to 700
+would make the indicator report as covered while feeding the model numbers two
+years old, which is the exact failure this registry exists to prevent. As it
+stands the indicator correctly reports zero coverage until a live source is
+found, and the external pillar leans on `trade_balance`, which is current for
+all eight."""
 
 
 COT_NET_POSITION = IndicatorSpec(
@@ -1105,6 +1373,7 @@ COT_NET_POSITION = IndicatorSpec(
     pillar=PillarName.POSITIONING,
     unit="contracts",
     frequency=Frequency.WEEKLY,
+    max_staleness_days=21,
     description=(
         "Net speculative position in CME currency futures from the CFTC "
         "Commitments of Traders report. A crowded position is a reason to fade "
@@ -1114,17 +1383,18 @@ COT_NET_POSITION = IndicatorSpec(
     series={
         "USD": _cftc(
             "098662",
+            date(2026, 9, 1),
             "USD Index on ICE, in the Legacy report (6dca-aqww), not TFF. The "
             "primary dollar read is the sign-flipped complement of the other "
             "seven; this contract is a small, thinly held cross-check.",
         ),
-        "EUR": _cftc("099741", "EURO FX, CME, TFF dataset gpe5-46if"),
-        "GBP": _cftc("096742", "BRITISH POUND, CME"),
-        "JPY": _cftc("097741", "JAPANESE YEN, CME"),
-        "CHF": _cftc("092741", "SWISS FRANC, CME"),
-        "CAD": _cftc("090741", "CANADIAN DOLLAR, CME"),
-        "AUD": _cftc("232741", "AUSTRALIAN DOLLAR, CME"),
-        "NZD": _cftc("112741", "NZ DOLLAR, CME"),
+        "EUR": _cftc("099741", date(2026, 9, 1), "EURO FX, CME, TFF gpe5-46if"),
+        "GBP": _cftc("096742", date(2026, 9, 1), "BRITISH POUND, CME"),
+        "JPY": _cftc("097741", date(2026, 9, 1), "JAPANESE YEN, CME"),
+        "CHF": _cftc("092741", date(2026, 9, 1), "SWISS FRANC, CME"),
+        "CAD": _cftc("090741", date(2026, 9, 1), "CANADIAN DOLLAR, CME"),
+        "AUD": _cftc("232741", date(2026, 9, 1), "AUSTRALIAN DOLLAR, CME"),
+        "NZD": _cftc("112741", date(2026, 9, 1), "NZ DOLLAR, CME"),
     },
 )
 
@@ -1134,6 +1404,7 @@ EQUITY_INDEX = IndicatorSpec(
     pillar=PillarName.RISK,
     unit="index",
     frequency=Frequency.DAILY,
+    max_staleness_days=75,
     description=(
         "Benchmark equity index for each economy. Feeds the risk pillar in two "
         "ways: as a proxy for the local growth and earnings picture, and, in "
@@ -1141,57 +1412,74 @@ EQUITY_INDEX = IndicatorSpec(
         "is in risk-on or risk-off."
     ),
     series={
-        "USD": _fred(
+        "USD": _ref(
+            SOURCE_FRED,
             "SP500",
             "index",
             Frequency.DAILY,
+            date(2026, 9, 8),
             note="daily close; FRED holds a rolling ten-year window only",
         ),
-        "JPY": _fred(
+        "JPY": _ref(
+            SOURCE_FRED,
             "NIKKEI225",
             "index",
             Frequency.DAILY,
-            note="daily close; current",
+            date(2026, 9, 9),
+            note="daily close",
         ),
-        "EUR": _fred(
-            "SPASTT01DEM661N",
+        "EUR": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/DEU.M.SHARE.IX......",
             "index",
             Frequency.MONTHLY,
+            date(2026, 8, 1),
             note=(
-                "OECD share price index, monthly average, 2015=100. Monthly is "
-                "too slow for a risk pillar; prefer the Stooq daily feed and "
-                "keep this as the offline fallback. Last observation 2026-06."
+                f"OECD share price index, monthly average. {_OECD_FRESHER}. "
+                "Monthly is slow for a risk pillar: prefer the Stooq daily "
+                "feed where it can be made to work, and keep this as the "
+                "dependable fallback."
             ),
         ),
-        "GBP": _fred(
-            "SPASTT01GBM661N",
+        "GBP": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/GBR.M.SHARE.IX......",
             "index",
             Frequency.MONTHLY,
-            note="OECD share price index; last observation 2026-06",
+            date(2026, 8, 1),
+            note=f"OECD share price index; {_OECD_FRESHER}",
         ),
-        "CHF": _fred(
-            "SPASTT01CHM661N",
+        "CHF": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/CHE.M.SHARE.IX......",
             "index",
             Frequency.MONTHLY,
-            note="OECD share price index; last observation 2026-06",
+            date(2026, 8, 1),
+            note=f"OECD share price index; {_OECD_FRESHER}",
         ),
-        "CAD": _fred(
-            "SPASTT01CAM661N",
+        "CAD": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/CAN.M.SHARE.IX......",
             "index",
             Frequency.MONTHLY,
-            note="OECD share price index; last observation 2026-06",
+            date(2026, 8, 1),
+            note=f"OECD share price index; {_OECD_FRESHER}",
         ),
-        "AUD": _fred(
-            "SPASTT01AUM661N",
+        "AUD": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/AUS.M.SHARE.IX......",
             "index",
             Frequency.MONTHLY,
-            note="OECD share price index; last observation 2026-06",
+            date(2026, 8, 1),
+            note=f"OECD share price index; {_OECD_FRESHER}",
         ),
-        "NZD": _fred(
-            "SPASTT01NZM661N",
+        "NZD": _ref(
+            SOURCE_OECD,
+            "DSD_STES@DF_FINMARK/NZL.M.SHARE.IX......",
             "index",
             Frequency.MONTHLY,
-            note="OECD share price index; last observation 2026-06",
+            date(2026, 8, 1),
+            note=f"OECD share price index; {_OECD_FRESHER}",
         ),
     },
 )
@@ -1202,17 +1490,20 @@ VIX = IndicatorSpec(
     pillar=PillarName.RISK,
     unit="index",
     frequency=Frequency.DAILY,
+    max_staleness_days=7,
     description=(
         "CBOE implied volatility on the S&P 500. A single global number, not a "
         "per-currency one: it sets the risk regime, and the currencies then "
         "sort themselves by `CurrencyMeta.risk_beta`."
     ),
     series={
-        GLOBAL: _fred(
+        GLOBAL: _ref(
+            SOURCE_FRED,
             "VIXCLS",
             "index",
             Frequency.DAILY,
-            note="daily close; current",
+            date(2026, 9, 8),
+            note="daily close",
         ),
     },
 )
@@ -1223,6 +1514,7 @@ COMMODITY_INDEX = IndicatorSpec(
     pillar=PillarName.EXTERNAL,
     unit="index",
     frequency=Frequency.MONTHLY,
+    max_staleness_days=90,
     description=(
         "Terms-of-trade proxy for the commodity currencies, plus a global "
         "benchmark. Only the three currencies with a `commodity_link` in "
@@ -1230,32 +1522,38 @@ COMMODITY_INDEX = IndicatorSpec(
         "or nothing."
     ),
     series={
-        GLOBAL: _fred(
+        GLOBAL: _ref(
+            SOURCE_FRED,
             "PALLFNFINDEXM",
             "index",
             Frequency.MONTHLY,
-            note="IMF all commodity price index, 2016=100; last obs 2026-07",
+            date(2026, 7, 1),
+            note="IMF all commodity price index, 2016=100",
         ),
-        "CAD": _fred(
+        "CAD": _ref(
+            SOURCE_FRED,
             "DCOILWTICO",
             "usd_per_barrel",
             Frequency.DAILY,
+            date(2026, 9, 1),
             note="WTI spot, the standard Canadian dollar terms-of-trade proxy",
         ),
-        "AUD": _fred(
+        "AUD": _ref(
+            SOURCE_FRED,
             "PIORECRUSDM",
             "index",
             Frequency.MONTHLY,
-            note="IMF iron ore price index; last observation 2026-07",
+            date(2026, 7, 1),
+            note="IMF iron ore price index",
         ),
         "NZD": _manual(
             "commodity_index",
             "index",
             Frequency.IRREGULAR,
-            "no dairy price index on FRED, verified by search. The GlobalDairy "
-            "Trade auction index is the right series and is published "
-            "fortnightly on globaldairytrade.info; enter it by hand. "
-            "PFOODINDEXM is a poor but free substitute.",
+            "no dairy price index on FRED, verified by search. The "
+            "GlobalDairyTrade auction index is the right series and is "
+            "published fortnightly on globaldairytrade.info. PFOODINDEXM is a "
+            "poor but free substitute.",
         ),
     },
 )
@@ -1291,13 +1589,13 @@ def series_for(indicator: str, currency: str) -> SeriesRef | None:
     """Look up the source reference for one indicator and one currency.
 
     Args:
-        indicator: Canonical indicator key, e.g. ``"cpi_yoy"``.
+        indicator: Canonical indicator key, e.g. ``"yield_2y"``.
         currency: ISO 4217 code, or ``"GLOBAL"`` for cross-market series.
 
     Returns:
         The `SeriesRef`, or ``None`` when the registry has no source for this
-        pair. ``None`` and a ref with ``verified=False`` mean different things:
-        the first is silence, the second is a known gap with a named fallback.
+        pair. ``None`` and a manual ref mean different things: the first is
+        silence, the second is a known gap with a named fallback.
 
     Raises:
         KeyError: If ``indicator`` is not a registered indicator key. An
@@ -1323,19 +1621,61 @@ def indicators_for_pillar(pillar: PillarName) -> tuple[str, ...]:
     return tuple(key for key, spec in INDICATORS.items() if spec.pillar is pillar)
 
 
-def coverage_report() -> Mapping[str, float]:
-    """Report the fraction of the G10 each indicator covers with a real source.
+def coverage_report(asof: date | None = None) -> Mapping[str, float]:
+    """Report the fraction of the G10 each indicator covers with usable data.
 
-    Coverage counts a currency only when its ref is ``verified`` and does not
-    come from the manual source, because a manual ref describes work an
-    operator has to do rather than data the engine can fetch. An indicator
-    holding a ``GLOBAL`` ref covers the whole universe by construction, since
-    one VIX print serves all eight currencies.
+    A currency counts only when its ref is verified, is not manual, and its
+    ``last_observed`` falls inside the indicator's ``max_staleness_days``. All
+    three conditions matter, and the third is the one that was missing before:
+    an identifier that resolves but stopped publishing in 2024 is not coverage,
+    it is a number that will pass every type check and score a currency wrongly.
 
-    Note that coverage says nothing about freshness. Several indicators score
-    1.0 here while resting on series that stopped updating in 2024 or 2025; the
-    ``note`` on each `SeriesRef` is where that shows up, and the staleness
-    penalty in the scoring layer is what acts on it.
+    An indicator holding a ``GLOBAL`` ref covers the whole universe by
+    construction, since one VIX print serves all eight currencies.
+
+    Args:
+        asof: Date to age the registry against. Defaults to `VERIFIED_ON`,
+            which is the honest default: the ``last_observed`` dates were
+            recorded then, so ageing against a much later date measures how
+            long since this file was checked as much as how stale the data is.
+            Pass a real run date to see the position on that day, and re-verify
+            the registry when the two drift far apart.
+
+    Returns:
+        Indicator key to fraction in ``0.0..1.0``.
+
+    """
+    when = asof or VERIFIED_ON
+    report: dict[str, float] = {}
+    for key, spec in INDICATORS.items():
+        limit = spec.max_staleness_days
+        global_ref = spec.series.get(GLOBAL)
+        if global_ref is not None:
+            usable = global_ref.fetchable and not global_ref.stale_on(when, limit)
+            report[key] = 1.0 if usable else 0.0
+            continue
+        covered = sum(
+            1
+            for code in G10
+            if (ref := spec.series.get(code)) is not None
+            and ref.fetchable
+            and not ref.stale_on(when, limit)
+        )
+        report[key] = covered / len(G10)
+    return report
+
+
+def identifier_coverage() -> Mapping[str, float]:
+    """Report how many G10 legs have a fetchable identifier, ignoring freshness.
+
+    Useful for one thing only: telling a wiring problem apart from a data
+    problem. If `coverage_report` says 0.0 and this says 1.0, every identifier
+    is right and the source has stopped publishing. If both say 0.0, the
+    registry has no source at all.
+
+    Do not use this to decide whether a pillar can score. That is
+    `coverage_report`'s job, and the difference between the two functions is
+    exactly the class of bug this registry is built to avoid.
 
     Returns:
         Indicator key to fraction in ``0.0..1.0``.
@@ -1344,15 +1684,47 @@ def coverage_report() -> Mapping[str, float]:
     report: dict[str, float] = {}
     for key, spec in INDICATORS.items():
         global_ref = spec.series.get(GLOBAL)
-        if global_ref is not None and global_ref.verified:
-            report[key] = 1.0
+        if global_ref is not None:
+            report[key] = 1.0 if global_ref.fetchable else 0.0
             continue
         covered = sum(
             1
             for code in G10
-            if (ref := spec.series.get(code)) is not None
-            and ref.verified
-            and ref.source != SOURCE_MANUAL
+            if (ref := spec.series.get(code)) is not None and ref.fetchable
         )
         report[key] = covered / len(G10)
     return report
+
+
+def stale_refs(asof: date | None = None) -> Mapping[str, tuple[str, ...]]:
+    """List the currencies whose ref for each indicator is unusable.
+
+    The complement of `coverage_report`, and the more actionable of the two:
+    this is the list an operator works through, and the list a report shows so
+    a reader can see which legs of a score were extrapolated.
+
+    Args:
+        asof: Date to age against. Defaults to `VERIFIED_ON`.
+
+    Returns:
+        Indicator key to the currencies with no usable ref. Indicators with
+        full coverage are omitted, so an empty mapping means the registry is
+        entirely healthy.
+
+    """
+    when = asof or VERIFIED_ON
+    out: dict[str, tuple[str, ...]] = {}
+    for key, spec in INDICATORS.items():
+        if GLOBAL in spec.series:
+            continue
+        limit = spec.max_staleness_days
+        bad = tuple(
+            code
+            for code in G10
+            if (ref := spec.series.get(code)) is None
+            or not ref.fetchable
+            or ref.stale_on(when, limit)
+        )
+        if bad:
+            out[key] = bad
+    return out

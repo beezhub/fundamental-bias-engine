@@ -1,10 +1,19 @@
 """FRED client: the engine's primary macro source.
 
 FRED is the Federal Reserve Bank of St. Louis's economic data service. It backs
-five of the seven pillars here, MONETARY, INFLATION, GROWTH, EMPLOYMENT and
-EXTERNAL, and it is the only free source in the stack with any real
-cross-country reach. Its reach is uneven, and
+MONETARY, GROWTH, EMPLOYMENT and EXTERNAL, plus US and euro-area INFLATION, and
+it is the widest single free source in the stack. Its reach is uneven, and
 `fbe.datasources.registry` documents exactly where.
+
+One caveat governs how much of this registry FRED is allowed to carry. Much of
+what FRED serves for non-US countries is republished OECD material, and several
+of those mirrors have stopped updating while continuing to answer requests
+normally: the whole OECD CPI complex ends in March or April 2025, Japan's ends
+in 2021, and industrial production and current account families end in 2023 and
+2024. Nothing in the API signals this. Wherever the OECD publishes the same
+series itself, the registry now reads it from `fbe.datasources.oecd` instead,
+and `last_updated` below exists so that any remaining FRED ref can be checked
+rather than trusted.
 
 The API
 -------

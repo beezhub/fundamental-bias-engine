@@ -19,6 +19,10 @@ dependencies = [
   "rich>=13.7",
   "jinja2>=3.1",
   "python-dateutil>=2.9",
+  # The Bank of England publishes its gilt yield curve only as a workbook,
+  # and it is the sole free source for the 2y point that drives 21% of
+  # every currency score. Without a reader, GBP loses the monetary pillar.
+  "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

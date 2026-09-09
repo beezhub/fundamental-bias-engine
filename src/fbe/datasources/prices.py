@@ -13,8 +13,11 @@ Source order
    DCOILBRENTEU, PALLFNFINDEXM, PIORECRUSDM and the DEX* spot rates are all
    verified live and are already covered by `fbe.datasources.fred`. Preferring
    FRED keeps one client, one key and one cache for most of this.
-2. Stooq, for the daily non-US equity indices FRED only carries monthly.
-3. Yahoo Finance, as a last resort, with the caveat below.
+2. The OECD API, for the non-US equity indices, which the registry now takes
+   from `fbe.datasources.oecd` rather than FRED. Both publish the same OECD
+   share price index; the OECD's own copy runs two months ahead. Still monthly.
+3. Stooq, for a daily read on those same indices, when it can be made to work.
+4. Yahoo Finance, as a last resort, with the caveat below.
 
 Stooq
 -----
@@ -37,10 +40,10 @@ returned the challenge page or a reset connection rather than CSV. Every symbol
 in `STOOQ_SYMBOLS` is therefore marked unverified. Before relying on any of
 them, fetch one by hand in a browser and confirm the CSV comes back.
 
-This is also a reason to keep the FRED path primary. A source that can start
-serving an anti-bot page instead of data is a source that will fail on a
-Monday morning, and the engine should degrade to a monthly OECD share price
-index rather than to nothing.
+This is also a reason to keep the FRED and OECD paths primary. A source that
+can start serving an anti-bot page instead of data is a source that will fail
+on a Monday morning, and the engine should degrade to a monthly OECD share
+price index rather than to nothing.
 
 Yahoo Finance
 -------------
