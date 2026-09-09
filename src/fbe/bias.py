@@ -5,6 +5,12 @@ there is no such thing as a strong currency, only a currency stronger than the
 one it is quoted against. Everything in this module is that subtraction and the
 rules that decide whether the result is worth acting on.
 
+Two questions are kept apart throughout. Conviction is a statement about how much
+the model believes its own view. Tradeability is a statement about whether that
+view can be executed sensibly. A pair can be HIGH conviction and untradeable, and
+the report shows both, because a blocked pair that was right is the most useful
+thing a later review can look at.
+
 The output is a bias, not a trade. Entry stays with the trader and with the
 trendlines and channels in the trading plan. What this module supplies is which
 way to lean, how hard, and when to stand aside.
@@ -16,7 +22,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 
 from fbe.config import Config, ScoringConfig
-from fbe.types import CalendarEvent, Conviction, CurrencyScore, Direction, PairBias
+from fbe.types import Conviction, CurrencyScore, Direction, PairBias
 
 __all__ = [
     "build_pair_biases",
@@ -25,45 +31,46 @@ __all__ = [
     "agreement",
     "apply_filters",
     "shortlist",
-    "MIN_COVERAGE",
-    "FULL_COVERAGE",
-    "AGREEMENT_DEADBAND",
+    "AGREEMENT_TIE_EPSILON",
     "CalendarGuard",
+    "EventHorizonGuard",
 ]
 
 
-MIN_COVERAGE: float = 0.60
-"""Coverage floor below which a pair is not tradeable at any spread.
+AGREEMENT_TIE_EPSILON: float = 1e-9
+"""Below this, two legs are treated as having scored a pillar identically.
 
-Under 60% of pillar weight the composite is an extrapolation from under half the
-model, and the size of the spread says more about which pillars happened to have
-data than about the two currencies. Belongs in `ScoringConfig` alongside
-``min_agreement``; it lives here until that field exists, and the integrator
-should move it.
+A float-equality guard rather than a modelling threshold. A pillar that scores
+the two legs the same has no opinion on the pair, and it is excluded from both
+sides of the agreement fraction rather than counted as agreeing.
 """
-
-FULL_COVERAGE: float = 0.85
-"""Coverage above which no conviction demotion is applied. Between this and
-`MIN_COVERAGE` a pair drops one conviction step."""
-
-AGREEMENT_DEADBAND: float = 0.10
-"""Per-pillar spread inside which a pillar is counted as having no opinion.
-
-Without a deadband a pillar that scores the two legs at 1.20 and 1.19 would be
-recorded as agreeing, and the agreement figure would drift toward the fraction
-of pillars that happen to have data rather than the fraction that have a view.
-"""
-
 
 CalendarGuard = Callable[[str, date], Sequence[str]]
-"""Injected hook that reports calendar blockers for one currency on one date.
+"""Injected hook reporting hard calendar blockers for one currency on one date.
 
-Returns zero or more blocker strings, conventionally ``"calendar:<ccy>:<event>"``.
-The implementation lives in ``fbe.calendar_guard`` and is owned elsewhere. It is
-injected rather than imported so the dependency runs one way: the calendar knows
-about dates and events, and this module knows about scores, and neither needs to
-import the other to do its job. It also lets a backtest run with the guard
-switched off without stubbing a module.
+Returns zero or more blocker strings for high-impact releases inside the
+execution blackout window, which is ``DataConfig.calendar_blackout_before_min``
+(30) and ``calendar_blackout_after_min`` (60) either side of the release. Inside
+that window there is no order, full stop.
+"""
+
+EventHorizonGuard = Callable[[str, date], bool]
+"""Injected hook answering whether a high-impact event is due within 24 hours.
+
+Separate from `CalendarGuard` because the two questions have different answers
+and different consequences. The 30/60 minute window is about execution and is a
+hard block. The 24-hour window is about whether the model has seen the
+information the position will be held through, and is a conviction cap: a pair
+with a central bank decision tomorrow can still be traded, but the engine refuses
+to call it better than LOW.
+
+Both hooks are injected rather than imported. The implementation lives in
+``fbe.calendar_guard``, and the dependency deliberately runs one way: the
+calendar module knows about dates and events, this module knows about scores, and
+neither needs to import the other. Keeping the window definitions and the keyword
+matching that catches mislabelled events on the calendar side is the point, and
+injection also lets a backtest run with the guards switched off without stubbing
+a module.
 """
 
 
@@ -71,21 +78,26 @@ def build_pair_biases(
     scores: Sequence[CurrencyScore],
     config: Config,
     asof: date,
+    event_horizon_guard: EventHorizonGuard | None = None,
 ) -> Sequence[PairBias]:
     """Difference every currency score into the 28 G10 pair biases.
 
     Args:
         scores: One `CurrencyScore` per currency, from `scoring.score_currencies`.
         config: Full run configuration. The scoring section supplies the
-            thresholds; the data section supplies the calendar blackout windows
-            the guard reads.
+            thresholds; the data section supplies the blackout windows the guards
+            read.
         asof: The date the run represents.
+        event_horizon_guard: Optional `EventHorizonGuard` used for the 24-hour
+            conviction cap. When ``None`` the cap is not applied and no event is
+            assumed, which is the right default for a backtest and the wrong one
+            for a live run, so the caller should pass it.
 
     Returns:
         One `PairBias` per entry in ``universe.ALL_PAIRS``, in that order, with
-        `spread`, `direction`, `conviction` and `agreement` populated. Filters
-        are applied separately by `apply_filters`, so what comes back here is the
-        model's unfiltered view and the caller can report both.
+        `spread`, `direction`, `conviction` and `agreement` populated. Hard
+        filters are applied separately by `apply_filters`, so what comes back
+        here is the model's unfiltered view.
 
     Raises:
         KeyError: If a pair's base or quote currency is absent from ``scores``.
@@ -97,6 +109,11 @@ def build_pair_biases(
     points above the quote's on a scale that runs from ``-3`` to ``+3``. Pairs are
     built in market convention, EUR/USD and never USD/EUR, because a report that
     inverts a pair inverts its bias without saying so.
+
+    Direction and conviction must never disagree. If `conviction_for` returns
+    `Conviction.NONE`, ``direction`` is forced to `Direction.NEUTRAL` regardless
+    of the spread. A pair the model will not back at any size does not have a
+    direction worth printing.
 
     A note on what the spread is not. It is not a forecast of how far the pair
     moves, and it carries no units the trader can size against. It is an ordering
@@ -134,6 +151,9 @@ def direction_for(spread: float, config: ScoringConfig) -> Direction:
     trades, and roughly half of the 28 pairs sitting in the neutral band on a
     typical run is that instruction expressed in arithmetic.
 
+    `build_pair_biases` may override the result to `Direction.NEUTRAL` when
+    conviction lands at `Conviction.NONE`. This function only reads the spread.
+
     """
     raise NotImplementedError
 
@@ -142,9 +162,11 @@ def conviction_for(
     spread: float,
     agreement_fraction: float,
     coverage_fraction: float,
+    dispersion_value: float,
+    event_within_24h: bool,
     config: ScoringConfig,
 ) -> Conviction:
-    """Grade a directional call by size, breadth, and completeness.
+    """Grade a directional call by size, breadth, completeness and timing.
 
     Args:
         spread: ``composite(base) - composite(quote)``. Only its magnitude is
@@ -154,8 +176,13 @@ def conviction_for(
             The lower rather than the mean, because a pair is only as well
             measured as its worse-measured side, and averaging would let a fully
             covered dollar hide a euro scored on three pillars.
-        config: Scoring configuration supplying the three spread thresholds and
-            ``min_agreement``.
+        dispersion_value: The higher of the two legs' `CurrencyScore.dispersion`,
+            for the mirror-image reason: one leg whose own pillars contradict
+            each other is enough to make the spread an average of arguments.
+        event_within_24h: True when a high-impact event is due on either leg
+            within 24 hours, from `EventHorizonGuard`.
+        config: Scoring configuration supplying the three spread thresholds,
+            ``min_agreement``, ``coverage_demotion`` and ``max_dispersion``.
 
     Returns:
         The conviction level, which gates position size and shortlist entry.
@@ -163,8 +190,8 @@ def conviction_for(
     Step 1, the base tier from the size of the spread, using the defaults 0.75,
     1.50 and 2.50:
 
-        ``|spread| < 0.75``: `Conviction.NONE`. Direction is neutral here too,
-        so the pair carries no view at all.
+        ``|spread| < 0.75``: `Conviction.NONE`. Direction is neutral here too, so
+        the pair carries no view at all.
 
         ``0.75 <= |spread| < 1.50``: `Conviction.LOW`.
 
@@ -175,52 +202,79 @@ def conviction_for(
         the top and bottom of the currency ranking disagreeing about almost
         everything, and it should be uncommon.
 
-    Step 2, the demotions, applied in this order to the tier from step 1:
-
-        ``coverage_fraction < MIN_COVERAGE`` (0.60): drop to `Conviction.NONE`
-        outright. Not a demotion but a veto: too much of the model is missing for
-        the spread to mean anything.
-
-        ``MIN_COVERAGE <= coverage_fraction < FULL_COVERAGE`` (0.85): demote one
-        step, HIGH to MEDIUM, MEDIUM to LOW, LOW to NONE.
+    Step 2, the demotions, applied in this order down the ladder
+    ``HIGH -> MEDIUM -> LOW -> NONE``:
 
         ``agreement_fraction < config.min_agreement`` (0.60): cap at
-        `Conviction.LOW`, whatever the spread. A large spread the pillars are
-        arguing about is one pillar's opinion, and `agreement` is where the
-        reasoning for that rule lives.
+        `Conviction.LOW`. One pillar is carrying the whole spread, and
+        `agreement` is where the reasoning for that rule lives.
 
-    The two demotions compose, so a pair at ``|spread| = 2.8`` with coverage 0.70
-    and agreement 0.50 lands at LOW: HIGH, demoted once for coverage to MEDIUM,
-    then capped by agreement to LOW. Conviction never rises, only falls, which is
-    the point: every input to this function is a reason to doubt the spread, and
-    none of them is a reason to believe it more than the spread already says.
+        ``coverage_fraction < config.coverage_demotion`` (0.80): demote one step.
+        The view rests on partial data. The threshold is calibrated to the weight
+        vector: missing a 0.15 pillar leaves coverage at 0.85 and does not demote,
+        while missing the 0.30 monetary pillar leaves 0.70 and does.
+
+        ``dispersion_value > config.max_dispersion`` (1.20): demote one step. A
+        leg's own pillars contradict each other, so the composite in the middle
+        is an average of two real views rather than a view of its own.
+
+        ``event_within_24h``: cap at `Conviction.LOW`. A position opened today
+        would be held through a repricing the model has not seen, and the rate
+        path is exactly what the heaviest pillar is measuring.
+
+    Demotions compound, and conviction never rises. A pair at ``|spread| = 2.8``
+    with coverage 0.70, dispersion 1.4 and weak agreement falls from HIGH to
+    NONE: the two one-step demotions take it to LOW and the agreement cap holds
+    it there, or reaches it by another route to the same place. Every input to
+    this function is a reason to doubt the spread, and none of them is a reason
+    to believe it more than the spread already says.
+
+    Note that ``config.min_coverage`` (0.60) does not appear here. Coverage below
+    that floor is a hard filter in `apply_filters`, not a demotion, because at
+    that point the question is no longer how much to believe the number but
+    whether there is a number at all.
 
     """
     raise NotImplementedError
 
 
-def agreement(base_score: CurrencyScore, quote_score: CurrencyScore) -> float:
-    """Return the fraction of pillars pointing the way the headline does.
+def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:
+    """Return the share of pillar weight pointing the way the headline does.
 
     Args:
-        base_score: The base currency's aggregate score, with its pillars.
-        quote_score: The quote currency's aggregate score, with its pillars.
+        base_leg: The base currency's aggregate score, with its pillars. Named
+            for the leg rather than for the score to keep it distinct from
+            ``PairBias.base_score``, which is a bare float.
+        quote_leg: The quote currency's aggregate score, with its pillars.
 
     Returns:
-        A value in ``[0.0, 1.0]``. ``0.0`` when no pillar is usable on both legs,
-        which pairs with a coverage figure low enough to veto the trade anyway.
+        A value in ``[0.0, 1.0]``. ``0.0`` when no pillar is considered, which
+        pairs with a coverage figure low enough to block the trade anyway.
 
-    Method. For every pillar usable on both legs, take the per-pillar spread
-    ``base.score - quote.score``. A pillar agrees when the sign of its own spread
-    matches the sign of the composite spread. The denominator is the count of
-    pillars usable on both legs; the numerator is the count that agree. Pillars
-    whose own spread falls inside `AGREEMENT_DEADBAND` count in the denominator
-    but not the numerator: they have no view, and a pillar with no view is
-    evidence of thinness, not of agreement.
+    The arithmetic, matching section 5.3 of ``docs/scoring-spec.md``:
 
-    Unweighted, for the same reason `scoring.dispersion` is unweighted. The
-    question is how many independent channels point the same way, and each
-    channel gets one vote regardless of how much of the composite it carries.
+        ``d(p)       = score(base, p) - score(quote, p)``
+
+        ``w_pair(p)  = ( w_eff(base, p) + w_eff(quote, p) ) / 2``
+
+        ``considered = pillars where |d(p)| > 1e-9``
+
+        ``agreeing   = considered pillars where sign(d(p)) == sign(spread)``
+
+        ``agreement  = sum of w_pair over agreeing / sum of w_pair over considered``
+
+    Pillars where the two legs score identically are excluded from both numerator
+    and denominator. They express no opinion on this pair and should neither
+    support nor oppose it; leaving them in the denominator would let a thin run
+    look like a disputed one.
+
+    Weighted by ``w_pair`` rather than counting pillars. The monetary pillar at
+    0.30 disagreeing is a materially worse sign than positioning at 0.10
+    disagreeing, and a headcount would treat them as equal. Using the mean of the
+    two legs' effective weights also means a pillar that is stale or missing on
+    one side counts for less on this pair than one that is fresh on both, which
+    is the correct treatment: agreement should measure the evidence that exists,
+    not the slots on the form.
 
     Why seven pillars agreeing at a spread of 1.0 is a better trade than two
     disagreeing at a spread of 2.0. The wide spread is an average, and averages
@@ -256,22 +310,24 @@ def apply_filters(
     config: Config,
     asof: date,
     calendar_guard: CalendarGuard | None = None,
-    events: Sequence[CalendarEvent] = (),
+    cost_ratio: float | None = None,
 ) -> PairBias:
     """Apply the hard filters and record why a pair is not tradeable.
 
     Args:
         bias: The unfiltered bias from `build_pair_biases`.
         scores: All currency scores for the run, keyed by ISO code, so the filter
-            can read each leg's coverage and staleness.
+            can read each leg's coverage.
         config: Full run configuration.
         asof: The date the run represents.
-        calendar_guard: Optional `CalendarGuard`. When ``None`` the calendar
-            check is skipped and ``"calendar:unchecked"`` is added to
-            ``blockers`` without setting ``tradeable`` to ``False``. Silence and
-            an all-clear must not look the same to the trader.
-        events: Calendar events already loaded for the run, passed through to the
-            guard so it does not re-fetch.
+        calendar_guard: Optional `CalendarGuard` for the execution blackout
+            window. When ``None`` the check is skipped and ``"event:unchecked"``
+            is appended to ``blockers`` without setting ``tradeable`` to
+            ``False``. Silence and an all-clear must not look the same.
+        cost_ratio: Round-trip dealing cost as a share of the expected move over
+            the bias horizon, supplied by the execution layer, which owns the ATR
+            and the broker's spread table. ``None`` records
+            ``"cost:unchecked"`` without blocking.
 
     Returns:
         A new `PairBias` with ``tradeable`` and ``blockers`` set. Frozen input,
@@ -279,36 +335,39 @@ def apply_filters(
         a pair blocked for three reasons is a different thing from a pair blocked
         for one, and the trader should see all three.
 
-    The filters, each of which sets ``tradeable = False`` unless noted:
+    The filters, matching section 6 of ``docs/scoring-spec.md``. Each sets
+    ``tradeable = False`` unless noted:
 
         ``no_edge``: direction is `Direction.NEUTRAL` or conviction is
         `Conviction.NONE`. Nothing to act on.
 
-        ``spread_cost``: the pair is not in ``universe.MAJORS`` and conviction is
-        below `Conviction.MEDIUM`. The trading plan calls for pairs with low
-        spreads and trading costs, and the dollar pairs are the only G10 set that
-        reliably clears that bar on a retail account. A cross such as GBP/NZD can
-        cost several times a dollar pair's spread, and on a R2,000 account risking
-        R20 to R40 a trade, that cost is a real share of the expected edge. So a
-        cross has to bring more fundamental separation than a major to be worth
-        paying for. This is a cost filter, not a view: the bias stands, it is just
-        not worth the ticket.
+        ``cost``: ``cost_ratio > config.max_cost_ratio`` (0.05). The expected move
+        is ``atr_20d_pips * sqrt(config.horizon_days)``, the standard random-walk
+        approximation, which is adequate here because the filter only has to
+        separate viable pairs from obviously uneconomic ones. Above 5% the broker
+        takes more than a twentieth of the plausible move before the position
+        starts, which on a R2,000 account risking R20 to R40 a trade is decisive.
+        This is the mechanism by which the plan's "low spreads and trading costs"
+        rule enters the model, and it is why wide G10 crosses usually fail even
+        when the score spread is attractive. It is a cost test, not a view: the
+        bias stands, it is just not worth the ticket.
 
-        ``low_coverage:<ccy>``: either leg's coverage is below `MIN_COVERAGE`.
-        The currency is named so the trader knows which side is thin.
+        ``coverage``: ``min(coverage_base, coverage_quote) < config.min_coverage``
+        (0.60). Under 60% of pillar weight the composite is a guess, and the size
+        of the spread says more about which pillars happened to have data than
+        about the two currencies.
 
-        ``stale:<ccy>``: either leg's newest input across all pillars is older
-        than ``ScoringConfig.max_staleness_days``. This usually means a source
-        outage rather than a quiet calendar, and it should be investigated rather
-        than traded around.
+        ``no_coverage``: either leg has ``coverage == 0.0``. No composite exists.
 
-        ``calendar:<ccy>:<event>``: whatever `CalendarGuard` returns for either
-        leg. High-impact releases inside the blackout windows in `DataConfig` are
-        the plan's own rule, and note that a pair has two legs, so an FOMC evening
+        ``event``: whatever `CalendarGuard` returns for either leg, for the
+        execution blackout window only. A pair has two legs, so an FOMC evening
         blocks every dollar pair and not only the one the trader was watching.
+        The wider 24-hour test is not here: it is a conviction cap in
+        `conviction_for`, and the two are kept apart deliberately.
 
-        ``calendar:unchecked``: no guard was injected. Recorded, but does not
-        block, so a backtest or an offline run still produces biases.
+        ``event:unchecked`` and ``cost:unchecked``: recorded when the
+        corresponding input was not supplied, and do not block, so an offline run
+        still produces biases.
 
     What this function does not do. It never changes ``direction``, ``spread`` or
     ``conviction``. The model's view and the tradeability of that view are
@@ -358,11 +417,11 @@ def shortlist(biases: Sequence[PairBias], limit: int = 3) -> Sequence[PairBias]:
     short dollar position wearing two tickets. The dollar leg is common, its
     moves arrive in both positions on the same tick, and the diversification the
     second ticket appears to buy is an illusion that shows up as a doubled loss
-    on the day the dollar goes the wrong way. ``RiskConfig.max_correlated_exposure``
-    caps combined risk across positions sharing a leg at 4% for exactly this
-    reason, and enforcing the constraint at the shortlist is cheaper than
-    enforcing it at the sizing stage, where the trader has already committed to
-    the idea.
+    on the day the dollar goes the wrong way.
+    ``RiskConfig.max_correlated_exposure`` caps combined risk across positions
+    sharing a leg at 4% for exactly this reason, and enforcing the constraint at
+    the shortlist is cheaper than enforcing it at the sizing stage, where the
+    trader has already committed to the idea.
 
     The rule is deliberately strict: any shared currency, in either position,
     disqualifies. It is stricter than correlation alone would demand, since
