@@ -50,7 +50,7 @@ is not part of the owner's plan.
 - Set the take-profit level at a reasonable distance from the entry point, considering recent price action and support/resistance levels.
 - Place the stop-loss order just beyond the trendline or key support/resistance level.
 
-N.B. (entry is discussed further in high probability trade)
+N.B (entry is discussed further in high probability trade)
 
 ---
 

@@ -8,8 +8,8 @@ through the policy path; this pillar measures the policy path directly.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import date
-from typing import Mapping, Sequence
 
 from fbe.pillars.base import BasePillar
 from fbe.types import Observation, PillarName
@@ -66,6 +66,7 @@ class MonetaryPillar(BasePillar):
         Returns:
             ``{component: weight}`` summing to 1.0, with the two change terms
             holding 0.55 between them.
+
         """
         return {
             "policy_rate": 0.15,
@@ -97,6 +98,7 @@ class MonetaryPillar(BasePillar):
         make a one-month change mean "twenty-one business days back from
         whichever day this series last updated", which is not comparable across
         currencies with different holiday calendars.
+
         """
         raise NotImplementedError
 
@@ -130,5 +132,6 @@ class MonetaryPillar(BasePillar):
         ``real_policy_rate`` only; the other four still compute, and
         `blend_components` renormalises over 0.85 of the sub-weight, which
         clears `MIN_COMPONENT_WEIGHT`.
+
         """
         raise NotImplementedError

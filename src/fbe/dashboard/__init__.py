@@ -25,6 +25,7 @@ def __getattr__(name: str) -> object:
 
     Raises:
         AttributeError: When the name is not exported by this package.
+
     """
     if name == "build_dashboard":
         from fbe.dashboard.build import build_dashboard

@@ -21,8 +21,9 @@ number is ours and is defended on its own merits in the scoring spec.
 
 ## The problem
 
-The owner's trading plan (`docs/reference/trading-plan-source.txt`) is a
-complete technical execution system. It specifies how to draw a trendline, how
+The owner's trading plan (`docs/trading-plan.md`, transcribed from
+`docs/reference/trading-plan-source.txt`) is a complete technical execution
+system. It specifies how to draw a trendline, how
 many touches make it credible, which candlestick patterns confirm a bounce, where
 the stop goes, how position size follows from stop distance, and how to exit. It
 is disciplined about risk: 1-2% per trade, stop always beyond the structure,
@@ -317,8 +318,9 @@ trigger:
    the plan already says the best trades are often the ones not taken.
 2. **As a size modifier.** Within the plan's fixed 1-2% band, a HIGH conviction
    with-trend setup earns the top of the band and a LOW conviction one earns the
-   bottom. The band itself is never widened. The bias changes how much of an
-   already-bounded risk is used, not the bound.
+   bottom. The ladder is specified in `docs/risk-and-execution.md`. The band
+   itself is never widened. The bias changes how much of an already-bounded risk
+   is used, not the bound.
 3. **As a shortlist.** The bias decides which four or five charts get drawn on at
    all. This is where most of the value is, and it costs nothing.
 4. **Never as an entry.** No position is opened because the score spread is wide.

@@ -7,8 +7,8 @@ rates pillar it ultimately feeds.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import date
-from typing import Mapping, Sequence
 
 from fbe.pillars.base import BasePillar
 from fbe.types import Observation, PillarName
@@ -71,6 +71,7 @@ class EmploymentPillar(BasePillar):
 
         Returns:
             ``{component: weight}`` summing to 1.0.
+
         """
         return {"unemployment_6m": 0.55, "employment_trend": 0.45}
 
@@ -92,6 +93,7 @@ class EmploymentPillar(BasePillar):
             grid, with quarterly publishers carried forward within the quarter
             so that a fixed number of periods means a fixed number of months for
             every currency.
+
         """
         raise NotImplementedError
 
@@ -115,5 +117,6 @@ class EmploymentPillar(BasePillar):
         Either component missing leaves the other below `MIN_COMPONENT_WEIGHT`
         for ``employment_trend`` alone, so a currency without an unemployment
         series is scored as missing rather than on hiring alone.
+
         """
         raise NotImplementedError

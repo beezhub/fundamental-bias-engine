@@ -1,0 +1,456 @@
+{#- Single-file HTML dashboard.
+
+    Context comes from fbe.report.build_context (report, diff, config,
+    currencies, pairs, grid, pillar_order) plus a `view` namespace supplied by
+    fbe.dashboard.build.render_dashboard for anything that needs arithmetic:
+
+      view.title            page title string
+      view.bar_pct(value)   bar half-width as a percentage of the widest score
+      view.heat(spread)     css class for a heatmap cell, heat-p1..p4 / n1..n4
+      view.at_pct(when)     position of a timestamp on the 24h calendar strip
+      view.span_pct(a, b)   width of a blackout window on that strip
+      view.legend           ordered (class, label) pairs for the heatmap legend
+
+    Arithmetic lives in Python because arithmetic in a template cannot be
+    tested. Constraints this file must keep are listed in the module docstring
+    of fbe/dashboard/build.py; check_constraints enforces them on the output.
+-#}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ view.title }}</title>
+<style>
+/* Light palette on bare :root. Every token gets its first definition here, so
+   no colour exists only inside a media query. The heat ramp is a diverging
+   pair, blue for a positive spread and red for a negative one, with a neutral
+   grey at zero: near zero must read as "no view", not as a weak signal.
+   Re-run the palette validator against both surfaces when these steps change. */
+:root {
+  color-scheme: light;
+  --surface:        #fcfcfb;
+  --plane:          #f9f9f7;
+  --raised:         #ffffff;
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:     #898781;
+  --hairline:       #e1e0d9;
+  --axis:           #c3c2b7;
+  --accent:         #2a78d6;
+  --pos-1: #cde2fb; --pos-2: #9ec5f4; --pos-3: #5598e7; --pos-4: #2a78d6;
+  --neg-1: #fbdcdc; --neg-2: #f4b0b0; --neg-3: #e87a7a; --neg-4: #d03b3b;
+  --zero:  #f0efec;
+  --heat-ink-lo:  #0b0b0b;
+  --heat-ink-hi:  #ffffff;
+  --good:     #0ca30c;
+  --warning:  #fab219;
+  --critical: #d03b3b;
+  --gutter: 16px;
+}
+/* Dark values under the OS setting, guarded so an explicit light stamp wins. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface:        #1a1a19;
+    --plane:          #0d0d0d;
+    --raised:         #222221;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --hairline:       #2c2c2a;
+    --axis:           #383835;
+    --accent:         #3987e5;
+    --pos-1: #184f95; --pos-2: #256abf; --pos-3: #2a78d6; --pos-4: #5598e7;
+    --neg-1: #5c1c1c; --neg-2: #8c2b2b; --neg-3: #d03b3b; --neg-4: #e66767;
+    --zero:  #383835;
+    --heat-ink-lo: #e8e8e4;
+    --heat-ink-hi: #0b0b0b;
+  }
+}
+/* The same dark values under an explicit toggle, so it wins in both
+   directions and not only when the OS is already dark. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface:        #1a1a19;
+  --plane:          #0d0d0d;
+  --raised:         #222221;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #898781;
+  --hairline:       #2c2c2a;
+  --axis:           #383835;
+  --accent:         #3987e5;
+  --pos-1: #184f95; --pos-2: #256abf; --pos-3: #2a78d6; --pos-4: #5598e7;
+  --neg-1: #5c1c1c; --neg-2: #8c2b2b; --neg-3: #d03b3b; --neg-4: #e66767;
+  --zero:  #383835;
+  --heat-ink-lo: #e8e8e4;
+  --heat-ink-hi: #0b0b0b;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--plane);
+  color: var(--text-primary);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+/* One wrapper owns the side gutter. Vertical padding is set on its own axis so
+   the shorthand can never zero the gutter out. */
+.wrap {
+  max-width: 960px;
+  margin: 0 auto;
+  padding-inline: var(--gutter);
+  padding-block: 20px 48px;
+}
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 32px 0 8px; letter-spacing: .04em;
+     text-transform: uppercase; color: var(--text-secondary); }
+h3 { font-size: 15px; margin: 0 0 4px; }
+p { margin: 0 0 8px; }
+.meta { color: var(--text-muted); font-size: 13px; }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.num { font-variant-numeric: tabular-nums; }
+
+/* Currency ranking: bars grow left and right from a centre zero line, because
+   the sign is the message. Rows are a grid so the labels align regardless of
+   bar width. */
+.rank-row {
+  display: grid;
+  grid-template-columns: 44px 1fr 60px;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.rank-track { position: relative; height: 18px; }
+.rank-track::before {
+  content: ""; position: absolute; left: 50%; top: 0; bottom: 0;
+  border-left: 1px solid var(--axis);
+}
+.rank-bar {
+  position: absolute; top: 3px; height: 12px;
+  border-radius: 4px;
+}
+.rank-bar.pos { left: 50%; background: var(--pos-4); }
+.rank-bar.neg { right: 50%; background: var(--neg-4); }
+.rank-value { text-align: right; color: var(--text-secondary); font-size: 13px; }
+.thin { opacity: .55; }
+
+/* The matrix is wider than a phone, so it scrolls inside its own container and
+   the page itself never scrolls sideways. */
+.scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table.matrix { border-collapse: separate; border-spacing: 2px; font-size: 12px; }
+table.matrix th { color: var(--text-muted); font-weight: 500; padding: 2px 4px; }
+table.matrix td {
+  width: 42px; height: 30px; text-align: center; border-radius: 4px;
+  background: var(--zero); color: var(--text-secondary);
+}
+.heat-p1 { background: var(--pos-1); color: var(--heat-ink-lo); }
+.heat-p2 { background: var(--pos-2); color: var(--heat-ink-lo); }
+.heat-p3 { background: var(--pos-3); color: var(--heat-ink-hi); }
+.heat-p4 { background: var(--pos-4); color: var(--heat-ink-hi); }
+.heat-n1 { background: var(--neg-1); color: var(--heat-ink-lo); }
+.heat-n2 { background: var(--neg-2); color: var(--heat-ink-lo); }
+.heat-n3 { background: var(--neg-3); color: var(--heat-ink-hi); }
+.heat-n4 { background: var(--neg-4); color: var(--heat-ink-hi); }
+.diag { background: transparent; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+          font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
+.swatch { width: 22px; height: 12px; border-radius: 3px; display: inline-block; }
+
+.cards { display: grid; gap: 10px; }
+@media (min-width: 720px) { .cards { grid-template-columns: 1fr 1fr; } }
+.tag {
+  display: inline-block; font-size: 11px; letter-spacing: .04em;
+  text-transform: uppercase; padding: 1px 6px; border-radius: 999px;
+  border: 1px solid var(--hairline); color: var(--text-secondary);
+}
+.tag.long  { border-color: var(--pos-4); color: var(--pos-4); }
+.tag.short { border-color: var(--neg-4); color: var(--neg-4); }
+.tag.block { border-color: var(--critical); color: var(--critical); }
+
+/* Calendar strip: one 24h axis with blackout windows shaded and events
+   ticked, so "is the window clear" is answered by looking. */
+.strip { position: relative; height: 46px; border-radius: 8px;
+         background: var(--surface); border: 1px solid var(--hairline); }
+.strip .window { position: absolute; top: 0; bottom: 0;
+                 background: var(--neg-1); opacity: .8; }
+.strip .tick { position: absolute; top: 0; bottom: 18px; width: 2px;
+               background: var(--critical); }
+.strip .hour { position: absolute; bottom: 2px; font-size: 10px;
+               color: var(--text-muted); transform: translateX(-50%); }
+.strip .now { position: absolute; top: 0; bottom: 0; width: 2px;
+              background: var(--accent); }
+
+table.plain { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.plain th { text-align: left; color: var(--text-muted); font-weight: 500;
+                 border-bottom: 1px solid var(--hairline); padding: 5px 6px; }
+table.plain td { border-bottom: 1px solid var(--hairline); padding: 5px 6px; }
+ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
+.toggle { background: none; border: 1px solid var(--hairline); color: inherit;
+          border-radius: 999px; padding: 4px 10px; font: inherit;
+          font-size: 12px; cursor: pointer; }
+.head { display: flex; flex-wrap: wrap; gap: 8px;
+        align-items: baseline; justify-content: space-between; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="head">
+    <div>
+      <h1>G10 fundamental bias, {{ report.asof.strftime('%d %b %Y') }}</h1>
+      <p class="meta">
+        Generated {{ report.generated_at.strftime('%Y-%m-%d %H:%M %Z') }}
+        &middot; config <span class="num">{{ report.config_digest }}</span>
+        &middot; {{ report.shortlist | length }} shortlisted
+      </p>
+    </div>
+    <button class="toggle" type="button" data-theme-toggle>Theme</button>
+  </header>
+
+  <p class="meta">
+    Directional bias only. Entries stay with the trendline and channel rules on
+    the 1h and 4h charts.
+  </p>
+
+  <h2>Currency ranking</h2>
+  <div class="card">
+    {% for score in currencies %}
+    <div class="rank-row{{ ' thin' if score.coverage < 1 }}">
+      <div><strong>{{ score.currency }}</strong>
+        <span class="meta num">{{ score.rank }}</span></div>
+      <div class="rank-track">
+        <div class="rank-bar {{ 'pos' if score.composite >= 0 else 'neg' }}"
+             style="width: {{ view.bar_pct(score.composite) }}%"></div>
+      </div>
+      <div class="rank-value num">{{ '%+.2f' | format(score.composite) }}</div>
+    </div>
+    {% endfor %}
+    <p class="meta">
+      Composite on the -3 to +3 band. Faded rows had incomplete pillar coverage.
+    </p>
+  </div>
+
+  <h2>Pair matrix</h2>
+  <div class="card">
+    <div class="scroll-x">
+      <table class="matrix">
+        <thead>
+          <tr><th></th>
+            {% for quote in grid %}<th scope="col">{{ quote }}</th>{% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for base, row in grid.items() %}
+          <tr>
+            <th scope="row">{{ base }}</th>
+            {% for quote, cell in row.items() %}
+              {% if cell is none %}
+              <td class="diag"></td>
+              {% else %}
+              <td class="num {{ view.heat(cell.spread) }}"
+                  title="{{ cell.pair }} {{ cell.direction.value }}, {{ cell.conviction.value }} conviction">
+                {{ '%+.1f' | format(cell.spread) }}
+              </td>
+              {% endif %}
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="legend">
+      <span>quote stronger</span>
+      {% for cls, label in view.legend %}
+      <span class="swatch {{ cls }}" title="{{ label }}"></span>
+      {% endfor %}
+      <span>base stronger</span>
+    </div>
+    <p class="meta">
+      Read along the row: the cell is the row currency's composite minus the
+      column currency's. The ranked table below carries the same numbers for
+      anyone who cannot separate the colours.
+    </p>
+  </div>
+
+  <h2>Shortlist</h2>
+  {% if not report.shortlist %}
+  <div class="card">
+    <p>Nothing cleared the conviction and blocker filters today.</p>
+    <p class="meta">
+      A day with no fundamental disagreement wide enough to trade is a day to
+      leave the platform closed. That is the plan working, not the engine
+      failing.
+    </p>
+  </div>
+  {% else %}
+  <div class="cards">
+    {% for idea in report.shortlist %}
+    <article class="card">
+      <h3>
+        {{ idea.bias.pair }}
+        <span class="tag {{ idea.bias.direction.value }}">
+          {{ idea.bias.direction.value }}</span>
+        <span class="tag">{{ idea.bias.conviction.value }}</span>
+        {% if idea.blackout_until %}<span class="tag block">blackout</span>{% endif %}
+      </h3>
+      <p class="meta num">
+        spread {{ '%+.2f' | format(idea.bias.spread) }}
+        &middot; {{ idea.bias.base }} {{ '%+.2f' | format(idea.bias.base_score) }}
+        vs {{ idea.bias.quote }} {{ '%+.2f' | format(idea.bias.quote_score) }}
+        &middot; {{ '%.0f%%' | format(idea.bias.agreement * 100) }} of pillars agree
+      </p>
+      <p>{{ idea.rationale }}</p>
+      {% if idea.size %}
+      <p class="meta num">
+        {{ '%.2f' | format(idea.size.lots) }} lots at
+        {{ '%.1f%%' | format(idea.size.risk_fraction * 100) }} risk,
+        {{ idea.size.account_currency }}
+        {{ '%.2f' | format(idea.size.risk_amount) }} on a
+        {{ '%.1f' | format(idea.size.stop_distance_pips) }} pip stop
+      </p>
+      {% endif %}
+      {% if idea.blackout_until %}
+      <p class="meta">
+        Stand aside until
+        {{ idea.blackout_until.strftime('%H:%M %Z on %d %b') }}.
+      </p>
+      {% endif %}
+      {% if idea.bias.blockers %}
+      <ul class="notes">
+        {% for blocker in idea.bias.blockers %}<li>{{ blocker }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <h2>Next 24 hours</h2>
+  <div class="card">
+    <div class="strip">
+      {% for window in view.blackouts %}
+      <div class="window"
+           style="left: {{ view.at_pct(window.start) }}%; width: {{ view.span_pct(window.start, window.end) }}%"
+           title="{{ window.label }}"></div>
+      {% endfor %}
+      {% for event in report.events %}
+      <div class="tick" style="left: {{ view.at_pct(event.scheduled_for) }}%"
+           title="{{ event.currency }} {{ event.title }} ({{ event.impact }})"></div>
+      {% endfor %}
+      <div class="now" style="left: {{ view.at_pct(report.generated_at) }}%"
+           title="now"></div>
+      {% for hour, label in view.hour_marks %}
+      <span class="hour" style="left: {{ view.at_pct(hour) }}%">{{ label }}</span>
+      {% endfor %}
+    </div>
+    <table class="plain">
+      <thead>
+        <tr><th>When</th><th>CCY</th><th>Event</th><th>Impact</th></tr>
+      </thead>
+      <tbody>
+        {% for event in report.events %}
+        <tr>
+          <td class="num">{{ event.scheduled_for.strftime('%a %H:%M') }}</td>
+          <td>{{ event.currency }}</td>
+          <td>{{ event.title }}</td>
+          <td>{{ event.impact }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="meta">No qualifying events in the horizon.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Coverage and warnings</h2>
+  <div class="card">
+    {% if report.warnings %}
+    <ul class="notes">
+      {% for warning in report.warnings %}<li>{{ warning }}</li>{% endfor %}
+    </ul>
+    {% else %}
+    <p class="meta">No warnings. Every pillar had data inside its staleness limit.</p>
+    {% endif %}
+  </div>
+
+  <h2>Since the last run</h2>
+  <div class="card">
+    {% if not diff %}
+    <p class="meta">No baseline run to compare against.</p>
+    {% elif diff.config_changed %}
+    <p>
+      The config changed since {{ diff.previous_asof.strftime('%d %b') }}.
+      Score movements are not comparable: re-weighting moves every currency at
+      once.
+    </p>
+    {% else %}
+    <table class="plain">
+      <thead><tr><th>CCY</th><th>Then</th><th>Now</th><th>Delta</th></tr></thead>
+      <tbody>
+        {% for change in diff.currencies %}
+        <tr>
+          <td>{{ change.currency }}</td>
+          <td class="num">{{ '%+.2f' | format(change.previous_composite) }}</td>
+          <td class="num">{{ '%+.2f' | format(change.current_composite) }}</td>
+          <td class="num">{{ '%+.2f' | format(change.delta) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if diff.pairs %}
+    <ul class="notes">
+      {% for change in diff.pairs %}
+      <li>
+        {{ change.pair }}:
+        {{ change.previous_direction.value }} to {{ change.current_direction.value }},
+        {{ change.previous_conviction.value }} to {{ change.current_conviction.value }}
+        {%- if change.flipped %} (flip){% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if diff.shortlist_added %}
+    <p class="meta">Entered: {{ diff.shortlist_added | join(', ') }}</p>
+    {% endif %}
+    {% if diff.shortlist_removed %}
+    <p class="meta">
+      Left:
+      {% for pair, reason in diff.shortlist_removed %}
+      {{ pair }} ({{ reason }}){{ ", " if not loop.last }}
+      {%- endfor %}
+    </p>
+    {% endif %}
+    {% endif %}
+  </div>
+
+  <p class="meta" style="margin-top:24px">
+    Config digest <span class="num">{{ report.config_digest }}</span>.
+    Rebuild with
+    <span class="num">fbe dashboard --asof {{ report.asof.strftime('%Y-%m-%d') }}</span>.
+  </p>
+</div>
+
+<script>
+/* Inline only. No fetch, no XHR, no external script: the sandbox blocks them
+   without a visible error. The toggle stamps data-theme on the root, which the
+   palette blocks above read in both directions. */
+(function () {
+  var root = document.documentElement;
+  var button = document.querySelector("[data-theme-toggle]");
+  if (!button) { return; }
+  button.addEventListener("click", function () {
+    var dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    var current = root.getAttribute("data-theme") || (dark ? "dark" : "light");
+    root.setAttribute("data-theme", current === "dark" ? "light" : "dark");
+  });
+})();
+</script>
+</body>
+</html>

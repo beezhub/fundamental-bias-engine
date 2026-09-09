@@ -19,8 +19,8 @@ already fetched, cached and keyed to the canonical indicator names.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
 from datetime import date
-from typing import Mapping, Sequence
 
 from fbe.config import ScoringConfig
 from fbe.types import Observation, PillarName, PillarScore
@@ -70,6 +70,7 @@ class BasePillar(ABC):
             available at compute time even if the source could supply it.
         config: Scoring configuration, read for the clip band, the lookback and
             this pillar's weight.
+
     """
 
     name: PillarName
@@ -90,6 +91,7 @@ class BasePillar(ABC):
         Args:
             config: Scoring configuration. Defaults to `ScoringConfig()`, which
                 carries the built-in weights and thresholds.
+
         """
         self.config = config or ScoringConfig()
 
@@ -101,6 +103,7 @@ class BasePillar(ABC):
             The configured weight, or ``0.0`` if the pillar is not listed in
             the weight map, which is how a pillar is switched off without
             removing it from the run.
+
         """
         return float(self.config.weights.get(self.name, 0.0))
 
@@ -134,6 +137,7 @@ class BasePillar(ABC):
 
         Returns:
             One `PillarScore` per currency, keyed by ISO code.
+
         """
         raise NotImplementedError
 
@@ -156,6 +160,7 @@ class BasePillar(ABC):
             sorted by ``period`` ascending and de-duplicated to the highest
             ``revision`` per period. Currencies with nothing usable map to an
             empty inner mapping rather than being omitted.
+
         """
 
     @abstractmethod
@@ -180,6 +185,7 @@ class BasePillar(ABC):
             data for maps to ``None``, never to ``0.0``: zero is a reading and
             missing is not, and conflating them would drag a currency toward the
             middle of the cross-section on the strength of an outage.
+
         """
 
     def _normalise(
@@ -198,6 +204,7 @@ class BasePillar(ABC):
         Returns:
             ``{currency: z}``, with ``None`` where the currency could not be
             scored.
+
         """
         raise NotImplementedError
 
@@ -208,6 +215,7 @@ class BasePillar(ABC):
         Returns:
             ``{component: weight}``, summing to 1.0 across the components the
             pillar defines. Overridden by every multi-component pillar.
+
         """
         return {}
 
@@ -250,6 +258,7 @@ class BasePillar(ABC):
             same value: every usable currency gets ``0.0``. That is a real
             finding, the pillar sees no difference between them, and it should
             not be reported as missing data.
+
         """
         raise NotImplementedError
 
@@ -285,6 +294,7 @@ class BasePillar(ABC):
             deviation is zero. Twelve is the floor because most of these series
             are monthly and a shorter window cannot distinguish a level shift
             from a seasonal one.
+
         """
         raise NotImplementedError
 
@@ -311,6 +321,7 @@ class BasePillar(ABC):
             unit, not annualised and not rebased to a percentage. ``None`` when
             the series holds fewer than ``periods + 1`` observations, which is
             the common case for a newly onboarded currency.
+
         """
         raise NotImplementedError
 
@@ -333,6 +344,7 @@ class BasePillar(ABC):
             ``None``. The zero is deliberate and is documented on
             `missing_score`: it is a neutral placeholder, and the coverage
             figure alongside it is what tells the reader the pillar was absent.
+
         """
         if z is None:
             return 0.0
@@ -367,6 +379,7 @@ class BasePillar(ABC):
         across four currencies is on a different scale from one computed across
         eight, and blending the two silently rescales the pillar. The growth
         pillar's PMI gap is the live case.
+
         """
         raise NotImplementedError
 
@@ -392,6 +405,7 @@ class BasePillar(ABC):
             after ``asof``, which happens with forward-dated survey data.
             Returns ``ScoringConfig.max_staleness_days + 1`` for an empty set,
             so an absent pillar sorts as stale rather than as fresh.
+
         """
         raise NotImplementedError
 
@@ -427,5 +441,6 @@ class BasePillar(ABC):
 
         Returns:
             A neutral `PillarScore` carrying this pillar's configured weight.
+
         """
         raise NotImplementedError

@@ -49,6 +49,7 @@ def default_pillars(config: ScoringConfig | None = None) -> tuple[BasePillar, ..
 
     Returns:
         One instance of each pillar class.
+
     """
     cfg = config or ScoringConfig()
     return (
@@ -76,6 +77,7 @@ def required_indicators(
 
     Returns:
         Sorted, de-duplicated indicator keys.
+
     """
     chosen = pillars if pillars is not None else default_pillars()
     keys: set[str] = set()

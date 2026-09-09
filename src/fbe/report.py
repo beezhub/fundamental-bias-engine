@@ -42,10 +42,11 @@ Report sections, in order:
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fbe.config import Config
@@ -92,6 +93,7 @@ class CurrencyChange:
         current_rank: Rank in the current run.
         delta: ``current_composite - previous_composite``, or ``None`` when
             either side is missing.
+
     """
 
     currency: str
@@ -118,6 +120,7 @@ class PairChange:
         previous_spread: Score spread in the baseline run.
         current_spread: Score spread in the current run.
         flipped: True when the direction changed and neither side was neutral.
+
     """
 
     pair: str
@@ -145,6 +148,7 @@ class ReportDiff:
         resolved_warnings: Warnings present before and absent now.
         config_changed: True when the config digest differs, in which case score
             movements are not comparable and the report says so.
+
     """
 
     previous_asof: date
@@ -192,6 +196,7 @@ def build_context(
 
     Raises:
         NotImplementedError: Always, until rendering lands.
+
     """
     raise NotImplementedError("fbe.report.build_context is scaffolded")
 
@@ -219,6 +224,7 @@ def render_report(
 
     Raises:
         NotImplementedError: Always, until rendering lands.
+
     """
     raise NotImplementedError("fbe.report.render_report is scaffolded")
 
@@ -247,6 +253,7 @@ def write_report(
 
     Raises:
         NotImplementedError: Always, until rendering lands.
+
     """
     raise NotImplementedError("fbe.report.write_report is scaffolded")
 
@@ -267,6 +274,7 @@ def load_report(path: Path) -> BiasReport:
 
     Raises:
         NotImplementedError: Always, until serialisation lands.
+
     """
     raise NotImplementedError("fbe.report.load_report is scaffolded")
 
@@ -285,6 +293,7 @@ def latest_report(reports_dir: Path, *, before: date | None = None) -> Path | No
 
     Raises:
         NotImplementedError: Always, until report discovery lands.
+
     """
     raise NotImplementedError("fbe.report.latest_report is scaffolded")
 
@@ -312,6 +321,7 @@ def diff_reports(previous: BiasReport, current: BiasReport) -> ReportDiff:
 
     Raises:
         NotImplementedError: Always, until the diff lands.
+
     """
     raise NotImplementedError("fbe.report.diff_reports is scaffolded")
 
@@ -327,6 +337,7 @@ def _grid(pairs: Sequence[PairBias]) -> Mapping[str, Mapping[str, PairBias | Non
 
     Raises:
         NotImplementedError: Always, until rendering lands.
+
     """
     raise NotImplementedError("fbe.report._grid is scaffolded")
 
@@ -343,5 +354,6 @@ def _pillar_order(config: Config | None) -> Sequence[PillarName]:
 
     Raises:
         NotImplementedError: Always, until rendering lands.
+
     """
     raise NotImplementedError("fbe.report._pillar_order is scaffolded")

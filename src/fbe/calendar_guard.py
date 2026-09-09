@@ -20,9 +20,9 @@ is the entire window plus change.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import datetime
-from enum import Enum
-from typing import Mapping, Sequence
+from enum import StrEnum
 
 from fbe.config import DataConfig
 from fbe.types import CalendarEvent
@@ -138,7 +138,7 @@ is not close. Tighten a category only after seeing it block something real.
 """
 
 
-class OpenPositionAction(str, Enum):
+class OpenPositionAction(StrEnum):
     """What to do with a position that is already open as an event approaches.
 
     Attributes:
@@ -150,6 +150,7 @@ class OpenPositionAction(str, Enum):
         FLATTEN: The event is inside the window and the position is not carrying
             enough buffer to survive a normal spike. Close it and re-enter after
             the window if the setup survives.
+
     """
 
     HOLD = "hold"
@@ -158,7 +159,7 @@ class OpenPositionAction(str, Enum):
 
 
 def is_high_impact(event: CalendarEvent) -> bool:
-    """True when an event should be treated as high impact.
+    """Decide whether an event should be treated as high impact.
 
     An event qualifies if ``event.impact`` is ``"high"`` (case-insensitive) OR
     its title matches any keyword in `HIGH_IMPACT_KEYWORDS`. The OR is the point:
@@ -170,6 +171,7 @@ def is_high_impact(event: CalendarEvent) -> bool:
 
     Returns:
         True when the event should generate a blackout window.
+
     """
     raise NotImplementedError
 
@@ -209,6 +211,7 @@ def blackout_windows(
 
     Raises:
         ValueError: If any event carries a naive ``scheduled_for``.
+
     """
     raise NotImplementedError
 
@@ -248,6 +251,7 @@ def is_blacked_out(
 
     Raises:
         ValueError: If ``when`` is naive or ``pair`` is malformed.
+
     """
     raise NotImplementedError
 
@@ -282,6 +286,7 @@ def next_clear_time(
 
     Raises:
         ValueError: If ``after`` is naive.
+
     """
     raise NotImplementedError
 
@@ -293,7 +298,7 @@ def action_for_open_position(
     config: DataConfig,
     unrealised_r: float = 0.0,
 ) -> tuple[OpenPositionAction, str | None]:
-    """What to do with an existing position in ``pair`` as ``when`` approaches.
+    """Decide what to do with an open position in ``pair`` as ``when`` nears.
 
     Holding through an event and entering into one are different decisions and
     the guard must not conflate them. Entering is free to decline: the setup
@@ -338,5 +343,6 @@ def action_for_open_position(
         This is advisory. It never sends an order. The owner executes, which
         keeps the decision where the plan puts it and keeps this module honest
         about being a filter rather than a trading system.
+
     """
     raise NotImplementedError

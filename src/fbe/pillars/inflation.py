@@ -9,8 +9,8 @@ to deliver, which is what `CurrencyMeta.inflation_target` holds.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import date
-from typing import Mapping, Sequence
 
 from fbe.pillars.base import BasePillar
 from fbe.types import Observation, PillarName
@@ -90,6 +90,7 @@ class InflationPillar(BasePillar):
 
         Returns:
             ``{component: weight}`` summing to 1.0.
+
         """
         return {"cpi_gap": 0.30, "core_gap": 0.30, "core_trend": 0.40}
 
@@ -106,6 +107,7 @@ class InflationPillar(BasePillar):
             Returns ``0.0`` for ``None``, which neutralises the two level
             components rather than guessing at the central bank's intent, and
             leaves ``core_trend`` carrying the pillar on its own.
+
         """
         if front_end_change is None:
             return 0.0
@@ -129,6 +131,7 @@ class InflationPillar(BasePillar):
             ``{currency: {indicator: observations}}`` for the three indicators in
             `requires`, sorted by period ascending. The yield series is resampled
             to month-end for the same reason as in the monetary pillar.
+
         """
         raise NotImplementedError
 
@@ -151,5 +154,6 @@ class InflationPillar(BasePillar):
         defaulting to 2%. A currency missing ``core_cpi_yoy`` loses 0.70 of the
         sub-weight, falls under `MIN_COMPONENT_WEIGHT`, and is scored as missing:
         headline alone is too noisy to carry this pillar.
+
         """
         raise NotImplementedError

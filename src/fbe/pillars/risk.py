@@ -9,8 +9,8 @@ currency its own share of it through ``CurrencyMeta.risk_beta``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import date
-from typing import Mapping, Sequence
 
 from fbe.pillars.base import BasePillar
 from fbe.types import Observation, PillarName
@@ -108,6 +108,7 @@ class RiskPillar(BasePillar):
 
         Returns:
             ``{"risk_response": 1.0}``.
+
         """
         return {"risk_response": 1.0}
 
@@ -121,6 +122,7 @@ class RiskPillar(BasePillar):
         Returns:
             ``min(abs(stress) / REGIME_THRESHOLD, 1.0)``, in ``[0.0, 1.0]``.
             One inside a declared regime, tapering linearly to zero at neutral.
+
         """
         return min(abs(float(stress)) / REGIME_THRESHOLD, 1.0)
 
@@ -135,6 +137,7 @@ class RiskPillar(BasePillar):
             ``"risk_off"``, ``"risk_on"`` or ``"neutral"``. The label is for the
             report only; the score is computed from ``stress`` directly and does
             not branch on the label.
+
         """
         if stress >= REGIME_THRESHOLD:
             return "risk_off"
@@ -165,6 +168,7 @@ class RiskPillar(BasePillar):
             ``ScoringConfig.lookback_years`` of history for the time-series
             z-scores, and the equity series needs
             `DRAWDOWN_WINDOW_SESSIONS` of history on top of that.
+
         """
         raise NotImplementedError
 
@@ -189,6 +193,7 @@ class RiskPillar(BasePillar):
         an unmeasurable regime is unmeasurable for everybody, and it is also the
         one case where every currency's coverage falls together and the whole
         run should be read with more caution.
+
         """
         raise NotImplementedError
 
@@ -205,5 +210,6 @@ class RiskPillar(BasePillar):
             ``{currency: value}`` taken straight from ``"risk_response"``. See
             the class docstring for why standardising here would cancel the
             regime out and leave a constant ranking of betas.
+
         """
         raise NotImplementedError

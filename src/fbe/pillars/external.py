@@ -8,8 +8,8 @@ currency a commodity currency.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import date
-from typing import Mapping, Sequence
 
 from fbe.pillars.base import BasePillar
 from fbe.types import Observation, PillarName
@@ -89,6 +89,7 @@ class ExternalPillar(BasePillar):
 
         Returns:
             ``{component: weight}`` summing to 1.0.
+
         """
         return {
             "current_account": 0.40,
@@ -115,6 +116,7 @@ class ExternalPillar(BasePillar):
             ``Observation.meta``, not by currency, so the extractor routes each
             index to the currencies whose ``commodity_link`` names it. A
             currency with no link gets no ``commodity_index`` entry.
+
         """
         raise NotImplementedError
 
@@ -138,5 +140,6 @@ class ExternalPillar(BasePillar):
         A currency missing both balances holds only 0.30 of the sub-weight,
         which is under `MIN_COMPONENT_WEIGHT`, so it is scored as missing rather
         than on a commodity move alone.
+
         """
         raise NotImplementedError

@@ -8,8 +8,8 @@ non-monotonic transform in the model.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import date
-from typing import Mapping, Sequence
 
 from fbe.pillars.base import BasePillar
 from fbe.types import Observation, PillarName
@@ -114,6 +114,7 @@ class PositioningPillar(BasePillar):
 
         Returns:
             ``{"positioning_response": 1.0}``.
+
         """
         return {"positioning_response": 1.0}
 
@@ -130,6 +131,7 @@ class PositioningPillar(BasePillar):
             The response in ``[-1.0, +0.5]``, or ``None`` when ``p`` is ``None``.
             Positive supports a long, negative fades the crowd. See the class
             docstring for the branch definitions and the reasoning.
+
         """
         if p is None:
             return None
@@ -166,6 +168,7 @@ class PositioningPillar(BasePillar):
         ``"percent"`` for the normalised form and ``"contracts"`` for the raw
         count. This is the one contract this pillar needs the data source owner
         to confirm.
+
         """
         raise NotImplementedError
 
@@ -186,5 +189,6 @@ class PositioningPillar(BasePillar):
             weekly reports inside the lookback window returns ``None``, because a
             positioning extreme has no meaning without a record of what normal
             looked like for that contract.
+
         """
         raise NotImplementedError

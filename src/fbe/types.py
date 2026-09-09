@@ -12,10 +12,11 @@ standard library.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from enum import Enum
-from typing import Any, Iterable, Mapping, Protocol, Sequence, runtime_checkable
+from enum import StrEnum
+from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
     "Direction",
@@ -35,7 +36,7 @@ __all__ = [
 ]
 
 
-class Direction(str, Enum):
+class Direction(StrEnum):
     """Directional bias for a currency pair, expressed on the base currency."""
 
     LONG = "long"
@@ -43,7 +44,7 @@ class Direction(str, Enum):
     NEUTRAL = "neutral"
 
 
-class Conviction(str, Enum):
+class Conviction(StrEnum):
     """How strongly the model backs a directional call.
 
     Conviction gates position size and whether a pair reaches the shortlist at
@@ -57,7 +58,7 @@ class Conviction(str, Enum):
     HIGH = "high"
 
 
-class PillarName(str, Enum):
+class PillarName(StrEnum):
     """The seven fundamental pillars scored for every currency."""
 
     MONETARY = "monetary"
@@ -69,7 +70,7 @@ class PillarName(str, Enum):
     RISK = "risk"
 
 
-class Frequency(str, Enum):
+class Frequency(StrEnum):
     """Release frequency of an underlying macro series."""
 
     DAILY = "daily"
@@ -99,6 +100,7 @@ class Observation:
         unit: Unit of ``value``, e.g. ``"percent"``, ``"index"``, ``"contracts"``.
         frequency: How often the series is published.
         revision: Vintage marker when a source republishes a period.
+
     """
 
     indicator: str
@@ -131,6 +133,7 @@ class PillarScore:
         staleness_days: Age of the newest input. Feeds the freshness penalty.
         inputs: Observations the pillar consumed, for audit and for the
             "show your working" section of the report.
+
     """
 
     pillar: PillarName
@@ -281,7 +284,7 @@ class DataSource(Protocol):
         ...
 
     def available(self) -> bool:
-        """True when the source is usable, e.g. its API key is configured."""
+        """Report whether the source is usable, e.g. its API key is configured."""
         ...
 
 

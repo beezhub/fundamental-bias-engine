@@ -21,10 +21,10 @@ Storage is JSONL under ``data/journal/``, one JSON object per line, append-only.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Mapping, Sequence
 
 from fbe.config import DATA_DIR
 from fbe.types import Conviction, Direction, PillarName
@@ -153,6 +153,7 @@ class TradeRecord:
             record when spreads and fills change with it.
         notes: Free text from the post-market review. The plan asks for the
             reasons behind winners and losers, and this is where they go.
+
     """
 
     trade_id: str
@@ -204,6 +205,7 @@ class ConvictionStats:
         avg_loss_r: Mean ``r_multiple`` of losers, negative.
         total_r: Sum of ``r_multiple``, the bucket's contribution to the account.
         max_drawdown_r: Deepest peak-to-trough run of the bucket's cumulative R.
+
     """
 
     conviction: Conviction
@@ -228,6 +230,7 @@ class DisciplineFlag:
         occurred_at: When the flagged behaviour happened.
         detail: Human-readable explanation naming the specific numbers, e.g.
             "entered GBPUSD 22 minutes after a -1.0R loss on EURUSD".
+
     """
 
     kind: str
@@ -258,6 +261,7 @@ def append(record: TradeRecord, path: Path = JOURNAL_PATH) -> None:
             rather than being logged and swallowed, because a trade that was
             taken but not recorded is worse than a failed write the owner
             notices immediately.
+
     """
     raise NotImplementedError
 
@@ -283,6 +287,7 @@ def load(
         ValueError: If a line is present but unparseable. A corrupt journal is
             reported, not skipped: silently dropping records would understate
             the trade count and flatter every statistic computed from it.
+
     """
     raise NotImplementedError
 
@@ -319,6 +324,7 @@ def evaluate(records: Sequence[TradeRecord]) -> Mapping[Conviction, ConvictionSt
         One `ConvictionStats` per conviction level present in the data. Levels
         with no closed trades are omitted rather than reported as zeros, so an
         empty bucket cannot be mistaken for a losing one.
+
     """
     raise NotImplementedError
 
@@ -359,5 +365,6 @@ def discipline_flags(records: Sequence[TradeRecord]) -> Sequence[DisciplineFlag]
         Flags in chronological order. An empty sequence means a clean run, which
         on a real trading record is worth noting in the review rather than
         assuming.
+
     """
     raise NotImplementedError

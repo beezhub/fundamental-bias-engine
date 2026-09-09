@@ -9,9 +9,9 @@ resulting config so a report can be tied back to the weights that made it.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Mapping
 
 from fbe.types import PillarName
 
@@ -132,9 +132,7 @@ class Config:
         if abs(total - 1.0) > 1e-6:
             problems.append(f"pillar weights sum to {total:.4f}, expected 1.0")
         if self.risk.risk_per_trade_max > 0.02:
-            problems.append(
-                "risk_per_trade_max above 2% contradicts the trading plan"
-            )
+            problems.append("risk_per_trade_max above 2% contradicts the trading plan")
         if self.risk.risk_per_trade_min > self.risk.risk_per_trade_max:
             problems.append("risk_per_trade_min exceeds risk_per_trade_max")
         return problems
@@ -149,6 +147,7 @@ def load_config(path: Path | None = None) -> Config:
 
     Returns:
         The effective `Config`.
+
     """
     raise NotImplementedError(
         "Config layering is scaffolded but not implemented; see docs/roadmap.md"

@@ -9,8 +9,8 @@ when they say a country is doing well.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import date
-from typing import Mapping, Sequence
 
 from fbe.pillars.base import BasePillar
 from fbe.types import Observation, PillarName
@@ -80,6 +80,7 @@ class GrowthPillar(BasePillar):
         Returns:
             ``{component: weight}`` summing to 1.0, with 0.30 in the two PMI
             components that may be dropped wholesale.
+
         """
         return {
             "gdp_yoy": 0.25,
@@ -106,6 +107,7 @@ class GrowthPillar(BasePillar):
             ``{currency: {indicator: observations}}``, sorted by period
             ascending. ``pmi_manufacturing`` is expected to be absent for most
             currencies and its absence is not an error.
+
         """
         raise NotImplementedError
 
@@ -129,5 +131,6 @@ class GrowthPillar(BasePillar):
         The three year-on-year components are taken as published; they are
         already in comparable percent units so they need no per-currency
         rebasing before the cross-sectional z-score.
+
         """
         raise NotImplementedError

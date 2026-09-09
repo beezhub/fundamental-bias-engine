@@ -139,6 +139,7 @@ def render_dashboard(
 
     Raises:
         NotImplementedError: Always, until rendering lands.
+
     """
     raise NotImplementedError("fbe.dashboard.build.render_dashboard is scaffolded")
 
@@ -169,6 +170,7 @@ def build_dashboard(
         NotImplementedError: Always, until rendering lands.
         ValueError: Once implemented, when `check_constraints` reports a
             violation.
+
     """
     raise NotImplementedError("fbe.dashboard.build.build_dashboard is scaffolded")
 
@@ -195,5 +197,6 @@ def check_constraints(html: str) -> list[str]:
 
     Raises:
         NotImplementedError: Always, until the checks land.
+
     """
     raise NotImplementedError("fbe.dashboard.build.check_constraints is scaffolded")

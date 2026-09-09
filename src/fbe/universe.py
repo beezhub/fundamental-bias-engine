@@ -9,8 +9,8 @@ the same time; see ``docs/roadmap.md`` if that changes.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence
 
 __all__ = [
     "CurrencyMeta",
@@ -41,6 +41,7 @@ class CurrencyMeta:
             currency, or ``None`` for currencies with no dominant link.
         session: Primary liquidity session, used by the execution layer to
             flag pairs the trader would be holding through a thin book.
+
     """
 
     code: str
@@ -180,6 +181,4 @@ def meta(currency: str) -> CurrencyMeta:
     try:
         return CURRENCIES[currency.upper()]
     except KeyError:
-        raise KeyError(
-            f"{currency!r} is outside the scored universe {G10}"
-        ) from None
+        raise KeyError(f"{currency!r} is outside the scored universe {G10}") from None

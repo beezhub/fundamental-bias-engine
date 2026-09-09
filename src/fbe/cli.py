@@ -1,4 +1,4 @@
-"""Command line surface for the fundamental bias engine.
+r"""Command line surface for the fundamental bias engine.
 
 The commands are organised around the daily routine in the trading plan rather
 than around the internals of the engine. Whatever the plan asks for at a given
@@ -46,7 +46,7 @@ The daily sequence, mapped to the routine in ``docs/reference/``:
 
 5. Post-market review and the evening journal::
 
-       fbe journal add EURUSD --direction long --entry 1.0850 --stop 1.0812 \\
+       fbe journal add EURUSD --direction long --entry 1.0850 --stop 1.0812 \
            --exit 1.0902 --followed-plan
        fbe journal review --days 7
 
@@ -72,7 +72,7 @@ script or a cron job without parsing output:
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -92,7 +92,7 @@ EXIT_BLOCKED = 3
 """A guard rule refused the request. Not an error, a decision."""
 
 
-class OutputFormat(str, Enum):
+class OutputFormat(StrEnum):
     """Machine or human rendering for the tabular commands.
 
     ``table`` is rich text for a terminal. ``json`` and ``csv`` exist so the
@@ -104,7 +104,7 @@ class OutputFormat(str, Enum):
     CSV = "csv"
 
 
-class Impact(str, Enum):
+class Impact(StrEnum):
     """Minimum calendar impact level to report on."""
 
     LOW = "low"
@@ -190,6 +190,7 @@ def main(
 
     Raises:
         NotImplementedError: Always, until the config layer lands.
+
     """
     raise NotImplementedError("fbe.cli.main is scaffolded, not implemented")
 
@@ -249,6 +250,7 @@ def doctor(
 
     Raises:
         NotImplementedError: Always, until the health checks land.
+
     """
     raise NotImplementedError("fbe.cli.doctor is scaffolded, not implemented")
 
@@ -306,6 +308,7 @@ def refresh(
 
     Raises:
         NotImplementedError: Always, until the source layer lands.
+
     """
     raise NotImplementedError("fbe.cli.refresh is scaffolded, not implemented")
 
@@ -372,6 +375,7 @@ def score(
 
     Raises:
         NotImplementedError: Always, until `fbe.scoring` lands.
+
     """
     raise NotImplementedError("fbe.cli.score is scaffolded, not implemented")
 
@@ -463,6 +467,7 @@ def bias(
 
     Raises:
         NotImplementedError: Always, until `fbe.bias` lands.
+
     """
     raise NotImplementedError("fbe.cli.bias is scaffolded, not implemented")
 
@@ -543,6 +548,7 @@ def calendar(
 
     Raises:
         NotImplementedError: Always, until `fbe.calendar_guard` lands.
+
     """
     raise NotImplementedError("fbe.cli.calendar is scaffolded, not implemented")
 
@@ -616,10 +622,7 @@ def size(
         bool,
         typer.Option(
             "--force",
-            help=(
-                "Size the trade even inside a blackout window. Exits 3 "
-                "without it."
-            ),
+            help=("Size the trade even inside a blackout window. Exits 3 without it."),
         ),
     ] = False,
     output_format: Annotated[
@@ -656,6 +659,7 @@ def size(
 
     Raises:
         NotImplementedError: Always, until `fbe.risk` lands.
+
     """
     raise NotImplementedError("fbe.cli.size is scaffolded, not implemented")
 
@@ -717,6 +721,7 @@ def report(
 
     Raises:
         NotImplementedError: Always, until `fbe.report` lands.
+
     """
     raise NotImplementedError("fbe.cli.report is scaffolded, not implemented")
 
@@ -738,8 +743,7 @@ def dashboard(
             "--out",
             "-o",
             help=(
-                "Output HTML file. Defaults to "
-                "data/reports/dashboard-YYYY-MM-DD.html."
+                "Output HTML file. Defaults to data/reports/dashboard-YYYY-MM-DD.html."
             ),
             dir_okay=False,
         ),
@@ -776,6 +780,7 @@ def dashboard(
 
     Raises:
         NotImplementedError: Always, until `fbe.dashboard.build` lands.
+
     """
     raise NotImplementedError("fbe.cli.dashboard is scaffolded, not implemented")
 
@@ -871,6 +876,7 @@ def journal_add(
 
     Raises:
         NotImplementedError: Always, until `fbe.journal` lands.
+
     """
     raise NotImplementedError("fbe.cli.journal_add is scaffolded, not implemented")
 
@@ -926,7 +932,6 @@ def journal_review(
 
     Raises:
         NotImplementedError: Always, until `fbe.journal` lands.
+
     """
-    raise NotImplementedError(
-        "fbe.cli.journal_review is scaffolded, not implemented"
-    )
+    raise NotImplementedError("fbe.cli.journal_review is scaffolded, not implemented")
