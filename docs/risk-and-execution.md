@@ -31,10 +31,37 @@ There are three cases in general, and this account is always in the third.
 | Account currency is the base of the pair | USD account, USDJPY | Divide by the pair's own price |
 | Account currency is in neither leg | **ZAR account, any G10 cross** | Multiply by a third rate: quote currency to ZAR |
 
-The third case needs market data the pair itself does not supply. If that rate
-is missing, `pip_value` raises `MissingRateError`. It does not fall back to 1.0,
-it does not reuse a stale rate, it does not carry forward the last successful
-conversion.
+The third case needs market data the pair itself does not supply.
+
+### Finding that third rate
+
+`convert_rate` resolves it in a fixed order, first match wins.
+
+1. **Identity.** Same currency both sides, factor 1.0. The only time this module
+   ever produces a 1.0.
+2. **Direct.** `USDZAR` is present, so USD to ZAR is 18.50.
+3. **Inverted.** `ZAR` to `USD` is `1 / 18.50`.
+4. **One hop through the US dollar.** Tried only when neither direct form
+   exists.
+
+Rule 4 is not an edge case on this account, it is the normal route. A feed that
+gives you `{"USDZAR": 18.50, "USDJPY": 155.00}`, which is exactly what the
+pre-trade checklist asks for, has no `JPYZAR` and no `ZARJPY`. Rules 2 and 3
+both miss. Rule 4 resolves JPY to USD as `1 / 155.00`, then USD to ZAR as
+`18.50`, and multiplies:
+
+```
+JPY to ZAR = 18.50 / 155.00 = 0.119355 rand per yen
+```
+
+The pivot is the dollar because it is the one currency with a liquid quoted leg
+against every G10 currency **and** against the rand. Your feed will have
+`USDZAR`. It will not have `ZARCHF`.
+
+No second pivot is attempted. If a one-hop dollar route cannot be built, the
+rate set is not fit for sizing the trade and `convert_rate` raises
+`MissingRateError`. It does not fall back to 1.0, it does not reuse a stale
+rate, it does not carry forward the last successful conversion.
 
 The reason is worth being blunt about. A wrong conversion factor produces no
 visible symptom. The size function still returns a number, the ticket still
@@ -81,10 +108,17 @@ the same 25 pip stop costs 1,000 x 0.00185 x 25 = **R46.25**, which is 2.3% of
 the account and outside the plan's band entirely.
 
 If the broker offers 0.001 nano lots, which is 100 units, round **down** to 400
-units. Realised risk: 400 x 0.00185 x 25 = **R18.50**. Inside the band, below
-the R20 target, which is the correct direction to miss in.
+units.
 
-6. **Reward to risk.** (1.0925 - 1.0850) / (1.0850 - 1.0825) = 0.0075 / 0.0025 =
+6. **Realised risk.** 400 x 0.00185 x 25 = **R18.50**, against an intended
+   R20.00. Inside the band, below the target, which is the correct direction to
+   miss in. This is the figure the checklist and the journal read, not the
+   R20.00.
+7. **Notional, in rand.** Face value is 400 x 1.0850 = 434.00 **USD**, which is
+   not a rand figure and cannot be shown as one. Carry it back through the same
+   leg as the risk: 434.00 x 18.50 = **R8,029.00**, about 4.0 times the account
+   balance. That is the leverage number.
+8. **Reward to risk.** (1.0925 - 1.0850) / (1.0850 - 1.0825) = 0.0075 / 0.0025 =
    **3.0R**. Clears the 2.5R minimum required at LOW conviction.
 
 ### Example B: USDJPY short, 2% risk
@@ -107,16 +141,27 @@ lower channel line.
 4. **Units.** 40.00 / (30.0 x 0.00119355) = 40.00 / 0.0358065 = **1,117.1 units**
 5. **Lots.** 1,117.1 / 100,000 = **0.0112 lots**
 
-At a 0.01 lot minimum, round down to 1,000 units. Realised risk:
-1,000 x 0.00119355 x 30 = **R35.81**, which is 1.79% of the account. Inside the
-band. **This trade is tradeable at a standard micro-lot broker and the EURUSD
-trade above was not.**
+At a 0.01 lot minimum, round down to 1,000 units. **This trade is tradeable at
+a standard micro-lot broker and the EURUSD trade above was not.**
 
-At a 0.001 nano-lot minimum, round down to 1,100 units. Realised risk:
-1,100 x 0.00119355 x 30 = **R39.39**, closer to the R40 target.
+6. **Realised risk.** 1,000 x 0.00119355 x 30 = **R35.81**, which is 1.79% of
+   the account. Inside the band, against an intended R40.00.
 
-6. **Reward to risk.** (155.00 - 154.10) / (155.30 - 155.00) = 0.90 / 0.30 =
+   That gap is about 10.5%, and it is the reason `realised_risk_amount` exists as its
+   own field. Journal this trade against R40.00 and a R71.61 win reads as
+   +1.79R when it was actually +2.00R. Every R-multiple in the file would be
+   wrong by the same ratio, and those R-multiples are the only evidence the
+   conviction model is ever judged on.
+
+7. **Notional, in rand.** 1,000 x 155.00 = 155,000 **JPY**. Through the same
+   conversion leg: 155,000 x 0.119355 = **R18,500.00**, or 9.25 times the
+   account balance. Leaving this in yen would have printed "155,000" on a ticket
+   whose money fields are all supposed to be rand.
+8. **Reward to risk.** (155.00 - 154.10) / (155.30 - 155.00) = 0.90 / 0.30 =
    **3.0R**.
+
+At a 0.001 nano-lot minimum, round down to 1,100 units instead: realised risk
+1,100 x 0.00119355 x 30 = **R39.39**, notional R20,350.00.
 
 ### Why the two examples differ
 
@@ -141,19 +186,40 @@ of expected profit and keeps the rule intact.
 
 Conviction modulates size. It does not gate entry, except at NONE.
 
-| Conviction | Risk fraction | On R2,000 | Minimum reward to risk |
-|---|---|---|---|
-| HIGH | 2.0% | R40.00 | 1.5R |
-| MEDIUM | 1.5% | R30.00 | 2.0R |
-| LOW | 1.0% | R20.00 | 2.5R |
-| NONE | no trade | R0 | no trade |
+| Conviction | Position in band | Risk fraction | On R2,000 | Minimum reward to risk |
+|---|---|---|---|---|
+| HIGH | top | 2.0% | R40.00 | 1.5R |
+| MEDIUM | midpoint | 1.5% | R30.00 | 2.0R |
+| LOW | bottom | 1.0% | R20.00 | 2.5R |
+| NONE | no trade | no trade | R0 | no trade |
 
-Two things about this table.
+The risk fractions are **derived, not fixed.** Each level holds a position in
+the band, and the band's ends are `risk_per_trade_min` and `risk_per_trade_max`
+in config. With the plan's 1% and 2% that produces the column above.
+
+This matters when you change the band. If a review sends you to lower
+`risk_per_trade_max` to 1.5%, the whole ladder moves down with it: HIGH becomes
+1.5%, MEDIUM 1.25%, LOW stays 1%. A hardcoded ladder would keep asking for 2%,
+`position_size` would clamp it and attach a warning, and the checklist below
+would then read that warning as a refusal. Every high-conviction setup would be
+rejected because two numbers disagreed.
+
+Three things about this table.
 
 **Size rises with conviction, and the reward requirement falls.** They run in
-opposite directions on purpose. When the fundamental case is strong the hit rate
-carries the expectancy, so a 1.5R target is enough. When the case is thin the
-trade has to pay more when it works, because it will work less often.
+opposite directions on purpose, and the reason is an assumption rather than a
+finding: that hit rate rises with conviction, so a strong case can pay off at a
+nearer target while a thin one has to pay more on the occasions it works.
+
+**That assumption is untested.** It is exactly what `evaluate` measures, and by
+that function's own standard it needs roughly 30 closed trades per bucket before
+anyone should believe it. Confirmation looks like `hit_rate` rising from LOW
+through MEDIUM to HIGH. Refutation looks like hit rate flat or inverted across
+buckets, and if that is what the journal shows, the reward ladder has no basis
+and should collapse to one minimum applied to every trade. The numbers above are
+a starting position chosen because it is the conservative one: if the assumption
+is wrong, demanding more reward on the trades the model is least sure of costs
+missed trades rather than lost money.
 
 **LOW conviction is still a trade.** Refusing everything below HIGH sounds
 disciplined and is not: it would leave the account idle for weeks and push you
@@ -227,14 +293,25 @@ a stop placed on structure, and gives up the trade's remaining expectancy on the
 strength of an event that might not touch it. A rule that flattens everything
 before every high-impact print bleeds the account through costs alone.
 
-The distinction is buffer:
+The distinction is buffer, measured against `TIGHTEN_BUFFER_R`, which is
+**1.0R**. Inside a window there are two branches and no gap between them:
 
-* **Up more than about 1R:** the position can survive an adverse spike. Manage
-  it with the plan's own tools. Take partial profit at the nearest support or
-  resistance, or pull the trailing stop in.
-* **At or below breakeven:** no buffer. A spike through a structural stop is
+* **At or above 1.0R: TIGHTEN.** The position can absorb a full stop-distance
+  move against it and still be at breakeven, which is the size of adverse move a
+  high-impact release routinely produces. Manage it with the plan's own tools.
+  Take partial profit at the nearest support or resistance, or pull the trailing
+  stop in.
+* **Below 1.0R: FLATTEN.** This includes a position in modest profit, not only
+  one at or below breakeven. Up 0.5R with a rate decision ten minutes out is
+  less than half a stop of cover, and a spike through a structural stop is
   precisely the loss the news rule exists to prevent. Close it and re-enter
   after the window if the setup survives.
+
+The comparison is inclusive: exactly 1.0R holds. Open profit is measured in R
+against `realised_risk_amount`, the same denominator the journal uses, so the
+number on the screen and the number in the file mean the same thing. 1.0R is a
+threshold, not a measurement. Revisit it once the journal can group outcomes by
+`exit_reason` and show what holding through windows has cost or saved.
 
 This connects to the plan's time-based exit. A trade that has stalled and is
 drifting toward a scheduled release is not waiting for its thesis, it is waiting
@@ -261,12 +338,16 @@ per id and the superseded line stays in the file.
 **Execution:** `trade_id`, `pair`, `direction`, `opened_at`, `closed_at`,
 `entry`, `exit_price`, `stop`, `target`, `units`, `lots`, `broker`.
 
-**Risk:** `risk_amount` and `risk_fraction` in ZAR,
-`account_balance_at_entry`, `account_currency`.
+**Risk:** `risk_amount` and `risk_fraction` in ZAR, populated from
+`PositionSize.realised_risk_amount` and never from the intended `risk_amount`,
+plus `account_balance_at_entry` and `account_currency`.
 
-**Outcome:** `outcome_zar` net of costs, and `r_multiple`. R multiples are the
-only comparable measure across different sizes and balances. A +2R on R2,000 and
-a +2R on R20,000 are the same trade well executed.
+**Outcome:** `outcome_zar` net of costs, and `r_multiple`, which is
+`outcome_zar` divided by the realised risk. R multiples are the only comparable
+measure across different sizes and balances. A +2R on R2,000 and a +2R on
+R20,000 are the same trade well executed. Divide by the intended risk instead
+and every R-multiple in the file reads high by the rounding ratio, which
+flatters the model rather than the trader and is invisible in the output.
 
 **Technicals:** `setup` (`channel_bounce`, `trendline_break_retest`,
 `double_bottom_neckline`), `timeframe` (`1h` or `4h`), and `exit_reason`, which
@@ -295,7 +376,11 @@ Run this once a week, at the same time, away from the market.
    rise from LOW through MEDIUM to HIGH.** If it does not, the conviction model
    is wrong, and the ladder is actively harmful because it is putting more money
    on the worse trades. The response is to re-weight the pillars or flatten the
-   ladder to a fixed 1% until the model earns the difference back.
+   ladder until the model earns the difference back. Flatten it by lowering
+   `risk_per_trade_max` toward `risk_per_trade_min` in config, not by editing
+   the ladder itself, so every rung moves together and nothing ends up clamped.
+   Read `hit_rate` while you are there: it is the evidence for or against the
+   reward-to-risk ladder in section 3.
 3. Check sample size before believing any of it. At five trades a week, thirty
    closed trades per bucket is roughly where a difference in expectancy becomes
    worth acting on. Below that the report is a record, not evidence. Reading it
@@ -383,10 +468,14 @@ Run this before every ticket. It takes about two minutes.
 
 **Size**
 
-- [ ] `position_size` run with the **current** USDZAR rate, not this morning's.
+- [ ] `position_size` run with the **current** USDZAR rate, not this morning's,
+      and with whatever second leg the pair needs (`USDJPY` for a yen cross).
 - [ ] `warnings` is empty. If the size is below the broker minimum, the trade
       does not happen. Do not round up.
-- [ ] Realised risk after rounding down is between R20 and R40.
+- [ ] **`realised_risk_amount`**, not `risk_amount`, is between R20 and R40.
+      That is the money actually on the book after rounding down.
+- [ ] `notional` reads as a rand figure and the leverage it implies is one you
+      are willing to carry.
 
 **Limits**
 

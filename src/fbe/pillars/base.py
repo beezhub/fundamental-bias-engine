@@ -21,6 +21,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from datetime import date
+from statistics import median
 
 from fbe.config import ScoringConfig
 from fbe.types import Frequency, Observation, PillarName, PillarScore
@@ -30,7 +31,29 @@ __all__ = [
     "MIN_CROSS_SECTION",
     "MIN_COMPONENT_WEIGHT",
     "DEFAULT_PUBLICATION_LAG_DAYS",
+    "RESTANDARDISATION_WINDOW_RUNS",
+    "MIN_RESTANDARDISATION_RUNS",
 ]
+
+
+RESTANDARDISATION_WINDOW_RUNS: int = 60
+"""Recent runs the re-standardisation divisor is estimated over.
+
+Roughly a quarter of daily runs. The quantity being estimated is the correlation
+structure between a pillar's own sub-indicators, which is a slow macro property,
+so the window wants to be long enough that a fortnight of unusual data cannot
+move it and short enough to follow a genuine change in how the components relate.
+
+Belongs in `ScoringConfig` beside the other tunables; it lives here until that
+field exists.
+"""
+
+MIN_RESTANDARDISATION_RUNS: int = 20
+"""Runs of history required before the rolling divisor is used at all.
+
+Below this the median is estimated from too few points to beat the run's own
+standard deviation, so the pillar falls back to run-local and says so.
+"""
 
 
 DEFAULT_PUBLICATION_LAG_DAYS: Mapping[Frequency, int] = {
@@ -83,13 +106,31 @@ class BasePillar(ABC):
     normalisation and scoring steps are shared and should rarely be overridden.
 
     Two-stage normalisation is used throughout. Components inside a pillar are
-    measured in different units, a policy rate in percent and a trade balance in
-    billions of local currency, so they cannot be summed raw. Each component is
-    z-scored across the cross-section first, the component z-scores are blended
-    with the pillar's sub-weights, and the blend is re-standardised so every
-    pillar hands the scorer a quantity on the same scale. Without that second
-    standardisation a five-component pillar would arrive systematically quieter
-    than a one-component pillar and would lose weight it was never meant to lose.
+    measured in different units, a policy rate in percent and a yield change in
+    basis points, so they cannot be summed raw. Each component is z-scored across
+    the cross-section first, the component z-scores are blended with the pillar's
+    sub-weights, and the blend is re-standardised so every pillar hands the
+    scorer a quantity on the same scale.
+
+    That second standardisation is not cosmetic. Averaging several imperfectly
+    correlated z-scores shrinks the variance of the result, and the shrinkage
+    grows with the number of components. On the reference run in section 7 of
+    ``docs/scoring-spec.md``, the five-component monetary blend has a standard
+    deviation of 0.7001 against 0.9711 for the two-component inflation blend, so
+    without the pass the monetary pillar speaks about 39% more quietly than
+    inflation relative to their declared weights: an effective ratio near 1.44 to
+    1 where `ScoringConfig` says 2 to 1. Re-standardising is what keeps the
+    configured weights the operative ones.
+
+    The divisor comes from `blend_divisor`, which estimates it over recent runs
+    rather than from the run in hand. That distinction matters enough to carry
+    its own argument; see that method.
+
+    Two pillars are excluded from the pass. Positioning and risk are already
+    constructed on the score band in units that mean something, and
+    re-standardising them would destroy that meaning: it would force positioning
+    to show a spread across currencies even on a run where nothing is crowded,
+    which is the opposite of what that pillar is for. Both override `_normalise`.
 
     Attributes:
         name: Which of the seven pillars this is.
@@ -98,6 +139,8 @@ class BasePillar(ABC):
             available at compute time even if the source could supply it.
         config: Scoring configuration, read for the clip band, the lookback and
             this pillar's weight.
+        blend_sd_history: Cross-sectional standard deviations this pillar's blend
+            produced on earlier runs, feeding `blend_divisor`.
 
     """
 
@@ -118,15 +161,31 @@ class BasePillar(ABC):
     what the positioning and risk pillars do.
     """
 
-    def __init__(self, config: ScoringConfig | None = None) -> None:
-        """Store the scoring configuration this pillar will read.
+    def __init__(
+        self,
+        config: ScoringConfig | None = None,
+        blend_sd_history: Sequence[float] | None = None,
+    ) -> None:
+        """Store the scoring configuration and any blend history this pillar has.
 
         Args:
             config: Scoring configuration. Defaults to `ScoringConfig()`, which
                 carries the built-in weights and thresholds.
+            blend_sd_history: Cross-sectional standard deviations this pillar's
+                blend produced on previous runs, oldest first, for the
+                re-standardisation divisor in `blend_divisor`. The runner loads
+                them from the stored reports under ``DataConfig.reports_dir`` and
+                passes them in here. ``None`` or a short history means the pillar
+                falls back to the current run's own standard deviation.
+
+        History arrives at construction rather than through `compute` because
+        `compute`'s signature is fixed by the `Pillar` protocol, and because it
+        is configuration of the same kind as the weights: a property of how this
+        pillar is set up for this run, not of the observations it is handed.
 
         """
         self.config = config or ScoringConfig()
+        self.blend_sd_history: Sequence[float] = blend_sd_history or ()
 
     @property
     def weight(self) -> float:
@@ -426,6 +485,61 @@ class BasePillar(ABC):
             return 0.0
         return max(-clip, min(clip, float(z)))
 
+    def blend_divisor(self, run_sd: float) -> tuple[float, str]:
+        """Pick the standard deviation the blend is divided by.
+
+        Args:
+            run_sd: The cross-sectional standard deviation of this run's own
+                blend. Used as the fallback, and recorded by the caller so it can
+                join the history for later runs.
+
+        Returns:
+            ``(divisor, path)``, where ``path`` is ``"rolling"`` or
+            ``"run_local"`` and belongs in ``PillarScore.notes``. A score computed
+            under the fallback is not on the same scale as one computed under the
+            rolling estimate, so a report that does not say which was used is
+            hiding the one fact needed to compare two runs.
+
+        Why the divisor is estimated from history rather than from this run.
+        Every component is already forced to unit standard deviation
+        cross-sectionally at the previous stage, so the blend's standard
+        deviation does not vary with how similar the eight economies happen to
+        be that day: that information was normalised away one step earlier. What
+        it varies with is the correlation between the pillar's own components.
+        When the five monetary sub-indicators agree, the blend's standard
+        deviation is near 1.0 and re-standardising barely touches it. When they
+        disagree, it falls and a run-local divisor scales the pillar up hard.
+
+        That is exactly backwards. Internal disagreement between a pillar's
+        components is evidence the pillar is on shaky ground, and a run-local
+        divisor converts it into amplification: the pillar would speak loudest on
+        the days its own inputs are least coherent, and nothing in the output
+        would reveal it. Estimating the divisor over recent runs breaks that
+        feedback. The pillar is corrected for how many parts it is built from,
+        which is the artefact the pass exists to remove, and not for how much
+        those parts happen to be arguing today, which is information the model
+        should keep.
+
+        The median rather than the mean, so one strange run cannot move the scale
+        the whole model is measured on. A fixed divisor also means the clip
+        interacts with a scaling that does not move day to day, so a currency
+        cannot cross the band edge because of something that happened to an
+        unrelated pillar.
+
+        The theoretical alternative, dividing by ``sqrt(sum of u squared)``, was
+        rejected: for the monetary pillar it gives 0.4583 against the 0.7001
+        actually observed, because it assumes components that are visibly
+        correlated are independent. It would scale the heaviest pillar in the
+        model by 2.18x instead of 1.43x, erring toward over-amplification in the
+        one place that costs most.
+
+        """
+        usable = [s for s in self.blend_sd_history if s > 1e-9]
+        window = usable[-RESTANDARDISATION_WINDOW_RUNS:]
+        if len(window) >= MIN_RESTANDARDISATION_RUNS:
+            return median(window), "rolling"
+        return float(run_sd), "run_local"
+
     def blend_components(
         self,
         component_z: Mapping[str, Mapping[str, float | None]],
@@ -443,8 +557,30 @@ class BasePillar(ABC):
                 `component_weights`.
 
         Returns:
-            ``{currency: z}``, re-standardised across the cross-section so the
-            blend has unit dispersion again.
+            ``{currency: z}``, centred on this run's own cross-section and
+            divided by the scale from `blend_divisor`.
+
+        The arithmetic, matching section 2.3 of ``docs/scoring-spec.md`` with the
+        divisor taken from history rather than from the run:
+
+            ``blend(c)    = sum over available j of u_j' * z_j(c)``
+
+            ``z_pillar(c) = (blend(c) - mean(blend)) / blend_divisor(sd(blend))``
+
+        The mean stays run-local while the scale does not, and the asymmetry is
+        deliberate. Centring is what keeps the pillar a statement about this run's
+        cross-section, so it must come from this run. Scaling only corrects for
+        how many parts the pillar is built from, which is a property of the
+        pillar rather than of the day, so it should not be re-derived from the
+        day. `blend_divisor` carries the full argument.
+
+        When every currency has full sub-indicator coverage the blend's mean is
+        exactly zero by construction, since each component z has mean zero and
+        the sub-weights sum to 1. It is only non-zero when the per-currency
+        renormalisation below differs across currencies, so subtract it anyway
+        rather than relying on the special case. A divisor below ``1e-9`` is
+        handled like any other degenerate cross-section: every score becomes
+        ``0.0``.
 
         Renormalisation rule: for each currency the weighted mean runs over the
         components that currency actually has, divided by the weight present

@@ -12,6 +12,8 @@ seven modules.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from fbe.config import ScoringConfig
 from fbe.pillars.base import BasePillar
 from fbe.pillars.employment import EmploymentPillar
@@ -21,6 +23,7 @@ from fbe.pillars.inflation import InflationPillar
 from fbe.pillars.monetary import MonetaryPillar
 from fbe.pillars.positioning import PositioningPillar
 from fbe.pillars.risk import RiskPillar
+from fbe.types import PillarName
 
 __all__ = [
     "BasePillar",
@@ -36,7 +39,10 @@ __all__ = [
 ]
 
 
-def default_pillars(config: ScoringConfig | None = None) -> tuple[BasePillar, ...]:
+def default_pillars(
+    config: ScoringConfig | None = None,
+    blend_sd_history: Mapping[PillarName, Sequence[float]] | None = None,
+) -> tuple[BasePillar, ...]:
     """Build the seven pillars in the order they are reported.
 
     Order is presentation only, running from the fastest and heaviest driver to
@@ -46,20 +52,31 @@ def default_pillars(config: ScoringConfig | None = None) -> tuple[BasePillar, ..
     Args:
         config: Scoring configuration handed to every pillar. Defaults to
             `ScoringConfig()`.
+        blend_sd_history: Per-pillar history of blend standard deviations from
+            earlier runs, for the re-standardisation divisor in
+            `BasePillar.blend_divisor`. The runner loads it from the stored
+            reports under ``DataConfig.reports_dir``. A pillar missing from the
+            mapping, or the whole argument being ``None``, means that pillar
+            falls back to the current run's own standard deviation and records
+            that it did.
 
     Returns:
         One instance of each pillar class.
 
     """
     cfg = config or ScoringConfig()
-    return (
-        MonetaryPillar(cfg),
-        InflationPillar(cfg),
-        GrowthPillar(cfg),
-        EmploymentPillar(cfg),
-        ExternalPillar(cfg),
-        PositioningPillar(cfg),
-        RiskPillar(cfg),
+    hist = blend_sd_history or {}
+    return tuple(
+        cls(cfg, hist.get(cls.name))
+        for cls in (
+            MonetaryPillar,
+            InflationPillar,
+            GrowthPillar,
+            EmploymentPillar,
+            ExternalPillar,
+            PositioningPillar,
+            RiskPillar,
+        )
     )
 
 
