@@ -1,0 +1,167 @@
+# CLAUDE.md
+
+Read this before changing anything in this repository.
+
+## What this project is
+
+`fundamental-bias-engine` answers exactly one question:
+
+> Which G10 currency is fundamentally stronger than which, and by enough to be
+> worth trading?
+
+It is a directional-bias layer, not a trading system. The owner already trades
+technically: trendlines, trend channels, 1h and 4h charts, candlestick
+confirmation. Those decisions stay with the owner. This engine supplies the
+fundamental lean that tells them which side of a pair to be looking for a setup
+on. It never places an order and it has no execution code path.
+
+The method is the Anton Kreil / Institute of Trading and Portfolio Management
+relative-value macro framework: score each currency on its own fundamentals,
+then difference the two legs of a pair. There is no such thing as a strong
+currency in isolation, only a currency stronger than the one it is quoted
+against.
+
+The owner's trading plan is transcribed at `docs/trading-plan.md`. Its appendix
+records which parts of the plan this engine automates and which it does not. If
+a change to this repo would contradict a rule in that plan, the plan wins.
+
+## Architecture and data flow
+
+Data flows in one direction. Nothing downstream calls back upstream.
+
+```
+data sources        pillars           scorer            bias layer        output
+-----------         -------           ------            ----------        ------
+FRED, CFTC,   -->   7 pillars   -->   weighted    -->   difference   -->  CLI table
+Stooq/Yahoo,        compute           sum per           the two legs      HTML dashboard
+Forex Factory,      one score         currency          of each pair      JSON report
+manual CSV          per currency
+
+Observation    -->  PillarScore  -->  CurrencyScore --> PairBias     -->  BiasReport
+```
+
+- **`src/fbe/datasources/`** produces `Observation`s. Each source owns its own caching and translates its own series identifiers into canonical indicator keys. Sources know nothing about pillars.
+- **`src/fbe/pillars/`** turns `Observation`s into `PillarScore`s. A pillar receives the whole universe's observations at once, not one currency's, because normalisation is cross-sectional by design. Pillars know nothing about weights or pairs.
+- **`src/fbe/scoring.py`** aggregates `PillarScore`s into one `CurrencyScore` per currency: a weighted sum on the `-3..+3` band, plus dispersion and coverage.
+- **`src/fbe/bias.py`** differences `CurrencyScore`s into `PairBias` rows, one per entry in `ALL_PAIRS`, and assigns `Direction` and `Conviction` from the spread, the pillar agreement, and data freshness.
+- **`src/fbe/risk.py`** and **`src/fbe/calendar_guard.py`** decorate a `PairBias` into a `TradeIdea`: position size from a trader-supplied stop, and a blackout flag if a high-impact release is near either leg.
+- **`src/fbe/report.py`**, **`src/fbe/dashboard/`** and **`src/fbe/cli.py`** render. They compute nothing. If a renderer needs a number that is not on a dataclass, the number belongs upstream, not in the template.
+
+## What is implemented and what is not
+
+Three modules are real. Everything else is scaffolding at varying stages.
+
+| Module | Status |
+| --- | --- |
+| `src/fbe/types.py` | Implemented. The shared vocabulary. |
+| `src/fbe/universe.py` | Implemented. G10, metadata, the 28 pairs. |
+| `src/fbe/config.py` | Implemented apart from `load_config()`. |
+| `src/fbe/datasources/*` | In progress |
+| `src/fbe/pillars/*`, `scoring.py`, `bias.py` | In progress |
+| `src/fbe/risk.py`, `calendar_guard.py`, `journal.py` | In progress |
+| `src/fbe/cli.py`, `report.py`, `dashboard/*` | In progress |
+
+**How to tell without checking this table:** a stub raises `NotImplementedError`
+with a message pointing at `docs/roadmap.md`. `load_config()` in
+`src/fbe/config.py` is the reference example. A function that returns plausible
+but fabricated numbers is worse than one that refuses to run, so stubs raise
+rather than return placeholder data. Do not "fix" a stub by making it return
+zeros.
+
+The tests reflect this. `tests/test_universe.py` and `tests/test_config.py`
+test real behaviour. `tests/test_smoke.py` uses `pytest.importorskip` so that
+modules still landing do not break the suite, and starts covering them
+automatically as they arrive.
+
+## The rule about `src/fbe/types.py`
+
+`src/fbe/types.py` is the shared vocabulary. Every other module in the package
+imports from it, and it imports nothing but the standard library. Keep it that
+way: no I/O, no computation, no third-party dependency.
+
+**Changing a type in `types.py` is a breaking change.** Renaming a field,
+changing its type, reordering positional arguments, or adding a required field
+breaks every consumer at once. If you change it, update every consumer in the
+same commit. Do not land a types change and leave the fixes for later, and do
+not add a compatibility shim to avoid touching consumers. Additive changes with
+a default are the only ones that are cheap, and even those need a docstring
+explaining what the field means and who reads it.
+
+The same discipline applies to `src/fbe/universe.py`: `ALL_PAIRS` ordering and
+quoting convention are load-bearing. A report that silently inverts a pair
+silently inverts its bias.
+
+## House style
+
+Strict. Applies to code, comments, docstrings, docs, and commit messages.
+
+- **No em dashes. No en dashes as sentence punctuation.** Use a comma, a colon, or a new sentence. Hyphenated numeric ranges like `1-2%` are fine.
+- **Plain, direct sentences.** No filler adjectives, no marketing tone, no exclamation marks. State what a thing does and what it does not do.
+- **Never describe any of this work as AI-generated or AI-assisted**, anywhere in the repo, in any file, comment, or commit message. No model, agent, or tool names in branch names, code, comments, or docs.
+- **Conventional Commits.** `feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`. Imperative subject, 72 characters or less. See `CONTRIBUTING.md`.
+- **Python:** `from __future__ import annotations` at the top of every module, full type hints on every function, Google-style docstrings. Line length 88.
+- **Docstrings explain why, not what.** The signature already says what. Say why the threshold is 0.6, why the convention is EURUSD and not USDEUR, why a pillar normalises cross-sectionally.
+
+## Running things
+
+```bash
+pip install -e ".[dev]"
+
+python3 -m pytest                # tests
+python3 -m ruff check .          # lint
+python3 -m ruff format --check . # formatting
+python3 -m mypy                  # types (config in pyproject.toml)
+```
+
+All four run in CI on Python 3.11 and 3.12 (`.github/workflows/ci.yml`). All
+four must pass before pushing.
+
+Tests run from `src` via the `pythonpath` setting in `pyproject.toml`, so the
+suite works without an editable install. Tests must not hit the network. Use
+`respx` to mock `httpx`, or `DataConfig(offline=True)` to force cache-only
+reads.
+
+## The `data/` directory
+
+```
+data/
+  cache/     Source responses, keyed by source and request. Git-ignored except .gitkeep.
+             Lifetime is DataConfig.cache_ttl_hours. Safe to delete at any time.
+  manual/    Hand-maintained CSV inputs for series with no free API. Committed,
+             because losing them means re-keying them by hand.
+  reports/   Generated BiasReport JSON and rendered HTML. Git-ignored except .gitkeep.
+             Output only. Nothing reads from here except the dashboard.
+```
+
+Anything written to `cache/` or `reports/` must be reproducible from source
+data plus config. If deleting `data/` loses information, that information was
+in the wrong place, and it belongs in `data/manual/` or in the journal.
+
+## Standing instruction on claims
+
+**No file in this repository may claim a backtested edge that has not been
+measured.** Not the README, not a docstring, not a dashboard tooltip, not a
+commit message.
+
+The pillar weights in `ScoringConfig` are priors. They are reasoned, they are
+documented in `docs/scoring-spec.md`, and they are not evidence. Nothing in
+this project has been validated against out-of-sample returns yet. Phase 6 in
+`docs/roadmap.md` is the first point at which anyone can honestly say whether
+the model works.
+
+Until then, permitted language is "the model's prior is", "the weight reflects
+the view that", "this has not been measured". Forbidden language is "proven",
+"backtested", "high win rate", "edge", and any number presented as a historical
+result that was not computed from real data in this repo. If you catch such a
+claim while working on something else, remove it.
+
+## Related documents
+
+- `docs/trading-plan.md` The owner's plan, plus what the engine automates.
+- `docs/methodology.md` The relative-value framework and why seven pillars.
+- `docs/scoring-spec.md` Normalisation, weights, conviction bands.
+- `docs/data-sources.md` Sources, indicator registry, caching.
+- `docs/risk-and-execution.md` Sizing, blackout windows, journal.
+- `docs/interfaces.md` CLI commands and report and dashboard contracts.
+- `docs/roadmap.md` Phases, definitions of done, open questions.
+- `CONTRIBUTING.md` Branches, commits, checks.
