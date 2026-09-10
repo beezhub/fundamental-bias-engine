@@ -97,7 +97,7 @@ Strict. Applies to code, comments, docstrings, docs, and commit messages.
 
 - **No em dashes. No en dashes as sentence punctuation.** Use a comma, a colon, or a new sentence. Hyphenated numeric ranges like `1-2%` are fine.
 - **Plain, direct sentences.** No filler adjectives, no marketing tone, no exclamation marks. State what a thing does and what it does not do.
-- **Never describe any of this work as AI-generated or AI-assisted**, anywhere in the repo, in any file, comment, or commit message. No model, agent, or tool names in branch names, code, comments, or docs.
+- **Never describe any of this work as AI-generated or AI-assisted**, anywhere in the repo, in any file, comment, or commit message. No model, agent, or tool names in branch names, code, comments, or docs. The one exception is a model used as a product dependency: `src/fbe/reasoning/` calls a language model the way the data layer calls FRED, and naming it there is a dependency, not a disclosure. See `docs/reasoning-layer.md`.
 - **Conventional Commits.** `feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`. Imperative subject, 72 characters or less. See `CONTRIBUTING.md`.
 - **Python:** `from __future__ import annotations` at the top of every module, full type hints on every function, Google-style docstrings. Line length 88.
 - **Docstrings explain why, not what.** The signature already says what. Say why the threshold is 0.6, why the convention is EURUSD and not USDEUR, why a pillar normalises cross-sectionally.
@@ -169,5 +169,6 @@ claim while working on something else, remove it.
 - `docs/data-sources.md` Sources, indicator registry, caching.
 - `docs/risk-and-execution.md` Sizing, blackout windows, journal.
 - `docs/interfaces.md` CLI commands and report and dashboard contracts.
+- `docs/reasoning-layer.md` The written brief: hot list, grounding gates, cost.
 - `docs/roadmap.md` Phases, definitions of done, open questions.
 - `CONTRIBUTING.md` Branches, commits, checks.
