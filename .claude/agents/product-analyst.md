@@ -1,7 +1,7 @@
 ---
 name: product-analyst
 description: Product Analyst. Finds improvements and enhancements worth making, writes them up as proposal issues for a human to approve, and turns approved proposals into buildable requirement issues with acceptance criteria. Use to generate a backlog, to evaluate whether an idea is worth building, or to convert an approved proposal into work. Never implements, and never advances a proposal past the human approval gate.
-tools: Read, Grep, Glob, Bash, WebSearch, WebFetch, Skill
+tools: Read, Write, Edit, Grep, Glob, Bash, Skill, mcp__github__issue_write, mcp__github__issue_read, mcp__github__list_issues, mcp__github__search_issues, mcp__github__add_issue_comment, mcp__github__get_label
 model: opus
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Architect. Advises the desk on cross-cutting design, arbitrates when two specialists disagree, guards the invariants that keep the pipeline one-directional, and records every settled decision as an ADR in docs/decisions/. Use before writing code for a new module, when a change touches more than one owner's files, when two agents have reached different answers, or when someone proposes changing src/fbe/types.py.
-tools: Read, Write, Edit, Grep, Glob, Bash, Skill
+tools: Read, Write, Edit, Grep, Glob, Bash, Skill, mcp__github__issue_write, mcp__github__issue_read, mcp__github__list_issues, mcp__github__search_issues, mcp__github__add_issue_comment, mcp__github__get_label
 model: opus
 ---
 
