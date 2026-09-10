@@ -4,22 +4,29 @@ Four scheduled runs keep the backlog moving without anyone at the keyboard.
 This file is the authority for what each one may do. Where a routine's prompt
 and this file disagree, this file wins, and the run says so.
 
-Every run is a fresh session. Nothing from a previous run sits in its
-transcript, so it cannot mistake last week's state for today's. Everything it
-needs to know it reads from GitHub and from this repository at the start.
+Each routine is bound to its own host session, and that session's container is
+cloned from the integration branch on every run, so the team definitions, the
+skills and this file are present from the first command. The four hosts are
+tagged `fbe-routine` in the sessions list.
+
+## Reused sessions, stale transcripts
+
+A host session is reused across runs, which means earlier turns sit above the
+current run in its transcript. They are from a previous run and they are stale:
+issues have been closed, answered, labelled or fixed since. Every run rebuilds
+its picture from GitHub at the start and trusts nothing it only remembers. It
+never refiles something because the transcript shows it filing that before, and
+never assumes a check still fails because it failed last time.
 
 ## Getting current
 
-The container clones `main`. Until the integration branch is merged, `main`
-does not contain the team definitions, the skills, or this file, so every run
-starts with:
+The container clones the integration branch. A run confirms that with
 
-    git fetch origin claude/anton-kreil-trading-system-4yj5yk
-    git checkout -B work origin/claude/anton-kreil-trading-system-4yj5yk
+    git rev-parse --abbrev-ref HEAD
 
-Once that branch is merged, the checkout becomes a no-op and the line can go.
-A run that cannot find `.claude/agents/` after the checkout says so in one line
-and stops.
+and, if `.claude/agents/` is missing, says so in one line and stops. Once the
+integration branch is merged, the host sessions are re-pointed at `main` and
+nothing else changes.
 
 ## The four runs
 
@@ -31,7 +38,8 @@ and stops.
 | audit | Saturday 08:00 | architect | Reads the whole repository against the standards and the specifications. Files at most 10 issues, verified present. Read-only checkout, writes nothing. | Fix anything. Refile something already open or already closed. |
 
 Triage runs an hour before build so answers are in place before anyone tries to
-claim work.
+claim work. Routines bound to a host session do not send push notifications, so
+the trail on GitHub is the only record of what a run did.
 
 ## How a human approves a proposal
 
