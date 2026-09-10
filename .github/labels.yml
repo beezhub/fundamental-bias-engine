@@ -28,3 +28,4 @@
 - { name: "p3", color: "0e8a16", description: "Minor" }
 
 - { name: "routine-safe", color: "bfd4f2", description: "An unattended agent may take this without a human" }
+- { name: "approved",     color: "0e8a16", description: "A human approved this proposal. The improve routine converts it to a requirement" }
