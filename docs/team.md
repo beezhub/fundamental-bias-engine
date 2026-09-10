@@ -20,6 +20,7 @@ account", or let the coordinator route the work.
 | `interface-dev` | Interface Developer | `src/fbe/cli.py`, `report.py`, `dashboard/` | Commands, the dated report, the run-to-run diff, the phone dashboard |
 | `performance-analyst` | Performance Analyst | `src/fbe/journal.py` | Hit rate and expectancy by conviction, discipline flags, the review routine |
 | `code-reviewer` | Code Reviewer | Nothing. Read-only. | Reviewing a diff before it is committed |
+| `architect` | Architect | `docs/decisions/` | Cross-cutting design, arbitrating a disagreement, anything touching `types.py` |
 
 ## Why these boundaries
 
@@ -46,6 +47,16 @@ right. `code-reviewer` sits outside it and reviews everything.
 Two agents hold a veto in their own area. `risk-manager` can refuse any change
 that could breach the per-trade risk cap. `execution-desk` can refuse any change
 that would turn a directional bias into an entry trigger.
+
+## Standards
+
+Technical agents load the `engineering-standards` skill before writing code. It
+carries SOLID, KISS, YAGNI and DRY as they apply here, the error handling and
+docstring rules, and the table of defects that motivated each one. Every rule in
+it exists because something in this repository went wrong in that exact way.
+
+The architect holds the team to it and records settled decisions in
+`docs/decisions/`.
 
 ## Standing rules every agent carries
 

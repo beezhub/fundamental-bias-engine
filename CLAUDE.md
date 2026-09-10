@@ -93,7 +93,19 @@ silently inverts its bias.
 
 ## House style
 
-Strict. Applies to code, comments, docstrings, docs, and commit messages.
+Before writing or reviewing Python here, load the `engineering-standards` skill
+in `.claude/skills/`. It carries SOLID, KISS, YAGNI and DRY as they apply to
+this codebase, the error handling and docstring rules, the testing rules, and
+the pre-pull-request checklist. Every rule in it exists because something here
+went wrong in that exact way, and the cases are named so the rules are arguable
+rather than obeyed.
+
+Settled cross-cutting decisions are recorded in `docs/decisions/`. A decision
+that lives only in a commit message is a decision that will be quietly
+reversed.
+
+The rest of this section is the writing style, which is strict and applies to
+code, comments, docstrings, docs, and commit messages.
 
 - **No em dashes. No en dashes as sentence punctuation.** Use a comma, a colon, or a new sentence. Hyphenated numeric ranges like `1-2%` are fine.
 - **Plain, direct sentences.** No filler adjectives, no marketing tone, no exclamation marks. State what a thing does and what it does not do.
@@ -171,4 +183,6 @@ claim while working on something else, remove it.
 - `docs/interfaces.md` CLI commands and report and dashboard contracts.
 - `docs/reasoning-layer.md` The written brief: hot list, grounding gates, cost.
 - `docs/roadmap.md` Phases, definitions of done, open questions.
+- `docs/decisions/` Architecture decision records.
+- `docs/team.md` The specialist roster and who owns what.
 - `CONTRIBUTING.md` Branches, commits, checks.
