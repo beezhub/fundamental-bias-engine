@@ -1,0 +1,34 @@
+## What this changes
+
+<!-- What changed and why. Not how it was made. -->
+
+Refs: #
+
+## Acceptance criteria
+
+<!-- Restate them from the issue, ticked, each with how it was verified. -->
+
+- [ ] 
+
+## Verification
+
+```
+ruff check .
+ruff format --check .
+mypy
+pytest
+```
+
+<!-- Paste the result. For a defect, show the original failure reproducing
+     before the fix, and the same check passing after. -->
+
+## Checks against this codebase's known traps
+
+- [ ] No missing input defaults to a plausible value. It raises, or returns a marked absence.
+- [ ] No number duplicated from `ScoringConfig` or `RiskConfig`.
+- [ ] Any rounding that affects risk rounds down.
+- [ ] Pair convention is market order. EURUSD, not USDEUR.
+- [ ] Historical reads filter on release date, not period.
+- [ ] Docstrings state units, sign convention and missing-data behaviour.
+- [ ] No claim of an edge, hit rate or backtested result that was not measured here.
+- [ ] The diff is the minimum that satisfies the criteria.

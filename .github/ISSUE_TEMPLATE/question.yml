@@ -1,0 +1,22 @@
+name: Question
+description: A decision is needed before work can start.
+labels: ["type:question", "status:needs-decision"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: The question
+      description: What must be decided, and what is blocked until it is.
+    validations: { required: true }
+  - type: textarea
+    id: options
+    attributes:
+      label: Options considered
+      description: Each with what it costs and what it wins. If you know of no options, say so.
+    validations: { required: true }
+  - type: textarea
+    id: evidence
+    attributes:
+      label: What evidence would settle this
+      description: Often one option is testable and nobody tested it. If the answer needs trade data that does not exist yet, say so plainly.
+    validations: { required: true }

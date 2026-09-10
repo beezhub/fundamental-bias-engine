@@ -1,0 +1,31 @@
+# Apply with any label-sync action, or create by hand. Exactly one status label
+# per issue, always.
+
+- { name: "type:defect",           color: "d73a4a", description: "Something is wrong in code, spec, or between them" }
+- { name: "type:debt",             color: "fbca04", description: "Not wrong, but will cost later" }
+- { name: "type:question",         color: "d876e3", description: "A decision is needed before work can start" }
+- { name: "type:proposal",         color: "0e8a16", description: "An improvement. Never implemented without human approval" }
+- { name: "type:requirement",      color: "1d76db", description: "An approved proposal, written so it can be built" }
+
+- { name: "status:needs-decision", color: "e99695", description: "Blocked on an answer from the architect" }
+- { name: "status:needs-approval", color: "b60205", description: "Awaiting a human. No agent may advance this" }
+- { name: "status:ready",          color: "0e8a16", description: "Every question answered. Claimable" }
+- { name: "status:in-progress",    color: "fef2c0", description: "Claimed. The claimant is named in a comment" }
+- { name: "status:blocked",        color: "5319e7", description: "Started then stopped. The comment says on what" }
+
+- { name: "area:data",             color: "c5def5", description: "datasources, registry, caching" }
+- { name: "area:scoring",          color: "c5def5", description: "pillars, scoring, bias" }
+- { name: "area:risk",             color: "c5def5", description: "sizing, limits, journal" }
+- { name: "area:execution",        color: "c5def5", description: "calendar guard, broker constraints" }
+- { name: "area:interface",        color: "c5def5", description: "cli, report, dashboard" }
+- { name: "area:reasoning",        color: "c5def5", description: "the written brief" }
+- { name: "area:infra",            color: "c5def5", description: "ci, tooling, packaging" }
+- { name: "area:docs",             color: "c5def5", description: "specifications and guides" }
+
+- { name: "p0", color: "b60205", description: "A wrong number is reaching the trader now" }
+- { name: "p1", color: "d93f0b", description: "Wrong behaviour, not yet reaching the trader" }
+- { name: "p2", color: "fbca04", description: "Real but bounded" }
+- { name: "p3", color: "0e8a16", description: "Minor" }
+
+- { name: "routine-safe", color: "bfd4f2", description: "An unattended agent may take this without a human" }
+- { name: "approved",     color: "0e8a16", description: "A human approved this proposal. The improve routine converts it to a requirement" }

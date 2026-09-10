@@ -1,0 +1,36 @@
+name: Requirement
+description: An approved proposal, written so it can be built. Opened only after human approval.
+labels: ["type:requirement", "status:ready"]
+body:
+  - type: input
+    id: approval
+    attributes:
+      label: Link to the approved proposal
+      description: Required. A requirement without an approval link is not ready.
+    validations: { required: true }
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: Required behaviour
+      description: Stated as observable behaviour, not as an implementation.
+    validations: { required: true }
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ] 
+        - [ ] Tests cover the behaviour, and at least one would have failed before.
+        - [ ] Documentation updated where behaviour changed.
+    validations: { required: true }
+  - type: input
+    id: owner
+    attributes:
+      label: Owning specialist
+      description: From docs/team.md.
+    validations: { required: true }
+  - type: textarea
+    id: questions
+    attributes:
+      label: Open questions
+      description: Anything the architect must answer first. If this is non-empty, relabel to status:needs-decision.
