@@ -151,6 +151,21 @@ class PillarScore:
     staleness_days: int = 0
     inputs: Sequence[Observation] = field(default_factory=tuple)
     notes: str = ""
+    diagnostics: Mapping[str, float] = field(default_factory=dict)
+    """Per-run measurements about the cross-section this score came from, as
+    opposed to the score itself. Read by the report and the reasoning layer,
+    never by the aggregator: nothing here may change a composite.
+
+    Two are expected. ``contamination`` is ``sqrt((n - max_z**2) / (n - 1))``,
+    which falls as one currency dominates the cross-section, and is worth
+    showing because at eight points a single outlier moves the mean and the
+    standard deviation together and can flip the sign of a currency that did
+    not move. ``emit_sd`` is the standard deviation the pillar actually emitted
+    across the universe, which is how a reader can tell whether a pillar is
+    speaking at the volume its weight implies. A pillar emitting well below one
+    contributes less than its declared weight, and that gap is invisible in the
+    composite.
+    """
 
 
 @dataclass(frozen=True, slots=True)
