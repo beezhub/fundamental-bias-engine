@@ -112,12 +112,14 @@ pillars and are clipped identically.
 For a pillar with sub-indicators `j` carrying sub-weights `u_j` that sum to 1.0:
 
     blend(c)    = sum over available j of ( u_j' * z_j(c) )
-    z_pillar(c) = ( blend(c) - mean(blend) ) / sd(blend)
+    z_pillar(c) = ( blend(c) - mean(blend) ) / divisor
     score(c)    = clip(z_pillar(c), score_clip)
 
 where `u_j'` is `u_j` renormalised over the sub-indicators actually available for
-currency `c`, and `mean` and `sd` are taken across the currencies that have this
-pillar at all.
+currency `c`, `mean` is taken across the currencies that have this pillar at all,
+and `divisor` comes from `BasePillar.blend_divisor` in
+`src/fbe/pillars/base.py`. The mean is run-local and the divisor is not. That
+asymmetry is deliberate and is the subject of the second half of this section.
 
 **Why the blend is re-standardised.** Averaging several imperfectly correlated
 z-scores shrinks the variance of the result. Two sub-indicators that agree
@@ -131,22 +133,79 @@ of 0.30 would contribute less than that, and POSITIONING at 0.10, being a single
 component, would contribute more, whatever `ScoringConfig` says. The weights in
 section 3 are meant to be the whole of the model's opinion about relative
 importance, and they can only be that if every pillar reaches the aggregator on
-the same scale. The re-standardisation pass puts each pillar's cross-sectional
-standard deviation at exactly 1.0 before weighting, so the declared weights are
-the operative ones.
+the same scale. The re-standardisation pass corrects for that, so the declared
+weights are the operative ones. It targets a cross-sectional standard deviation
+of 1.0 for every pillar, and it hits exactly 1.0 only on the fallback path
+described below. On the rolling path a pillar lands near 1.0 and is left free to
+be louder or quieter on a day when its own components agree or disagree more
+than usual, which is the point of taking the divisor from history.
 
 Section 7.1 shows the size of the effect on real numbers: the blended MONETARY
 column has a standard deviation of 0.7001 and is scaled up by a factor of 1.43,
 while the two-component INFLATION column has a standard deviation of 0.9711 and
 is barely touched at 1.03. Without the pass, MONETARY would have spoken roughly
-39% more quietly than INFLATION relative to their declared weights.
+39% more quietly than INFLATION relative to their declared weights. Section 7 is
+a single run with no stored history, so both of those figures are the fallback
+path below, not the rolling one.
+
+**Which standard deviation the blend is divided by.** Not this run's.
+`blend_divisor` takes the median of the cross-sectional blend standard deviations
+this pillar produced over the last `ScoringConfig.restandardisation_window_runs`
+runs (60), and it engages only once `ScoringConfig.min_restandardisation_runs`
+(20) of that history exist. Below that count it falls back to the run's own
+`sd(blend)` and records that it did.
+
+The reason is that the blend's dispersion is not measuring what it looks like it
+is measuring. Every component is already forced to unit standard deviation
+cross-sectionally one stage earlier, at stage 3, so the blend's spread does not
+track how similar or how different the eight economies are on the day. That was
+normalised away. What it tracks is the correlation between a pillar's own
+sub-indicators. When the five MONETARY sub-indicators tell the same story the
+blend's standard deviation sits near 1.0 and the pass barely touches it; when
+they contradict each other it falls, and a run-local divisor scales the pillar
+up hard.
+
+That is exactly backwards. Internal disagreement between a pillar's own
+components is evidence that the pillar is on shaky ground that day, and a
+run-local divisor converts it into amplification: the pillar would speak loudest
+on the days its own inputs are least coherent, it would do so in proportion to
+how incoherent they were, and nothing downstream would reveal it. Taking the
+divisor from recent runs breaks that feedback loop. The pillar is corrected for
+how many parts it is built from, which is the artefact this pass exists to
+remove, and not for how much those parts happen to be arguing today, which is
+information the model should keep.
+
+The median rather than the mean, so that one strange run cannot move the scale
+the whole model is measured on. A divisor that does not move day to day also
+means the clip in section 1.2 interacts with a fixed scaling, so a currency
+cannot be pushed across the band edge by something that happened to an unrelated
+pillar's internal coherence.
+
+**The path taken is recorded.** `blend_divisor` returns the divisor and a path
+label, `"rolling"` or `"run_local"`, and the label belongs in
+`PillarScore.notes` on every run. This is not bookkeeping. Scores computed under
+the fallback and scores computed under the rolling estimate are not on the same
+scale, so a run-to-run comparison that hides the switch shows the reader a change
+the market did not make. The run's own `sd(blend)` is returned to the caller for
+storage as well, because it is the next run's history.
+
+**Why the theoretical divisor was rejected.** The obvious alternative is to
+divide by the standard deviation the blend would have if the sub-indicators were
+independent, `sqrt(sum of u_j squared)`. It is a fixed number per pillar, it
+needs no history, and it is wrong for the same reason it is convenient: it
+assumes components that are visibly correlated are independent. For MONETARY it
+gives `sqrt(0.15^2 + 0.25^2 + 0.20^2 + 0.25^2 + 0.15^2) = 0.4583`, against the
+0.7001 actually observed in section 7.1. It would scale the heaviest pillar in
+the model by 2.18x where the observed figure calls for 1.43x, erring toward
+over-amplification in the one place where over-amplification costs most.
 
 Two implementation notes. When every currency has full sub-indicator coverage the
 blend's mean is exactly 0 by construction, since each `z_j` has mean 0 and the
-sub-weights sum to 1, so the pass reduces to a division by `sd(blend)`. The mean
+sub-weights sum to 1, so the pass reduces to a division by the divisor. The mean
 is only non-zero when per-currency sub-weight renormalisation differs across
-currencies, so subtract it anyway rather than relying on the special case. And
-`sd(blend) < 1e-9` is handled exactly as in section 1.3: every score becomes 0.
+currencies, so subtract it anyway rather than relying on the special case. And a
+divisor below `1e-9`, from either path, is handled exactly as in section 1.3:
+every score becomes 0.
 
 The pass applies only to the five cross-sectionally normalised pillars.
 POSITIONING and RISK are excluded for the reasons in section 2.2: both are
@@ -722,12 +781,19 @@ Same blend for the rest of the universe:
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | blended | +1.136 | -0.375 | +0.793 | -0.220 | -0.977 | -0.354 | +0.603 | -0.607 |
 
-Now the re-standardisation pass of section 2.3. Every currency has all five
-sub-indicators, so the blended column has a mean of exactly 0 and the pass
-reduces to a division by its standard deviation:
+Now the re-standardisation pass of section 2.3. This example is a single run with
+no stored history, so `blend_divisor` cannot reach
+`ScoringConfig.min_restandardisation_runs` and returns the `run_local` path: the
+divisor is this run's own `sd(blend)`, and `PillarScore.notes` would say so.
+Every currency has all five sub-indicators, so the blended column has a mean of
+exactly 0 and the pass reduces to a division by that standard deviation:
 
     sd(blend) = 0.7001
     USD: +1.13595 / 0.7001 = +1.6227  ->  published as +1.62
+
+On the rolling path the divisor would instead be the median `sd(blend)` over the
+last 60 runs and every score below would move with it. The whole of section 7 is
+the fallback path.
 
 This is the effect the pass exists to correct, and MONETARY is where it is
 largest in this run. Five sub-indicators that agree in direction but not in
@@ -1156,9 +1222,17 @@ An implementer should assert, at minimum:
 - All scores lie within `+/- score_clip` after clipping.
 - Cross-sectional z-scores over a run have mean 0 and population sd 1, to within
   floating point tolerance, for any sub-indicator with full coverage.
-- Every pillar's `z` has cross-sectional mean 0 and population standard deviation
-  1 after the re-standardisation pass of section 2.3, for the five pillars that
-  use it, and the pass is **not** applied to POSITIONING or RISK.
+- Every pillar's `z` has cross-sectional mean 0 after the re-standardisation
+  pass of section 2.3, for the five pillars that use it, and the pass is **not**
+  applied to POSITIONING or RISK. Population standard deviation is exactly 1 only
+  where `blend_divisor` took the `run_local` path, which is the path a test with
+  no supplied history gets. Under the `rolling` path the standard deviation is
+  1 divided by the ratio of the run's own `sd(blend)` to the historical median,
+  and asserting exactly 1 there would be asserting the bug section 2.3 exists to
+  avoid.
+- `blend_divisor` returns `"run_local"` below
+  `ScoringConfig.min_restandardisation_runs` of history and `"rolling"` at or
+  above it, and the path it returned reaches `PillarScore.notes` in both cases.
 - A pillar is absent for a currency holding less than `MIN_COMPONENT_WEIGHT`
   (0.5) of that pillar's sub-weight, and that absence lowers coverage rather than
   producing a score.
@@ -1178,90 +1252,596 @@ An implementer should assert, at minimum:
 
 ## 10. Open questions
 
-Listed honestly. None of these is settled, and none should be silently resolved
-in code without updating this section.
+Each question below carries its current status and points at the evidence behind
+it. Four specialists worked these; the findings are in
+`docs/answers/framework.md`, `docs/answers/scoring-maths.md`,
+`docs/answers/data.md` and `docs/answers/product.md`. The statuses are the four
+verdicts those files use:
 
-1. **Inflation credibility.** Section 3.2 assumes above-target inflation is
-   currency-positive through the policy channel. When a central bank is credibly
-   ignoring an overshoot the sign inverts, and the model has no switch for this.
-   The idea behind any fix is to let the rate market decide whether the bank is
-   expected to respond, rather than assuming it will.
+| Status | Meaning |
+| --- | --- |
+| **Answered** | Settled, with evidence cited. "Change nothing" is a legitimate answer and several of these are. |
+| **Narrowed** | Not settled. Options eliminated or the answer bounded, with the remaining range stated. |
+| **Blocked on trade data** | Cannot be settled until the journal holds closed trades. The measurement and the sample it needs are named. |
+| **Judgement call** | No empirical answer exists. It is a preference, stated as one. |
 
-   **Candidate: a front-end response gate.** Define a gate from the same
-   3-month change in the 2-year yield that MONETARY already consumes:
+Recording a status is not resolving a question. Nothing below has been applied
+to the pillar definitions, the sub-weights or `ScoringConfig`, and none of it may
+be silently resolved in code without updating this section first. Where an item
+says a change is recommended, the change is still a proposal and the body of this
+document is unchanged.
 
-       g = clip( yield_2y_chg_3m / 0.10pp , 1.0 )       , so g is in -1 .. +1
+One correction has been carried into the body since these questions were
+written, and it was never one of them: section 2.3 now describes the
+re-standardisation divisor the code actually uses. That was a divergence between
+the specification and `src/fbe/pillars/base.py`, not an open question.
 
-   A **positive** inflation gap is then scored `gap * g`, and a **negative** gap
-   is left ungated and stays currency-negative. In words: inflation above target
-   only helps the currency to the extent the front end is actually repricing
-   toward a response, and if the front end is repricing the other way the same
-   overshoot counts against the currency. Inflation below target is
-   currency-negative either way, since a bank undershooting its target has no
-   reason to tighten regardless of what the curve is doing. The rule pivots
-   continuously at `gap = 0`, where both branches give 0, so there is no jump at
-   the target.
+No number anywhere below is a measured result about returns. The measurements
+cited are sensitivity measurements, how far the model's own output moves when one
+of its own choices moves, and the published research cited is about the FX market
+in general and was not run on this model. Phase 6 remains the first point at
+which anyone can say whether the engine works.
 
-   The gate is attractive because it answers the question with a series already
-   in the model rather than a new data dependency, and because it degrades
-   gracefully: at `g = 0`, a flat front end, inflation simply stops contributing
-   instead of contributing the wrong sign.
+### 1. Inflation credibility
 
-   **It is not in the pillar.** Section 3.2 stands as written, with headline at
-   0.40 and core at 0.60 and no gate. Two reasons. It adds a conditional, and
-   conditionals are exactly what the methodology's section on separating
-   fundamentals from technicals warns about: `0.10pp` is a free parameter, and
-   the pivot rule is a second one. And the real policy rate term already inside
-   MONETARY captures part of the same effect, since a tolerated overshoot shows
-   up as a falling real rate, so the gate would partly double-count something the
-   model already sees. Recorded here as the leading candidate, to be taken up
-   with the sub-weight question in item 2 rather than on its own.
+Section 3.2 assumes above-target inflation is currency-positive through the
+policy channel. When a central bank is credibly ignoring an overshoot the sign
+inverts, and the model has no switch for this. The idea behind any fix is to let
+the rate market decide whether the bank is expected to respond, rather than
+assuming it will.
 
-2. **Sub-weights are undefended.** The seven pillar weights are argued for. The
-   sub-weights inside each pillar (0.15 / 0.25 / 0.20 / 0.25 / 0.15 in MONETARY,
-   0.40 / 0.60 in INFLATION, and so on) are reasonable but essentially asserted.
-   Equal weighting within each pillar is a defensible alternative that would
-   remove eleven free parameters, and it has not been tested against the current
-   scheme.
+**Status: answered on the double-counting objection, narrowed on the
+instrument.** Evidence: `docs/answers/framework.md` Q1. Section 3.2 stands as
+written, headline at 0.40 and core at 0.60, no gate.
 
-3. **The POSITIONING boundaries.** The joins at `|p| = 1.0` and `|p| = 2.0` and
-   the contrarian slope of 1.5 are conventions. The shape is right in principle;
-   the constants are guesses.
+**Candidate: a front-end response gate.** Define a gate from the same 3-month
+change in the 2-year yield that MONETARY already consumes:
 
-4. **Cross-sectional versus time-series normalisation.** The model normalises
-   cross-sectionally almost everywhere, which means it has no view when all eight
-   currencies move together. That is intentional, but it also means a
-   universe-wide hawkish repricing shows up as nothing at all, when in reality it
-   changes which currencies are worth funding with. A hybrid, blending a
-   cross-sectional and a time-series z, has not been designed.
+    g = clip( yield_2y_chg_3m / 0.10pp , 1.0 )       , so g is in -1 .. +1
 
-5. **The eight-currency sample.** Eight points is a small sample for a z-score.
-   One outlier moves the mean and the standard deviation together, which can flip
-   the sign of a mid-ranked currency. Winsorising the inputs before normalising,
-   or using a median and median absolute deviation instead of mean and standard
-   deviation, would be more robust and less familiar. Not decided.
+A **positive** inflation gap is then scored `gap * g`, and a **negative** gap is
+left ungated and stays currency-negative. In words: inflation above target only
+helps the currency to the extent the front end is actually repricing toward a
+response, and if the front end is repricing the other way the same overshoot
+counts against the currency. Inflation below target is currency-negative either
+way, since a bank undershooting its target has no reason to tighten regardless of
+what the curve is doing. The rule pivots continuously at `gap = 0`, where both
+branches give 0, so there is no jump at the target. It answers the question with
+a series already in the model rather than a new data dependency, and it degrades
+gracefully: at `g = 0`, a flat front end, inflation simply stops contributing
+instead of contributing the wrong sign.
 
-6. **The 10-day horizon in the cost filter.** `horizon_days = 10` is a stand-in
-   for "the bias horizon". The actual holding period is the trader's, is shorter,
-   and is variable. If the true average hold is three days, the filter is roughly
-   twice as permissive as it should be.
+**Why it is still not in the pillar.** One of the two reasons this item
+originally gave survives and one does not. The surviving reason is that the gate
+adds two free parameters, the `0.10pp` scale and the pivot rule, and conditionals
+are what the methodology's section on separating fundamentals from technicals
+warns about. The reason that does not survive is the claim of double-counting,
+which was wrong as stated and is replaced by the three findings below.
 
-7. **No FX-specific carry term.** Carry is currently implicit, sitting inside
-   MONETARY as a rate level. Whether it deserves its own pillar, particularly for
-   the funding currencies, is unaddressed. It would overlap heavily with what is
-   already there.
+**What was found.**
 
-8. **Conviction does not distinguish quality from magnitude.** A spread of 2.6
-   built from a single pillar and one built from seven agreeing pillars both
-   reach HIGH before the agreement test demotes the first. The demotion ladder
-   handles this, but coarsely: a continuous conviction score that was then
-   bucketed might be better than a bucket that is then demoted.
+- **Not literal double-counting.** `real_policy_rate` is `policy_rate - cpi_yoy`
+  and contains no yield-change term. The gate would introduce a product,
+  `gap x front-end change`, and no such interaction exists anywhere in the model.
+  A product of two variables does not double-count either of them linearly.
+- **The overlap is real in effect.** The one clear within-G10 instance of a
+  credibly tolerated overshoot is the Bank of Japan through 2022, where `g` would
+  have been near zero and `real_policy_rate` was deeply negative at the same time
+  and for the same reason. The two corrections fire on the same episodes and push
+  the same way. Section 7.1 shows the mechanism at a smaller scale: JPY has the
+  fastest-rising 2-year yield in the universe, at +1.459 and +1.528, and still
+  finishes MONETARY at -0.31, pulled there by a real policy rate of -2.30%.
+- **A third and larger overlap, which this item did not previously mention.**
+  `real_policy_rate` carries an explicit coefficient of minus one on headline
+  CPI. INFLATION carries a positive loading on the same series. The model
+  therefore holds an inflation term with two opposing signs that partly cancel by
+  construction. Computed from the worked example's own cross-sectional
+  dispersions, per 1pp of headline CPI:
 
-9. **Currency metadata is static.** `risk_beta`, `inflation_target` and
-   `commodity_link` are hard-coded constants standing in for relationships that
-   drift. There is no process for reviewing them and no record of when they were
-   last correct.
+  | Term | Composite loading |
+  | --- | --- |
+  | INFLATION, headline sub-indicator | +0.1008 |
+  | INFLATION, core sub-indicator, if core moves one for one with headline | +0.1666 |
+  | MONETARY, real policy rate | -0.0501 |
 
-10. **No treatment of intervention or capital controls.** The model assumes eight
-    freely floating currencies with central banks that target inflation. That is
-    a good approximation for G10 and it is still an approximation.
+  If headline moves alone, the real policy rate term cancels **49.7%** of
+  INFLATION's response. If headline and core move together it cancels **18.7%**.
+  This is arithmetic from one run's dispersions, not a measurement, and the exact
+  figures move run to run because every `sd` in them is recomputed daily. The
+  direction and the rough magnitude do not move.
+
+  This matters beyond the gate. Section 2.3 exists so that the section 3 weights
+  are the whole of the model's opinion about relative importance. The `-cpi_yoy`
+  inside `real_policy_rate` quietly breaks that guarantee for the one pillar it
+  touches. **Recorded here as a finding and deliberately not acted on**, to be
+  ruled on together with item 2, as this item already says it should be.
+
+**On the base sign and the credibility conditioning.** The base sign is supported
+by published work on the FX market in general: Clarida and Waldman, studying
+10-minute windows around inflation announcements for 10 countries from 2001 to
+2005, find higher than expected inflation appreciates the currency, through the
+near-term policy rate rather than through beliefs about the long-run price level
+([NBER w13010](https://www.nber.org/papers/w13010)). The credibility conditioning
+is also supported, but mostly out of sample for this universe: the documented
+cross-country variation in that response is between advanced and emerging
+economies ([Dallas Fed, 2024](https://www.dallasfed.org/research/economics/2024/0903)),
+and all eight currencies here sit at the transparent, inflation-targeting end of
+that scale. The gate would be harvesting an effect whose measured dispersion
+comes from a sample this model does not trade.
+
+**On a cleaner instrument, narrowed.** Three candidates eliminated. Market-based
+inflation expectations, breakevens or inflation swaps, fail on coverage, since
+after US TIPS and UK index-linked gilts the G10 runs out of free series and
+`MIN_COMPONENT_WEIGHT` would leave the term absent for most of the universe, and
+on sign, since a rising breakeven can mean the bank is expected to hike or that
+the market has stopped believing the target. Substituting a real 2-year yield for
+the nominal adds nothing `real_policy_rate` does not carry and enlarges the
+cancellation above. A hand-set credibility flag in `CurrencyMeta` is a free
+parameter with no update process and interacts badly with item 9. What remains is
+a choice rather than an addition: the gate and the `real_policy_rate` term are
+two implementations of one correction and should be chosen between rather than
+stacked, which dissolves the double-counting objection because you cannot
+double-count if you only run one. Choosing between them requires measurement that
+does not exist.
+
+### 2. Sub-weights are undefended
+
+The seven pillar weights are argued for. The sub-weights inside each pillar
+(0.15 / 0.25 / 0.20 / 0.25 / 0.15 in MONETARY, 0.40 / 0.60 in INFLATION, and so
+on) are reasonable but essentially asserted. Equal weighting within each pillar
+is a defensible alternative that would remove eleven free parameters.
+
+**Status: answered for the measurable part, blocked on which scheme is better.**
+Evidence: `docs/answers/scoring-maths.md` Spec 2. The sub-weights stand as
+specified in section 3.
+
+**What was measured.** On the section 7 fixture, replacing all eleven sub-weights
+with equal weights inside each pillar changes no currency's rank, no pair's
+direction and no pair's conviction tier. The largest pair spread moves 0.1187 and
+the mean move is 0.0386, against a cross-pair spread standard deviation of 0.9538
+in that run, so eleven parameters are worth about 4% of the signal's own scale.
+Per pillar, the two blends correlate between 0.99265 for MONETARY, the least
+internally agreeing pillar, and 1.00000 for EMPLOYMENT, whose two components are
+already equally weighted. Over 5,000 synthetic runs and 140,000 pair
+observations, equal sub-weights change 3.42% of conviction tiers and 0.00% of
+directions, against 6.07% of tiers for a single 0.05 shift between two pillar
+weights. Section 8's own sensitivity bar is roughly 20%. Sub-weights can only
+matter to the extent that a pillar's components disagree, and inside these
+pillars they mostly do not.
+
+**What is blocked.** Which scheme is better. Two constructions whose blends
+correlate between 0.993 and 1.000 across an eight-name cross-section are the same
+construction as far as any test on that cross-section is concerned, and because
+the two schemes never disagree on direction, a hit-rate comparison has nothing to
+count. This does not become answerable by waiting for more forward record.
+
+**Two findings filed here rather than acted on.** The level-versus-momentum split
+inside MONETARY, currently 0.40 on the two level terms against 0.45 on the two
+momentum windows, is the one sub-weight division carrying real economic content,
+and is the comparison worth running first
+(`docs/answers/framework.md` Q7). EXTERNAL's flat 0.30 terms-of-trade sub-weight
+assumes the commodity-to-currency transmission is identical for CAD, AUD and NZD,
+which is the weak assumption behind item 9's `commodity_link`
+(`docs/answers/framework.md` Q9). Item 1's real-rate cancellation is to be ruled
+on with this item.
+
+### 3. The POSITIONING boundaries
+
+The joins at `|p| = 1.0` and `|p| = 2.0` and the contrarian slope of 1.5 are
+conventions. The shape is right in principle; the constants are guesses.
+
+**Status: narrowed.** Evidence: `docs/answers/scoring-maths.md` Spec 3. Section
+3.6 stands as written.
+
+**Constrained by definition rather than by fit.** `p` is a time-series z-score,
+so it has unit variance by construction and only the tail shape is an assumption.
+Under a normal `p`, a flip at 2.0 puts 4.55% of currency-weeks in the contrarian
+branch, about one currency every third run in an eight-name universe. A flip at
+1.5 fires on one currency in every single run, and a condition that holds for one
+of eight names every week is not what "extreme" means. A flip at 2.5 fires on one
+currency every tenth run, which is too rare to justify carrying the branch at
+all. The saturation point is not free either, since it is `flip + cap / slope`:
+at a slope of 1.5 the cap binds about once per 146 runs, which is what a backstop
+should do, at 1.0 it never binds and is decoration, and at 3.0 it binds monthly
+and becomes the operating point section 3.6 argues against.
+
+**Genuinely unidentified: the slope.** Over 4,000 synthetic runs and 112,000 pair
+observations, moving the slope between 1.0 and 2.5 changes at most 0.17% of
+conviction tiers. Deleting the pillar outright changes 4.64%. The model cannot
+tell a slope of 1.0 from a slope of 2.5, so the constant is a convention and
+naming it as one is more useful than defending it.
+
+**A quantity this document never stated.** `f(p)` emits at a cross-sectional
+standard deviation of about 0.5885 under a normal `p`, and 0.6437 on the section
+7 fixture, against exactly 1.0 for the five pillars that pass through section
+2.3. POSITIONING's declared weight of 0.10 therefore buys roughly 0.059 of
+effective influence, and the shape constants are what make it so. That is a
+consequence of the exclusion in section 2.2 and 2.3, not an oversight, and it
+should not be repaired by re-standardising POSITIONING, which section 2.3 rules
+out for a stated reason. Whether 0.10 was ever the intended influence is a
+question this document has not answered either way.
+
+**What would settle the constants, and what blocks it.** Bin CFTC `p` against the
+subsequent pair return and find where the relationship changes sign. The
+contrarian bin holds 4.55% of currency-weeks, so roughly 100 observations in it
+needs about 2,200 currency-weeks, around seven years across the six G10
+currencies with a liquid contract. COT history runs back to 1986, so this is
+blocked on the data layer rather than on trade data: it becomes possible when
+`src/fbe/datasources/cot.py` lands, and it needs no journal.
+
+### 4. Cross-sectional versus time-series normalisation
+
+The model normalises cross-sectionally almost everywhere, which means it has no
+view when all eight currencies move together. That is intentional, but it also
+means a universe-wide hawkish repricing shows up as nothing at all, when in
+reality it changes which currencies are worth funding with.
+
+**Status: answered, negative.** Evidence: `docs/answers/scoring-maths.md` Spec 4.
+The hybrid was designed and rejected. Section 2.2 stands.
+
+**The blind spot is real and definitional.** Adding a constant to every
+currency's input changes every cross-sectional z-score by at most `6.66e-16`. The
+shift cancels in the mean, so it cancels in every z and in every pair spread.
+
+**What a time-series leg puts back is not the common move.** Writing the hybrid
+as `lambda * z_xs + (1 - lambda) * z_ts`, a common shift of size `d` contributes
+exactly
+
+    (1 - lambda) * d * ( 1 / sd_hist(base) - 1 / sd_hist(quote) )
+
+to the pair spread, where `sd_hist` is each currency's own historical standard
+deviation. Simulated with per-currency historical volatilities spanning 0.60 for
+JPY to 1.35 for NZD, a universe-wide move of 1.75 units moves the pure
+time-series AUDJPY spread by 0.7849, which the formula reproduces to four decimal
+places, so this is a derivation and not an observation. At `lambda = 0.5` that is
+0.3925, which is 52% of the 0.75 neutral band, arriving from an event in which
+nothing happened to the relative position of the two currencies. Every large
+entry in that table is a yen cross, because the yen has the quietest history in
+the set. A hybrid would go systematically long every low-volatility currency
+against every high-volatility one whenever the G10 repriced together, at a size
+set by the ratio of their historical standard deviations. It would also cost
+`lookback_years` of history for every indicator in every pillar for every
+currency, which the data layer does not have and which `docs/data-sources.md`
+gives no free route to for several series.
+
+**The real question underneath is not a scoring question.** A universe-wide
+repricing does change something, and what it changes is not the ordering but how
+much ordering there is. That quantity, the cross-sectional dispersion of the raw
+inputs before z-scoring, is already computed inside every pillar and then thrown
+away. A run in which the eight policy rates span 25 basis points and one in which
+they span 400 produce identical z-scores, and only the second is a market where a
+relative-value view is worth much. Carrying that dispersion forward as run
+metadata would let a report say the G10 rate spread has narrowed and let a reader
+discount the whole run. It changes no score. Where it lives is a `types.py`
+decision, either a field on `PillarScore` or an entry in `PillarScore.notes`, and
+belongs to whoever owns that file. Anyone reopening the hybrid carries the burden
+of explaining why the difference in two currencies' historical volatilities is a
+fundamental fact about them.
+
+### 5. The eight-currency sample
+
+Eight points is a small sample for a z-score. One outlier moves the mean and the
+standard deviation together, which can flip the sign of a mid-ranked currency.
+Winsorising the inputs, or using a median and median absolute deviation, would be
+more robust.
+
+**Status: answered.** Evidence: `docs/answers/scoring-maths.md` Spec 5. Section
+1.3 stands: mean and population standard deviation, no winsorising, no median and
+MAD.
+
+**The effect is real and now has a number.** Shift the Swiss franc's entire
+MONETARY block by 2 standard deviations of each component's own cross-section, a
+plausible Swiss National Bank regime change taking the policy rate from 0.25% to
+3.30%. JPY, ranked fourth, moves from **+0.1869 to -0.0117** and changes sign.
+Nothing about Japan changed. That perturbation study works from unrounded pillar
+scores, so its clean JPY composite reads +0.1869 where section 7.6 publishes
++0.1875 from the rounded ones; the difference is presentational and does not
+touch the finding. Two mitigations belong next to that finding. The
+ordering of the untouched currencies is preserved by construction on any single
+component, because a z-score is an affine map and an affine map does not reorder;
+what an outlier destroys is not the ordering but the spacing, compressing the
+rest of the cross-section toward each other until the differences are numerically
+meaningless. And the pair layer, which is what is traded, moves far less than the
+composite layer, because part of the contamination is common to both legs: at
+this perturbation none of the 21 pairs containing neither leg of the franc
+changes conviction tier and the largest spread move is 0.1257. At 5 standard
+deviations, four of them change.
+
+**Median and MAD: rejected.** Over 20,000 clean draws and 20,000 contaminated
+ones, it is 1.83 times noisier than mean and standard deviation on clean data,
+RMSE 0.8101 against 0.4419, and no more robust in expectation, which is not what
+its reputation suggests. The reason is `n = 8`: the median of eight points is the
+average of the fourth and fifth order statistics and the MAD is the median of
+eight absolute deviations, so both are step functions that jump when a point
+crosses an order statistic. Its worst single change across those draws was 47.6,
+a run where the MAD collapsed toward zero and took the divisor with it. It is
+also the only one of the three rules that changes a conviction tier on a clean
+fixture with no outlier in it, and adopting it would invalidate every threshold
+in `ScoringConfig`, since a MAD-based z is not on the scale 0.75, 1.50 and 2.50
+were chosen for.
+
+**Winsorising: rejected, for a specific reason.** It works as advertised,
+removing the contamination completely at the component level and cutting
+contamination RMSE by 33% for 23% more estimation noise. But winsorising one
+point at each end of an eight-point cross-section replaces the largest value with
+the second largest, which on the clean section 7 fixture ties the top two
+currencies on **16 of 16 components**. `bias.shortlist` works by pairing the top
+of the ranking against the bottom, so this deletes the sharpest information the
+model has, in every run, to defend against a rare event. It also mutes the
+dislocation itself: the yen's composite under a 5 standard deviation MONETARY
+shock reads +0.995 under the current rule and +0.631 under winsorising, so the
+one currency that genuinely did something gets understated.
+
+**Recommended instead, not adopted here.** The current rule's problem is not that
+it produces a wrong number but that it produces a compressed one silently, and
+compression is exactly computable. For population z-scores over `n` names the
+squared z-scores sum to `n`, so once the largest absolute z is `m` the remaining
+names satisfy `residual RMS = sqrt( (n - m^2) / (n - 1) )`, with no estimation
+and no parameter. The section 7 fixture is already in that territory without
+anyone having noticed: Japan's real policy rate at `|z| = 2.3481` has compressed
+the other seven currencies' real-rate scores to 0.5960 of their natural spread,
+and EXTERNAL's terms of trade to 0.6707. Surfacing that diagnostic changes no
+score. Where it lives is the same `types.py` decision as item 4, and the level at
+which a report should complain about it is a convention rather than a finding;
+0.70, a largest absolute z above roughly 2.15, is a reasonable starting point.
+
+Note also that the divisor correction now in section 2.3 helps here. A run-local
+divisor re-inflates a cross-section that an outlier has just compressed, so the
+historical divisor is measurably less contaminated by a dislocated currency: at a
+3 standard deviation CHF shift, 0 tier changes among the untouched pairs against
+2 under a run-local divisor.
+
+### 6. The 10-day horizon in the cost filter
+
+`horizon_days = 10` is a stand-in for "the bias horizon". The actual holding
+period is the trader's, is shorter, and is variable.
+
+**Status: answered on the structure, blocked on trade data for the value.**
+Evidence: `docs/answers/scoring-maths.md` Spec 6. Section 6 stands.
+
+**The filter has one free parameter, not two.**
+
+    cost_ratio = cost / ( atr_20d * sqrt(horizon_days) ) <= max_cost_ratio
+
+rearranges to
+
+    cost / atr_20d <= max_cost_ratio * sqrt(horizon_days) = k
+
+Only `k` is identified. `max_cost_ratio` and `horizon_days` cannot be argued
+about separately, because every pair of values with the same product describes
+the same filter. At the defaults `k = 0.05 * sqrt(10) = 0.1581`, so a pair with a
+62-pip 20-day ATR may cost up to 9.80 pips round trip. The concern recorded in
+this item is right in substance and slightly off in size: moving the horizon from
+10 to 3 without touching `max_cost_ratio` tightens the filter by
+`sqrt(10/3) = 1.83`, not 2, and takes that allowance to 5.37 pips.
+
+**Blocked on trade data.** The measurement is the median holding period, taken
+from `opened_at` and `closed_at` on `journal.TradeRecord`, which already carries
+both, so no new field is needed. Pinning the mean to plus or minus one day at a
+plausible dispersion of three days needs about 35 closed trades:
+`(1.96 * 3 / 1)^2 = 35`. There are none. Nothing else in this repository measures
+a holding period, and both cost examples in section 7 pass at every horizon in
+the plausible range, so the fixture cannot demonstrate a pair changing status
+either. Once the hold is measured, set `horizon_days` to it and set
+`max_cost_ratio` so that `k` lands where the trader wants it, rather than moving
+either alone.
+
+Two further points that do not depend on the measurement. The square-root scaling
+assumes a random walk, which understates the move if the bias has any content and
+overstates it if the pair mean-reverts, so `k` is not a physical constant even
+once the hold is known. And the quantity a trader actually cares about is cost as
+a share of the money at risk, `cost / stop_distance`, which needs no horizon at
+all. That check belongs at the sizing layer, which sees the stop, and not at the
+bias layer, which by design is computed before a chart is looked at, so the ATR
+screen stays here as the coarse filter it is.
+
+### 7. No FX-specific carry term
+
+Carry is currently implicit, sitting inside MONETARY as a rate level. Whether it
+deserves its own pillar, particularly for the funding currencies, was
+unaddressed.
+
+**Status: answered. No carry pillar.** Evidence: `docs/answers/framework.md` Q7.
+Section 3.1 stands.
+
+**The overlap is near-total by construction.** An asset's carry is its expected
+return assuming its price does not change (Koijen, Moskowitz, Pedersen and Vrugt,
+[JFE 2018](https://pages.stern.nyu.edu/~lpederse/papers/Carry.pdf)); in FX that
+quantity is the interest rate differential and there is no other input. MONETARY
+already scores rate levels cross-sectionally at 0.15 on `policy_rate` and 0.25 on
+`yield_2y`, which is 0.40 of the pillar, and in a differenced relative-value
+model the cross-sectional z of a rate level is the carry rank up to a monotone
+transform. A carry pillar would fail the roadmap's own Phase 3 test, that two
+pillars correlated above 0.9 across the cross-section are double-counting, on the
+first run.
+
+**Carry as income does not rescue it at this horizon.** At an annualised
+differential of 2%, wide for the G10, ten days accrues 0.055%, against a plausible
+move of `atr_20d_pips * sqrt(10)`. The trading plan holds hours to a few days, so
+the realised figure is smaller again.
+
+**And the carry factor's downside is already the RISK pillar's subject.** The
+high-minus-low interest rate slope factor accounts for most of the
+cross-sectional variation in average excess returns
+([RFS 2011, NBER w14082](https://www.nber.org/papers/w14082)), and its returns
+are negatively skewed because of sudden unwinds when risk appetite and funding
+liquidity fall ([NBER w14473](https://www.nber.org/papers/w14473)). That unwind is
+precisely what section 3.7 describes. A carry pillar would double-count
+MONETARY's level terms on the upside and RISK on the downside, and under section
+8 constraint 3 a pillar that cannot justify 0.05 should not be created.
+
+**One caveat surfaced by this work, recorded and not applied.** The positive sign
+on the rate *level* is regime-dependent in a way the sign on the rate *change* is
+not. Bussière, Chinn, Ferrara and Heipertz find the classic rejection of
+uncovered interest parity "does not survive into the period during and in the
+decade after the financial crisis", where the coefficient on the interest
+differential becomes large and positive
+([NBER w24342](https://www.nber.org/papers/w24342)), which means high-rate
+currencies depreciating. That is an argument for stating the asymmetry in section
+3.1's known failure mode, not for removing the level terms, and it is consistent
+with the pillar already putting 0.45 of its sub-weight on the two momentum
+windows against 0.40 on levels. Section 3.1 is unchanged pending a ruling. Worth
+recording alongside it that the carry factor is weakest in exactly this universe:
+published work finds including emerging market currencies substantially raises
+the carry Sharpe ratio relative to a developed-market-only portfolio.
+
+### 8. Conviction does not distinguish quality from magnitude
+
+A spread of 2.6 built from a single pillar and one built from seven agreeing
+pillars both reach HIGH before the agreement test demotes the first. The demotion
+ladder handles this, but coarsely.
+
+**Status: narrowed, and the empirical route is effectively closed.** Evidence:
+`docs/answers/scoring-maths.md` Spec 8. Section 5.4 stands.
+
+**The ladder's defect is real and now stated precisely.** The demotions act on an
+ordinal ladder, so an identical trigger costs wildly different amounts depending
+on where the pair started. A pair at `abs(spread) = 2.55` loses about 0.05 of
+effective spread to a one-step coverage demotion. A pair at 0.76 loses its
+direction entirely. Worth writing down whether or not the rule ever changes.
+
+**The alternative was built and compared.** It introduces no new constants;
+every anchor is an existing `ScoringConfig` field:
+
+    m_agreement  = min(1, agreement / min_agreement)      , 1 at and above 0.60
+    m_coverage   = min(1, coverage / 0.80)                , 1 at and above 0.80
+    m_dispersion = min(1, max_dispersion / dispersion)    , 1 at and below 1.20
+
+    Q = |spread| * m_agreement * m_coverage * m_dispersion
+
+bucketed at the same 0.75, 1.50 and 2.50, with the 24-hour event test still
+capping at LOW. It agrees with the ladder on all 28 pairs of the section 7
+fixture, and disagrees on 3.05% of 112,000 synthetic pair observations, 85% of
+which is a pair just over 0.75 that the ladder demotes to NONE and the continuous
+score haircuts but leaves above the line. That is the boundary section 7.7
+already calls a rounding difference between two nearly flat currencies. Under a
+0.05 input jiggle the continuous form is about 20% more stable, 2.91% against
+3.64%, which is not the same as being more correct.
+
+**This will not be settled by measurement at this cadence, and should stop being
+described as though Phase 6 will settle it.** Separating a 50% hit rate from a
+60% one at 80% power needs about 389 observations per arm. The two schemes
+disagree on roughly 0.85 pair observations per run, and over a 10-day bias
+horizon consecutive daily runs re-observe the same episode, so six months of
+daily running yields on the order of ten independent disagreeing episodes rather
+than 111. The gap between ten and 389 is not closable by waiting a little longer.
+Computing `Q` and recording it alongside the ladder without letting it decide
+anything would cost three lines, make the inconsistency visible on the pairs
+where it bites, and build the forward record. It needs a field on `PairBias`,
+which is a `types.py` decision.
+
+### 9. Currency metadata is static
+
+`risk_beta`, `inflation_target` and `commodity_link` are hard-coded constants
+standing in for relationships that drift. There is no process for reviewing them
+and no record of when they were last correct.
+
+**Status: answered, and it splits three ways.** Evidence:
+`docs/answers/framework.md` Q9 and `docs/answers/scoring-maths.md` Roadmap 4. All
+three fields stay static, for different reasons.
+
+**`inflation_target`: static is correct.** Targets in this universe change on a
+decade scale and by announcement, so a change is applied deliberately rather than
+detected. The Federal Reserve's 2025 framework review removed the
+average-inflation-targeting language and left the 2% longer-run goal untouched,
+and the RBNZ remit was amended twice in three years with the 1-3% band and its 2%
+midpoint surviving both. The pattern to expect is that the framework around the
+target churns and the target does not.
+
+The field has a different problem, larger than drift: it holds a point where
+three of the eight do not have one. AUD's 2.5 is the midpoint of a 2-3% band,
+NZD's 2.0 the midpoint of 1-3%, and the SNB runs no point target at all but
+defines price stability as inflation below 2%, so CHF's 1.0 is a modelling choice
+standing in for an asymmetric objective rather than a published number. A 3.1%
+print is at the top of the Australian band and outside the New Zealand one, and
+section 3.2 cannot tell those two policy problems apart. Whether to add an
+optional band field is a separate decision and is not recommended yet, because
+nothing would consume it.
+
+**`commodity_link`: static is correct, and the field is not where the error is.**
+Dairy was 29.9% of New Zealand's total goods exports in the twelve months to June
+2025, and Australia supplied 53.9% of world iron ore exports in 2025. Neither
+identity flips inside a review cycle. What does move is the strength of the
+transmission from the commodity to the currency, which EXTERNAL currently assumes
+is identical across the three by giving each a flat 0.30 sub-weight. That is a
+sub-weight question and sits under item 2.
+
+**`risk_beta`: not fine as a constant, and still the right thing to use.** The
+failure is recent and specific. In April 2025 the dollar depreciated alongside
+equities: the ECB's November 2025 Financial Stability Review records a 12%
+depreciation against the euro from January with roughly 7 percentage points of it
+after 2 April, and the correlation between US Treasury yields and the dollar
+turning negative for a period. Run that through section 3.7. A broad equity index
+was deep below its 52-week high and volatility was far above its mean, so `R`
+would have been strongly negative, and with `risk_beta(USD) = -0.5` the pillar
+would have scored the dollar strongly positive while it was falling. Not a
+magnitude error, a sign error, on the most-traded currency in the universe, on
+exactly the days the pillar exists to handle. The same instability is documented
+for the yen, whose haven behaviour rests on repatriation flows and its funding
+role rather than on anything permanent about Japan, and weakens when Japanese
+rates rise.
+
+The obvious repair does not work. A trailing regression describes the regime that
+just ended: it would have carried -0.5 into April 2025 unchanged and turned the
+sign some weeks after the episode it was needed for, converting a wrong constant
+into a lagging variable at the cost of a fitted parameter. Simulated against a
+drifting true beta, a rolling estimate beats the static constant only once the
+true beta's drift standard deviation exceeds roughly 0.25 of the `-1..+1` band,
+and even at a drift of 0.35 the best window improves RMSE by 13%. A 60-day
+window, the one people reach for because it responds quickly, is the worst
+performer at every drift level tested. What a beta error costs is bounded and
+regime-dependent: at `R = -0.625` a beta error of 0.30 is 0.075 of pair spread,
+10% of the neutral band, and changes 5.25% of conviction tiers over 2,000 draws
+on the fixture. In a calm run, where `R` is near zero, it costs nothing by
+construction.
+
+**Recommended and not adopted here:** keep the static values; compute a rolling
+realised beta and report it next to the static one as a diagnostic that feeds no
+score, saying so on the page when the two disagree in sign; add a `last_reviewed`
+date to `CurrencyMeta`, which is the record half of this item's complaint; and
+review on section 8's cadence, annually or on an announced framework change. Any
+rolling beta must be measured against a per-currency index, for example the
+geometric mean of that currency's seven crosses, rather than against a dollar
+pair: regressing EURUSD on an equity index measures the difference between two
+betas, and the dollar has a large one of its own, so a beta estimated off USD
+pairs would be confidently and invisibly wrong for every currency at once.
+`CurrencyMeta` changes belong to `src/fbe/universe.py`.
+
+### 10. No treatment of intervention or capital controls
+
+The model assumes eight freely floating currencies with central banks that target
+inflation. That is a good approximation for G10 and it is still an approximation.
+
+**Status: open, unworked.** None of the four specialist passes took this up. It
+stands exactly as written, with no evidence behind it in either direction.
+
+### Findings from the same passes that are not items in this section
+
+Recorded here so they are not lost, and because two of them bear on the body of
+this document. None has been applied.
+
+- **A free business-confidence series covering all eight currencies exists**, in
+  the OECD Business Tendency Surveys dataflow, monthly for USD, EUR, GBP and CHF
+  and quarterly for JPY, CAD, AUD and NZD, which bears on section 3.3's statement
+  that PMI is unavailable on a free feed for every G10 country. It is not a
+  drop-in: the unit is a percentage balance centred on zero, not a diffusion index
+  centred on 50, so it cannot sit under `pmi_composite` without misscoring every
+  observation. Whether GROWTH takes it as a separate component is a scoring
+  decision that has not been made. Evidence: `docs/answers/data.md` question 5.
+- **GDP revisions are large enough to move the cross-sectional ranking.** The
+  current cross-sectional standard deviation of `gdp_yoy` across the G10 is 0.636
+  percentage points with adjacent currencies as close as 0.004, against a US
+  advance-to-latest average revision without regard to sign of 1.2 percentage
+  points on the quarterly annualised rate. Live scoring should use the latest
+  vintage, which is what the registry does; first-print data is for a backtest,
+  which is what `Observation.released_at` and `revision` exist for. Evidence:
+  `docs/answers/data.md` question 8.
+- **A free forward curve exists for four of the eight currencies**, EUR, GBP, AUD
+  and USD, fetched live, and does not exist free for CAD, JPY, CHF and NZD. If a
+  separate `policy_path` sub-indicator inside MONETARY is ever wanted, that is the
+  coverage it would start from, and whether a 4-of-8 indicator is worth adding
+  under `MIN_COMPONENT_WEIGHT` is a scoring decision, not a data one. Evidence:
+  `docs/answers/data.md` question 3.
+- **Section 7 should not be handed to a reasoning layer as context.** It exists so
+  a human can check the arithmetic by hand. Evidence:
+  `docs/answers/product.md`, reasoning-layer 1.
