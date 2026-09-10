@@ -1,0 +1,52 @@
+name: Defect
+description: Something is wrong in the code, the specification, or between them.
+labels: ["type:defect", "status:needs-decision"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most defects in this project produce a plausible number rather than an
+        error. Describe what it produces, not only that it is wrong.
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: Observed behaviour
+      description: What happens now, as an observable fact.
+    validations: { required: true }
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Failure scenario
+      description: Concrete inputs, and the wrong output they produce. Give real numbers.
+      placeholder: "rates = {'USDZAR': 18.50, 'USDJPY': 155.00}, sizing USDJPY raises MissingRateError, so every yen cross is refused."
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations: { required: true }
+  - type: input
+    id: files
+    attributes:
+      label: Affected files or modules
+    validations: { required: true }
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: A checkable list. Someone not in this conversation must be able to verify each one.
+      value: |
+        - [ ] 
+        - [ ] A test reproduces the failure and fails before the fix.
+        - [ ] Documentation updated where behaviour changed.
+    validations: { required: true }
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - "p0: a wrong number is reaching the trader now"
+        - "p1: wrong behaviour, not yet reaching the trader"
+        - "p2: real but bounded"
+        - "p3: minor"
+    validations: { required: true }

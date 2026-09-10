@@ -100,6 +100,12 @@ the pre-pull-request checklist. Every rule in it exists because something here
 went wrong in that exact way, and the cases are named so the rules are arguable
 rather than obeyed.
 
+Work enters as a GitHub issue and leaves as a merged pull request. The
+`issue-workflow` skill carries the lifecycle, the labels, the definition of
+ready, what an agent running unattended may and may not do, and the one rule
+with no agent override: a proposal never becomes work without a human
+approving it. `docs/team.md` shows the flow and who owns what.
+
 Settled cross-cutting decisions are recorded in `docs/decisions/`. A decision
 that lives only in a commit message is a decision that will be quietly
 reversed.

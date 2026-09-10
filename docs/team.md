@@ -21,6 +21,9 @@ account", or let the coordinator route the work.
 | `performance-analyst` | Performance Analyst | `src/fbe/journal.py` | Hit rate and expectancy by conviction, discipline flags, the review routine |
 | `code-reviewer` | Code Reviewer | Nothing. Read-only. | Reviewing a diff before it is committed |
 | `architect` | Architect | `docs/decisions/` | Cross-cutting design, arbitrating a disagreement, anything touching `types.py` |
+| `product-analyst` | Product Analyst | Proposal and requirement issues | Whether an idea is worth building, and writing it so someone else can build it |
+| `developer` | Developer | One ready issue at a time | Implementing an issue end to end, branch through pull request |
+| `test-engineer` | Test Engineer | `tests/` | Coverage, fixtures, and verifying acceptance criteria independently |
 
 ## Why these boundaries
 
@@ -57,6 +60,43 @@ it exists because something in this repository went wrong in that exact way.
 
 The architect holds the team to it and records settled decisions in
 `docs/decisions/`.
+
+## How work flows
+
+Work enters as an issue and leaves as a merged pull request. Nothing skips a
+stage, and one stage cannot be skipped by an agent at all.
+
+```
+  audit, review, or idea
+          |
+          +--> type:defect / type:debt --> questions? --> status:needs-decision
+          |                                                      |
+          |                                          architect answers
+          |                                                      v
+          |                                              status:ready
+          |                                                      |
+          +--> type:proposal --> status:needs-approval           |
+                                        |                        |
+                                 HUMAN APPROVES                  |
+                                        |                        |
+                                        v                        |
+                               type:requirement ----------------->
+                                                                 |
+                                                                 v
+                              branch -> tests -> code -> pull request -> review -> merge
+```
+
+The approval gate is the one rule with no agent override. A proposal never
+becomes work without a human, including when it looks obviously correct.
+Obviousness is the feeling that reliably precedes an unwanted change.
+
+`status:ready` is the only state a developer may claim, and it means every open
+question on the issue has been answered. An issue that fails the definition of
+ready goes back to the architect rather than being started carefully in the
+wrong direction.
+
+The full lifecycle, the labels, what an unattended agent may and may not do, and
+the definitions of ready and done are in the `issue-workflow` skill.
 
 ## Standing rules every agent carries
 

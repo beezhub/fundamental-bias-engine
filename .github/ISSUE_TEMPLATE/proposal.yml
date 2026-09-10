@@ -1,0 +1,48 @@
+name: Proposal
+description: An improvement or enhancement. Requires human approval before any work starts.
+labels: ["type:proposal", "status:needs-approval"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A proposal is never implemented directly. A human approves it, then it
+        becomes a requirement issue. No agent may advance this issue itself.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: The problem, not the solution. If you cannot state it without naming the fix, the problem may not be real.
+    validations: { required: true }
+  - type: input
+    id: plan-rule
+    attributes:
+      label: Which rule in docs/trading-plan.md does this serve?
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations: { required: true }
+  - type: textarea
+    id: cost
+    attributes:
+      label: Cost
+      description: Build effort, running cost, and what it adds to the surface that can go wrong.
+    validations: { required: true }
+  - type: textarea
+    id: failure
+    attributes:
+      label: Failure mode
+      description: What does this look like when it is wrong, and would anyone notice? On this project that question outranks the benefit.
+    validations: { required: true }
+  - type: textarea
+    id: nothing
+    attributes:
+      label: What happens if this is never built
+      description: Doing nothing is the baseline. Often the honest answer is "very little".
+    validations: { required: true }
+  - type: textarea
+    id: falsify
+    attributes:
+      label: What observation would show this was not worth building
+    validations: { required: true }
