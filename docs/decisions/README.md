@@ -14,3 +14,5 @@ often more useful later than reasoning that was right.
 | # | Decision | Status |
 | --- | --- | --- |
 | [0001](0001-rolling-re-standardisation-divisor.md) | Estimate the blend divisor over recent runs | Accepted |
+| [0002](0002-representing-not-known.md) | Absence is represented explicitly, never as a passing value | Accepted |
+| [0003](0003-publish-effective-loadings-rather-than-remove-real-policy-rate.md) | Publish the effective loadings rather than remove `real_policy_rate` | Accepted |
