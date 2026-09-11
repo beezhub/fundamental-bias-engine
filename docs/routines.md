@@ -47,15 +47,20 @@ at a glance, so the identity has to be written into the artefact itself.
 
 Each run has a desk name and a label, both fixed:
 
-| Run | Desk | Label |
+| Run, as its own prompt opens | Desk | Label |
 | --- | --- | --- |
-| deliver | planning desk | `run:planning` |
-| triage | triage desk | `run:triage` |
-| build lane 1 | maintenance desk | `run:maintenance` |
-| implement lane A | build desk A | `run:build-a` |
-| implement lane B | build desk B | `run:build-b` |
-| audit | audit desk | `run:audit` |
-| improve | proposals desk | `run:proposals` |
+| "Scheduled delivery run" | planning desk | `run:planning` |
+| "Scheduled triage run" | triage desk | `run:triage` |
+| "Scheduled build run, lane 1" | maintenance desk | `run:maintenance` |
+| "Scheduled implementation run, lane A" | build desk A | `run:build-a` |
+| "Scheduled implementation run, lane B" | build desk B | `run:build-b` |
+| "Scheduled audit run" | audit desk | `run:audit` |
+| "Scheduled improvement run" | proposals desk | `run:proposals` |
+
+The first column is how each run's own prompt introduces it, so a run can
+find its own row without being told which one it is. A prompt that matches no
+row means the schedule has changed and this file has not: say so and sign as
+the run name in the prompt rather than guessing a desk.
 
 A run applies its own label to every issue it files and every pull request it
 opens, and to nothing else. It never removes another desk's label, because the
