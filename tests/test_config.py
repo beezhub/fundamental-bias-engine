@@ -4,15 +4,27 @@ Two things matter here. The pillar weights must sum to 1.0, or the composite
 score is on an unstated scale and the conviction thresholds mean nothing. And
 ``digest()`` must be stable, because a report that cannot be tied back to the
 weights that produced it cannot be evaluated later.
+
+A third concern is provenance. ``RiskConfig`` must say which limits the trading
+plan states and which the engine derived, because the plan wins any conflict and
+a derived limit wrongly attributed to it cannot be argued with.
 """
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import replace
 
 import pytest
 
-from fbe.config import Config, DataConfig, RiskConfig, ScoringConfig, load_config
+from fbe.config import (
+    REPO_ROOT,
+    Config,
+    DataConfig,
+    RiskConfig,
+    ScoringConfig,
+    load_config,
+)
 from fbe.types import PillarName
 
 WEIGHT_TOLERANCE = 1e-9
@@ -121,6 +133,77 @@ def test_risk_defaults_match_the_trading_plan(default_config: Config) -> None:
     assert risk.account_balance == pytest.approx(2000.0)
     assert risk.risk_per_trade_min == pytest.approx(0.01)
     assert risk.risk_per_trade_max == pytest.approx(0.02)
+
+
+DERIVED_RISK_LIMITS = (
+    "max_concurrent_positions",
+    "max_correlated_exposure",
+    "max_daily_loss",
+    "max_drawdown_pause",
+)
+"""Limits the plan does not state. Each is derived from the plan's intent in
+``docs/risk-and-execution.md`` section 4, and the config must say so, because
+``CLAUDE.md`` lets the plan win any argument and a limit wrongly attributed to
+the plan cannot be argued with."""
+
+
+def _field_docstring(source: str, name: str) -> str:
+    """The attribute docstring that follows ``name``'s field definition.
+
+    A string literal after a dataclass field is discarded at runtime, so the
+    only way to check it is to read the source. The docstring runs from the
+    field's line to the next field or the end of the class.
+    """
+    lines = source.splitlines()
+    start = next(
+        i for i, line in enumerate(lines) if line.lstrip().startswith(f"{name}:")
+    )
+    body: list[str] = []
+    for line in lines[start + 1 :]:
+        stripped = line.strip()
+        if not stripped.startswith('"""') and not body:
+            return ""
+        body.append(stripped)
+        if stripped.endswith('"""') and (len(body) > 1 or len(stripped) > 3):
+            break
+    return " ".join(body)
+
+
+def test_risk_config_does_not_attribute_every_limit_to_the_plan() -> None:
+    doc = RiskConfig.__doc__ or ""
+    assert "taken directly from the trading plan" not in doc
+    assert "from the plan" in doc
+    assert "derived" in doc
+
+
+@pytest.mark.parametrize("name", DERIVED_RISK_LIMITS)
+def test_derived_risk_limit_states_its_provenance(name: str) -> None:
+    doc = _field_docstring(inspect.getsource(RiskConfig), name)
+    assert doc, f"{name} has no docstring"
+    assert "risk-and-execution.md" in doc
+    assert "section 4" in doc
+    assert "prior" in doc
+
+
+@pytest.mark.parametrize("name", ["max_concurrent_positions", "account_currency"])
+def test_previously_undocumented_risk_fields_have_docstrings(name: str) -> None:
+    assert _field_docstring(inspect.getsource(RiskConfig), name)
+
+
+def test_nothing_in_src_claims_to_be_taken_directly_from_the_plan() -> None:
+    hits = [
+        path
+        for path in (REPO_ROOT / "src").rglob("*.py")
+        if "taken directly from the trading plan" in path.read_text()
+    ]
+    assert hits == []
+
+
+@pytest.mark.parametrize("name", DERIVED_RISK_LIMITS)
+def test_plan_appendix_maps_each_derived_limit(name: str) -> None:
+    plan = (REPO_ROOT / "docs" / "trading-plan.md").read_text()
+    appendix = plan.split("# Appendix: what the engine automates", 1)[1]
+    assert f"{name}`" in appendix
 
 
 def test_conviction_thresholds_are_ordered(default_config: Config) -> None:
