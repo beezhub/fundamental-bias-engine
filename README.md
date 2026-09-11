@@ -53,9 +53,22 @@ cp .env.example .env
 ```
 
 Get a free FRED API key from
-<https://fredaccount.stlouisfed.org/apikeys> and put it in `.env` as
-`FRED_API_KEY`. It backs the monetary, inflation, growth, and employment
-pillars. Registration takes a minute and costs nothing.
+<https://fredaccount.stlouisfed.org/apikeys>. The request form asks for a short
+description of the application; a paragraph describing a personal macro
+research tool is enough, and the key is issued on submission. It backs the
+monetary, inflation, growth, and employment pillars.
+
+Put the key in `.env` as `FRED_API_KEY` so you have a record of it, then export
+it. The code reads the environment only. Nothing loads `.env` yet, so a key that
+lives only in that file is invisible to the engine.
+
+```bash
+export FRED_API_KEY=your_key_here
+```
+
+```powershell
+$env:FRED_API_KEY = "your_key_here"
+```
 
 Then check the install:
 
@@ -65,6 +78,12 @@ fbe doctor
 
 `doctor` reports which data sources are reachable, whether the FRED key works,
 what is in the cache, and which parts of the pipeline are not yet implemented.
+Until it lands, confirm the key with one direct request. A working key returns
+a JSON body with one observation; a bad one returns 400.
+
+```bash
+curl -s "https://api.stlouisfed.org/fred/series/observations?series_id=FEDFUNDS&file_type=json&limit=1&sort_order=desc&api_key=$FRED_API_KEY"
+```
 
 ## Status
 
