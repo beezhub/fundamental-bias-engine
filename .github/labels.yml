@@ -27,7 +27,7 @@
 - { name: "p2", color: "fbca04", description: "Real but bounded" }
 - { name: "p3", color: "0e8a16", description: "Minor" }
 
-- { name: "roadmap", color: "5319e7", description: "Delivers a roadmap phase. The implementation lanes claim from this pool, never the maintenance lanes" }
+- { name: "roadmap", color: "5319e7", description: "Delivers a roadmap phase. The build desks claim this pool, the maintenance desk never does" }
 
 - { name: "phase:0", color: "e4e0f7", description: "docs/roadmap.md Phase 0: contracts and documentation" }
 - { name: "phase:1", color: "d9d2f5", description: "docs/roadmap.md Phase 1: the data layer" }
@@ -40,8 +40,8 @@
 - { name: "run:planning",    color: "006b75", description: "Filed or opened by the weekday 05:00 planning desk, the run that decomposes the roadmap" }
 - { name: "run:triage",      color: "0a7d8c", description: "Filed or opened by the weekday 06:00 and 12:00 triage desk" }
 - { name: "run:maintenance", color: "1391a3", description: "Opened by the maintenance desk, the lane that claims routine-safe work" }
-- { name: "run:build-a",     color: "1aa6ba", description: "Opened by build desk A, the implementation lane working up from the lowest unblocked roadmap issue" }
-- { name: "run:build-b",     color: "22bcd1", description: "Opened by build desk B, the implementation lane working down from the highest unblocked roadmap issue" }
+- { name: "run:build-a",     color: "1aa6ba", description: "Opened by build desk A, which works up from the lowest unblocked roadmap issue" }
+- { name: "run:build-b",     color: "22bcd1", description: "Opened by build desk B, which works down from the highest unblocked roadmap issue" }
 - { name: "run:audit",       color: "2bd2e8", description: "Filed by the Saturday audit desk" }
 - { name: "run:proposals",   color: "35e8ff", description: "Filed by the Sunday proposals desk" }
 

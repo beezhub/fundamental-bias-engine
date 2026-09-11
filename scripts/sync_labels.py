@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -67,17 +68,43 @@ def existing_labels(owner: str, repo: str, token: str) -> dict[str, dict[str, An
         page += 1
 
 
+MAX_NAME = 50
+MAX_DESCRIPTION = 100
+COLOUR = re.compile(r"^[0-9a-f]{6}$")
+
+
 def desired_labels(spec: Path) -> list[dict[str, str]]:
-    """Read the intended labels, normalising colours to bare lowercase hex."""
+    """Read the intended labels, normalising colours to bare lowercase hex.
+
+    Every entry is checked against the API's limits before anything is sent,
+    and every violation is reported at once. The API rejects an over-long
+    description with a bare 422 naming no field, and the apply loop is not
+    atomic, so without this check one bad entry creates the labels ahead of it,
+    fails, and leaves the board in a state no one asked for. That happened:
+    a 101-character description on `run:build-b` created five labels and lost
+    the two behind it.
+    """
     entries = yaml.safe_load(spec.read_text())
     out: list[dict[str, str]] = []
+    problems: list[str] = []
     for entry in entries:
-        out.append(
-            {
-                "name": entry["name"],
-                "color": str(entry["color"]).lstrip("#").lower(),
-                "description": entry.get("description", ""),
-            }
+        name = entry["name"]
+        colour = str(entry["color"]).lstrip("#").lower()
+        description = entry.get("description", "")
+        if len(name) > MAX_NAME:
+            problems.append(f"{name}: name is {len(name)} characters, max {MAX_NAME}")
+        if len(description) > MAX_DESCRIPTION:
+            problems.append(
+                f"{name}: description is {len(description)} characters, "
+                f"max {MAX_DESCRIPTION}"
+            )
+        if not COLOUR.match(colour):
+            problems.append(f"{name}: colour {colour!r} is not six hex digits")
+        out.append({"name": name, "color": colour, "description": description})
+    if problems:
+        raise ValueError(
+            f"{spec} has {len(problems)} invalid entr"
+            f"{'y' if len(problems) == 1 else 'ies'}:\n  " + "\n  ".join(problems)
         )
     return out
 
@@ -87,10 +114,14 @@ def sync(owner: str, repo: str, token: str, spec: Path, *, apply: bool) -> int:
 
     Returns the number of labels that differed, so a dry run can be used as a
     check: a non-zero result means the board does not match the file.
+
+    The specification is validated before the first request, so an invalid
+    entry costs nothing and changes nothing.
     """
+    wanted = desired_labels(spec)
     current = existing_labels(owner, repo, token)
     changed = 0
-    for want in desired_labels(spec):
+    for want in wanted:
         name = want["name"]
         have = current.get(name)
         if have is None:
@@ -135,7 +166,11 @@ def main() -> int:
         print("GITHUB_TOKEN or GH_TOKEN must be set", file=sys.stderr)
         return 2
 
-    changed = sync(args.owner, args.repo, token, args.spec, apply=not args.dry_run)
+    try:
+        changed = sync(args.owner, args.repo, token, args.spec, apply=not args.dry_run)
+    except ValueError as invalid:
+        print(invalid, file=sys.stderr)
+        return 2
     verb = "would change" if args.dry_run else "changed"
     print(f"\n{changed} label(s) {verb}.")
     return 0
