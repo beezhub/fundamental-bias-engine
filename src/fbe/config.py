@@ -3,11 +3,14 @@
 Config is layered, later layers winning: built-in defaults below, then
 ``config.yaml`` at the repo root if present, then ``FBE_*`` environment
 variables, then explicit CLI flags. Every run records a digest of the
-resulting config so a report can be tied back to the weights that made it.
+resulting scoring and risk settings so a report can be tied back to the
+weights that made it.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
@@ -195,11 +198,38 @@ class Config:
     data: DataConfig = field(default_factory=DataConfig)
 
     def digest(self) -> str:
-        """Stable short hash of the config, recorded on every report."""
-        import hashlib
-        import json
+        """Short hash of the settings that change what a run computes.
 
-        payload = json.dumps(asdict(self), sort_keys=True, default=str)
+        Recorded on every report and journal entry so an old call can be tied
+        to the weights and limits that produced it, and read by ``--compare``,
+        which treats a digest change as a re-weighting and reports the deltas
+        between two runs as not comparable.
+
+        Covered: the whole of ``ScoringConfig``, and ``RiskConfig`` except
+        ``account_balance``. The percentages and position limits are the rule
+        and shape every ``PositionSize``, so a report sized under a different
+        cap must not look like the same run.
+
+        Not covered: ``account_balance``, which moves after every closed trade
+        and would make each day incomparable to the last; it is recorded per
+        ticket on ``PositionSize`` and per trade in the journal instead.
+        ``DataConfig`` is excluded entirely. Nothing in it changes a score:
+        the cache lifetime, the offline flag and the blackout windows change
+        where numbers come from and when they may be acted on, not what they
+        are. It also holds the FRED key and three paths derived from
+        ``REPO_ROOT``, and a hash written into committed reports must not
+        move with a secret or with the machine it ran on.
+
+        Returns:
+            The first twelve hex characters of a SHA-256 over the covered
+            fields, serialised with sorted keys so field order cannot move it.
+
+        """
+        risk = asdict(self.risk)
+        del risk["account_balance"]
+        payload = json.dumps(
+            {"risk": risk, "scoring": asdict(self.scoring)}, sort_keys=True
+        )
         return hashlib.sha256(payload.encode()).hexdigest()[:12]
 
     def validate(self) -> list[str]:

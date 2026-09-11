@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -116,9 +117,106 @@ def test_digest_changes_when_a_weight_changes(default_config: Config) -> None:
     assert reweighted.digest() != default_config.digest()
 
 
-def test_digest_changes_when_risk_changes(default_config: Config) -> None:
+def test_digest_ignores_the_account_balance(default_config: Config) -> None:
+    """The balance moves after every closed trade, and ``--compare`` reads a
+    digest change as a re-weighting and suppresses the deltas. Hashing the
+    balance would make every pair of runs incomparable the day after a trade
+    settles. The balance is recorded per ticket on ``PositionSize`` and per
+    trade in the journal, which is where a per-trade figure belongs."""
     richer = replace(default_config, risk=RiskConfig(account_balance=5000.0))
-    assert richer.digest() != default_config.digest()
+    assert richer.risk.account_balance != default_config.risk.account_balance
+    assert richer.digest() == default_config.digest()
+
+
+def test_digest_ignores_the_fred_api_key(default_config: Config) -> None:
+    """A credential must not leave a fingerprint in a committed report, and a
+    key rotation is not a change to the model."""
+    keyed = replace(default_config, data=DataConfig(fred_api_key="abc123"))
+    assert keyed.digest() == default_config.digest()
+
+
+@pytest.mark.parametrize("name", ["cache_dir", "manual_dir", "reports_dir"])
+def test_digest_ignores_data_directories(default_config: Config, name: str) -> None:
+    """The defaults derive from ``REPO_ROOT``, so a digest that saw them would
+    differ between machines and in CI for identical weights."""
+    moved = replace(
+        default_config,
+        data=replace(default_config.data, **{name: Path("/somewhere/else")}),
+    )
+    assert moved.digest() == default_config.digest()
+
+
+def test_digest_is_independent_of_repo_root(default_config: Config) -> None:
+    """Every data directory pointed away from ``REPO_ROOT`` at once, so the
+    hash cannot be carrying the checkout path in any of them."""
+    elsewhere = Path("/tmp/fbe-elsewhere")
+    relocated = replace(
+        default_config,
+        data=DataConfig(
+            cache_dir=elsewhere / "cache",
+            manual_dir=elsewhere / "manual",
+            reports_dir=elsewhere / "reports",
+        ),
+    )
+    assert not any(
+        str(REPO_ROOT) in str(getattr(relocated.data, name))
+        for name in ("cache_dir", "manual_dir", "reports_dir")
+    )
+    assert relocated.digest() == default_config.digest()
+
+
+def test_digest_ignores_data_config_entirely(default_config: Config) -> None:
+    """Nothing in ``DataConfig`` changes a score. Offline, cache lifetime and
+    the blackout windows change where numbers come from and when they may be
+    acted on, not what they are."""
+    altered = replace(
+        default_config,
+        data=DataConfig(
+            offline=True,
+            cache_ttl_hours=1,
+            calendar_blackout_before_min=5,
+            calendar_blackout_after_min=5,
+        ),
+    )
+    assert altered.digest() == default_config.digest()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("min_spread_low", 0.80),
+        ("max_staleness_days", 60),
+        ("score_clip", 2.5),
+        ("min_agreement", 0.70),
+        ("horizon_days", 5),
+    ],
+)
+def test_digest_changes_when_a_scoring_field_changes(
+    default_config: Config, name: str, value: float
+) -> None:
+    """Weights are covered by ``test_digest_changes_when_a_weight_changes``;
+    this pins the thresholds, which are as much the model as the weights."""
+    assert getattr(default_config.scoring, name) != value
+    rescored = replace(
+        default_config, scoring=replace(default_config.scoring, **{name: value})
+    )
+    assert rescored.digest() != default_config.digest()
+
+
+def test_digest_changes_when_risk_per_trade_max_changes(
+    default_config: Config,
+) -> None:
+    """The percentages are the rule and shape every ``PositionSize``, so a
+    report sized under a different cap must not look like the same run."""
+    capped = replace(default_config, risk=RiskConfig(risk_per_trade_max=0.015))
+    assert capped.digest() != default_config.digest()
+
+
+def test_digest_changes_when_a_derived_risk_limit_changes(
+    default_config: Config,
+) -> None:
+    looser = replace(default_config, risk=RiskConfig(max_concurrent_positions=5))
+    assert looser.digest() != default_config.digest()
 
 
 def test_digest_is_short_and_hex(default_config: Config) -> None:
