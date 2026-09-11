@@ -195,7 +195,9 @@ def is_high_impact(event: CalendarEvent) -> bool:
         True when the event should generate a blackout window.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.calendar_guard.is_high_impact is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def blackout_windows(
@@ -235,7 +237,9 @@ def blackout_windows(
         ValueError: If any event carries a naive ``scheduled_for``.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.calendar_guard.blackout_windows is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def is_blacked_out(
@@ -275,7 +279,9 @@ def is_blacked_out(
         ValueError: If ``when`` is naive or ``pair`` is malformed.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.calendar_guard.is_blacked_out is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def next_clear_time(
@@ -310,7 +316,9 @@ def next_clear_time(
         ValueError: If ``after`` is naive.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.calendar_guard.next_clear_time is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def action_for_open_position(
@@ -377,4 +385,7 @@ def action_for_open_position(
         about being a filter rather than a trading system.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.calendar_guard.action_for_open_position is scaffolded; "
+        "see docs/roadmap.md Phase 4"
+    )

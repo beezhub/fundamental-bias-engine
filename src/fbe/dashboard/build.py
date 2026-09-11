@@ -145,7 +145,10 @@ def render_dashboard(
         NotImplementedError: Always, until rendering lands.
 
     """
-    raise NotImplementedError("fbe.dashboard.build.render_dashboard is scaffolded")
+    raise NotImplementedError(
+        "fbe.dashboard.build.render_dashboard is scaffolded; "
+        "see docs/roadmap.md Phase 5"
+    )
 
 
 def build_dashboard(
@@ -176,7 +179,9 @@ def build_dashboard(
             violation.
 
     """
-    raise NotImplementedError("fbe.dashboard.build.build_dashboard is scaffolded")
+    raise NotImplementedError(
+        "fbe.dashboard.build.build_dashboard is scaffolded; see docs/roadmap.md Phase 5"
+    )
 
 
 def check_constraints(html: str) -> list[str]:
@@ -203,4 +208,7 @@ def check_constraints(html: str) -> list[str]:
         NotImplementedError: Always, until the checks land.
 
     """
-    raise NotImplementedError("fbe.dashboard.build.check_constraints is scaffolded")
+    raise NotImplementedError(
+        "fbe.dashboard.build.check_constraints is scaffolded; "
+        "see docs/roadmap.md Phase 5"
+    )

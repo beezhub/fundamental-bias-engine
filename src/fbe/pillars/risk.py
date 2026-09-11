@@ -213,7 +213,10 @@ class RiskPillar(BasePillar):
         ``ScoringConfig.lookback_years`` for its z-score.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.risk.RiskPillar._extract is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def _transform(
         self,
@@ -242,7 +245,10 @@ class RiskPillar(BasePillar):
         be read with more caution.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.risk.RiskPillar._transform is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def _normalise(
         self,
@@ -259,4 +265,7 @@ class RiskPillar(BasePillar):
             regime out and leave a constant ranking of betas.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.risk.RiskPillar._normalise is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )

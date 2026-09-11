@@ -229,7 +229,9 @@ def _effective_config(ctx: typer.Context) -> Config:
         NotImplementedError: Always, until the config layer lands.
 
     """
-    raise NotImplementedError("fbe.cli._effective_config is scaffolded")
+    raise NotImplementedError(
+        "fbe.cli._effective_config is scaffolded; see docs/roadmap.md Phase 1"
+    )
 
 
 @app.command(
@@ -296,7 +298,9 @@ def doctor(
         NotImplementedError: Always, until the health checks land.
 
     """
-    raise NotImplementedError("fbe.cli.doctor is scaffolded, not implemented")
+    raise NotImplementedError(
+        "fbe.cli.doctor is scaffolded; see docs/roadmap.md Phase 1"
+    )
 
 
 @app.command(
@@ -360,7 +364,9 @@ def refresh(
         NotImplementedError: Always, until the source layer lands.
 
     """
-    raise NotImplementedError("fbe.cli.refresh is scaffolded, not implemented")
+    raise NotImplementedError(
+        "fbe.cli.refresh is scaffolded; see docs/roadmap.md Phase 1"
+    )
 
 
 @app.command(
@@ -433,7 +439,9 @@ def score(
         NotImplementedError: Always, until `fbe.scoring` lands.
 
     """
-    raise NotImplementedError("fbe.cli.score is scaffolded, not implemented")
+    raise NotImplementedError(
+        "fbe.cli.score is scaffolded; see docs/roadmap.md Phase 2"
+    )
 
 
 @app.command(
@@ -531,7 +539,7 @@ def bias(
         NotImplementedError: Always, until `fbe.bias` lands.
 
     """
-    raise NotImplementedError("fbe.cli.bias is scaffolded, not implemented")
+    raise NotImplementedError("fbe.cli.bias is scaffolded; see docs/roadmap.md Phase 2")
 
 
 @app.command(
@@ -618,7 +626,9 @@ def calendar(
         NotImplementedError: Always, until `fbe.calendar_guard` lands.
 
     """
-    raise NotImplementedError("fbe.cli.calendar is scaffolded, not implemented")
+    raise NotImplementedError(
+        "fbe.cli.calendar is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 @app.command(
@@ -741,7 +751,7 @@ def size(
         NotImplementedError: Always, until `fbe.risk` lands.
 
     """
-    raise NotImplementedError("fbe.cli.size is scaffolded, not implemented")
+    raise NotImplementedError("fbe.cli.size is scaffolded; see docs/roadmap.md Phase 4")
 
 
 @app.command(
@@ -809,7 +819,9 @@ def report(
         NotImplementedError: Always, until `fbe.report` lands.
 
     """
-    raise NotImplementedError("fbe.cli.report is scaffolded, not implemented")
+    raise NotImplementedError(
+        "fbe.cli.report is scaffolded; see docs/roadmap.md Phase 5"
+    )
 
 
 @app.command(
@@ -873,7 +885,9 @@ def dashboard(
         NotImplementedError: Always, until `fbe.dashboard.build` lands.
 
     """
-    raise NotImplementedError("fbe.cli.dashboard is scaffolded, not implemented")
+    raise NotImplementedError(
+        "fbe.cli.dashboard is scaffolded; see docs/roadmap.md Phase 5"
+    )
 
 
 @journal_app.command(
@@ -979,7 +993,9 @@ def journal_add(
         NotImplementedError: Always, until `fbe.journal` lands.
 
     """
-    raise NotImplementedError("fbe.cli.journal_add is scaffolded, not implemented")
+    raise NotImplementedError(
+        "fbe.cli.journal_add is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 @journal_app.command(
@@ -1042,4 +1058,6 @@ def journal_review(
         NotImplementedError: Always, until `fbe.journal` lands.
 
     """
-    raise NotImplementedError("fbe.cli.journal_review is scaffolded, not implemented")
+    raise NotImplementedError(
+        "fbe.cli.journal_review is scaffolded; see docs/roadmap.md Phase 6"
+    )

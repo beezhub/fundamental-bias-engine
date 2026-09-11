@@ -328,7 +328,9 @@ def convert_rate(
             be inverted or multiplied through.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.risk.convert_rate is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def pip_value(
@@ -385,7 +387,9 @@ def pip_value(
         ValueError: If ``units`` is negative or ``pair`` is malformed.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.risk.pip_value is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def position_size(
@@ -505,7 +509,9 @@ def position_size(
             and must not be approximated.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.risk.position_size is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def risk_fraction_for(conviction: Conviction, config: RiskConfig) -> float:
@@ -538,7 +544,9 @@ def risk_fraction_for(conviction: Conviction, config: RiskConfig) -> float:
             backwards and quietly return a fraction outside the band.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.risk.risk_fraction_for is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def reward_to_risk(entry: float, stop: float, target: float) -> float:
@@ -572,7 +580,9 @@ def reward_to_risk(entry: float, stop: float, target: float) -> float:
         wherever rounding moved the size.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.risk.reward_to_risk is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def min_acceptable_rr(conviction: Conviction) -> float:
@@ -590,7 +600,9 @@ def min_acceptable_rr(conviction: Conviction) -> float:
         The minimum acceptable ratio. Infinite for `Conviction.NONE`.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.risk.min_acceptable_rr is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def correlated_exposure(
@@ -636,7 +648,9 @@ def correlated_exposure(
         no exposure are absent rather than present with 0.0.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.risk.correlated_exposure is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def check_limits(
@@ -689,4 +703,6 @@ def check_limits(
         listed above. Empty list means every limit passed.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.risk.check_limits is scaffolded; see docs/roadmap.md Phase 4"
+    )

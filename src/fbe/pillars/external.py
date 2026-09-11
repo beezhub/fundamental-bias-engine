@@ -118,7 +118,10 @@ class ExternalPillar(BasePillar):
             currency with no link gets no ``commodity_price`` entry.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.external.ExternalPillar._extract is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def _transform(
         self,
@@ -144,4 +147,7 @@ class ExternalPillar(BasePillar):
         that is the only route to an absent external pillar.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.external.ExternalPillar._transform is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )

@@ -100,7 +100,10 @@ class InflationPillar(BasePillar):
             `requires`, sorted by period ascending.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.inflation.InflationPillar._extract is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def _transform(
         self,
@@ -130,4 +133,7 @@ class InflationPillar(BasePillar):
         missing: headline alone is too noisy to carry this pillar.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.inflation.InflationPillar._transform is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )

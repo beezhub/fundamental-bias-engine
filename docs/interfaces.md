@@ -46,6 +46,16 @@ The global callback only captures these flags. The config itself is resolved
 lazily, so `fbe <command> --help` still works when the config file is broken.
 A tool you cannot ask for help is a poor tool to debug with.
 
+Once resolved, the config is validated before it is used. `fbe doctor` and
+every command that scores or sizes from the config (`score`, `bias`, `report`,
+`dashboard` and `size`) call `Config.validate` first and refuse to run on a
+non-empty result, printing each problem on its own line. `validate` rejects
+weights that do not cover every pillar, are negative or do not sum to 1.0, a
+risk cap above the plan's 2%, and any threshold ordering that would leave a
+scoring formula undefined or a conviction band empty. A config that fails here
+would not crash the engine. It would produce a report that looks normal and is
+wrong, which is why the refusal happens before any number is computed.
+
 ## The daily sequence
 
 | Routine step (trading plan) | Command |

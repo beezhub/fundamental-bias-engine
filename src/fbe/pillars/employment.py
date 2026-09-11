@@ -104,7 +104,10 @@ class EmploymentPillar(BasePillar):
             every currency.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.employment.EmploymentPillar._extract is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def _transform(
         self,
@@ -154,4 +157,7 @@ class EmploymentPillar(BasePillar):
         when reading such a run.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.employment.EmploymentPillar._transform is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )

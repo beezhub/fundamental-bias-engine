@@ -233,11 +233,141 @@ class Config:
         return hashlib.sha256(payload.encode()).hexdigest()[:12]
 
     def validate(self) -> list[str]:
-        """Return a list of configuration problems; empty means usable."""
+        """Return a list of configuration problems; empty means usable.
+
+        Every check here guards a downstream formula that would otherwise
+        keep producing a plausible number. The scoring thresholds are read as
+        ordered bands by the staleness ramp, the conviction ladder and the
+        coverage filter, and none of those formulas can tell an inverted band
+        from a valid one: a ramp whose start is past its end silently gives a
+        pillar full weight or none, an empty LOW band promotes every marginal
+        pair to MEDIUM and to 1.5% of balance, and a demotion floor below the
+        hard filter is dead code. This is where such a config fails, at load,
+        instead of in a report that looks normal. The defaults pass every
+        check, and a change to a default that stops them passing is a defect
+        in the change.
+
+        Every message names the fields involved and their values, so it can
+        be acted on without opening this file. Problems accumulate rather than
+        short-circuiting, because a config wrong in three places should say so
+        once.
+        """
         problems: list[str] = []
-        total = sum(self.scoring.weights.values())
+        problems.extend(self._weight_problems())
+        problems.extend(self._threshold_problems())
+        problems.extend(self._risk_problems())
+        return problems
+
+    def _weight_problems(self) -> list[str]:
+        """Check that the weights cover every pillar, are non-negative and sum to 1.0.
+
+        A pillar missing from the map is switched off by `BasePillar.weight`,
+        which returns 0.0 for it. That is rejected here all the same, so that a
+        pillar is switched off by writing 0.0 where a reader will see it rather
+        than by an omission they have to notice. A negative weight is rejected
+        because it inverts the sign convention for that pillar while the sum
+        can still come to 1.0.
+        """
+        problems: list[str] = []
+        weights = self.scoring.weights
+        total = sum(weights.values())
         if abs(total - 1.0) > 1e-6:
             problems.append(f"pillar weights sum to {total:.4f}, expected 1.0")
+        for name in PillarName:
+            if name not in weights:
+                problems.append(
+                    f"weights has no entry for {name}: set it to 0.0 to "
+                    "switch the pillar off"
+                )
+        for name, weight in weights.items():
+            if weight < 0.0:
+                problems.append(
+                    f"weights[{name}] is {weight}, expected at or above 0.0"
+                )
+        return problems
+
+    def _threshold_problems(self) -> list[str]:
+        """Check that the scoring thresholds form the bands the formulas assume.
+
+        The orderings, each one read by a named consumer:
+
+            ``0 < staleness_full_days < max_staleness_days``, the ramp in
+            ``scoring.apply_staleness_penalty``.
+
+            ``0 < min_spread_low < min_spread_medium < min_spread_high``, the
+            tiers in ``bias.conviction_for``.
+
+            ``0 < min_coverage <= coverage_demotion <= 1.0``, the hard filter
+            in ``bias.apply_filters`` and the demotion above it.
+
+            ``0 < min_agreement <= 1.0``, a fraction of pillar weight.
+
+            ``max_dispersion``, ``max_cost_ratio`` and ``score_clip`` above 0
+            and ``horizon_days`` at least 1, since each divides or bounds a
+            quantity that a zero would zero out.
+
+            ``min_restandardisation_runs <= restandardisation_window_runs``,
+            or the rolling divisor could never engage.
+        """
+        problems: list[str] = []
+        s = self.scoring
+        if s.staleness_full_days <= 0:
+            problems.append(
+                f"staleness_full_days is {s.staleness_full_days}, expected above 0"
+            )
+        if s.staleness_full_days >= s.max_staleness_days:
+            problems.append(
+                f"staleness_full_days {s.staleness_full_days} must be below "
+                f"max_staleness_days {s.max_staleness_days}"
+            )
+        if s.min_spread_low <= 0.0:
+            problems.append(f"min_spread_low is {s.min_spread_low}, expected above 0")
+        if s.min_spread_low >= s.min_spread_medium:
+            problems.append(
+                f"min_spread_low {s.min_spread_low} must be below "
+                f"min_spread_medium {s.min_spread_medium}"
+            )
+        if s.min_spread_medium >= s.min_spread_high:
+            problems.append(
+                f"min_spread_medium {s.min_spread_medium} must be below "
+                f"min_spread_high {s.min_spread_high}"
+            )
+        if s.min_coverage <= 0.0:
+            problems.append(f"min_coverage is {s.min_coverage}, expected above 0")
+        if s.min_coverage > s.coverage_demotion:
+            problems.append(
+                f"min_coverage {s.min_coverage} must be at or below "
+                f"coverage_demotion {s.coverage_demotion}"
+            )
+        if s.coverage_demotion > 1.0:
+            problems.append(
+                f"coverage_demotion is {s.coverage_demotion}, expected at or below 1.0"
+            )
+        if s.min_agreement <= 0.0 or s.min_agreement > 1.0:
+            problems.append(
+                f"min_agreement is {s.min_agreement}, expected above 0 and at or "
+                "below 1.0"
+            )
+        for name, value in (
+            ("max_dispersion", s.max_dispersion),
+            ("max_cost_ratio", s.max_cost_ratio),
+            ("score_clip", s.score_clip),
+        ):
+            if value <= 0.0:
+                problems.append(f"{name} is {value}, expected above 0")
+        if s.horizon_days < 1:
+            problems.append(f"horizon_days is {s.horizon_days}, expected at least 1")
+        if s.min_restandardisation_runs > s.restandardisation_window_runs:
+            problems.append(
+                f"min_restandardisation_runs {s.min_restandardisation_runs} must be "
+                "at or below restandardisation_window_runs "
+                f"{s.restandardisation_window_runs}"
+            )
+        return problems
+
+    def _risk_problems(self) -> list[str]:
+        """Check that the per-trade band sits inside the plan's 1-2% and is ordered."""
+        problems: list[str] = []
         if self.risk.risk_per_trade_max > 0.02:
             problems.append("risk_per_trade_max above 2% contradicts the trading plan")
         if self.risk.risk_per_trade_min > self.risk.risk_per_trade_max:
@@ -257,7 +387,7 @@ def load_config(path: Path | None = None) -> Config:
 
     """
     raise NotImplementedError(
-        "Config layering is scaffolded but not implemented; see docs/roadmap.md"
+        "fbe.config.load_config is scaffolded; see docs/roadmap.md Phase 1"
     )
 
 

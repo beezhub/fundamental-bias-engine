@@ -263,7 +263,10 @@ class CurvesSource(BaseDataSource):
             True when any provider answers, or when a warm cache exists.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.curves.CurvesSource.available is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch(
         self,
@@ -291,7 +294,10 @@ class CurvesSource(BaseDataSource):
                 lost series, so it must not be swallowed as an empty result.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.curves.CurvesSource.fetch is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is one of the curve providers.
@@ -300,7 +306,10 @@ class CurvesSource(BaseDataSource):
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.curves.CurvesSource.refs is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch_boc(
         self, series_id: str, start: date, end: date
@@ -319,7 +328,10 @@ class CurvesSource(BaseDataSource):
             SourceError: On repeated request failure or an unreadable body.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.curves.CurvesSource.fetch_boc is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch_ecb(
         self, key: str, start: date, end: date
@@ -339,7 +351,10 @@ class CurvesSource(BaseDataSource):
             SourceError: On repeated request failure or an unreadable body.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.curves.CurvesSource.fetch_ecb is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch_jgb(
         self, tenor: str, start: date, end: date
@@ -363,7 +378,10 @@ class CurvesSource(BaseDataSource):
                 decoded as Shift-JIS.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.curves.CurvesSource.fetch_jgb is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch_boe_iadb(
         self, codes: Sequence[str], start: date, end: date
@@ -385,7 +403,10 @@ class CurvesSource(BaseDataSource):
                 a ``DATE,`` header.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.curves.CurvesSource.fetch_boe_iadb is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch_boe_curve(
         self, maturity_years: float, start: date, end: date
@@ -415,7 +436,10 @@ class CurvesSource(BaseDataSource):
                 or when no header maturity is within tolerance of the request.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.curves.CurvesSource.fetch_boe_curve is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch_rba(
         self, series_id: str, start: date, end: date
@@ -437,7 +461,10 @@ class CurvesSource(BaseDataSource):
                 and have changed between releases.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.curves.CurvesSource.fetch_rba is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch_snb(
         self, cube: str, tenor: str, start: date, end: date
@@ -462,7 +489,10 @@ class CurvesSource(BaseDataSource):
             SourceError: On repeated request failure or an unreadable body.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.curves.CurvesSource.fetch_snb is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def provider_health(self) -> Mapping[str, date | None]:
         """Report each provider's newest observation.
@@ -483,4 +513,7 @@ class CurvesSource(BaseDataSource):
                 diagnosing.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.curves.CurvesSource.provider_health is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )

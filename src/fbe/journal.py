@@ -274,7 +274,9 @@ def append(record: TradeRecord, path: Path = JOURNAL_PATH) -> None:
             notices immediately.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.journal.append is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def load(
@@ -300,7 +302,9 @@ def load(
             the trade count and flatter every statistic computed from it.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.journal.load is scaffolded; see docs/roadmap.md Phase 4"
+    )
 
 
 def evaluate(records: Sequence[TradeRecord]) -> Mapping[Conviction, ConvictionStats]:
@@ -346,7 +350,9 @@ def evaluate(records: Sequence[TradeRecord]) -> Mapping[Conviction, ConvictionSt
         empty bucket cannot be mistaken for a losing one.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.journal.evaluate is scaffolded; see docs/roadmap.md Phase 6"
+    )
 
 
 def discipline_flags(records: Sequence[TradeRecord]) -> Sequence[DisciplineFlag]:
@@ -389,4 +395,6 @@ def discipline_flags(records: Sequence[TradeRecord]) -> Sequence[DisciplineFlag]
         assuming.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.journal.discipline_flags is scaffolded; see docs/roadmap.md Phase 6"
+    )

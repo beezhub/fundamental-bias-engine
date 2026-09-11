@@ -114,7 +114,10 @@ class MonetaryPillar(BasePillar):
         the level, the extractor resamples to month-end before differencing.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.monetary.MonetaryPillar._extract is scaffolded; "
+            "see docs/roadmap.md Phase 2"
+        )
 
     def _transform(
         self,
@@ -149,4 +152,7 @@ class MonetaryPillar(BasePillar):
         clears `MIN_COMPONENT_WEIGHT`.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.monetary.MonetaryPillar._transform is scaffolded; "
+            "see docs/roadmap.md Phase 2"
+        )

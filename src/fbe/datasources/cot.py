@@ -203,7 +203,10 @@ class CotSource(BaseDataSource):
             Whether this source can be used on this run.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cot.CotSource.available is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def fetch(
         self,
@@ -229,7 +232,10 @@ class CotSource(BaseDataSource):
             SourceError: On repeated request failure or an unparseable body.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cot.CotSource.fetch is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is ``"cftc"``.
@@ -238,7 +244,10 @@ class CotSource(BaseDataSource):
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cot.CotSource.refs is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def fetch_contract(
         self,
@@ -262,7 +271,10 @@ class CotSource(BaseDataSource):
             SourceError: On repeated request failure.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cot.CotSource.fetch_contract is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def derive_usd_position(
         self,
@@ -287,7 +299,10 @@ class CotSource(BaseDataSource):
             ``(report_date, net_position)`` pairs for the dollar.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cot.CotSource.derive_usd_position is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def latest_report_date(self) -> date | None:
         """Return the most recent Tuesday for which positions are published.
@@ -302,4 +317,7 @@ class CotSource(BaseDataSource):
             SourceError: On repeated request failure.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cot.CotSource.latest_report_date is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
