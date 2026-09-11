@@ -200,7 +200,10 @@ class DiskCache:
             A `KEY_LENGTH`-character hex key.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cache.DiskCache.key_for is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def get(self, source: str, key: str) -> CacheEntry:
         """Return a cached entry, honouring the TTL unless offline.
@@ -218,7 +221,10 @@ class DiskCache:
                 online, in which case the caller should refetch.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cache.DiskCache.get is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def put(
         self,
@@ -251,7 +257,10 @@ class DiskCache:
                 defeats the only reason the flag exists.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cache.DiskCache.put is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def age_hours(self, entry: CacheEntry) -> float:
         """Return an entry's age in hours since it was fetched.
@@ -263,7 +272,10 @@ class DiskCache:
             Hours since ``fetched_at``.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cache.DiskCache.age_hours is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def is_expired(self, entry: CacheEntry, ttl_hours: int | None = None) -> bool:
         """Say whether an entry has passed its TTL.
@@ -278,7 +290,10 @@ class DiskCache:
             where expiry is meaningless because nothing can be refetched.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cache.DiskCache.is_expired is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def clear(self, source: str | None = None) -> int:
         """Delete cached entries.
@@ -291,7 +306,10 @@ class DiskCache:
             The number of entries removed.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cache.DiskCache.clear is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def stats(self) -> Mapping[str, Mapping[str, float]]:
         """Summarise what is on disk, per source.
@@ -304,4 +322,7 @@ class DiskCache:
             Source name to its statistics.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.cache.DiskCache.stats is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )

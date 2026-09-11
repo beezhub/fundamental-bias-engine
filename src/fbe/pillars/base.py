@@ -223,7 +223,10 @@ class BasePillar(ABC):
         caller for storage, since it is the next run's history.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.base.BasePillar.compute is scaffolded; "
+            "see docs/roadmap.md Phase 2"
+        )
 
     @abstractmethod
     def _extract(
@@ -330,7 +333,10 @@ class BasePillar(ABC):
             scored.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.base.BasePillar._normalise is scaffolded; "
+            "see docs/roadmap.md Phase 2"
+        )
 
     @property
     def component_weights(self) -> Mapping[str, float]:
@@ -384,7 +390,10 @@ class BasePillar(ABC):
             not be reported as missing data.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.base.BasePillar.cross_sectional_z is scaffolded; "
+            "see docs/roadmap.md Phase 2"
+        )
 
     @staticmethod
     def time_series_z(
@@ -421,7 +430,10 @@ class BasePillar(ABC):
             from a seasonal one.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.base.BasePillar.time_series_z is scaffolded; "
+            "see docs/roadmap.md Phase 2"
+        )
 
     @staticmethod
     def momentum(series: Sequence[Observation], periods: int) -> float | None:
@@ -448,7 +460,10 @@ class BasePillar(ABC):
             the common case for a newly onboarded currency.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.base.BasePillar.momentum is scaffolded; "
+            "see docs/roadmap.md Phase 2"
+        )
 
     @staticmethod
     def clip_and_scale(z: float | None, clip: float) -> float:
@@ -592,7 +607,10 @@ class BasePillar(ABC):
         throws away the best series in a pillar whenever one country is missing.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.base.BasePillar.blend_components is scaffolded; "
+            "see docs/roadmap.md Phase 2"
+        )
 
     # ------------------------------------------------------------------
     # Freshness and absence
@@ -618,7 +636,10 @@ class BasePillar(ABC):
             so an absent pillar sorts as stale rather than as fresh.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.base.BasePillar.staleness_days is scaffolded; "
+            "see docs/roadmap.md Phase 2"
+        )
 
     def missing_score(
         self,
@@ -654,4 +675,7 @@ class BasePillar(ABC):
             A neutral `PillarScore` carrying this pillar's configured weight.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.base.BasePillar.missing_score is scaffolded; "
+            "see docs/roadmap.md Phase 2"
+        )

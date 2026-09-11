@@ -205,7 +205,10 @@ class PositioningPillar(BasePillar):
         contract count and never has to guess which form it was handed.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.positioning.PositioningPillar._extract is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def _transform(
         self,
@@ -234,7 +237,10 @@ class PositioningPillar(BasePillar):
         negatively while holding a large net long.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.positioning.PositioningPillar._transform is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def _normalise(
         self,
@@ -251,4 +257,7 @@ class PositioningPillar(BasePillar):
             would undo what the shape function is for.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.positioning.PositioningPillar._normalise is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )

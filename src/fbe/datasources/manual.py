@@ -207,7 +207,10 @@ class ManualSource(BaseDataSource):
             Whether this source can be used on this run.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.manual.ManualSource.available is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch(
         self,
@@ -235,7 +238,10 @@ class ManualSource(BaseDataSource):
                 fill.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.manual.ManualSource.fetch is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is ``"manual"``.
@@ -244,7 +250,10 @@ class ManualSource(BaseDataSource):
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.manual.ManualSource.refs is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def load_file(self, path: Path) -> Sequence[Observation]:
         """Parse and validate one YAML file.
@@ -261,7 +270,10 @@ class ManualSource(BaseDataSource):
                 universe, or a unit that contradicts the registry.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.manual.ManualSource.load_file is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def missing(self, asof: date) -> Mapping[str, tuple[str, ...]]:
         """Report which manual refs have no usable value as of a date.
@@ -278,7 +290,10 @@ class ManualSource(BaseDataSource):
             Indicator key to the currencies still missing a fresh value.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.manual.ManualSource.missing is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def template(self, indicator: str, currency: str) -> str:
         """Return a ready-to-paste YAML stub for one indicator and currency.
@@ -298,4 +313,7 @@ class ManualSource(BaseDataSource):
             KeyError: If the indicator is not in the registry.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.manual.ManualSource.template is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )

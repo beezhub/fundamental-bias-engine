@@ -125,7 +125,10 @@ class GrowthPillar(BasePillar):
             its absence is not an error.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.growth.GrowthPillar._extract is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )
 
     def _transform(
         self,
@@ -150,4 +153,7 @@ class GrowthPillar(BasePillar):
         per-currency rebasing before the cross-sectional z-score.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.pillars.growth.GrowthPillar._transform is scaffolded; "
+            "see docs/roadmap.md Phase 3"
+        )

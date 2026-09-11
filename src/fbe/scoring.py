@@ -86,7 +86,9 @@ def score_currencies(
     coverage figure is what tells the reader which case they are looking at.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.scoring.score_currencies is scaffolded; see docs/roadmap.md Phase 2"
+    )
 
 
 def composite(
@@ -136,7 +138,9 @@ def composite(
     effect achieved once instead of twice.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.scoring.composite is scaffolded; see docs/roadmap.md Phase 2"
+    )
 
 
 def coverage(
@@ -175,7 +179,9 @@ def coverage(
     ``no_coverage``.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.scoring.coverage is scaffolded; see docs/roadmap.md Phase 2"
+    )
 
 
 def dispersion(
@@ -224,7 +230,9 @@ def dispersion(
     `bias.conviction_for`.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.scoring.dispersion is scaffolded; see docs/roadmap.md Phase 2"
+    )
 
 
 def freshness(staleness_days: int, config: ScoringConfig) -> float:
@@ -256,7 +264,9 @@ def freshness(staleness_days: int, config: ScoringConfig) -> float:
     horizon the engine's output is held for.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.scoring.freshness is scaffolded; see docs/roadmap.md Phase 2"
+    )
 
 
 def apply_staleness_penalty(
@@ -295,4 +305,6 @@ def apply_staleness_penalty(
     is appended to ``notes``.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.scoring.apply_staleness_penalty is scaffolded; see docs/roadmap.md Phase 2"
+    )

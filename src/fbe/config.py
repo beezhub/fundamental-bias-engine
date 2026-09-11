@@ -187,7 +187,7 @@ def load_config(path: Path | None = None) -> Config:
 
     """
     raise NotImplementedError(
-        "Config layering is scaffolded but not implemented; see docs/roadmap.md"
+        "fbe.config.load_config is scaffolded; see docs/roadmap.md Phase 1"
     )
 
 
