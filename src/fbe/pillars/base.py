@@ -171,8 +171,10 @@ class BasePillar(ABC):
 
         Returns:
             The configured weight, or ``0.0`` if the pillar is not listed in
-            the weight map, which is how a pillar is switched off without
-            removing it from the run.
+            the weight map. The fallback is defensive only:
+            `fbe.config.Config.validate` rejects a map with a pillar missing,
+            so a pillar is switched off by setting its weight to ``0.0``
+            explicitly, where a reader of the config will see it.
 
         """
         return float(self.config.weights.get(self.name, 0.0))
