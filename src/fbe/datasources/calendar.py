@@ -225,7 +225,10 @@ class CalendarSource(BaseDataSource):
             Whether this source can be used on this run.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.calendar.CalendarSource.available is scaffolded; "
+            "see docs/roadmap.md Phase 4"
+        )
 
     def fetch(
         self,
@@ -249,7 +252,10 @@ class CalendarSource(BaseDataSource):
             An empty sequence, always.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.calendar.CalendarSource.fetch is scaffolded; "
+            "see docs/roadmap.md Phase 4"
+        )
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return an empty mapping. This source owns no registry entries.
@@ -258,7 +264,10 @@ class CalendarSource(BaseDataSource):
             An empty mapping.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.calendar.CalendarSource.refs is scaffolded; "
+            "see docs/roadmap.md Phase 4"
+        )
 
     def events(
         self,
@@ -285,7 +294,10 @@ class CalendarSource(BaseDataSource):
                 publisher's "Request Denied" page rather than the feed.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.calendar.CalendarSource.events is scaffolded; "
+            "see docs/roadmap.md Phase 4"
+        )
 
     def blackout_windows(
         self,
@@ -304,7 +316,10 @@ class CalendarSource(BaseDataSource):
             Currency to ``(start, end)`` intervals in UTC, ordered and merged.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.calendar.CalendarSource.blackout_windows is scaffolded; "
+            "see docs/roadmap.md Phase 4"
+        )
 
     def classify(self, title: str) -> tuple[str, ...]:
         """Match an event title against the plan's ten classes to avoid.
@@ -318,7 +333,10 @@ class CalendarSource(BaseDataSource):
             Friday legitimately matches two.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.calendar.CalendarSource.classify is scaffolded; "
+            "see docs/roadmap.md Phase 4"
+        )
 
     def is_blackout(
         self,
@@ -340,4 +358,7 @@ class CalendarSource(BaseDataSource):
             economies' release schedules.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.calendar.CalendarSource.is_blackout is scaffolded; "
+            "see docs/roadmap.md Phase 4"
+        )

@@ -195,7 +195,10 @@ class PricesSource(BaseDataSource):
             Whether this source can be used on this run.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.prices.PricesSource.available is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch(
         self,
@@ -222,7 +225,10 @@ class PricesSource(BaseDataSource):
                 the anti-bot challenge rather than CSV.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.prices.PricesSource.fetch is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is ``"stooq"``.
@@ -231,7 +237,10 @@ class PricesSource(BaseDataSource):
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.prices.PricesSource.refs is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch_stooq(
         self,
@@ -258,7 +267,10 @@ class PricesSource(BaseDataSource):
                 ``Date,Open,High,Low,Close,Volume`` header.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.prices.PricesSource.fetch_stooq is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def spot(self, pair: str, on: date | None = None) -> float | None:
         """Return the spot rate for a pair in market quoting convention.
@@ -275,4 +287,7 @@ class PricesSource(BaseDataSource):
             a bias ends up backwards.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.prices.PricesSource.spot is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )

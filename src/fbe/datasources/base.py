@@ -134,7 +134,10 @@ class BaseDataSource(ABC):
             True when the source is usable.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.base.BaseDataSource.available is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     @abstractmethod
     def fetch(
@@ -205,11 +208,17 @@ class BaseDataSource(ABC):
                 the cache holds nothing for this request.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.base.BaseDataSource._request is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def _throttle(self) -> None:
         """Block until this source's rate limit allows another request."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.base.BaseDataSource._throttle is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def _cache_key(
         self,
@@ -231,7 +240,10 @@ class BaseDataSource(ABC):
             A filesystem-safe cache key.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.base.BaseDataSource._cache_key is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def _observation(
         self,
@@ -259,4 +271,7 @@ class BaseDataSource(ABC):
             A populated `Observation`.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.base.BaseDataSource._observation is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )

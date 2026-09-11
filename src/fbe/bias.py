@@ -133,7 +133,9 @@ def build_pair_biases(
     discrete levels instead of passing the number through.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.bias.build_pair_biases is scaffolded; see docs/roadmap.md Phase 2"
+    )
 
 
 def direction_for(spread: float, config: ScoringConfig) -> Direction:
@@ -167,7 +169,9 @@ def direction_for(spread: float, config: ScoringConfig) -> Direction:
     conviction lands at `Conviction.NONE`. This function only reads the spread.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.bias.direction_for is scaffolded; see docs/roadmap.md Phase 2"
+    )
 
 
 def conviction_for(
@@ -247,7 +251,9 @@ def conviction_for(
     whether there is a number at all.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.bias.conviction_for is scaffolded; see docs/roadmap.md Phase 2"
+    )
 
 
 def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:
@@ -325,7 +331,9 @@ def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:
     dramatic one gets pulled back down to LOW.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.bias.agreement is scaffolded; see docs/roadmap.md Phase 2"
+    )
 
 
 def apply_filters(
@@ -400,7 +408,9 @@ def apply_filters(
     a later review can learn from.
 
     """
-    raise NotImplementedError
+    raise NotImplementedError(
+        "fbe.bias.apply_filters is scaffolded; see docs/roadmap.md Phase 2"
+    )
 
 
 def shortlist(biases: Sequence[PairBias], limit: int) -> Sequence[PairBias]:

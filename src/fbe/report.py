@@ -208,7 +208,9 @@ def build_context(
         NotImplementedError: Always, until rendering lands.
 
     """
-    raise NotImplementedError("fbe.report.build_context is scaffolded")
+    raise NotImplementedError(
+        "fbe.report.build_context is scaffolded; see docs/roadmap.md Phase 5"
+    )
 
 
 def render_report(
@@ -236,7 +238,9 @@ def render_report(
         NotImplementedError: Always, until rendering lands.
 
     """
-    raise NotImplementedError("fbe.report.render_report is scaffolded")
+    raise NotImplementedError(
+        "fbe.report.render_report is scaffolded; see docs/roadmap.md Phase 5"
+    )
 
 
 def write_report(
@@ -278,7 +282,9 @@ def write_report(
         NotImplementedError: Always, until rendering lands.
 
     """
-    raise NotImplementedError("fbe.report.write_report is scaffolded")
+    raise NotImplementedError(
+        "fbe.report.write_report is scaffolded; see docs/roadmap.md Phase 5"
+    )
 
 
 def load_report(path: Path) -> BiasReport:
@@ -299,7 +305,9 @@ def load_report(path: Path) -> BiasReport:
         NotImplementedError: Always, until serialisation lands.
 
     """
-    raise NotImplementedError("fbe.report.load_report is scaffolded")
+    raise NotImplementedError(
+        "fbe.report.load_report is scaffolded; see docs/roadmap.md Phase 5"
+    )
 
 
 def latest_report(reports_dir: Path, *, before: date | None = None) -> Path | None:
@@ -318,7 +326,9 @@ def latest_report(reports_dir: Path, *, before: date | None = None) -> Path | No
         NotImplementedError: Always, until report discovery lands.
 
     """
-    raise NotImplementedError("fbe.report.latest_report is scaffolded")
+    raise NotImplementedError(
+        "fbe.report.latest_report is scaffolded; see docs/roadmap.md Phase 5"
+    )
 
 
 def diff_reports(previous: BiasReport, current: BiasReport) -> ReportDiff:
@@ -346,7 +356,9 @@ def diff_reports(previous: BiasReport, current: BiasReport) -> ReportDiff:
         NotImplementedError: Always, until the diff lands.
 
     """
-    raise NotImplementedError("fbe.report.diff_reports is scaffolded")
+    raise NotImplementedError(
+        "fbe.report.diff_reports is scaffolded; see docs/roadmap.md Phase 5"
+    )
 
 
 def _grid(pairs: Sequence[PairBias]) -> Mapping[str, Mapping[str, PairBias | None]]:
@@ -393,7 +405,9 @@ def _grid(pairs: Sequence[PairBias]) -> Mapping[str, Mapping[str, PairBias | Non
         NotImplementedError: Always, until rendering lands.
 
     """
-    raise NotImplementedError("fbe.report._grid is scaffolded")
+    raise NotImplementedError(
+        "fbe.report._grid is scaffolded; see docs/roadmap.md Phase 5"
+    )
 
 
 def _pillar_order(config: Config | None) -> Sequence[PillarName]:
@@ -410,4 +424,6 @@ def _pillar_order(config: Config | None) -> Sequence[PillarName]:
         NotImplementedError: Always, until rendering lands.
 
     """
-    raise NotImplementedError("fbe.report._pillar_order is scaffolded")
+    raise NotImplementedError(
+        "fbe.report._pillar_order is scaffolded; see docs/roadmap.md Phase 5"
+    )

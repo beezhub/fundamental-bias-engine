@@ -62,11 +62,23 @@ Three modules are real. Everything else is scaffolding at varying stages.
 | `src/fbe/cli.py`, `report.py`, `dashboard/*` | In progress |
 
 **How to tell without checking this table:** a stub raises `NotImplementedError`
-with a message pointing at `docs/roadmap.md`. `load_config()` in
-`src/fbe/config.py` is the reference example. A function that returns plausible
-but fabricated numbers is worse than one that refuses to run, so stubs raise
-rather than return placeholder data. Do not "fix" a stub by making it return
-zeros.
+with a message naming the fully qualified callable and pointing at the phase of
+`docs/roadmap.md` that delivers it, in one form everywhere:
+
+```python
+raise NotImplementedError(
+    "fbe.scoring.composite is scaffolded; see docs/roadmap.md Phase 2"
+)
+```
+
+An abstract method on a base class, such as `BaseDataSource.fetch`, keeps a
+bare `raise NotImplementedError`. Reaching it means a subclass is incomplete,
+not that a phase is unfinished, and the message would say the wrong thing.
+`tests/test_stubs.py` walks the package and enforces both halves of this rule.
+
+A function that returns plausible but fabricated numbers is worse than one that
+refuses to run, so stubs raise rather than return placeholder data. Do not "fix"
+a stub by making it return zeros.
 
 The tests reflect this. `tests/test_universe.py` and `tests/test_config.py`
 test real behaviour. `tests/test_smoke.py` uses `pytest.importorskip` so that

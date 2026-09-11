@@ -190,7 +190,10 @@ class FredSource(BaseDataSource):
             Whether this source can be used on this run.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.fred.FredSource.available is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch(
         self,
@@ -215,7 +218,10 @@ class FredSource(BaseDataSource):
             SourceError: On repeated request failure or an unparseable body.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.fred.FredSource.fetch is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is ``"fred"``.
@@ -224,7 +230,10 @@ class FredSource(BaseDataSource):
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.fred.FredSource.refs is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch_series(
         self,
@@ -253,7 +262,10 @@ class FredSource(BaseDataSource):
             SourceError: On repeated request failure or an unparseable body.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.fred.FredSource.fetch_series is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def vintage_dates(self, series_id: str) -> Sequence[date]:
         """List every date on which a series was revised.
@@ -272,7 +284,10 @@ class FredSource(BaseDataSource):
             SourceError: On repeated request failure.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.fred.FredSource.vintage_dates is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def last_updated(self, series_id: str) -> date | None:
         """Return the date of a series' most recent observation.
@@ -292,4 +307,7 @@ class FredSource(BaseDataSource):
             SourceError: On repeated request failure.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.fred.FredSource.last_updated is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )

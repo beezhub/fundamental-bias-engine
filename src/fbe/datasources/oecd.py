@@ -278,7 +278,10 @@ class OecdSource(BaseDataSource):
             Whether this source can be used on this run.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.oecd.OecdSource.available is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch(
         self,
@@ -309,7 +312,10 @@ class OecdSource(BaseDataSource):
                 or when the body contains `THROTTLE_MARKER`.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.oecd.OecdSource.fetch is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is ``"oecd"``.
@@ -318,7 +324,10 @@ class OecdSource(BaseDataSource):
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.oecd.OecdSource.refs is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def split_series_id(self, series_id: str) -> tuple[str, str]:
         """Split a registry series ID into its dataflow and dimension key.
@@ -336,7 +345,10 @@ class OecdSource(BaseDataSource):
                 turned into a URL, so it fails here rather than as a 404 later.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.oecd.OecdSource.split_series_id is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def fetch_key(
         self,
@@ -366,7 +378,10 @@ class OecdSource(BaseDataSource):
                 is neither CSV nor a recognised error.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.oecd.OecdSource.fetch_key is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def parse_period(self, period: str, frequency: str) -> date:
         """Convert an SDMX time period to the first day of the period it names.
@@ -384,7 +399,10 @@ class OecdSource(BaseDataSource):
             ValueError: On a period string that does not match the frequency.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.oecd.OecdSource.parse_period is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def cpi_key(self, currency: str, core: bool = False) -> tuple[str, str]:
         """Build the flow and key for one currency's CPI series.
@@ -403,7 +421,10 @@ class OecdSource(BaseDataSource):
                 states rather than the bloc.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.oecd.OecdSource.cpi_key is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
 
     def finmark_key(self, currency: str, measure: str) -> tuple[str, str]:
         """Build the flow and key for one currency's financial market series.
@@ -419,4 +440,7 @@ class OecdSource(BaseDataSource):
             KeyError: If the currency or measure is unknown.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "fbe.datasources.oecd.OecdSource.finmark_key is scaffolded; "
+            "see docs/roadmap.md Phase 1"
+        )
