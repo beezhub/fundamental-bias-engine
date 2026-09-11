@@ -826,7 +826,7 @@ from its XML during verification, so a reader is a convenience rather than a
 strict requirement, but it is the sane way to do it.
 
 **Sub-weight floors should account for the 2-year gap.** `MIN_COMPONENT_WEIGHT`
-scores a pillar missing when a currency holds less than half its sub-weight.
+scores a pillar missing when a currency holds at or below half its sub-weight.
 CHF and NZD hold 0.30 of the monetary pillar without a 2-year. Whether that
 should drop the pillar entirely or score it on what remains is a scoring
 decision, not a data one, but the data layer cannot close it and the scoring

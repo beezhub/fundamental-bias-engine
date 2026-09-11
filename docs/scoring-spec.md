@@ -214,20 +214,29 @@ re-standardising them would destroy that meaning. In particular it would force
 POSITIONING to have a non-zero spread across currencies even in a run where
 nothing is crowded, which is the opposite of what that pillar is for.
 
-**Minimum available sub-weight.** A currency must hold at least half of a
+**Minimum available sub-weight.** A currency must hold more than half of a
 pillar's total sub-weight for that pillar to be scored:
 
     MIN_COMPONENT_WEIGHT = 0.5
-    if sum of u_j over available j  <  MIN_COMPONENT_WEIGHT:
+    if sum of u_j over available j  <=  MIN_COMPONENT_WEIGHT:
         the pillar is absent for that currency
+
+The comparison is "at or below", so exactly half is absent rather than scored.
+The boundary is reachable and is not a corner case: EMPLOYMENT's two components
+carry 0.50 each, so a currency missing either one lands exactly on it, and under
+a strict "less than" the floor could never fire for that pillar at all. GROWTH
+reaches it too, on any one 0.30 component plus one 0.20 component. The rule
+applies uniformly, with no per-pillar exemption, because the reason for the
+floor is arithmetic rather than a judgement about any one pillar's economics.
 
 Renormalising is a reasonable repair for one missing series out of four. It is
 not a reasonable repair for three missing out of four, where it stops being a
 repair and becomes an assertion that the one surviving series speaks for the
-whole pillar. Below the floor the honest output is absence, which flows into
-coverage (section 4.2) and is visible in the report, rather than a confident
-number resting on a fragment. If a currency has no sub-indicator at all for a
-pillar, the pillar is likewise absent and contributes nothing to coverage.
+whole pillar. At or below the floor the honest output is absence, which flows
+into coverage (section 4.2) and is visible in the report, rather than a
+confident number resting on a fragment. If a currency has no sub-indicator at
+all for a pillar, the pillar is likewise absent and contributes nothing to
+coverage.
 
 `PillarScore.raw` carries the pillar's headline number in natural units, for the
 report. `PillarScore.z` carries `z_pillar` after re-standardisation and before
@@ -343,9 +352,18 @@ survey (PMI), and two coincident hard-data series.
 | Retail sales year on year | `retail_sales_yoy` | Level, percent | Higher is positive | 0.20 |
 
 PMI is not available on a free feed for every G10 country. Where it is missing
-the sub-weight is renormalised across the remaining three, per section 2.3, and
-coverage is unaffected because the pillar still has data. The engine must not
-substitute a proxy silently.
+the sub-weight is renormalised across the remaining three, which hold 0.70
+between them, per section 2.3, and coverage is unaffected because the pillar
+still has data. The engine must not substitute a proxy silently.
+
+**GROWTH is absent for a currency holding exactly half its sub-weight.** Any one
+0.30 component plus one 0.20 component sums to 0.50, which is at the floor of
+section 2.3 and therefore absent rather than scored. The live instance:
+`indpro_yoy` is manual-only for CHF, AUD and NZD, and the manual PMI file holds
+no values, so those three currencies hold GDP plus retail sales today and GROWTH
+is absent for all three. Their composite renormalises around the gap and their
+coverage falls to 0.85, which is above `coverage_demotion`. Filling either
+manual file for those currencies restores the pillar.
 
 **Known failure mode.** GDP is published quarterly and heavily revised, so a
 third of the pillar can be describing a world two quarters old. The staleness
@@ -372,6 +390,16 @@ points means something similar everywhere.
 
 The sign flip on unemployment is the single flip in this pillar and is applied
 inside the transformation.
+
+**EMPLOYMENT is absent for a currency holding either component alone.** The two
+sub-weights are 0.50 each, so losing one leaves exactly the floor of section
+2.3, which is "at or below" and therefore absent. This pillar has no partial
+state: a currency has both series or it has none of the pillar. That is the
+consequence of weighting the two equally, and it is intended. The unemployment
+rate falls both when hiring is strong and when people leave the labour force,
+and the employment series is what separates the two, so a score built on the
+rate alone is the failure mode below rather than a weaker reading of the same
+thing.
 
 **Known failure mode.** Employment lags the cycle. By the time the unemployment
 rate has turned, the rate market has usually finished repricing, so the pillar
@@ -1233,9 +1261,14 @@ An implementer should assert, at minimum:
 - `blend_divisor` returns `"run_local"` below
   `ScoringConfig.min_restandardisation_runs` of history and `"rolling"` at or
   above it, and the path it returned reaches `PillarScore.notes` in both cases.
-- A pillar is absent for a currency holding less than `MIN_COMPONENT_WEIGHT`
+- A pillar is absent for a currency holding at or below `MIN_COMPONENT_WEIGHT`
   (0.5) of that pillar's sub-weight, and that absence lowers coverage rather than
-  producing a score.
+  producing a score. The boundary itself is the case to assert, since it is
+  where the two readings of the rule differ: EMPLOYMENT with one of its two
+  components, and GROWTH with one 0.30 component and one 0.20 component, are
+  both absent rather than scored. A currency missing only `cpi_yoy` holds 0.85
+  of MONETARY and still scores, which is what keeps the widened comparison from
+  sweeping up the ordinary missing-series case.
 - `f(p)` in POSITIONING is continuous at `|p| = 1.0` and `|p| = 2.0`, is odd, and
   has the sign changes stated in section 3.6.
 - `f(p)` saturates at magnitude 2.0 from `|p| = 3.33` upward, so it never reaches
