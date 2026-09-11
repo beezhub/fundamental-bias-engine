@@ -1,13 +1,14 @@
 # Routines
 
-Four scheduled runs keep the backlog moving without anyone at the keyboard.
-This file is the authority for what each one may do. Where a routine's prompt
-and this file disagree, this file wins, and the run says so.
+Four kinds of scheduled run keep the backlog moving without anyone at the
+keyboard: triage, build, improve and audit. This file is the authority for what
+each one may do. Where a routine's prompt and this file disagree, this file
+wins, and the run says so.
 
 Each routine is bound to its own host session, and that session's container is
-cloned from the integration branch on every run, so the team definitions, the
-skills and this file are present from the first command. The four hosts are
-tagged `fbe-routine` in the sessions list.
+cloned from `main` on every run, so the team definitions, the skills and this
+file are present from the first command. The hosts are tagged `fbe-routine` in
+the sessions list.
 
 ## Reused sessions, stale transcripts
 
@@ -20,26 +21,33 @@ never assumes a check still fails because it failed last time.
 
 ## Getting current
 
-The container clones the integration branch. A run confirms that with
+The container clones `main`. A run confirms that with
 
     git rev-parse --abbrev-ref HEAD
 
-and, if `.claude/agents/` is missing, says so in one line and stops. Once the
-integration branch is merged, the host sessions are re-pointed at `main` and
-nothing else changes.
+and, if `.claude/agents/` is missing, says so in one line and stops.
 
-## The four runs
+## The runs
 
 | Run | When (SAST) | Role | Does | Does not |
 | --- | --- | --- | --- | --- |
-| triage | weekdays 06:00 | architect | Answers questions on `status:needs-decision` issues in a comment. Moves an issue to `status:ready` when it meets the definition of ready. Files at most 3 defects it finds while reading. | Touch source. Open proposals. Advance anything past the approval gate. |
-| build | weekdays 07:00 | developer, then test-engineer, then code-reviewer | Claims **one** issue: `status:ready`, `routine-safe`, `p2` or `p3`. Branch, failing test, fix, four checks, pull request. | Take a second issue. Touch `types.py`. Change a value in `ScoringConfig` or `RiskConfig`. Merge. |
+| triage | weekdays 06:00 and 12:00 | architect | Answers questions on `status:needs-decision` issues in a comment. Moves an issue to `status:ready` when it meets the definition of ready. Widens the unattended pool by labelling qualifying `status:ready` issues at `p2` or `p3` `routine-safe`, with a comment giving the reason. Splits any ready issue too big for one pull request into child issues and sets the parent to `status:blocked`. Files at most 3 defects it finds while reading. | Touch source. Open proposals. Advance anything past the approval gate. |
+| build, lane 1 | weekdays 07:00, 11:00 and 15:00 | developer, then test-engineer, then code-reviewer | Claims **one** issue, the lowest-numbered that is `status:ready`, `routine-safe`, `p2` or `p3`. Branch, failing test, fix, four checks, pull request. | Take a second issue. Take an issue already at `status:in-progress`. Touch `types.py`. Change a value in `ScoringConfig` or `RiskConfig`. Merge. |
+| build, lane 2 | weekdays 09:00, 13:00 and 17:00 | developer, then test-engineer, then code-reviewer | Claims **one** issue, the highest-numbered that is `status:ready`, `routine-safe`, `p2` or `p3`. Branch, failing test, fix, four checks, pull request. | Take a second issue. Take an issue already at `status:in-progress`. Touch `types.py`. Change a value in `ScoringConfig` or `RiskConfig`. Merge. |
 | improve | Sunday 08:00 | product-analyst | Converts every `type:proposal` carrying `approved` into a `type:requirement`. Then files at most 3 new proposals at `status:needs-approval`. | Approve anything. Convert a proposal without the `approved` label. |
 | audit | Saturday 08:00 | architect | Reads the whole repository against the standards and the specifications. Files at most 10 issues, verified present. Read-only checkout, writes nothing. | Fix anything. Refile something already open or already closed. |
 
-Triage runs an hour before build so answers are in place before anyone tries to
-claim work. Routines bound to a host session do not send push notifications, so
-the trail on GitHub is the only record of what a run did.
+The two build lanes take the backlog from opposite ends so they do not race
+for the same issue. Both re-read the labels on GitHub immediately before
+claiming, and neither takes an issue already at `status:in-progress`, because
+a lane cannot tell from its own transcript whether the other lane claimed
+something in the last two hours. One issue per run, one pull request per
+issue, and a human merges.
+
+Each triage runs an hour before the next build so that answers, the
+`routine-safe` label and any split are in place before a lane tries to claim
+work. Routines bound to a host session send no push notifications, so the trail
+on GitHub is the record of what a run did.
 
 ## How a human approves a proposal
 
