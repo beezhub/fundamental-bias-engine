@@ -34,24 +34,64 @@ repository layout."""
 
 @dataclass(frozen=True, slots=True)
 class RiskConfig:
-    """Risk limits, taken directly from the trading plan.
+    """Risk limits. Some are the trading plan's own text, the rest are derived.
 
-    The plan fixes 1-2% of balance per trade and quotes R20-R40 as the money
-    equivalent, which implies a roughly R2,000 account. Balance is configurable
-    because it moves; the percentages are the rule and should not.
+    Two categories, and each field says which it is in. The distinction
+    matters because ``CLAUDE.md`` lets the plan win any conflict: a limit the
+    plan states is not up for negotiation here, while a limit derived from the
+    plan's intent can be argued with on its merits.
+
+    From the plan: ``account_currency``, ``account_balance``,
+    ``risk_per_trade_min`` and ``risk_per_trade_max``. The plan fixes 1-2% of
+    balance per trade and quotes R20-R40 as the money equivalent, which
+    implies a roughly R2,000 account. Balance is configurable because it
+    moves; the percentages are the rule and should not, and
+    ``Config.validate()`` refuses a ceiling above 2%.
+
+    Derived from the plan's intent: ``max_concurrent_positions``,
+    ``max_correlated_exposure``, ``max_daily_loss`` and ``max_drawdown_pause``.
+    The plan names the behaviour each one guards against but gives it no
+    number. The numbers are priors, reasoned in ``docs/risk-and-execution.md``
+    section 4 and not measured, on the same standing as the pillar weights.
     """
 
     account_currency: str = "ZAR"
+    """Currency the balance and every risk amount are denominated in. From the
+    plan, which quotes its per-trade risk as R20-R40. No G10 cross has a ZAR
+    leg, so sizing always needs an explicit conversion rate; see
+    ``docs/risk-and-execution.md`` section 1."""
     account_balance: float = 2000.0
     risk_per_trade_min: float = 0.01
     risk_per_trade_max: float = 0.02
     max_concurrent_positions: int = 3
+    """Derived, not from the plan. Serves "Avoid Overtrading" and "Be
+    Selective" (Keep in mind 2, Enhance your focus 8). The plan sets no
+    position count. This one is a prior for how many 1h and 4h charts can be
+    managed by hand at once, reasoned in ``docs/risk-and-execution.md``
+    section 4, and it has not been measured."""
     max_correlated_exposure: float = 0.04
-    """Cap on combined risk across positions sharing a leg. Two longs against
-    USD are one trade wearing two tickets."""
+    """Derived, not from the plan. Serves "Trade Size Matters" and the 1-2%
+    rule (Keep in mind 10, Trading plan 2): two longs against USD are one
+    short-USD bet wearing two tickets, and counting them as two independent
+    trades understates the risk. Fraction of ``account_balance`` at risk
+    across all positions sharing a leg, with the full risk of a position
+    attributed to both of its legs. The plan gives no number. This one is a
+    prior from ``docs/risk-and-execution.md`` section 4, not a measured
+    result."""
     max_daily_loss: float = 0.04
+    """Derived, not from the plan. Serves "Avoid Revenge Trading" (Enhance
+    your focus 11, Keep in mind 12), which the plan states as psychology with
+    no number. Fraction of ``account_balance`` lost in one day, realised
+    losses only, after which the session is over; an open trade underwater
+    does not count. This one is a prior from ``docs/risk-and-execution.md``
+    section 4, not a measured result."""
     max_drawdown_pause: float = 0.10
-    """Stop trading and review the model when equity falls this far from peak."""
+    """Derived, not from the plan. Serves "Be Ready for Drawdowns" (Keep in
+    mind 16), which the plan states as psychology with no number. Fraction of
+    peak equity; falling this far stops trading for a review of the model,
+    since a drawdown this deep more likely means the weights are wrong than
+    that variance was unkind. This one is a prior from
+    ``docs/risk-and-execution.md`` section 4, not a measured result."""
 
 
 @dataclass(frozen=True, slots=True)

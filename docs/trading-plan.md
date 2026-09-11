@@ -321,6 +321,22 @@ near. Nothing here changes a rule above.
 | "Consider incorporating fundamental analysis and market sentiment" (Keep in mind 15) | The whole engine | This is the reason the project exists. The seven pillars produce a relative-value fundamental ranking of the G10, differenced into a per-pair directional bias. |
 | "Consider the overall market sentiment" (Daily routine 2) | `src/fbe/pillars/risk.py`, `src/fbe/pillars/positioning.py` | Risk-regime and COT positioning pillars, which are the sentiment inputs the engine can measure from free data. |
 
+## Derived from the plan's intent
+
+The plan names each of these behaviours but gives none of them a number. The
+engine adds a number so that `check_limits` in `src/fbe/risk.py` has something
+to refuse a trade against. Every figure below is a prior, reasoned in
+`docs/risk-and-execution.md` section 4 and not measured, on the same standing as
+the pillar weights. The precedence rule in `CLAUDE.md` does not protect them:
+they can be argued with on their merits.
+
+| Plan rule it serves | Where it lives | What the engine adds |
+| --- | --- | --- |
+| "Avoid Overtrading" and "Be Selective" (Keep in mind 2, Enhance your focus 8) | `RiskConfig.max_concurrent_positions` | A cap on open positions, defaulting to 3, guarding the attention it takes to manage 1h and 4h charts by hand. The plan sets no count. |
+| "Trade Size Matters" and the 1% - 2% rule (Keep in mind 10, Trading plan 2) | `RiskConfig.max_correlated_exposure` | A cap on combined risk across positions sharing a leg, defaulting to 4% of balance, so that two tickets against the same currency are not counted as two independent trades. The plan does not mention correlated exposure. |
+| "Avoid Revenge Trading" (Enhance your focus 11, Keep in mind 12) | `RiskConfig.max_daily_loss` | A realised daily loss, defaulting to 4% of balance, after which the session is over. The plan states this as psychology with no number. |
+| "Be Ready for Drawdowns" (Keep in mind 16) | `RiskConfig.max_drawdown_pause` | A drawdown from peak equity, defaulting to 10%, at which trading stops for a review of the model. The plan states this as psychology with no number. |
+
 ## Stays fully manual
 
 The engine produces a directional lean and a conviction. It never produces a
