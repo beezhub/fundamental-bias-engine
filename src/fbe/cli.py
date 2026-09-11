@@ -71,7 +71,7 @@ script or a cron job without parsing output:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -79,6 +79,7 @@ from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from fbe import config as config_module
 from fbe.types import Conviction, Direction
 
 if TYPE_CHECKING:
@@ -211,6 +212,16 @@ def main(
     ctx.obj = GlobalOptions(config_path=config, offline=offline, verbose=verbose)
 
 
+_CONFIG_META_KEY = "fbe.cli.effective_config"
+"""Where the resolved config is parked on the context.
+
+``Context.meta`` is shared with every nested context, so the group callback
+and each command see the same entry. ``ctx.obj`` would not do: it holds a
+frozen `GlobalOptions`, and the point is one config per invocation rather than
+one per command.
+"""
+
+
 def _effective_config(ctx: typer.Context) -> Config:
     """Resolve the effective config once per run and cache it on the context.
 
@@ -219,19 +230,47 @@ def _effective_config(ctx: typer.Context) -> Config:
     write a report record that digest, which is what makes an old report
     reproducible.
 
+    ``--offline`` is applied here and is one-way, as `main` documents it:
+    passing it forces `fbe.config.DataConfig.offline` true, and omitting it
+    leaves whatever the file or the defaults said. There is deliberately no
+    way to force online from the command line, because the flag exists to make
+    a run reproducible and a flag that can undo that is a flag that will.
+
+    This resolves and does not refuse. A config that `fbe.config.Config.validate`
+    would reject still loads, because ``fbe doctor`` reports those problems as
+    its first check and a resolver that raised would hide the very thing the
+    operator ran ``doctor`` to see.
+
     Args:
         ctx: Typer context carrying a `GlobalOptions` in ``ctx.obj``.
 
     Returns:
-        The effective `fbe.config.Config`, with ``--offline`` applied.
+        The effective `fbe.config.Config`, with ``--offline`` applied. The same
+        object on every call within one invocation, not an equal copy.
 
     Raises:
-        NotImplementedError: Always, until the config layer lands.
+        RuntimeError: When the context carries no `GlobalOptions`, which means
+            the group callback did not run. Falling back to the defaults here
+            would silently ignore ``--config`` and ``--offline``.
+        fbe.config.ConfigError: When the config file or an ``FBE_`` variable
+            cannot be read. Raised from `fbe.config.load_config`, and left to
+            reach the operator rather than being turned into a default.
 
     """
-    raise NotImplementedError(
-        "fbe.cli._effective_config is scaffolded; see docs/roadmap.md Phase 1"
-    )
+    cached = ctx.meta.get(_CONFIG_META_KEY)
+    if isinstance(cached, config_module.Config):
+        return cached
+    options = ctx.obj
+    if not isinstance(options, GlobalOptions):
+        raise RuntimeError(
+            "the global options are missing from the context, so --config and "
+            "--offline would be ignored"
+        )
+    resolved = config_module.load_config(options.config_path)
+    if options.offline:
+        resolved = replace(resolved, data=replace(resolved.data, offline=True))
+    ctx.meta[_CONFIG_META_KEY] = resolved
+    return resolved
 
 
 @app.command(
