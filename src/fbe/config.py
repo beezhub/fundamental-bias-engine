@@ -148,16 +148,39 @@ class ScoringConfig:
     a cliff, so a series does not swing a score the day it crosses a boundary."""
     max_staleness_days: int = 45
     max_dispersion: float = 1.20
-    """Standard deviation across a currency's pillar scores above which
-    conviction is demoted. High dispersion means the pillars disagree, and a
-    composite that averages a strong disagreement is not the same evidence as
-    a composite built from consensus."""
+    """Dispersion above which conviction is demoted one step, in
+    ``bias.conviction_for``. Compared against ``CurrencyScore.dispersion``,
+    which is the effective-weighted standard deviation of a currency's pillar
+    scores about its composite, and not the unweighted standard deviation
+    across those scores. The weights are the post-staleness effective weights,
+    renormalised to sum to 1.0 so the measure stays on the score band whatever
+    the coverage was. ``docs/scoring-spec.md`` section 4.4 defines it and
+    ``scoring.dispersion`` computes it. High dispersion means the pillars
+    disagree, and a composite that averages a strong disagreement is not the
+    same evidence as a composite built from consensus. 1.20 was judged against
+    that weighted quantity, where it means the pillars sit typically more than
+    a full band unit from the composite, so a replacement reasoned about as
+    the plain spread of seven pillar scores will not mean here what it
+    appears to mean."""
     min_coverage: float = 0.60
-    """Fraction of pillar weight that must have usable data for a pair to be
-    tradeable at all. Below this the composite is extrapolated from too little
-    to act on."""
+    """Coverage below which a pair is untradeable whatever its spread says,
+    blocked with ``coverage`` in ``bias.apply_filters`` on whichever leg is
+    thinner. Compared against
+    ``CurrencyScore.coverage``, the sum of the effective pillar weights,
+    ``sum over p of w_eff(p)``, defined in ``docs/scoring-spec.md`` section
+    4.2 and computed by ``scoring.coverage``. Effective weight carries the
+    staleness discount, so this is the fraction of pillar weight that had
+    usable and fresh data rather than the fraction of pillars present: a
+    pillar scoring on a 30-day-old input contributes half its weight, not all
+    of it. That is why coverage is continuous and why the threshold is a
+    fraction rather than a count. Below it the composite is extrapolated from
+    too little to act on."""
     coverage_demotion: float = 0.80
-    """Coverage below this demotes conviction without blocking the trade."""
+    """Coverage below this demotes conviction one step without blocking the
+    trade. The same quantity as ``min_coverage``, the sum of effective pillar
+    weights from ``docs/scoring-spec.md`` section 4.2, so it carries the same
+    freshness discount. The view still stands here, it just rests on partial
+    data."""
     max_cost_ratio: float = 0.05
     """Ceiling on spread cost as a share of the expected move over the
     horizon. Above it the spread consumes too much of the move to be worth
