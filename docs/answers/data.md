@@ -5,6 +5,12 @@ this machine on 2026-09-10. Where a fetch failed, the failure mode is recorded
 in the same way the RBNZ 403 is recorded elsewhere in this repository:
 distinguished from "does not exist."
 
+**Update, 2026-09-11.** A `FRED_API_KEY` has since been issued and verified
+live against `series/observations`. The ALFRED first-print comparison under
+question 8 is no longer blocked on the key and can be run through the API
+once `FredSource` lands. The method notes below describe the keyless pass as
+it was done and are left as written.
+
 A note on method for this pass. I did not have a `FRED_API_KEY` in this
 environment and did not create a St. Louis Fed account to get one, because
 doing so means sending an email address to a third party for a purpose nobody

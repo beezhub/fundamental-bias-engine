@@ -58,12 +58,27 @@ the only free source here with real cross-country reach.
 ### Getting a key
 
 1. Create an account at <https://fredaccount.stlouisfed.org/apikeys>.
-2. Request a key. It is issued immediately, free, no approval step.
+2. Request a key. The form asks you to describe the application you intend to
+   write. A paragraph describing a personal macro research tool that pulls a
+   few dozen series daily is accepted, and the key is issued on submission
+   with no manual review. FRED's terms permit personal and commercial use of
+   the data; the restrictions are on redistribution and on implying
+   endorsement.
 3. It is a 32-character lowercase alphanumeric string.
-4. Export it: `export FRED_API_KEY=your_key_here`
+4. Export it. Bash: `export FRED_API_KEY=your_key_here`. PowerShell:
+   `$env:FRED_API_KEY = "your_key_here"`, or
+   `[Environment]::SetEnvironmentVariable("FRED_API_KEY", "your_key_here", "User")`
+   to persist it across sessions.
 
 `fbe.config.default_config` reads `FRED_API_KEY` from the environment, so the
-key never has to appear in a config file or a commit.
+key never has to appear in a config file or a commit. `.env.example` exists as
+a template for a local, git-ignored record of the key, but nothing in the
+package loads `.env`. A key that lives only there is not seen by the engine.
+
+The key was obtained and verified on 2026-09-11: `series/observations` for
+`FEDFUNDS` with `file_type=json` returned 200 and the expected observations.
+Before that date the endpoints in this document were verified only by their
+400 responses to unauthenticated calls.
 
 ### Parameters worth knowing
 
@@ -1184,9 +1199,14 @@ Nothing here needs intraday polling, and every source in the stack punishes it.
 ## Troubleshooting
 
 **"FRED source unavailable"**
-`FRED_API_KEY` is not in the environment. Check with `echo $FRED_API_KEY`. Get
-one at <https://fredaccount.stlouisfed.org/apikeys>. Or run with `offline: true`
-if there is a warm cache.
+`FRED_API_KEY` is not in the environment. Check with `echo $FRED_API_KEY` in
+bash or `$env:FRED_API_KEY` in PowerShell. Get one at
+<https://fredaccount.stlouisfed.org/apikeys>. Or run with `offline: true` if
+there is a warm cache.
+
+**The key is in `.env` but the source is still unavailable**
+Nothing loads `.env`. The config reads the environment only, so export the key
+in the shell that runs the engine. See "Getting a key" above.
 
 **FRED returns 400 "Variable api_key is not set"**
 The key was not attached to the request. Note that this is exactly the response
