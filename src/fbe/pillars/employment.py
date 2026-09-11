@@ -149,12 +149,15 @@ class EmploymentPillar(BasePillar):
         pillars use to report a readable quantity alongside a derived one.
 
         With the components weighted equally at 0.50, either one missing leaves
-        exactly `MIN_COMPONENT_WEIGHT` present, which is on the boundary rather
-        than under it, so a currency with one of the two series is still scored
-        on that series alone. That is the intended behaviour: half of this pillar
-        is better than none of a 0.10-weight pillar, and the missing half shows
-        up as neither a coverage nor a dispersion signal, which is worth knowing
-        when reading such a run.
+        exactly `MIN_COMPONENT_WEIGHT` present, and the floor is "at or below",
+        so a currency with only one of the two series is scored as missing rather
+        than on that series alone. There is therefore no partial state for this
+        pillar: a currency has both components or it has none of the pillar, and
+        the shortfall reaches the reader as reduced coverage on the
+        `CurrencyScore` instead of as a full-weight score built on half the
+        evidence. That is the point of the equal weighting. Neither component
+        guards against the other's failure mode, so half of this pillar is not
+        better than none of it.
 
         """
         raise NotImplementedError(

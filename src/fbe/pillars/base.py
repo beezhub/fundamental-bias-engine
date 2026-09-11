@@ -69,9 +69,26 @@ to score the whole cross-section rather than scoring part of it.
 MIN_COMPONENT_WEIGHT: float = 0.5
 """Fraction of a pillar's sub-weight that must be present for a currency.
 
-Multi-component pillars renormalise over the components they actually have.
-Below half the sub-weight the renormalisation is doing more work than the data,
-so the currency is scored as missing instead.
+Multi-component pillars renormalise over the components they actually have. At
+or below half the sub-weight the renormalisation is doing more work than the
+data, so the currency is scored as missing instead.
+
+Half is not enough, and the boundary is part of the rule rather than an
+accident of it. EMPLOYMENT is the case that decides this: its two components
+carry 0.50 each, so a currency missing either one holds exactly 0.50. Under a
+strict "less than" the floor could never fire for the one pillar whose own
+docstring says neither component guards against the other's failure mode alone,
+and a currency scored on the unemployment rate with no hiring series would
+carry the pillar's full weight with nothing marking it. A safeguard that cannot
+fire for the pillar that needs it most is worse than no safeguard, because a
+reader checking the rule concludes the case is covered.
+
+The comparison is uniform across pillars. GROWTH reaches the boundary too, on
+any one 0.30 component plus one 0.20 component, and is scored as absent there on
+the same reasoning: the reason for the floor is arithmetic, that the surviving
+components are being asked to speak for the absent ones, not a judgement about
+any one pillar's economics. Exempting a pillar would be a conditional wearing a
+disguise.
 """
 
 
@@ -594,10 +611,12 @@ class BasePillar(ABC):
 
         Renormalisation rule: for each currency the weighted mean runs over the
         components that currency actually has, divided by the weight present
-        rather than the weight configured. A currency holding less than
+        rather than the weight configured. A currency holding at or below
         `MIN_COMPONENT_WEIGHT` of the pillar's sub-weight is returned as ``None``
-        instead, because past that point the surviving components are being
-        asked to speak for the ones that are absent.
+        instead, because at that point the surviving components are being
+        asked to speak for the ones that are absent. The comparison is ``<=``,
+        and the boundary is where it bites: a currency holding exactly half is
+        absent, not scored. `MIN_COMPONENT_WEIGHT` carries the reason.
 
         A component present for only part of the cross-section is z-scored
         across the currencies that have it, and the currencies that do not

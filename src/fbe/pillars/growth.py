@@ -51,7 +51,18 @@ class GrowthPillar(BasePillar):
     remaining three, which hold 0.70 between them and clear
     `MIN_COMPONENT_WEIGHT`. Coverage is unaffected, because the pillar still has
     data. The engine must not substitute a proxy silently. Filling the manual PMI
-    file improves the pillar; leaving it empty does not break it.
+    file improves the pillar; leaving it empty does not by itself break it.
+
+    A second missing component does break it, and that is the live case. The
+    floor is "at or below", so a currency holding one 0.30 component and one 0.20
+    component sits at exactly 0.50 and the pillar is absent for it. On the
+    registry as it stands, ``industrial_production_yoy`` is manual-only for CHF,
+    AUD and NZD and the manual PMI file holds no values, so those three hold GDP
+    plus retail sales and GROWTH is absent for them until one of the two manual
+    files is filled. That is the honest reading: a score built from GDP and
+    retail sales alone would otherwise be presented with the same confidence as
+    one built from four series, and nothing in the report would say which the
+    reader was holding.
 
     One caveat to hold in mind when reading a run with partial PMI coverage. The
     PMI z-score is computed across whichever currencies have the series, so a
