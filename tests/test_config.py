@@ -403,6 +403,49 @@ def test_previously_undocumented_risk_fields_have_docstrings(name: str) -> None:
     assert _field_docstring(inspect.getsource(RiskConfig), name)
 
 
+def test_max_dispersion_names_the_quantity_it_is_compared_against() -> None:
+    """1.20 was judged against the weighted dispersion, not the plain spread.
+
+    The two are different numbers on the same cross-section, so a docstring
+    describing the plain standard deviation across a currency's pillar scores
+    invites a replacement threshold reasoned about the wrong quantity. This is
+    read at the point the number is set, which is the only place a re-weighting
+    looks, so it has to name what ``scoring.dispersion`` returns.
+    """
+    doc = _field_docstring(inspect.getsource(ScoringConfig), "max_dispersion")
+    assert "effective-weighted standard deviation" in doc
+    assert "about its composite" in doc
+    assert "post-staleness" in doc
+    assert "section 4.4" in doc
+
+
+def test_min_coverage_says_coverage_carries_the_freshness_discount() -> None:
+    """Coverage is a sum of effective weights, not a count of usable pillars.
+
+    The staleness discount is the whole reason it is continuous, and a pillar
+    on a 30-day-old input contributing half its weight is what makes 0.60 a
+    fraction rather than "at least four pillars present".
+    """
+    doc = _field_docstring(inspect.getsource(ScoringConfig), "min_coverage")
+    assert "effective pillar weights" in doc
+    assert "staleness discount" in doc
+    assert "fresh data" in doc
+    assert "section 4.2" in doc
+
+
+def test_coverage_demotion_names_the_same_quantity_as_min_coverage() -> None:
+    """Both thresholds read the same field, so both must define it.
+
+    An unqualified "Coverage" next to the demotion threshold inherits whatever
+    the reader assumed from the filter above it, which is the omission this
+    pair of docstrings exists to close.
+    """
+    doc = _field_docstring(inspect.getsource(ScoringConfig), "coverage_demotion")
+    assert "min_coverage" in doc
+    assert "freshness discount" in doc
+    assert "section 4.2" in doc
+
+
 def test_nothing_in_src_claims_to_be_taken_directly_from_the_plan() -> None:
     hits = [
         path
