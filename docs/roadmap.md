@@ -200,23 +200,111 @@ Two rules for the whole exercise:
 
 Recorded so they are decided deliberately rather than by accident.
 
+Each question carries its status and points at the evidence behind it. A
+verdict recorded here has not been applied to the code: section 10 of
+`docs/scoring-spec.md` governs what is applied and when, and nothing below
+may be resolved in code without updating that section first. The files under
+`docs/answers/` are dated snapshots of the investigations, not descriptions of
+the repository.
+
 **Scoring and weights**
 
 1. Should normalisation be purely cross-sectional (a currency versus the other seven today) or blended with a time-series z-score over `lookback_years`? Cross-sectional is the framework's logic and needs no history. Time-series catches the case where the whole G10 tightens together. The current design is cross-sectional and this is unresolved.
+   **Status: answered, negative.** The hybrid was designed and rejected. On
+   a universe-wide move the only thing a time-series leg adds to a pair
+   spread is a term in the ratio of the two currencies' historical
+   volatilities, which ranks them by the quietness of their own history, and
+   it would cost `lookback_years` of history for every indicator. Section
+   2.2 of the scoring spec stands. Evidence: `docs/scoring-spec.md` section
+   10 item 4, `docs/answers/scoring-maths.md` Spec 4 and Roadmap 1.
 2. Is `MONETARY` at 0.30 too low? If rate differentials carry most of the signal, an argument exists for 0.40 or higher and for treating the other six as tiebreakers. Phase 6 decides.
+   **Status: narrowed, residual blocked on trade data.** Published work
+   bounds the weight to 0.25-0.35 and cannot supply a number, so 0.30 stays.
+   The test that would settle the residual is a comparison of the
+   seven-pillar ranking of the 28 pairs against a MONETARY-only ranking on
+   the forward record, not a weight sweep, and it needs roughly two years of
+   record. Evidence: `docs/answers/framework.md` Q2 (roadmap).
 3. Should the expected policy path be scored separately from the current setting? The 2y yield mixes both. Splitting them needs a forward-curve source that is free, which may not exist.
+   **Status: answered on the data, scoring call not taken.** A free forward
+   curve exists and was fetched live for EUR, GBP, AUD and USD, and does not
+   exist free for CAD, JPY, CHF and NZD. Whether a 4-of-8 `policy_path`
+   sub-indicator is worth adding under `MIN_COMPONENT_WEIGHT` is a scoring
+   decision. Evidence: `docs/answers/data.md` question 3,
+   `docs/scoring-spec.md` section 10 findings.
 4. `RISK` uses static `risk_beta` values in `CurrencyMeta`. Those betas move with the regime. Estimate them rolling, or accept a static approximation and document the error?
+   **Status: answered, with a remainder tracked separately.** Keep the static
+   betas: a rolling estimate describes the regime that just ended, and in
+   simulation it beats the constant only once the true beta's drift exceeds
+   roughly 0.25 of the `-1..+1` band. Any rolling beta must be measured
+   against a per-currency index, never a dollar pair. The two answer
+   documents reach different headline positions on the sign-flip case,
+   which is [#22](../../issues/22): costed on the section 7 fixture and
+   answered as far as the evidence allows, with the rolling-beta diagnostic
+   pending as a proposal. Evidence: `docs/scoring-spec.md` section 10 item
+   9, `docs/answers/framework.md` Q9, `docs/answers/scoring-maths.md`
+   Roadmap 4.
 
 **Data**
 
 5. No free source covers G10 PMIs completely. Options: `data/manual/` CSV upkeep, drop PMI from `GROWTH`, or accept uneven coverage across currencies and let `coverage` reflect it.
+   **Status: answered.** The OECD Business Tendency Surveys dataflow carries
+   a composite business confidence balance for all eight currencies, fetched
+   live: monthly for USD, EUR, GBP and CHF, quarterly for JPY, CAD, AUD and
+   NZD. It is a percentage balance centred on zero, not a diffusion index
+   centred on 50, so it needs its own indicator key. The registry entry is
+   proposed in [#6](../../issues/6); whether GROWTH takes it, given the
+   quarterly half, is [#23](../../issues/23). Evidence:
+   `docs/answers/data.md` question 5, `docs/scoring-spec.md` section 10
+   findings.
 6. CFTC COT is published Friday for the prior Tuesday. That is three days stale on arrival and up to ten by the next release. Does `POSITIONING` earn 0.10 with that lag?
+   **Status: narrowed on the lag, blocked on the weight.** How much of the
+   signal survives the lag is a function of weekly persistence, measurable
+   from CFTC history alone once `datasources/cot.py` lands. Whether the
+   pillar earns 0.10 needs COT history joined to forward returns, roughly
+   seven years of it. The shape function accounts for more of the pillar's
+   shortfall against 0.10 than the lag does. Evidence:
+   `docs/answers/scoring-maths.md` Roadmap 6.
 7. The Forex Factory calendar has no official free API. If scraping breaks, is there a fallback, and does the blackout fail open or closed? Failing closed means missing trades; failing open means trading into an NFP print.
+   **Status: narrowed, fail direction open.** Working fallbacks exist per
+   country: central bank rate decision calendars for all eight and the ONS
+   release calendar for GBP, while the BLS returns 403 to automated requests
+   and no single free feed covers all eight, so a fallback is eight to ten
+   small scrapers rather than one. Whether the blackout fails open or closed
+   is [#24](../../issues/24), owned by the execution desk. Evidence:
+   `docs/answers/data.md` question 7.
 8. GDP revisions can be large. Score the first print, the latest vintage, or both?
+   **Status: answered.** Revisions are large enough to move the
+   cross-sectional ranking. Score the latest vintage for the live run, which
+   is what the registry does; first-print data is for a backtest, which is
+   what `Observation.released_at` and `revision` exist for. Evidence:
+   `docs/answers/data.md` question 8, `docs/scoring-spec.md` section 10
+   findings.
 
 **Product**
 
 9. What is the right refresh cadence? Daily fits the routine in the trading plan, but most of these series are monthly, so most days the bias will not move. Does a daily run that says "unchanged" build discipline or invite banner blindness?
+   **Status: answered, one sub-question blocked on usage data.** Daily. The
+   plan's morning routine fixes the cadence, and the calendar changes every
+   day even when no composite does. Whether a daily "unchanged" run builds
+   discipline or invites blindness is about the owner's behaviour and waits
+   on the journal. Evidence: `docs/answers/product.md` Roadmap 9.
 10. Should the engine suppress a pair entirely when conviction is `NONE`, or show it greyed out? Hiding is cleaner; showing proves the engine considered it and reduces the temptation to re-derive it by hand.
+   **Status: answered.** Show it. A pair silently missing is
+   indistinguishable from a pair the engine never scored. NONE pairs stay in
+   the list and the matrix and sort to the bottom; the trader shortens the
+   list with `--min-conviction` or `--tradeable-only`. Evidence:
+   `docs/answers/product.md` Roadmap 10.
 11. Should the engine ever contradict the technical setup loudly, for instance warning when a chart-based long runs against a high-conviction fundamental short? That edges from bias into advice, which is out of scope as currently drawn.
+   **Status: judgement.** No. The line stays where it is. The contradiction
+   already reaches the trader through the checklist and `agreed_with_bias`
+   in the journal, and `fbe evaluate` should report overrides separately
+   rather than warn louder. Revisit only if at least 30 closed overrides
+   perform materially worse than with-bias trades. Evidence:
+   `docs/answers/framework.md` Q11 (roadmap).
 12. Does the universe ever widen past G10? SEK and NOK are the obvious candidates and were excluded on retail spread cost. Revisit only if the account grows enough for the spread to stop mattering.
+   **Status: narrowed.** Not on a R2,000 account, and dealing spread is not
+   the binding reason: the account cannot size the pairs it already has, and
+   widening the cross-section re-prices every existing score. Four
+   conditions are stated in the evidence, all of which must hold, and the
+   account balance gate is the one that is not close. Evidence:
+   `docs/answers/framework.md` Q12 (roadmap).

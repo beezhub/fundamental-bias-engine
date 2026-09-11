@@ -45,6 +45,18 @@ the two legs the same has no opinion on the pair, and it is excluded from both
 sides of the agreement fraction rather than counted as agreeing.
 """
 
+_CONVICTION_RANK: Mapping[Conviction, int] = {
+    Conviction.NONE: 0,
+    Conviction.LOW: 1,
+    Conviction.MEDIUM: 2,
+    Conviction.HIGH: 3,
+}
+"""Sort order for `shortlist`, highest conviction first.
+
+`Conviction` is a string enum with no ordering of its own, so the ladder is
+spelled out here rather than relied on through declaration order.
+"""
+
 CalendarGuard = Callable[[str, date], Sequence[str]]
 """Injected hook reporting hard calendar blockers for one currency on one date.
 
@@ -401,19 +413,30 @@ def apply_filters(
     )
 
 
-def shortlist(biases: Sequence[PairBias], limit: int = 3) -> Sequence[PairBias]:
+def shortlist(biases: Sequence[PairBias], limit: int) -> Sequence[PairBias]:
     """Pick the handful of pairs worth putting on a chart today.
 
     Args:
         biases: Filtered biases from `apply_filters`, normally all 28.
-        limit: How many pairs to return. Defaults to 3, matching
-            ``RiskConfig.max_concurrent_positions``: there is no purpose in
-            shortlisting more trades than the risk rules permit to be open.
+        limit: How many pairs to return at most. The caller passes
+            ``config.risk.max_concurrent_positions``: there is no purpose in
+            shortlisting more trades than the risk rules permit to be open, and
+            the number lives in `RiskConfig` and nowhere else. There is no
+            default on purpose. A default here would be a second copy of the
+            cap, and the two would drift apart silently: a trader who lowers the
+            cap to 2 would still be handed three ideas and refused the third at
+            the ticket. ``0`` returns nothing, for a run where the risk rules
+            permit no new positions.
 
     Returns:
-        Up to ``limit`` tradeable biases, best first. Ordered by conviction
-        first and by absolute spread within a conviction level, with ties broken
-        by pair name so two identical runs produce identical shortlists.
+        Up to ``limit`` tradeable biases, best first, as a tuple. Ordered by
+        conviction first and by absolute spread within a conviction level, with
+        ties broken by pair name so two identical runs produce identical
+        shortlists. An empty ``biases`` yields an empty tuple.
+
+    Raises:
+        ValueError: If ``limit`` is negative. A negative cap is a configuration
+            error, not a request for an empty shortlist.
 
     Selection rules, in order:
 
@@ -456,6 +479,27 @@ def shortlist(biases: Sequence[PairBias], limit: int = 3) -> Sequence[PairBias]:
     rule working, not failing.
 
     """
-    raise NotImplementedError(
-        "fbe.bias.shortlist is scaffolded; see docs/roadmap.md Phase 2"
+    if limit < 0:
+        raise ValueError(f"shortlist limit must be non-negative, got {limit}")
+
+    candidates = [
+        bias for bias in biases if bias.tradeable and bias.conviction != Conviction.NONE
+    ]
+    candidates.sort(
+        key=lambda bias: (
+            -_CONVICTION_RANK[bias.conviction],
+            -abs(bias.spread),
+            bias.pair,
+        )
     )
+
+    taken: list[PairBias] = []
+    legs_in_use: set[str] = set()
+    for bias in candidates:
+        if len(taken) >= limit:
+            break
+        if bias.base in legs_in_use or bias.quote in legs_in_use:
+            continue
+        taken.append(bias)
+        legs_in_use.update((bias.base, bias.quote))
+    return tuple(taken)

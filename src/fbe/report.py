@@ -11,12 +11,16 @@ scores, the inputs that produced them, and the config digest that weighted them.
 Markdown because it stays readable in ten years, diffs cleanly, and needs no
 tooling to open.
 
-The files are meant to be committed alongside the code. A report and the config
-digest that produced it are one artefact: re-weighting the pillars changes every
+The files are committed alongside the code. A report and the config digest
+that produced it are one artefact: re-weighting the pillars changes every
 future call, and without the historical files there is no way to tell whether
 the model improved or simply started agreeing with a different set of trades.
-Note that ``data/reports/`` is currently listed in ``.gitignore``, so keeping the
-history requires relaxing that rule; see ``docs/interfaces.md``.
+``data/reports/`` is tracked on purpose, and ``.gitignore`` says so where the
+exclusion used to be. A report is precisely what cannot be reproduced later:
+macro series get revised, cross-sectional scores depend on the rest of the
+universe on the day, and the weights may have changed since. Re-running last
+week's date does not recover last week's call. ``CLAUDE.md`` and the "Why
+reports go to disk" section of ``docs/interfaces.md`` set this out.
 
 Why the diff is a first-class section
 -------------------------------------

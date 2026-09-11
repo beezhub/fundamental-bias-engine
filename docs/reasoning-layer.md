@@ -182,10 +182,31 @@ R5 on purpose: the gates exist before external content is allowed in, not after.
 1. How much of the scoring spec belongs in the cached prefix? Too little and the
    explanations are shallow, too much and every run pays to re-read the whole
    document.
+   **Status: answered, token figures as estimates.** The full scoring spec is
+   roughly 15,000 to 19,000 tokens at 3.5 to 4.5 characters per token, against
+   the roughly 12,000-token prefix budgeted under Prompt caching, so it cannot
+   be cached verbatim. A condensed primer of roughly 2,000 to 2,600 tokens
+   fits: the sign convention and score band, the seven-stage pipeline as a
+   list, per pillar the name, weight, inputs, transform shape and the one-line
+   sign justification, the coverage, dispersion and conviction band table
+   verbatim, and the blackout rule in one line. The worked example,
+   re-weighting, test obligations and open questions stay out. Evidence:
+   `docs/answers/product.md` Reasoning-layer 1.
 2. Should the daily brief see the previous day's brief? It would read better and
    it risks compounding an early misreading across a week.
+   **Status: narrowed.** Not the prior prose. A deterministic check of the
+   previous brief's claims against today's report goes into the context pack
+   instead, and narrative continuity is reserved for the weekly brief.
+   Evidence: `docs/answers/product.md` Reasoning-layer 2.
 3. What is the right tolerance for numeric grounding, given the report publishes
    two decimals and the model will round in prose?
+   **Status: judgement.** A tolerance per field kind rather than one number:
+   absolute 0.05 on score-band values, 1 percentage point on ratios, the
+   larger of 1% or R0.50 on money, exact on counts and ranks. Hedge words
+   widen the tolerance and precise phrasing does not, and the comparison runs
+   at the coarser of the two precisions. A starting design, to be revisited
+   against the rejection log. Evidence: `docs/answers/product.md`
+   Reasoning-layer 3.
 4. The current design explains the ranking. An adversarial mode that argues
    against it was considered and deferred. Worth revisiting once there are
    enough briefs to judge whether explanation alone changes any decision.
