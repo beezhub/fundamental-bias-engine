@@ -39,6 +39,41 @@ priority does not gate the implementation lanes. Build lane 1 is still barred
 from `p0` and `p1`, because a high-priority defect deserves a person deciding
 who fixes it.
 
+## Who did what
+
+Every run is signed. The commits all carry the repository owner's name, and a
+pull request list that does not say which run produced each row cannot be read
+at a glance, so the identity has to be written into the artefact itself.
+
+Each run has a desk name and a label, both fixed:
+
+| Run | Desk | Label |
+| --- | --- | --- |
+| deliver | planning desk | `run:planning` |
+| triage | triage desk | `run:triage` |
+| build lane 1 | maintenance desk | `run:maintenance` |
+| implement lane A | build desk A | `run:build-a` |
+| implement lane B | build desk B | `run:build-b` |
+| audit | audit desk | `run:audit` |
+| improve | proposals desk | `run:proposals` |
+
+A run applies its own label to every issue it files and every pull request it
+opens, and to nothing else. It never removes another desk's label, because the
+label records who produced the thing rather than who last touched it.
+
+A run opens every issue comment and every pull request body it writes with one
+line naming itself and when it ran:
+
+    **Build desk A**, 2026-09-11 09:00 SAST.
+
+That line is the first thing in the body, before the template's first heading.
+Two runs can work the same issue on the same day, and without the timestamp the
+order they did so in is guesswork.
+
+The desk names are seats, not people, and a seat is held by whichever run is
+scheduled into it. Nothing else goes in that line: no tool, no model, no agent
+name, per the writing rules in `CLAUDE.md`.
+
 ## The weekday schedule
 
 Read down. Two runs must never share a slot, because a shared slot is how two
@@ -137,6 +172,9 @@ not.
 - **Leave a trail.** A comment on every issue it touched saying what it did and
   what it chose not to do. A run that leaves no trace is indistinguishable from
   one that did nothing.
+- **Sign what it produces.** Its desk line on every comment and pull request
+  body, its `run:` label on every issue it files and pull request it opens. See
+  "Who did what".
 - **Put questions on GitHub.** A question that exists only in the run's final
   report will not be read for days. It goes on the issue, with
   `status:needs-decision`.

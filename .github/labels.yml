@@ -37,5 +37,13 @@
 - { name: "phase:5", color: "ad9aeb", description: "docs/roadmap.md Phase 5: report and dashboard" }
 - { name: "phase:6", color: "a28ce8", description: "docs/roadmap.md Phase 6: journal-based evaluation" }
 
+- { name: "run:planning",    color: "006b75", description: "Filed or opened by the weekday 05:00 planning desk, the run that decomposes the roadmap" }
+- { name: "run:triage",      color: "0a7d8c", description: "Filed or opened by the weekday 06:00 and 12:00 triage desk" }
+- { name: "run:maintenance", color: "1391a3", description: "Opened by the maintenance desk, the lane that claims routine-safe work" }
+- { name: "run:build-a",     color: "1aa6ba", description: "Opened by build desk A, the implementation lane working up from the lowest unblocked roadmap issue" }
+- { name: "run:build-b",     color: "22bcd1", description: "Opened by build desk B, the implementation lane working down from the highest unblocked roadmap issue" }
+- { name: "run:audit",       color: "2bd2e8", description: "Filed by the Saturday audit desk" }
+- { name: "run:proposals",   color: "35e8ff", description: "Filed by the Sunday proposals desk" }
+
 - { name: "routine-safe", color: "bfd4f2", description: "An unattended agent may take this without a human" }
 - { name: "approved",     color: "0e8a16", description: "A human approved this proposal. The improve routine converts it to a requirement" }
