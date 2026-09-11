@@ -13,14 +13,22 @@ import hashlib
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
+from types import UnionType
+from typing import Any, get_args, get_origin, get_type_hints
+
+import yaml
 
 from fbe.types import PillarName
 
 __all__ = [
     "REPO_ROOT",
     "DATA_DIR",
+    "DEFAULT_CONFIG_FILE",
+    "ENV_PREFIX",
+    "SECRET_FIELDS",
+    "ConfigError",
     "RiskConfig",
     "ScoringConfig",
     "DataConfig",
@@ -33,6 +41,37 @@ DATA_DIR = REPO_ROOT / "data"
 """Root of the on-disk data tree. Exported because the journal and the cache
 both resolve their own paths beneath it rather than each guessing at the
 repository layout."""
+
+DEFAULT_CONFIG_FILE = REPO_ROOT / "config.yaml"
+"""Where ``load_config`` looks when no path is given. Absent is not an error:
+the defaults are a working config, and the file is for overriding them."""
+
+ENV_PREFIX = "FBE_"
+"""Prefix claiming an environment variable for this engine. A variable that
+starts with it and names nothing is a typo and raises; a variable without it
+belongs to somebody else and is ignored. ``FRED_API_KEY`` is deliberately
+outside this scheme: it is the vendor's own documented name, read by
+`default_config`."""
+
+
+SECRET_FIELDS = frozenset({"fred_api_key"})
+"""Fields whose value must not appear in an error message.
+
+An unquoted numeric API key in YAML is read as an int, fails the ``str`` check
+and would otherwise be echoed back with the value attached. Errors here are
+printed at a terminal, pasted into issues and captured by CI logs, so the
+value is replaced by a marker and only the setting is named.
+"""
+
+
+class ConfigError(ValueError):
+    """A config file or environment override that cannot be applied.
+
+    Its own type, so a caller cannot swallow it with a stray ``except
+    ValueError`` around a float conversion. Every message names the offending
+    key or variable and, for a file, the path it came from, because the
+    operator fixing it is looking at a file rather than at this module.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,20 +437,345 @@ class Config:
         return problems
 
 
+_BOOLEAN_WORDS: Mapping[str, bool] = {
+    "true": True,
+    "yes": True,
+    "on": True,
+    "1": True,
+    "false": False,
+    "no": False,
+    "off": False,
+    "0": False,
+}
+"""Accepted spellings of a boolean from a file or the environment.
+
+Fixed and small on purpose. Anything else raises, because the field this
+mostly guards is ``DataConfig.offline``, and reading an unrecognised word as
+False sends a run that was meant to be cache-only at the network.
+"""
+
+
+def _section_types() -> Mapping[str, type]:
+    """Section name to its dataclass, read off `Config` rather than listed here.
+
+    Derived so that adding a fourth section to `Config` is picked up by the
+    file reader, the environment reader and their error messages at once. A
+    hand-maintained list is the config-drift defect in another costume.
+    """
+    hints = get_type_hints(Config)
+    return {entry.name: hints[entry.name] for entry in fields(Config)}
+
+
+def _is_mapping_field(hint: object) -> bool:
+    """Say whether a field is a mapping rather than a scalar, as ``weights`` is."""
+    return get_origin(hint) in (Mapping, dict)
+
+
+def _shown(value: object, secret: bool) -> str:
+    """Render a value for an error message, withholding it if it is a secret."""
+    return "<redacted>" if secret else repr(value)
+
+
+def _coerce(value: object, hint: object, where: str, secret: bool = False) -> Any:
+    """Convert one raw value to the type its field is annotated with.
+
+    Handles both sources: YAML gives typed values already, the environment
+    gives strings only. Both go through here so that ``offline: yes`` in a
+    file and ``FBE_DATA_OFFLINE=yes`` cannot mean different things.
+
+    Args:
+        value: The value as read, a string from the environment or whatever
+            YAML produced.
+        hint: The field's resolved annotation.
+        where: How to name this setting in an error, such as a variable name
+            or ``<path>: scoring.horizon_days``.
+        secret: When true, the value is withheld from any error raised here.
+
+    Returns:
+        The value as the field's type. Typed ``Any`` because the type returned
+        is decided by ``hint`` at runtime; the caller assigns it into a typed
+        field, which is where it is checked.
+
+    Raises:
+        ConfigError: When the value cannot be read as that type. Nothing here
+            falls back to a default: a setting the operator wrote and this
+            module could not read is the quiet-wrong-number failure mode, and
+            it stops the run instead.
+
+    """
+    if isinstance(hint, UnionType):
+        inner = [arg for arg in get_args(hint) if arg is not type(None)]
+        if value is None:
+            return None
+        if len(inner) == 1:
+            return _coerce(value, inner[0], where, secret)
+        raise ConfigError(f"{where}: no rule for reading {hint}")
+    if hint is bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().lower() in _BOOLEAN_WORDS:
+            return _BOOLEAN_WORDS[value.strip().lower()]
+        raise ConfigError(
+            f"{where}: expected a boolean, got {_shown(value, secret)}. "
+            "Write one of "
+            f"{', '.join(sorted(_BOOLEAN_WORDS))}."
+        )
+    if hint is int:
+        # bool is a subclass of int, so this order matters: without the guard
+        # above, ``horizon_days: true`` would quietly become 1.
+        if isinstance(value, bool):
+            raise ConfigError(
+                f"{where}: expected a whole number, got {_shown(value, secret)}"
+            )
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value.strip())
+            except ValueError as exc:
+                raise ConfigError(
+                    f"{where}: expected a whole number, got {_shown(value, secret)}"
+                ) from exc
+        raise ConfigError(
+            f"{where}: expected a whole number, got {_shown(value, secret)}"
+        )
+    if hint is float:
+        if isinstance(value, bool):
+            raise ConfigError(
+                f"{where}: expected a number, got {_shown(value, secret)}"
+            )
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value.strip())
+            except ValueError as exc:
+                raise ConfigError(
+                    f"{where}: expected a number, got {_shown(value, secret)}"
+                ) from exc
+        raise ConfigError(f"{where}: expected a number, got {_shown(value, secret)}")
+    if hint is Path:
+        if isinstance(value, Path):
+            return value
+        if isinstance(value, str):
+            return Path(value)
+        raise ConfigError(f"{where}: expected a path, got {_shown(value, secret)}")
+    if hint is str:
+        if isinstance(value, str):
+            return value
+        raise ConfigError(f"{where}: expected text, got {_shown(value, secret)}")
+    raise ConfigError(f"{where}: no rule for reading {hint}")
+
+
+def _coerce_weights(value: object, where: str) -> Mapping[PillarName, float]:
+    """Read a complete pillar weight mapping from a config file.
+
+    Every pillar must be present. A block naming one pillar could be merged
+    over the defaults, but the result would be a set of weights summing to
+    something nobody chose, and the composite is on an unstated scale the
+    moment that happens. Refusing is the loud option.
+
+    Args:
+        value: The mapping as YAML produced it.
+        where: How to name this setting in an error.
+
+    Returns:
+        One weight per pillar. Weights are fractions of 1.0, not percentages;
+        `Config.validate` is what checks they sum to 1.0.
+
+    Raises:
+        ConfigError: When the value is not a mapping, names a pillar that does
+            not exist, or omits one that does.
+
+    """
+    if not isinstance(value, dict):
+        raise ConfigError(f"{where}: expected a mapping of pillar to weight")
+    known = {pillar.value: pillar for pillar in PillarName}
+    parsed: dict[PillarName, float] = {}
+    for key, weight in value.items():
+        if key not in known:
+            raise ConfigError(
+                f"{where}: unknown pillar {key!r}; expected one of "
+                f"{', '.join(sorted(known))}"
+            )
+        parsed[known[key]] = _coerce(weight, float, f"{where}.{key}")
+    missing = [name for name in known if known[name] not in parsed]
+    if missing:
+        raise ConfigError(
+            f"{where}: every pillar must be listed; missing "
+            f"{', '.join(sorted(missing))}. A block naming some of them would "
+            "be merged over the defaults and leave a total nobody chose."
+        )
+    return parsed
+
+
+def _read_yaml(path: Path) -> Mapping[str, Any]:
+    """Parse the config file, or raise naming the path.
+
+    Returns:
+        The mapping the file holds. An empty file is an empty mapping, which
+        is the defaults, and not an error: a file someone emptied while
+        debugging should behave as no file at all.
+
+    Raises:
+        ConfigError: When the file cannot be read, is not valid YAML, or holds
+            something other than a mapping at the top level.
+
+    """
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        raise ConfigError(f"{path}: cannot be read: {exc}") from exc
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{path}: is not valid YAML: {exc}") from exc
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ConfigError(
+            f"{path}: expected a mapping of sections at the top level, got "
+            f"{type(loaded).__name__}"
+        )
+    return loaded
+
+
+def _file_overrides(path: Path) -> Mapping[str, Mapping[str, object]]:
+    """Read one section of overrides per `Config` section from a YAML file.
+
+    Raises:
+        ConfigError: On an unknown section, an unknown key within a section, a
+            section that is not a mapping, or a value of the wrong type. An
+            unknown key is refused rather than ignored because a key that does
+            nothing is a setting the operator believes is applied.
+
+    """
+    sections = _section_types()
+    raw = _read_yaml(path)
+    collected: dict[str, dict[str, object]] = {name: {} for name in sections}
+    for section_name, body in raw.items():
+        if section_name not in sections:
+            raise ConfigError(
+                f"{path}: unknown section {section_name!r}; expected one of "
+                f"{', '.join(sorted(sections))}"
+            )
+        if not isinstance(body, dict):
+            raise ConfigError(
+                f"{path}: section {section_name!r} must be a mapping of settings, "
+                f"got {type(body).__name__}"
+            )
+        hints = get_type_hints(sections[section_name])
+        for key, value in body.items():
+            if key not in hints:
+                raise ConfigError(
+                    f"{path}: unknown key {key!r} in section {section_name!r}; "
+                    f"expected one of {', '.join(sorted(hints))}"
+                )
+            where = f"{path}: {section_name}.{key}"
+            hint = hints[key]
+            collected[section_name][key] = (
+                _coerce_weights(value, where)
+                if _is_mapping_field(hint)
+                else _coerce(value, hint, where, key in SECRET_FIELDS)
+            )
+    return collected
+
+
+def _environment_overrides(
+    environ: Mapping[str, str],
+) -> Mapping[str, Mapping[str, object]]:
+    """Read overrides from ``FBE_<SECTION>_<FIELD>`` variables.
+
+    The names are derived from the section dataclasses, so there is no table
+    to keep in step and no variable that parses two ways. That holds while no
+    section name contains an underscore: ``FBE_A_B_C`` would be ambiguous
+    between a section ``a_b`` and a field ``b_c``, and a section added with
+    one in its name needs an explicit mapping rather than this derivation.
+
+    Raises:
+        ConfigError: On a variable carrying the prefix that names no setting,
+            or a value of the wrong type. A typo in a variable name has to
+            raise for the same reason an unknown file key does.
+
+    """
+    sections = _section_types()
+    index: dict[str, tuple[str, str, object]] = {}
+    for section_name, section_type in sections.items():
+        for field_name, hint in get_type_hints(section_type).items():
+            variable = f"{ENV_PREFIX}{section_name.upper()}_{field_name.upper()}"
+            index[variable] = (section_name, field_name, hint)
+    collected: dict[str, dict[str, object]] = {name: {} for name in sections}
+    for variable, raw in environ.items():
+        if not variable.startswith(ENV_PREFIX):
+            continue
+        if variable not in index:
+            raise ConfigError(
+                f"{variable} is not a setting. Expected "
+                f"{ENV_PREFIX}<SECTION>_<FIELD>, where SECTION is one of "
+                f"{', '.join(sorted(sections))} and FIELD is a field of it."
+            )
+        section_name, field_name, hint = index[variable]
+        if _is_mapping_field(hint):
+            raise ConfigError(
+                f"{variable}: {section_name}.{field_name} is a mapping and can "
+                "only be set in the config file. A half-parsed set of weights "
+                "is worse than no override."
+            )
+        collected[section_name][field_name] = _coerce(
+            raw, hint, variable, field_name in SECRET_FIELDS
+        )
+    return collected
+
+
 def load_config(path: Path | None = None) -> Config:
     """Build the effective config from defaults, file, and environment.
 
+    The layers apply in that order, each overriding the one before it field by
+    field, so a file that sets one threshold leaves the rest at their defaults.
+
+    Environment variables are named ``FBE_<SECTION>_<FIELD>`` in upper case,
+    for example ``FBE_DATA_OFFLINE`` or ``FBE_SCORING_MIN_SPREAD_LOW``. A
+    variable carrying the prefix that names no field raises, as does an
+    unknown key in the file: a setting that silently does nothing is a setting
+    the operator believes is applied. ``FRED_API_KEY`` keeps its own name,
+    read by `default_config`, because that is the name the vendor documents.
+
+    This resolves and does not judge. `Config.validate` is what reports an
+    unusable combination, and ``fbe doctor`` is what prints it, so a config
+    wrong enough to need fixing can still be loaded and looked at.
+
     Args:
         path: Optional YAML file overriding the defaults. Defaults to
-            ``config.yaml`` at the repo root when that file exists.
+            ``config.yaml`` at the repo root when that file exists. A path
+            given explicitly must exist; the default one need not.
 
     Returns:
         The effective `Config`.
 
+    Raises:
+        ConfigError: When a named file is missing, unreadable or malformed,
+            when a key or variable names nothing, or when a value cannot be
+            read as its field's type. Every message names the setting, and for
+            a file the path as well.
+
     """
-    raise NotImplementedError(
-        "fbe.config.load_config is scaffolded; see docs/roadmap.md Phase 1"
-    )
+    base = default_config()
+    if path is not None and not path.exists():
+        raise ConfigError(f"{path}: config file not found")
+    file_path = path if path is not None else DEFAULT_CONFIG_FILE
+    overrides: dict[str, dict[str, object]] = {name: {} for name in _section_types()}
+    if file_path.exists():
+        for section_name, values in _file_overrides(file_path).items():
+            overrides[section_name].update(values)
+    for section_name, values in _environment_overrides(os.environ).items():
+        overrides[section_name].update(values)
+    resolved = {
+        section_name: replace(getattr(base, section_name), **values)
+        if values
+        else getattr(base, section_name)
+        for section_name, values in overrides.items()
+    }
+    return replace(base, **resolved)
 
 
 def default_config() -> Config:

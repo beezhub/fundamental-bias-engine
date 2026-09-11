@@ -32,6 +32,8 @@ dev = [
   "ruff>=0.5",
   "mypy>=1.10",
   "respx>=0.21",
+  # src now imports yaml under mypy, which has no inline types of its own.
+  "types-PyYAML>=6.0",
 ]
 
 [project.scripts]

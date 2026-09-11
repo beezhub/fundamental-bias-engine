@@ -13,15 +13,23 @@ a derived limit wrongly attributed to it cannot be argued with.
 from __future__ import annotations
 
 import inspect
+import os
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
+import typer
+import typer.main
+from typer.testing import CliRunner
 
+import fbe.config
+from fbe.cli import GlobalOptions, _effective_config, app
 from fbe.config import (
     REPO_ROOT,
     Config,
+    ConfigError,
     DataConfig,
     RiskConfig,
     ScoringConfig,
@@ -480,6 +488,448 @@ def test_offline_config_fixture_is_offline(offline_config: Config) -> None:
     assert offline_config.data.offline is True
 
 
-def test_load_config_is_not_implemented_yet() -> None:
-    with pytest.raises(NotImplementedError, match="roadmap"):
+# ---------------------------------------------------------------------------
+# load_config: the three layers, and what it refuses
+#
+# The layering is defaults, then the file, then the environment. Where a test
+# proves an override, it uses three distinct values so a pass cannot come from
+# the built-in default happening to match what the test wrote.
+# ---------------------------------------------------------------------------
+
+DEFAULT_LOW = ScoringConfig().min_spread_low
+FILE_LOW = 0.90
+ENV_LOW = 1.10
+
+
+@pytest.fixture
+def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
+    """Point the default file lookup at an empty directory and clear the vars.
+
+    Every test in this section runs against a config file under ``tmp_path``,
+    never the repo's own, and with no ``FBE_`` variable inherited from the
+    machine running the suite. ``FRED_API_KEY`` goes too, since
+    ``default_config`` reads it and CI and a developer laptop differ.
+    """
+    monkeypatch.setattr(fbe.config, "DEFAULT_CONFIG_FILE", tmp_path / "config.yaml")
+    for name in list(os.environ):
+        if name.startswith("FBE_"):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    yield tmp_path
+
+
+def _write(directory: Path, body: str, name: str = "config.yaml") -> Path:
+    path = directory / name
+    path.write_text(body)
+    return path
+
+
+def test_no_file_and_no_environment_gives_the_built_in_defaults(
+    clean_env: Path,
+) -> None:
+    assert load_config() == fbe.config.default_config()
+    assert load_config() == Config()
+
+
+def test_a_file_value_overrides_the_built_in_default(clean_env: Path) -> None:
+    path = _write(clean_env, f"scoring:\n  min_spread_low: {FILE_LOW}\n")
+    assert DEFAULT_LOW != FILE_LOW
+    assert load_config(path).scoring.min_spread_low == FILE_LOW
+
+
+def test_the_default_lookup_finds_the_file_without_being_given_a_path(
+    clean_env: Path,
+) -> None:
+    _write(clean_env, f"scoring:\n  min_spread_low: {FILE_LOW}\n")
+    assert load_config().scoring.min_spread_low == FILE_LOW
+
+
+def test_a_field_the_file_does_not_mention_keeps_its_default(
+    clean_env: Path,
+) -> None:
+    path = _write(clean_env, f"scoring:\n  min_spread_low: {FILE_LOW}\n")
+    scoring = load_config(path).scoring
+    assert scoring.min_spread_low == FILE_LOW
+    assert scoring.min_spread_medium == ScoringConfig().min_spread_medium
+    assert scoring.max_dispersion == ScoringConfig().max_dispersion
+
+
+def test_an_environment_variable_overrides_the_file(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three distinct values, so this proves the order and not just that one wins."""
+    path = _write(clean_env, f"scoring:\n  min_spread_low: {FILE_LOW}\n")
+    monkeypatch.setenv("FBE_SCORING_MIN_SPREAD_LOW", str(ENV_LOW))
+    assert len({DEFAULT_LOW, FILE_LOW, ENV_LOW}) == 3
+    assert load_config(path).scoring.min_spread_low == ENV_LOW
+
+
+def test_an_environment_variable_overrides_the_default_with_no_file(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FBE_RISK_ACCOUNT_BALANCE", "3125.50")
+    assert load_config().risk.account_balance == 3125.50
+
+
+@pytest.mark.parametrize(
+    ("section", "field_name", "raw", "expected"),
+    [
+        ("scoring", "horizon_days", "14", 14),
+        ("scoring", "max_dispersion", "1.45", 1.45),
+        ("risk", "account_currency", "USD", "USD"),
+        ("data", "cache_ttl_hours", "6", 6),
+        ("data", "fred_api_key", "abc123", "abc123"),
+    ],
+)
+def test_environment_values_are_coerced_to_the_field_type(
+    clean_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    section: str,
+    field_name: str,
+    raw: str,
+    expected: object,
+) -> None:
+    """An environment variable is a string; the field's annotation decides the type."""
+    monkeypatch.setenv(f"FBE_{section.upper()}_{field_name.upper()}", raw)
+    value = getattr(getattr(load_config(), section), field_name)
+    assert value == expected
+    assert type(value) is type(expected)
+
+
+def test_a_path_field_from_the_environment_becomes_a_path(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FBE_DATA_CACHE_DIR", "/tmp/fbe-elsewhere/cache")
+    assert load_config().data.cache_dir == Path("/tmp/fbe-elsewhere/cache")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("true", True),
+        ("True", True),
+        ("1", True),
+        ("yes", True),
+        ("on", True),
+        ("false", False),
+        ("False", False),
+        ("0", False),
+        ("no", False),
+        ("off", False),
+    ],
+)
+def test_a_boolean_from_the_environment_accepts_the_documented_spellings(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
+) -> None:
+    monkeypatch.setenv("FBE_DATA_OFFLINE", raw)
+    assert load_config().data.offline is expected
+
+
+@pytest.mark.parametrize("raw", ["maybe", "", "2", "t", "offline"])
+def test_an_unparseable_boolean_raises_rather_than_guessing(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """``offline`` wrong in the quiet direction sends a test run at the network."""
+    monkeypatch.setenv("FBE_DATA_OFFLINE", raw)
+    with pytest.raises(ConfigError) as excinfo:
         load_config()
+    assert "FBE_DATA_OFFLINE" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("variable", "raw"),
+    [
+        ("FBE_SCORING_HORIZON_DAYS", "ten"),
+        ("FBE_SCORING_HORIZON_DAYS", "10.5"),
+        ("FBE_SCORING_MAX_DISPERSION", "wide"),
+        ("FBE_RISK_ACCOUNT_BALANCE", ""),
+    ],
+)
+def test_an_unparseable_number_raises_naming_the_variable(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, variable: str, raw: str
+) -> None:
+    monkeypatch.setenv(variable, raw)
+    with pytest.raises(ConfigError) as excinfo:
+        load_config()
+    assert variable in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("body", "field_name"),
+    [
+        ("scoring:\n  horizon_days: true\n", "horizon_days"),
+        ("scoring:\n  lookback_years: false\n", "lookback_years"),
+        ("risk:\n  account_balance: true\n", "account_balance"),
+        ("data:\n  cache_ttl_hours: true\n", "cache_ttl_hours"),
+    ],
+)
+def test_a_boolean_in_a_numeric_field_raises(
+    clean_env: Path, body: str, field_name: str
+) -> None:
+    """``bool`` subclasses ``int``, so an unguarded read turns ``true`` into 1.
+
+    A horizon of one day, or a balance of one unit of account currency, is the
+    shape of defect this repository exists to refuse: plausible, silent, and
+    wrong by a factor nobody would look for.
+    """
+    path = _write(clean_env, body)
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    assert field_name in str(excinfo.value)
+
+
+def test_a_bad_credential_value_is_not_echoed_into_the_error(
+    clean_env: Path,
+) -> None:
+    """An unquoted numeric key is an int to YAML, and the error must not carry it.
+
+    Config errors are printed at a terminal, pasted into issues and captured
+    by CI logs. The setting is named; the value is withheld.
+    """
+    path = _write(clean_env, "data:\n  fred_api_key: 1234567890\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    message = str(excinfo.value)
+    assert "fred_api_key" in message
+    assert "1234567890" not in message
+    assert "<redacted>" in message
+
+
+def test_a_non_secret_value_is_echoed_so_the_error_can_be_acted_on(
+    clean_env: Path,
+) -> None:
+    """Redaction is for credentials only. Everything else names the bad value."""
+    path = _write(clean_env, "scoring:\n  horizon_days: ten\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    assert "ten" in str(excinfo.value)
+
+
+def test_an_unrecognised_key_in_the_file_raises_naming_key_and_path(
+    clean_env: Path,
+) -> None:
+    """A silently ignored key is a setting the operator believes is applied."""
+    path = _write(clean_env, "scoring:\n  min_spread_lo: 0.9\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    message = str(excinfo.value)
+    assert "min_spread_lo" in message
+    assert str(path) in message
+
+
+def test_an_unrecognised_section_in_the_file_raises_naming_key_and_path(
+    clean_env: Path,
+) -> None:
+    path = _write(clean_env, "scorring:\n  min_spread_low: 0.9\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    assert "scorring" in str(excinfo.value)
+    assert str(path) in str(excinfo.value)
+
+
+def test_an_unrecognised_environment_variable_raises_naming_it(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same reasoning as an unknown file key: a typo must not be a no-op."""
+    monkeypatch.setenv("FBE_DATA_OFLINE", "true")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config()
+    assert "FBE_DATA_OFLINE" in str(excinfo.value)
+
+
+def test_a_variable_without_the_prefix_is_left_alone(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prefix is the whole claim of ownership. The rest is somebody else's."""
+    monkeypatch.setenv("DATA_OFFLINE", "true")
+    monkeypatch.setenv("FBEDATA", "nonsense")
+    assert load_config() == Config()
+
+
+def test_malformed_yaml_raises_an_error_naming_the_path(clean_env: Path) -> None:
+    path = _write(clean_env, "scoring:\n  min_spread_low: [0.9\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    assert str(path) in str(excinfo.value)
+
+
+def test_a_file_that_is_not_a_mapping_raises(clean_env: Path) -> None:
+    path = _write(clean_env, "- min_spread_low\n- 0.9\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    assert str(path) in str(excinfo.value)
+
+
+def test_a_section_that_is_not_a_mapping_raises(clean_env: Path) -> None:
+    path = _write(clean_env, "scoring: 0.9\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    assert "scoring" in str(excinfo.value)
+
+
+def test_an_empty_file_is_the_defaults_not_an_error(clean_env: Path) -> None:
+    path = _write(clean_env, "")
+    assert load_config(path) == Config()
+
+
+def test_a_path_given_explicitly_must_exist(clean_env: Path) -> None:
+    """A missing file the operator named is a typo, not an instruction to ignore it."""
+    missing = clean_env / "nowhere.yaml"
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(missing)
+    assert str(missing) in str(excinfo.value)
+
+
+def test_an_absent_default_file_is_not_an_error(clean_env: Path) -> None:
+    assert not (clean_env / "config.yaml").exists()
+    assert load_config() == Config()
+
+
+# ---------------------------------------------------------------------------
+# Weights, which are a mapping rather than a scalar
+# ---------------------------------------------------------------------------
+
+
+def test_weights_from_the_file_replace_the_whole_mapping(clean_env: Path) -> None:
+    body = "scoring:\n  weights:\n" + "".join(
+        f"    {name.value}: {value}\n"
+        for name, value in zip(
+            PillarName,
+            (0.30, 0.20, 0.15, 0.10, 0.10, 0.10, 0.05),
+            strict=True,
+        )
+    )
+    path = _write(clean_env, body)
+    weights = load_config(path).scoring.weights
+    assert weights[PillarName.INFLATION] == 0.20
+    assert weights[PillarName.RISK] == 0.05
+    assert abs(sum(weights.values()) - 1.0) < WEIGHT_TOLERANCE
+
+
+def test_a_partial_weights_block_raises_rather_than_merging(clean_env: Path) -> None:
+    """Merging one weight over the defaults leaves a total nobody chose."""
+    path = _write(clean_env, "scoring:\n  weights:\n    monetary: 0.40\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    message = str(excinfo.value)
+    assert "inflation" in message
+    assert str(path) in message
+
+
+def test_an_unknown_pillar_in_the_weights_raises(clean_env: Path) -> None:
+    body = "scoring:\n  weights:\n" + "".join(
+        f"    {name.value}: 0.10\n" for name in PillarName
+    )
+    path = _write(clean_env, body + "    momentum: 0.10\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    assert "momentum" in str(excinfo.value)
+
+
+def test_weights_cannot_be_set_from_the_environment(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refused loudly. A half-parsed mapping is the worst of the three outcomes."""
+    monkeypatch.setenv("FBE_SCORING_WEIGHTS", "monetary=0.4")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config()
+    assert "FBE_SCORING_WEIGHTS" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# cli._effective_config: one config per invocation, and --offline one-way
+# ---------------------------------------------------------------------------
+
+
+def _context(options: GlobalOptions) -> typer.Context:
+    """A context carrying the global flags, built the way Typer builds one.
+
+    ``meta`` starts empty on a fresh context, which is what makes the caching
+    test meaningful: nothing is carried over between two of these.
+    """
+    context = typer.Context(typer.main.get_command(app))
+    context.obj = options
+    return context
+
+
+def test_effective_config_reads_the_file_once_per_invocation(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two commands in one invocation must not produce two digests."""
+    calls: list[Path | None] = []
+    real = fbe.config.load_config
+
+    def counting(path: Path | None = None) -> Config:
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(fbe.config, "load_config", counting)
+    context = _context(GlobalOptions())
+    first = _effective_config(context)
+    second = _effective_config(context)
+    assert calls == [None]
+    assert first is second
+
+
+def test_effective_config_passes_the_config_path_through(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write(clean_env, f"scoring:\n  min_spread_low: {FILE_LOW}\n", "other.yaml")
+    context = _context(GlobalOptions(config_path=path))
+    assert _effective_config(context).scoring.min_spread_low == FILE_LOW
+
+
+def test_offline_flag_forces_offline_over_a_file_that_says_false(
+    clean_env: Path,
+) -> None:
+    path = _write(clean_env, "data:\n  offline: false\n")
+    context = _context(GlobalOptions(config_path=path, offline=True))
+    assert _effective_config(context).data.offline is True
+
+
+def test_omitting_the_offline_flag_leaves_the_file_value(clean_env: Path) -> None:
+    """``--offline`` is documented as one-way. Its absence is not ``--online``."""
+    path = _write(clean_env, "data:\n  offline: true\n")
+    context = _context(GlobalOptions(config_path=path, offline=False))
+    assert _effective_config(context).data.offline is True
+
+
+def test_omitting_the_offline_flag_leaves_a_false_file_value_false(
+    clean_env: Path,
+) -> None:
+    path = _write(clean_env, "data:\n  offline: false\n")
+    context = _context(GlobalOptions(config_path=path, offline=False))
+    assert _effective_config(context).data.offline is False
+
+
+def test_the_cached_config_carries_the_offline_flag_on_every_read(
+    clean_env: Path,
+) -> None:
+    path = _write(clean_env, "data:\n  offline: false\n")
+    context = _context(GlobalOptions(config_path=path, offline=True))
+    assert _effective_config(context).data.offline is True
+    assert _effective_config(context).data.offline is True
+
+
+def test_effective_config_resolves_rather_than_refusing_an_invalid_config(
+    clean_env: Path,
+) -> None:
+    """``doctor`` reports validate problems, so the resolver must not pre-empt it."""
+    path = _write(clean_env, "risk:\n  risk_per_trade_max: 0.05\n")
+    config = _effective_config(_context(GlobalOptions(config_path=path)))
+    assert config.risk.risk_per_trade_max == 0.05
+    assert config.validate() != []
+
+
+def test_help_still_works_with_a_broken_default_config_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A tool you cannot ask for help is a poor tool to debug a bad file with."""
+    broken = _write(tmp_path, "scoring:\n  min_spread_low: [0.9\n")
+    monkeypatch.setattr(fbe.config, "DEFAULT_CONFIG_FILE", broken)
+    runner = CliRunner()
+    assert runner.invoke(app, ["--help"]).exit_code == 0
+    assert runner.invoke(app, ["doctor", "--help"]).exit_code == 0
+    assert (
+        runner.invoke(app, ["--config", str(broken), "doctor", "--help"]).exit_code == 0
+    )

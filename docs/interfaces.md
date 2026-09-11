@@ -39,12 +39,38 @@ script without parsing output:
 | Option | Default | Meaning |
 |---|---|---|
 | `--config`, `-c` | `config.yaml` at the repo root if present | Config file for this run. |
-| `--offline` / `--online` | online | Read the cache only, never touch the network. |
+| `--offline` | off, so the file or the defaults decide | Read the cache only, never touch the network. One-way: passing it forces offline on, omitting it changes nothing. There is no `--online`, because the flag exists to make a run reproducible and a flag that can undo it is a flag that will. |
 | `--verbose`, `-v` | off | Repeatable. Once shows per-source timings, twice shows every request and every pillar input. |
 
 The global callback only captures these flags. The config itself is resolved
 lazily, so `fbe <command> --help` still works when the config file is broken.
 A tool you cannot ask for help is a poor tool to debug with.
+
+One invocation resolves one config, cached on the Typer context, so two
+commands in the same run cannot produce two digests.
+
+### Where a setting comes from
+
+Three layers, each overriding the one before it, field by field:
+
+1. The built-in defaults in `fbe.config`.
+2. `config.yaml`, or the file given to `--config`. Top-level keys are the
+   section names `risk`, `scoring` and `data`, each holding that section's
+   field names.
+3. `FBE_<SECTION>_<FIELD>` environment variables, upper-cased, such as
+   `FBE_DATA_OFFLINE` or `FBE_SCORING_MIN_SPREAD_LOW`. `FRED_API_KEY` keeps
+   its own name, because that is the name the vendor documents.
+
+A key in the file that names no field, and a variable carrying the `FBE_`
+prefix that names no field, both raise and name the offending setting. A
+setting that silently does nothing is a setting the operator believes is
+applied. `scoring.weights` is the one field that must be given in full: a
+block naming some pillars would be merged over the defaults and leave a total
+nobody chose.
+
+Loading is not judging. A config that `Config.validate` would reject still
+loads, so `fbe doctor` can print the problem rather than the resolver hiding
+it behind an exception.
 
 Once resolved, the config is validated before it is used. `fbe doctor` and
 every command that scores or sizes from the config (`score`, `bias`, `report`,
