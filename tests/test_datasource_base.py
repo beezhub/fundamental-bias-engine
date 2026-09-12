@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -417,10 +418,21 @@ def test_an_unparseable_retry_after_falls_back_to_the_backoff(
 def test_a_minimum_interval_is_waited_between_requests(
     data_config: DataConfig, no_sleep: list[float]
 ) -> None:
-    """The wait is the interval minus however long the previous request took,
-    which is real wall-clock time and varies by runner, so the assertion is a
-    band rather than a figure. It is still tight enough that halving the
-    quantity, or reading it from the wrong field, falls outside."""
+    """The wait is the interval minus however long has passed since the last
+    request, asserted against a bracket the test computes rather than a band.
+
+    The previous assertion was ``0.5 * 0.75 < wait <= 0.5``, which holds only if
+    the first request completes within 125ms. That is a statement about the
+    runner, not about the throttle, and it failed on every one of eight runs on
+    one machine and intermittently on CI.
+
+    `_throttle` reads ``time.monotonic()`` once, at a moment inside the second
+    ``_request`` call. Bracketing that call gives the earliest and latest gap it
+    could have seen, and so the narrowest and widest residual it could have
+    slept. The bracket is milliseconds wide, so it is tighter than the band it
+    replaces: halving the quantity, or reading it from the wrong field, still
+    falls outside.
+    """
     respx.get(f"{BASE_URL}{PATH}").mock(return_value=httpx.Response(200, json=PAYLOAD))
 
     class _Spaced(_Source):
@@ -430,10 +442,17 @@ def test_a_minimum_interval_is_waited_between_requests(
 
     source = _Spaced(replace(data_config, cache_ttl_hours=0))
     source._request(PATH, PARAMS)
-    source._request(PATH, PARAMS)
 
+    recorded = source._request_times[-1]
+    before = time.monotonic()
+    source._request(PATH, PARAMS)
+    after = time.monotonic()
+
+    interval = _Spaced.rate_limit.min_interval_seconds
     assert len(no_sleep) == 1
-    assert 0.5 * 0.75 < no_sleep[0] <= 0.5
+    assert interval - (after - recorded) <= no_sleep[0]
+    assert no_sleep[0] <= interval - (before - recorded)
+    assert 0.0 < no_sleep[0] <= interval
 
 
 @respx.mock
