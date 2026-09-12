@@ -121,9 +121,9 @@ def sample_observations() -> tuple[Observation, ...]:
     """One observation per indicator per G10 currency, plus one global series.
 
     Four indicators across all eight currencies, so a cross-sectional pillar
-    has a full universe to normalise against, and a ``GLOBAL`` VIX print for
-    the risk pillar. Every value carries the fixed ``ASOF`` period, so nothing
-    in the set is stale relative to anything else.
+    has a full universe to normalise against, and a ``GLOBAL`` volatility
+    print for the risk pillar. Every value carries the fixed ``ASOF`` period,
+    so nothing in the set is stale relative to anything else.
     """
     observations: list[Observation] = []
     for currency in G10:
@@ -149,7 +149,7 @@ def sample_observations() -> tuple[Observation, ...]:
         )
     observations.append(
         _observation(
-            "vix",
+            "vol_index",
             "GLOBAL",
             17.4,
             unit="index",

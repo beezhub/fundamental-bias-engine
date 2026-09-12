@@ -26,10 +26,12 @@ Every file carries a ``meta`` block and an ``observations`` list.
       updated: 2026-09-08
       updated_by: "operator"
       notes: >
-        Manufacturing PMI headline prints. Flash where marked, otherwise final.
+        Manufacturing PMI headline prints entered under pmi_composite as a
+        stated approximation, pending a services print to blend in. Flash
+        where marked, otherwise final.
 
     observations:
-      - indicator: pmi_manufacturing
+      - indicator: pmi_composite
         currency: EUR
         value: 49.8
         period: 2026-08-01

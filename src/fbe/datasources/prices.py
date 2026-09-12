@@ -211,7 +211,7 @@ class PricesSource(BaseDataSource):
 
         Args:
             indicators: Canonical indicator keys. Serves ``equity_index``,
-                ``vix`` and ``commodity_index``.
+                ``vol_index`` and ``commodity_price``.
             currencies: ISO 4217 codes, plus ``"GLOBAL"`` for VIX and the
                 broad commodity index.
             start: Earliest session wanted.

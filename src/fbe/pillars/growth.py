@@ -44,7 +44,13 @@ class GrowthPillar(BasePillar):
     The US ISM indices are public; the S&P Global national PMIs are licensed and
     published only in headline form. So ``pmi_composite`` arrives through the
     manual drop at ``DataConfig.manual_dir`` for whichever currencies the trader
-    has filled in, and is simply absent for the rest.
+    has filled in, and is simply absent for the rest. Until an operator is
+    entering a genuine manufacturing-plus-services blend for a currency, the
+    registry's note on this indicator says to record the manufacturing print
+    alone as a stated approximation rather than a silent one; see
+    `fbe.datasources.registry.PMI_COMPOSITE` and `docs/answers/data.md`
+    question 5 for a free proxy that may replace the manual entry for some
+    currencies.
 
     The fallback, per section 3.3 of ``docs/scoring-spec.md``: where the PMI is
     missing for a currency, that currency's sub-weights renormalise across the
@@ -56,7 +62,7 @@ class GrowthPillar(BasePillar):
     A second missing component does break it, and that is the live case. The
     floor is "at or below", so a currency holding one 0.30 component and one 0.20
     component sits at exactly 0.50 and the pillar is absent for it. On the
-    registry as it stands, ``industrial_production_yoy`` is manual-only for CHF,
+    registry as it stands, ``indpro_yoy`` is manual-only for CHF,
     AUD and NZD and the manual PMI file holds no values, so those three hold GDP
     plus retail sales and GROWTH is absent for them until one of the two manual
     files is filled. That is the honest reading: a score built from GDP and
