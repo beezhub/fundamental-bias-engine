@@ -35,6 +35,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Protocol, runtime_checkable
 
 from fbe.config import RiskConfig
 from fbe.types import Conviction, PositionSize
@@ -48,6 +50,16 @@ __all__ = [
     "CONVERSION_PIVOT",
     "CONVICTION_BAND_POSITION",
     "MIN_REWARD_TO_RISK",
+    "LIMITS",
+    "LIMIT_CONCURRENT",
+    "LIMIT_CORRELATED",
+    "LIMIT_DAILY_LOSS",
+    "LIMIT_DRAWDOWN",
+    "LimitStatus",
+    "LimitCheck",
+    "LimitReport",
+    "OpenPosition",
+    "PositionRisk",
     "MissingRateError",
     "pip_size",
     "convert_rate",
@@ -605,8 +617,257 @@ def min_acceptable_rr(conviction: Conviction) -> float:
     )
 
 
+LIMIT_CONCURRENT: str = "max_concurrent_positions"
+LIMIT_CORRELATED: str = "max_correlated_exposure"
+LIMIT_DAILY_LOSS: str = "max_daily_loss"
+LIMIT_DRAWDOWN: str = "max_drawdown_pause"
+
+LIMITS: Mapping[str, str] = {
+    LIMIT_CONCURRENT: (
+        "Attention, not capital. The plan runs on 1h and 4h charts managed by "
+        "hand, and a fourth open ticket is where management degrades."
+    ),
+    LIMIT_CORRELATED: (
+        "Long EURUSD and long GBPUSD is one short-USD bet wearing two tickets. "
+        "Counting them as two independent trades understates the real exposure."
+    ),
+    LIMIT_DAILY_LOSS: (
+        "Revenge trading, given a number. Realised losses only: an open trade "
+        "sitting underwater is not yet evidence of anything."
+    ),
+    LIMIT_DRAWDOWN: (
+        "The model, not the trader. A drawdown this deep more likely means the "
+        "weights are wrong than that variance was unkind."
+    ),
+}
+"""Every limit `check_limits` evaluates, and the reason each one exists.
+
+The key is the `RiskConfig` field holding the limit's number, so the report can
+be read next to the config without a translation table, and so a limit cannot be
+added here without a configured number behind it. Iteration order is evaluation
+order and print order.
+
+The reason is carried in the code rather than only in the document because a
+limit nobody understands is a limit that gets disabled the first time it is
+inconvenient. ``tests/test_limit_checks.py`` asserts these keys and the table in
+section 4 of ``docs/risk-and-execution.md`` hold the same four limits in the
+same order, so the next addition cannot land in one place only.
+
+Every entry is reported on every call. There is no circumstance in which a limit
+is left out of the answer: if it could not be evaluated it is reported as
+`LimitStatus.NOT_PERFORMED`, because an omitted limit reads to a consumer
+exactly like a limit that passed.
+"""
+
+
+class LimitStatus(StrEnum):
+    """What happened to one limit on one call.
+
+    Three outcomes, not two, and the third is the reason this enum exists. A
+    check that could not run is not a check that passed. ADR 0002 rule 2.
+
+    Values are the words a ticket prints, so the terminal output, the JSON
+    export and this enum cannot drift into three vocabularies for one fact.
+    """
+
+    CLEAR = "clear"
+    """Performed, and the proposed trade is inside the limit."""
+
+    BREACHED = "breached"
+    """Performed, and the proposed trade is outside the limit."""
+
+    NOT_PERFORMED = "not performed"
+    """An input the limit needs was not supplied, so nothing was compared.
+
+    Not a refusal and not a pass. The trade is not blocked by this outcome,
+    because two of the four limits have no automated source at all today and a
+    blanket refusal would be argued away within a week, taking the real
+    breaches with it. It does mean `LimitReport.all_clear` is false and the
+    pre-trade checklist box for that limit has to be ticked by hand.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class LimitCheck:
+    """The outcome of one limit, with the figures that produced it.
+
+    Attributes:
+        limit: Key from `LIMITS`, which is also the `RiskConfig` field name.
+        status: Clear, breached or not performed.
+        detail: One line naming the numbers. For a performed check, the
+            measured figure and the ceiling it was compared against, with money
+            in the account currency (ZAR) and exposure as a percentage of
+            balance. For a breach of the correlated limit, the offending
+            currency by name, because "too much exposure" does not tell the
+            owner which ticket to drop. For a not-performed check, the input
+            that was missing. Never empty: a check with nothing to say about
+            itself is indistinguishable from one that was never run.
+
+    """
+
+    limit: str
+    status: LimitStatus
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class LimitReport:
+    """Every limit's outcome for one proposed trade.
+
+    The old contract was ``list[str]``, empty meaning take the trade. That
+    cannot express the case this account is actually in, where two of the four
+    limits have no input at all and the other two had no open book to count
+    against, so the empty list said "all clear" when it meant "nothing was
+    checked".
+
+    There is deliberately no shortcut from this object to permission. Reading
+    `all_clear` is the only way to get a yes, and it is false whenever any limit
+    was not performed, so a caller cannot obtain an all-clear from a run that
+    did not check everything.
+
+    Attributes:
+        checks: One `LimitCheck` per entry in `LIMITS`, in that order. Every
+            limit appears exactly once, enforced in ``__post_init__``.
+
+    Raises:
+        ValueError: If ``checks`` does not cover every limit in `LIMITS`
+            exactly once. A partial report is the original defect wearing a new
+            shape: a consumer iterating what it was given would find nothing
+            wrong with a limit that was silently dropped.
+
+    """
+
+    checks: tuple[LimitCheck, ...]
+
+    def __post_init__(self) -> None:
+        """Refuse a report that does not answer for every limit."""
+        seen = [check.limit for check in self.checks]
+        if sorted(seen) != sorted(LIMITS):
+            missing = sorted(set(LIMITS) - set(seen))
+            extra = sorted(set(seen) - set(LIMITS))
+            raise ValueError(
+                "a limit report must cover every limit exactly once; "
+                f"missing {missing}, unexpected {extra}, got {seen}"
+            )
+
+    @property
+    def all_clear(self) -> bool:
+        """True only when every limit was performed and every one of them passed.
+
+        False when anything was breached AND false when anything was not
+        performed. The two are different facts, which is why they are also
+        available separately, but neither of them is permission to trade.
+        """
+        return all(check.status is LimitStatus.CLEAR for check in self.checks)
+
+    @property
+    def breached(self) -> tuple[LimitCheck, ...]:
+        """Limits that were checked and failed. These are reasons to stand aside."""
+        return tuple(
+            check for check in self.checks if check.status is LimitStatus.BREACHED
+        )
+
+    @property
+    def not_performed(self) -> tuple[LimitCheck, ...]:
+        """Limits that had no input. These are the ones the owner checks by hand."""
+        return tuple(
+            check for check in self.checks if check.status is LimitStatus.NOT_PERFORMED
+        )
+
+
+@runtime_checkable
+class OpenPosition(Protocol):
+    """The three facts a limit check needs about a position already on the book.
+
+    Deliberately not `PositionSize`. A position already open is held by the
+    journal, and a caller that has a `fbe.journal.TradeRecord` should not have
+    to invent an entry price, a stop and a pip distance to ask whether one more
+    ticket fits. Interface segregation: where a caller needs only part of a
+    type, pass the part. The attribute names are the journal's, so a
+    `TradeRecord` satisfies this structurally with no adapter.
+
+    ``risk_amount`` here is the REALISED money at risk in the account currency,
+    which is what `TradeRecord.risk_amount` holds. `PositionSize.risk_amount` is
+    the INTENDED figure before the lot size was rounded down, and it is the
+    wrong number for every limit, so `PositionSize` is intentionally left unable
+    to satisfy this protocol. Convert one with
+    `PositionRisk.from_position_size`, which reads ``realised_risk_amount``.
+
+    Attributes:
+        pair: Six-character pair in market convention. Both legs carry the
+            position's full risk in `correlated_exposure`.
+        risk_amount: Realised money at risk in the account currency (ZAR),
+            positive.
+        account_balance_at_entry: Balance the size was derived from, in the
+            account currency. Risk fractions are computed against this rather
+            than against the current balance, because that is what the position
+            was actually sized on.
+
+    """
+
+    @property
+    def pair(self) -> str:
+        """Six-character pair in market convention, e.g. ``"EURUSD"``."""
+        ...
+
+    @property
+    def risk_amount(self) -> float:
+        """Realised money at risk in the account currency (ZAR), positive."""
+        ...
+
+    @property
+    def account_balance_at_entry(self) -> float:
+        """Balance the position was sized on, in the account currency (ZAR)."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class PositionRisk:
+    """A concrete `OpenPosition`, for callers that do not hold a journal record.
+
+    Used for the proposed trade inside `check_limits`, which arrives as a
+    `PositionSize` and has to be compared against open positions on the same
+    terms.
+
+    Attributes:
+        pair: Six-character pair in market convention.
+        risk_amount: Realised money at risk in the account currency (ZAR).
+        account_balance_at_entry: Balance the size was derived from, same
+            currency.
+
+    """
+
+    pair: str
+    risk_amount: float
+    account_balance_at_entry: float
+
+    @classmethod
+    def from_position_size(cls, position: PositionSize) -> PositionRisk:
+        """Narrow a sized position to the three fields the limits read.
+
+        Reads ``realised_risk_amount``, never ``risk_amount``. The intended
+        figure is the one before the lot size was rounded down, it is routinely
+        10% or more above what is actually on the book at this account size, and
+        using it here would refuse trades on exposure the account does not
+        carry.
+
+        Args:
+            position: A freshly sized position, money fields in the account
+                currency.
+
+        Returns:
+            The same position expressed as an `OpenPosition`.
+
+        """
+        return cls(
+            pair=position.pair,
+            risk_amount=position.realised_risk_amount,
+            account_balance_at_entry=position.account_balance,
+        )
+
+
 def correlated_exposure(
-    open_positions: Sequence[PositionSize],
+    open_positions: Sequence[OpenPosition],
 ) -> Mapping[str, float]:
     """Total risk fraction attributable to each currency across open positions.
 
@@ -619,10 +880,11 @@ def correlated_exposure(
 
     Method:
         For each position, split its pair into base and quote. Attribute the
-        position's realised risk fraction (``realised_risk_amount /
-        account_balance``) to BOTH legs. Sum per currency. The resulting map is
-        compared leg by leg against ``RiskConfig.max_correlated_exposure``,
-        which defaults to 4%, or two full-size trades pointing the same way.
+        position's realised risk fraction (``risk_amount /
+        account_balance_at_entry``, both in the account currency) to BOTH legs.
+        Sum per currency. The resulting map is compared leg by leg against
+        ``RiskConfig.max_correlated_exposure``, which defaults to 4%, or two
+        full-size trades pointing the same way.
 
         Realised rather than intended, for the same reason the checklist reads
         realised: what is on the book is what can be lost, and after rounding
@@ -638,14 +900,23 @@ def correlated_exposure(
     error to make on a R2,000 account.
 
     Args:
-        open_positions: Positions currently live. Each supplies its own pair,
-            realised risk amount and account balance, so no external state is
-            needed.
+        open_positions: Positions currently live, as `OpenPosition` views. Each
+            supplies its own pair, realised risk amount and the balance it was
+            sized on, so no external state is needed. An empty sequence means a
+            known-empty book and returns an empty mapping. This function has no
+            way to express "not known", which is why the caller that can tell
+            the difference, `check_limits`, takes that decision before calling.
 
     Returns:
         Mapping of ISO currency code to total risk fraction of the account, for
         every currency appearing in at least one open position. Currencies with
         no exposure are absent rather than present with 0.0.
+
+    Raises:
+        ValueError: If any position's ``account_balance_at_entry`` is not
+            strictly positive. A zero balance has no risk fraction, and
+            returning one anyway would put a fabricated number in front of the
+            exposure cap.
 
     """
     raise NotImplementedError(
@@ -654,53 +925,109 @@ def correlated_exposure(
 
 
 def check_limits(
-    open_positions: Sequence[PositionSize],
+    open_positions: Sequence[OpenPosition] | None,
     proposed: PositionSize,
     config: RiskConfig,
-    realised_pnl_today: float = 0.0,
+    realised_pnl_today: float | None = None,
     equity_peak: float | None = None,
-) -> list[str]:
-    """Return the reasons ``proposed`` must not be taken. Empty means take it.
+) -> LimitReport:
+    """Report what each portfolio limit says about ``proposed``, including silence.
 
-    Returning reasons rather than a boolean is the point. The owner needs to
-    know which limit bit, because "already three positions open" is a wait and
-    "down 4% today" is a stop for the day, and those call for different
-    behaviour. A bare False invites arguing with the number.
+    Every limit in `LIMITS` comes back with one of three outcomes: clear,
+    breached, or not performed because an input was missing. There is no
+    all-clear that a run can obtain without having actually checked everything,
+    which is the whole reason this returns a `LimitReport` rather than a list of
+    refusals. An empty refusal list from a caller that supplied no open
+    positions, no daily profit and loss and no equity peak used to mean "nothing
+    was checked" and read as "everything passed", and a pass is what authorises
+    a trade.
 
-    Checks, all evaluated so the caller sees every breach rather than the first:
-        Concurrent positions: ``len(open_positions) >= max_concurrent_positions``
-            refuses the trade. Three is not a capital constraint, it is an
+    A not-performed outcome does not block the ticket. It accompanies it. Two of
+    these four limits have no automated source in this repository at all, so a
+    refusal on absence would refuse every trade, and a gate that refuses
+    everything gets switched off along with the checks that were working. What a
+    not-performed outcome does do is deny `LimitReport.all_clear` and put a named
+    line on the ticket, so the owner checks that limit by hand against the broker
+    terminal before ticking the box in section 8 of
+    ``docs/risk-and-execution.md``.
+
+    Every limit is evaluated, so the caller sees all the breaches rather than
+    the first. The boundaries differ by limit and are stated here because an
+    off-by-one on a limit is not visible in the output:
+
+        Concurrent positions: breached when ``len(open_positions) >=
+            max_concurrent_positions``, since the question is whether there is
+            room for one more. Three is not a capital constraint, it is an
             attention constraint. The plan runs on 1h and 4h charts managed by
-            hand, and a fourth open ticket is where management degrades.
-        Correlated exposure: adding ``proposed`` must not push any single
-            currency's total above ``max_correlated_exposure``. Compute
-            `correlated_exposure` over ``open_positions + [proposed]`` and
-            compare each leg. Name the offending currency and the resulting
-            figure in the reason string.
-        Daily loss: ``realised_pnl_today <= -max_daily_loss * account_balance``
-            stops trading for the session. This is the plan's revenge-trading
-            guard given a number. The threshold is realised loss only; an open
-            position sitting at a loss is not yet evidence of anything.
-        Drawdown pause: if ``equity_peak`` is supplied and current balance has
-            fallen ``max_drawdown_pause`` (10%) or more below it, refuse and
-            direct the owner to review the model rather than to resize. A
-            drawdown that deep on a fundamental bias engine is more likely to
-            mean the weights are wrong than that variance was unkind.
+            hand, and a fourth open ticket is where management degrades. Not
+            performed when ``open_positions`` is ``None``.
+        Correlated exposure: breached when adding ``proposed`` pushes any single
+            currency's total STRICTLY above ``max_correlated_exposure``. Landing
+            exactly on 4% is holding the configured maximum, not exceeding it.
+            Compute `correlated_exposure` over ``open_positions`` plus
+            `PositionRisk.from_position_size(proposed)` and compare each leg.
+            The detail names the offending currency and the resulting figure,
+            because "too much exposure" does not tell the owner which ticket to
+            drop. Not performed when ``open_positions`` is ``None``: the
+            proposed position's own legs are known, but a total that ignores the
+            book is not an exposure figure, and reporting it as one would be the
+            same defect in a smaller font.
+        Daily loss: breached when ``realised_pnl_today <= -max_daily_loss *
+            proposed.account_balance``, at or beyond, because the threshold is a
+            stop for the session rather than a ceiling to sit on. R80.00 on the
+            plan's R2,000 balance at the 4% default. Realised only: an open
+            position sitting at a loss is not yet evidence of anything. Not
+            performed when ``realised_pnl_today`` is ``None``.
+        Drawdown pause: breached when ``proposed.account_balance <= equity_peak
+            * (1 - max_drawdown_pause)``, again at or beyond. The direction to
+            take is a review of the model, not a resize: a drawdown that deep on
+            a fundamental bias engine is more likely to mean the weights are
+            wrong than that variance was unkind. Not performed when
+            ``equity_peak`` is ``None``, which is every run today, because
+            nothing in this repository records a balance history.
+
+    Which balance: the two money comparisons use ``proposed.account_balance``,
+    the balance the proposed size was actually derived from, rather than
+    ``config.account_balance``. A run that overrides the balance for one ticket
+    would otherwise size against one number and check against another. The
+    limits themselves, the counts and the fractions, come from ``config``.
 
     Args:
-        open_positions: Positions already live.
-        proposed: The position being considered.
-        config: Risk limits from the plan.
+        open_positions: Positions already live, as `OpenPosition` views, which a
+            `fbe.journal.TradeRecord` satisfies without conversion. ``None``
+            means the open book is not known, for example because the journal
+            could not be read, and is reported as not performed on the two
+            position limits. An empty sequence means the book was read and is
+            genuinely empty, which is a reading and clears both. The parameter
+            has no default so that a caller has to say which of those two it
+            holds.
+        proposed: The position being considered. Money fields in the account
+            currency, and the limits read ``realised_risk_amount``, not
+            ``risk_amount``.
+        config: Risk limits from the plan. Supplies every ceiling; no threshold
+            is written into this function.
         realised_pnl_today: Closed profit and loss for the current session in
-            the account currency, negative for a loss. Defaults to 0.0, which
-            disables the daily-loss check for callers that do not track it.
-        equity_peak: Highest account balance reached, in the account currency.
-            ``None`` disables the drawdown check rather than assuming the
-            current balance is the peak, which would hide an existing drawdown.
+            the account currency (ZAR), negative for a loss. ``None`` means not
+            tracked and produces a not-performed outcome. ``0.0`` is a reading,
+            it means flat on the day, and it produces a performed check. The two
+            used to be the same argument, which is the case ADR 0002 rule 1
+            names.
+        equity_peak: Highest account balance reached, in the account currency,
+            positive. ``None`` means not tracked and produces a not-performed
+            outcome rather than assuming the current balance is the peak, which
+            would hide an existing drawdown.
 
     Returns:
-        Human-readable reasons for refusal, one per breached limit, in the order
-        listed above. Empty list means every limit passed.
+        A `LimitReport` holding one `LimitCheck` per entry in `LIMITS`, in that
+        order. `LimitReport.all_clear` is the only permission this function
+        grants, and it is false if anything was breached or not performed.
+
+    Raises:
+        ValueError: If ``proposed.account_balance`` is not strictly positive, or
+            if ``equity_peak`` is supplied and is not strictly positive. Both
+            would make a percentage of the account meaningless, and a
+            meaningless percentage compared against a limit is worse than no
+            comparison because it produces an answer.
 
     """
     raise NotImplementedError(

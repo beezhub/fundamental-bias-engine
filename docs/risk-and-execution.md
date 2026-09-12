@@ -233,21 +233,73 @@ so there is no trade this system is entitled to an opinion on.
 
 ## 4. Limits, and what each one is for
 
-`check_limits` returns the reasons a trade is refused, not a yes or no, because
-each limit means something different about what to do next.
+`check_limits` reports one outcome per limit, not a yes or no, because each limit
+means something different about what to do next.
 
 | Limit | Default | What it is actually protecting |
 |---|---|---|
-| Max concurrent positions | 3 | Attention, not capital. The plan runs on 1h and 4h charts managed by hand. A fourth open ticket is where management degrades and stops get moved. |
-| Max correlated exposure | 4% per currency | Long EURUSD and long GBPUSD is one short-USD bet wearing two tickets. Both lose together on any dollar rally. Counting them as two independent 1% trades understates the real exposure by half. |
-| Max daily loss | 4% (R80) | Revenge trading, given a number. When it bites, the session is over. Realised losses only: an open trade sitting underwater is not yet evidence of anything. |
-| Drawdown pause | 10% (R200 from peak) | The model, not the trader. A drawdown this deep on a fundamental bias engine more likely means the weights are wrong than that variance was unkind. Stop and review before resizing. |
+| `max_concurrent_positions` | 3 | Attention, not capital. The plan runs on 1h and 4h charts managed by hand. A fourth open ticket is where management degrades and stops get moved. |
+| `max_correlated_exposure` | 4% per currency | Long EURUSD and long GBPUSD is one short-USD bet wearing two tickets. Both lose together on any dollar rally. Counting them as two independent 1% trades understates the real exposure by half. |
+| `max_daily_loss` | 4% (R80) | Revenge trading, given a number. When it bites, the session is over. Realised losses only: an open trade sitting underwater is not yet evidence of anything. |
+| `max_drawdown_pause` | 10% (R200 from peak) | The model, not the trader. A drawdown this deep on a fundamental bias engine more likely means the weights are wrong than that variance was unkind. Stop and review before resizing. |
 
 On correlated exposure, the full risk of a position is attributed to **both** of
 its legs, not split between them. A pair trade genuinely does stake the whole
 amount on each leg's behaviour. This is conservative and it will occasionally
 overstate a genuinely hedged book. On a R2,000 account that is the right error
 to make.
+
+### Three outcomes per limit, because two is not enough
+
+Each limit comes back **clear**, **breached** or **not performed**.
+
+Not performed means an input the limit needs was not supplied, so nothing was
+compared. It is not a pass. `check_limits` used to return an empty list of
+refusals in that case, which read as every limit cleared, and the only caller
+that could have produced one supplied no open positions, no daily profit and
+loss and no equity peak. An empty answer from a check with nothing to check
+against is the shape of defect `docs/decisions/0002-representing-not-known.md`
+exists to stop.
+
+What each outcome does to the ticket:
+
+* **Clear.** The limit was compared and there is room. The detail line carries
+  the measured figure and the ceiling, so the number can be read rather than
+  trusted.
+* **Breached.** The limit was compared and there is not. It prints on the ticket
+  with the figure, and for correlated exposure with the currency named, because
+  "too much exposure" does not tell you which ticket to drop. Whether a breach
+  also changes the exit code is open in issue #46.
+* **Not performed.** Printed as not performed, never as clear. It does not block
+  the ticket: two of these four limits have no automated source at all today, so
+  refusing on absence would refuse every trade, and a gate that refuses
+  everything is a gate that gets switched off along with the checks that were
+  working. It does mean the run is not all clear, and it is your cue to check
+  that one limit by hand in the terminal before the box in section 8 is ticked.
+
+### What is automated today, stated plainly
+
+`fbe size` reads the journal, counts the records that are still open, and prints
+the count, the journal path and the time the file was last written. On that
+basis the concurrent and correlated limits are performed. If the journal cannot
+be read or a line will not parse, the open book is **not known**, which is
+different from empty, and both position limits report not performed rather than
+clear.
+
+**The daily-loss and drawdown limits report not performed on every run.** Nothing
+supplies today's realised profit and loss, and nothing anywhere in this
+repository records an equity peak: `TradeRecord` holds
+`account_balance_at_entry`, which is a balance at an entry time, not a peak, and
+is wrong across a withdrawal. Until a source exists, those two limits are
+checked by hand. Issue #46 decides whether the journal is an honest enough source
+for the first and where the second could come from. No part of this document
+claims either limit is automated.
+
+The journal is also only as current as the last entry written. The plan's
+routine allows the journal entry to be written in the evening, and a position
+opened this morning and not yet journalled is invisible to the count. That is why
+the ticket prints the basis rather than only the verdict. Policy for a stale
+journal is issue #46's first question.
 
 ---
 
@@ -479,8 +531,12 @@ Run this before every ticket. It takes about two minutes.
 
 **Limits**
 
-- [ ] `check_limits` returns an empty list.
-- [ ] Fewer than 3 positions open.
+- [ ] Every limit on the ticket reads **clear**. A limit reading **not
+      performed** is not a pass: check that one by hand against the terminal
+      before ticking its box below. Today that is the last two every time.
+- [ ] Fewer than 3 positions open. The ticket prints the count, the journal path
+      and when the journal was last written. If a position is open that you have
+      not journalled yet, the count is wrong and you are the one who knows it.
 - [ ] No currency leg exceeds 4% total exposure once this trade is added.
 - [ ] Not down 4% or more on the day.
 - [ ] Not in a 10% drawdown from peak.
