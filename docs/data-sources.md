@@ -590,7 +590,7 @@ meta:
     Manufacturing PMI headline prints. Flash where marked, otherwise final.
 
 observations:
-  - indicator: pmi_manufacturing
+  - indicator: pmi_composite
     currency: EUR
     value: 49.8
     period: 2026-08-01
@@ -721,7 +721,7 @@ daily market rate about 10.
 
 Setting an allowance higher than the cadence justifies, so a frozen series
 passes, converts a visible gap into an invisible one. It is the single easiest
-way to make this whole registry lie, and `current_account` below is the case
+way to make this whole registry lie, and `current_account_gdp` below is the case
 where it would have been tempting.
 
 **The allowance is now read twice.** `coverage_report` uses it to decide whether
@@ -748,21 +748,23 @@ keys currently in that position.
 | --- | --- | --- | --- |
 | `policy_rate` | 8/8 | 8/8 | good |
 | `yield_2y` | 6/8 | 6/8 | CHF and NZD manual, see below |
+| `yield_2y_chg_1m` | 6/8 | 6/8 | derived from `yield_2y`, not separately published; same 6/8 |
+| `yield_2y_chg_3m` | 6/8 | 6/8 | derived from `yield_2y`, not separately published; same 6/8 |
 | `yield_10y` | 8/8 | 8/8 | good |
 | `cpi_yoy` | 8/8 | 8/8 | good, was 2/8 before the OECD API |
 | `core_cpi_yoy` | 8/8 | 8/8 | good, was 2/8 |
 | `gdp_yoy` | 8/8 | 8/8 | good |
 | `unemployment_rate` | 8/8 | 8/8 | good |
-| `employment_change` | 7/8 | 7/8 | EUR manual |
+| `employment_chg` | 7/8 | 7/8 | EUR manual |
 | `retail_sales_yoy` | 7/8 | 8/8 | AUD frozen at 2025Q2 |
-| `industrial_production_yoy` | 4/8 | 5/8 | worst of the growth inputs |
-| `pmi_manufacturing` | 0/8 | 0/8 | licensed, entirely manual |
+| `indpro_yoy` | 4/8 | 5/8 | worst of the growth inputs |
+| `pmi_composite` | 0/8 | 0/8 | licensed, entirely manual |
 | `trade_balance` | 8/8 | 8/8 | good |
-| `current_account` | 0/8 | 8/8 | all eight frozen at 2024Q4 |
-| `cot_net_position` | 8/8 | 8/8 | good, 8-10 days stale by design |
+| `current_account_gdp` | 0/8 | 8/8 | all eight frozen at 2024Q4 |
+| `cot_net_pct_oi` | 8/8 | 8/8 | good, 8-10 days stale by design |
 | `equity_index` | 8/8 | 8/8 | USD and JPY daily, rest monthly |
-| `vix` | global | global | good |
-| `commodity_index` | global + CAD, AUD | | NZD dairy manual |
+| `vol_index` | global | global | good |
+| `commodity_price` | global + CAD, AUD | | NZD dairy manual |
 
 ### The gaps that remain, and what each costs
 
@@ -829,7 +831,7 @@ indicator: Germany runs a structural trade surplus larger than the bloc's, so
 the proxy flatters the euro on `trade_balance`.
 
 Affected: `unemployment_rate`, `retail_sales_yoy`,
-`industrial_production_yoy`, `trade_balance`, `current_account`,
+`indpro_yoy`, `trade_balance`, `current_account_gdp`,
 `equity_index`, and `yield_10y` where the Bund stands in for the euro curve.
 
 ### Manual fallback per gap
@@ -888,21 +890,23 @@ a free machine-readable source, not the operator's typing.
 | --- | --- | --- | --- | --- | --- | --- |
 | `policy_rate` | monetary | `percent` | daily | 75d | 100% | 100% |
 | `yield_2y` | monetary | `percent` | daily | 10d | 75% | 75% |
+| `yield_2y_chg_1m` | monetary | `basis_points` | daily | 10d | 75% | 75% |
+| `yield_2y_chg_3m` | monetary | `basis_points` | daily | 10d | 75% | 75% |
 | `yield_10y` | monetary | `percent` | monthly | 75d | 100% | 100% |
 | `cpi_yoy` | inflation | `percent` | monthly | 200d | 100% | 100% |
 | `core_cpi_yoy` | inflation | `percent` | monthly | 200d | 100% | 100% |
 | `gdp_yoy` | growth | `percent` | quarterly | 270d | 100% | 100% |
 | `unemployment_rate` | employment | `percent` | monthly | 270d | 100% | 100% |
-| `employment_change` | employment | `persons` | monthly | 270d | 88% | 88% |
+| `employment_chg` | employment | `persons` | monthly | 270d | 88% | 88% |
 | `retail_sales_yoy` | growth | `percent` | monthly | 270d | 88% | 100% |
-| `industrial_production_yoy` | growth | `percent` | monthly | 180d | 50% | 62% |
-| `pmi_manufacturing` | growth | `index` | monthly | 75d | 0% | 0% |
+| `indpro_yoy` | growth | `percent` | monthly | 180d | 50% | 62% |
+| `pmi_composite` | growth | `index` | monthly | 75d | 0% | 0% |
 | `trade_balance` | external | `usd` | monthly | 150d | 100% | 100% |
-| `current_account` | external | `percent_of_gdp` | quarterly | 210d | 0% | 100% |
-| `cot_net_position` | positioning | `contracts` | weekly | 21d | 100% | 100% |
+| `current_account_gdp` | external | `percent_of_gdp` | quarterly | 210d | 0% | 100% |
+| `cot_net_pct_oi` | positioning | `contracts` | weekly | 21d | 100% | 100% |
 | `equity_index` | risk | `index` | daily | 75d | 100% | 100% |
-| `vix` | risk | `index` | daily | 7d | 100% | 100% |
-| `commodity_index` | external | `index` | monthly | 90d | 100% | 100% |
+| `vol_index` | risk | `index` | daily | 7d | 100% | 100% |
+| `commodity_price` | external | `index` | monthly | 90d | 100% | 100% |
 
 `Allowance` is `max_staleness_days`. `Fresh` is `coverage_report()`,
 `Identifiers` is `identifier_coverage()`. Where the two differ, every
@@ -943,6 +947,14 @@ Pillar: **monetary**. Canonical unit: `percent`. Staleness allowance: 10 days. F
 | CAD | boc | `BD.CDN.2YR.DQ.YLD` | percent | daily | level | yes | 2026-09-08 | Government of Canada 2-year benchmark bond yield |
 | AUD | rba | `FCMYGBAG2D` | percent | daily | level | yes | 2026-09-02 | Australian Government 2-year bond, interpolated, from RBA statistical table F2 |
 | NZD | manual | `yield_2y` | percent | daily | level | **no** | **unknown** | the RBNZ publishes 2-year government bond yields in table B2, but rbnz.govt.nz, nzdmo.govt.nz and debtmanagement.treasury.govt.nz all refuse automated requests with HTTP 403. Not verified, not wired in. This may be an environment block rather than a policy one, so it is worth retrying from another network before accepting the manual route. |
+
+#### `yield_2y_chg_1m` and `yield_2y_chg_3m`
+
+One-month and three-month changes in the two-year government bond yield, in basis points, resampled to month-end or quarter-end before differencing. Together they carry 0.45 of the monetary pillar, more than the level itself, because the direction of repricing typically leads the level in FX.
+
+Neither is a separately published series. No source in this registry, or found by search, publishes a pre-differenced government bond yield change for any G10 issuer. Both reuse `yield_2y`'s own source, series ID, unit and verification status for every currency, under the registry's `chg_1m` and `chg_3m` transforms, which is why their source table is not repeated here: it is `yield_2y`'s table above, currency for currency, source for source. Coverage, freshness and the CHF/NZD manual gap are therefore identical to `yield_2y`'s.
+
+Pillar: **monetary**. Canonical unit: `basis_points`. Staleness allowance: 10 days. Fresh coverage: 75% (both).
 
 #### `yield_10y`
 
@@ -1029,7 +1041,7 @@ Pillar: **employment**. Canonical unit: `percent`. Staleness allowance: 270 days
 | AUD | fred | `LRHUTTTTAUM156S` | percent | monthly | level | yes | 2026-06-01 | - |
 | NZD | fred | `LRHUTTTTNZQ156S` | percent | quarterly | level | yes | 2026-04-01 | quarterly by publication; 2026Q2 |
 
-#### `employment_change`
+#### `employment_chg`
 
 Change in the number of people employed. The flow, not the stock: a falling unemployment rate driven by people leaving the labour force is a different signal from one driven by hiring, and this indicator is what separates them.
 
@@ -1038,7 +1050,7 @@ Pillar: **employment**. Canonical unit: `persons`. Staleness allowance: 270 days
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | USD | fred | `PAYEMS` | thousands_of_persons | monthly | diff | yes | 2026-08-01 | total nonfarm payrolls; the differenced level is the NFP headline |
-| EUR | manual | `employment_change` | persons | quarterly | level | **no** | **unknown** | no live euro-area or German employment level on FRED (LFEMTTTTEZQ647S stopped at 2022-10); take the Eurostat quarterly employment release by hand |
+| EUR | manual | `employment_chg` | persons | quarterly | level | **no** | **unknown** | no live euro-area or German employment level on FRED (LFEMTTTTEZQ647S stopped at 2022-10); take the Eurostat quarterly employment release by hand |
 | GBP | fred | `LFEMTTTTGBQ647S` | persons | quarterly | diff | yes | 2026-01-01 | 2026Q1 |
 | JPY | fred | `LFEMTTTTJPM647S` | persons | monthly | diff | yes | 2026-06-01 | - |
 | CHF | fred | `LFEMTTTTCHQ647S` | persons | quarterly | diff | yes | 2026-01-01 | 2026Q1 |
@@ -1063,7 +1075,7 @@ Pillar: **growth**. Canonical unit: `percent`. Staleness allowance: 270 days. Fr
 | AUD | fred | `SLRTTO01AUQ659S` | percent | quarterly | level | yes | **2025-04-01** (stale) | DISCONTINUED at 2025Q2. Australia has no live retail series on FRED and none was found on the OECD API either. |
 | NZD | fred | `SLRTTO01NZQ659S` | percent | quarterly | level | yes | 2026-01-01 | 2026Q1 |
 
-#### `industrial_production_yoy`
+#### `indpro_yoy`
 
 Industrial production, year on year. Coverage here is the worst of the growth inputs: four of eight are live. Weight it accordingly, or the growth pillar ends up scoring the countries that happen to publish rather than the countries that happen to be growing.
 
@@ -1075,27 +1087,27 @@ Pillar: **growth**. Canonical unit: `percent`. Staleness allowance: 180 days. Fr
 | EUR | fred | `DEUPRINTO01GYSAM` | percent | monthly | level | yes | **2023-12-01** (stale) | DISCONTINUED at 2023-12. euro-area aggregate stopped updating; German national series used as the euro-area proxy, and the German proxy has now stopped too. |
 | GBP | fred | `GBRPRINTO01GYSAM` | percent | monthly | level | yes | 2026-05-01 | - |
 | JPY | fred | `JPNPRINTO01GYSAM` | percent | monthly | level | yes | 2026-05-01 | - |
-| CHF | manual | `industrial_production_yoy` | percent | quarterly | level | **no** | **unknown** | no Swiss industrial production series on FRED in any live form |
+| CHF | manual | `indpro_yoy` | percent | quarterly | level | **no** | **unknown** | no Swiss industrial production series on FRED in any live form |
 | CAD | fred | `CANPRINTO01GYSAM` | percent | monthly | level | yes | 2026-04-01 | - |
-| AUD | manual | `industrial_production_yoy` | percent | quarterly | level | **no** | **unknown** | no Australian industrial production series on FRED |
-| NZD | manual | `industrial_production_yoy` | percent | quarterly | level | **no** | **unknown** | no New Zealand industrial production series on FRED |
+| AUD | manual | `indpro_yoy` | percent | quarterly | level | **no** | **unknown** | no Australian industrial production series on FRED |
+| NZD | manual | `indpro_yoy` | percent | quarterly | level | **no** | **unknown** | no New Zealand industrial production series on FRED |
 
-#### `pmi_manufacturing`
+#### `pmi_composite`
 
-Manufacturing purchasing managers' index, 50 being the expansion line. The best leading indicator in the growth pillar and the one with zero free coverage, which is why the manual source exists at all. The allowance is 75 rather than 45 because 45 is the age of a punctual monthly print under first-day period stamping, so the series was expiring on the day it published. 75 is this table's own rule: a month elapsing, the survey's own lag, and one more month before the next print is due.
+Composite purchasing managers' index, manufacturing and services blended, 50 being the expansion line. The best leading indicator in the growth pillar and the one with zero free coverage, which is why the manual source exists at all. Until an operator has a services print to blend in, entering the manufacturing headline alone under this key is a stated approximation: note it as such in the manual entry's `meta` rather than presenting it as the real composite. See "Question 5" in `docs/answers/data.md` for a free OECD business-confidence proxy that is a different, real thing (a percentage balance, not a 50-centred diffusion index) and belongs under its own key rather than this one. The allowance is 75 rather than 45 because 45 is the age of a punctual monthly print under first-day period stamping, so the series was expiring on the day it published. 75 is this table's own rule: a month elapsing, the survey's own lag, and one more month before the next print is due.
 
 Pillar: **growth**. Canonical unit: `index`. Staleness allowance: 75 days. Fresh coverage: 0%.
 
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| USD | manual | `pmi_manufacturing` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
-| EUR | manual | `pmi_manufacturing` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
-| GBP | manual | `pmi_manufacturing` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
-| JPY | manual | `pmi_manufacturing` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
-| CHF | manual | `pmi_manufacturing` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
-| CAD | manual | `pmi_manufacturing` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
-| AUD | manual | `pmi_manufacturing` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
-| NZD | manual | `pmi_manufacturing` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
+| USD | manual | `pmi_composite` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
+| EUR | manual | `pmi_composite` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
+| GBP | manual | `pmi_composite` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
+| JPY | manual | `pmi_composite` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
+| CHF | manual | `pmi_composite` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
+| CAD | manual | `pmi_composite` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
+| AUD | manual | `pmi_composite` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
+| NZD | manual | `pmi_composite` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
 
 #### `trade_balance`
 
@@ -1114,7 +1126,7 @@ Pillar: **external**. Canonical unit: `usd`. Staleness allowance: 150 days. Fres
 | AUD | fred | `XTNTVA01AUM667S` | usd | monthly | level | yes | 2026-06-01 | - |
 | NZD | fred | `XTNTVA01NZM667S` | usd | monthly | level | yes | 2026-06-01 | - |
 
-#### `current_account`
+#### `current_account_gdp`
 
 Current account balance as a share of GDP. A structural measure of whether a currency is financed by the world or financing it.
 
@@ -1131,9 +1143,11 @@ Pillar: **external**. Canonical unit: `percent_of_gdp`. Staleness allowance: 210
 | AUD | fred | `AUSB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
 | NZD | fred | `NZLB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
 
-#### `cot_net_position`
+#### `cot_net_pct_oi`
 
 Net speculative position in CME currency futures from the CFTC Commitments of Traders report. A crowded position is a reason to fade a fundamental view, not to add to it, so this pillar usually works against the others by design.
+
+This key was renamed from `cot_net_position` to match `fbe.pillars.positioning.PositioningPillar` and `docs/scoring-spec.md` section 3.6, both of which want net non-commercial positioning as a share of open interest, `(long - short) / open_interest`, not a raw contract count. The rename is not a fix for that gap: the division by open interest is not implemented anywhere yet, so a fetch under this key today still returns raw contracts, and `Canonical unit` below still says so honestly. Do not treat the identifier resolving as evidence the percentage is being computed.
 
 Pillar: **positioning**. Canonical unit: `contracts`. Staleness allowance: 21 days. Fresh coverage: 100%.
 
@@ -1165,9 +1179,9 @@ Pillar: **risk**. Canonical unit: `index`. Staleness allowance: 75 days. Fresh c
 | AUD | oecd | `DSD_STES@DF_FINMARK/AUS.M.SHARE.IX......` | index | monthly | level | yes | 2026-08-01 | OECD share price index; taken from the OECD API rather than FRED's mirror of the same OECD material, which runs two months behind |
 | NZD | oecd | `DSD_STES@DF_FINMARK/NZL.M.SHARE.IX......` | index | monthly | level | yes | 2026-08-01 | OECD share price index; taken from the OECD API rather than FRED's mirror of the same OECD material, which runs two months behind |
 
-#### `vix`
+#### `vol_index`
 
-CBOE implied volatility on the S&P 500. A single global number, not a per-currency one: it sets the risk regime, and the currencies then sort themselves by `CurrencyMeta.risk_beta`.
+A global volatility benchmark, currently the CBOE's implied volatility on the S&P 500 (VIX). A single global number, not a per-currency one: it sets the risk regime, and the currencies then sort themselves by `CurrencyMeta.risk_beta`. Named for what it measures rather than for the vendor's ticker, so a future addition or replacement stays under this same key.
 
 Pillar: **risk**. Canonical unit: `index`. Staleness allowance: 7 days. Fresh coverage: 100%.
 
@@ -1175,7 +1189,7 @@ Pillar: **risk**. Canonical unit: `index`. Staleness allowance: 7 days. Fresh co
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | GLOBAL | fred | `VIXCLS` | index | daily | level | yes | 2026-09-08 | daily close |
 
-#### `commodity_index`
+#### `commodity_price`
 
 Terms-of-trade proxy for the commodity currencies, plus a global benchmark. Only the three currencies with a `commodity_link` in `CurrencyMeta` carry a specific ref; the others take the global index or nothing.
 
@@ -1186,7 +1200,7 @@ Pillar: **external**. Canonical unit: `index`. Staleness allowance: 90 days. Fre
 | GLOBAL | fred | `PALLFNFINDEXM` | index | monthly | level | yes | 2026-07-01 | IMF all commodity price index, 2016=100 |
 | CAD | fred | `DCOILWTICO` | usd_per_barrel | daily | level | yes | 2026-09-01 | WTI spot, the standard Canadian dollar terms-of-trade proxy |
 | AUD | fred | `PIORECRUSDM` | index | monthly | level | yes | 2026-07-01 | IMF iron ore price index |
-| NZD | manual | `commodity_index` | index | irregular | level | **no** | **unknown** | no dairy price index on FRED, verified by search. The GlobalDairyTrade auction index is the right series and is published fortnightly on globaldairytrade.info. PFOODINDEXM is a poor but free substitute. |
+| NZD | manual | `commodity_price` | index | irregular | level | **no** | **unknown** | no dairy price index on FRED, verified by search. The GlobalDairyTrade auction index is the right series and is published fortnightly on globaldairytrade.info. PFOODINDEXM is a poor but free substitute. |
 ---
 
 ## Refresh cadence
@@ -1291,7 +1305,7 @@ everyone.
 That is them working. `identifier_coverage()` at 1.0 with `coverage_report()` at
 0.0 means every identifier is correct and the source stopped publishing, which
 is a data problem to solve at the source. Both at 0.0 means the registry has no
-source at all, which is a wiring problem. `current_account` is the standing
+source at all, which is a wiring problem. `current_account_gdp` is the standing
 example of the first.
 
 **A currency's monetary pillar is missing entirely**

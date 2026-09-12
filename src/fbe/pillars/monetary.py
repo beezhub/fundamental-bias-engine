@@ -127,14 +127,19 @@ class MonetaryPillar(BasePillar):
             ``{currency: {indicator: observations}}`` for the five indicators in
             `requires`, each sorted by period ascending.
 
-        The two change series arrive from the registry as their own keys rather
-        than being differenced here, so the definition of "one month back" lives
-        in one place. That matters because the two-year yield is daily and the
-        currencies keep different holiday calendars: differencing raw daily
-        observations locally would make a one-month change mean "twenty-one
-        business days back from whichever day this series last updated", which is
-        not comparable across the cross-section. Where the registry supplies only
-        the level, the extractor resamples to month-end before differencing.
+        The two change series arrive as their own keys, ``yield_2y_chg_1m`` and
+        ``yield_2y_chg_3m``, rather than being differenced here, so the
+        definition of "one month back" lives in one place: the registry's
+        ``chg_1m``/``chg_3m`` transform, which resamples to month-end or
+        quarter-end before differencing. That matters because the two-year
+        yield is daily and the currencies keep different holiday calendars;
+        differencing raw daily observations locally would make a one-month
+        change mean "twenty-one business days back from whichever day this
+        series last updated", which is not comparable across the
+        cross-section. Neither change key is backed by an independently
+        published series; both reuse ``yield_2y``'s own identifiers under a
+        different transform, so a currency's coverage on the two change
+        components always matches its coverage on the level.
 
         """
         raise NotImplementedError(

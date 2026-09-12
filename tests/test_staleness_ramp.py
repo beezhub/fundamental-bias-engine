@@ -226,14 +226,24 @@ def test_the_allowance_fallback_is_wired_to_config_not_to_a_literal() -> None:
 
 
 def test_pillar_indicator_keys_without_a_registry_allowance_are_pinned() -> None:
-    """Which pillar inputs fall back to the default, recorded deliberately.
+    """Which pillar inputs fall back to the default. The set is now empty.
 
-    Several pillars ask for keys the registry does not carry under that name,
-    ``pmi_composite`` against ``pmi_manufacturing`` and ``vol_index`` against
-    ``vix`` among them. Those components get the 45-day default, which is the
-    behaviour this fix is removing everywhere else, so the set is pinned rather
-    than left to drift. Shrinking it is the fix; growing it is a regression.
-    Either way this test should be read and updated deliberately.
+    This pinned nine keys the registry did not carry under the name the pillar
+    asked for, ``pmi_composite`` against ``pmi_manufacturing`` and ``vol_index``
+    against ``vix`` among them. Those components took the 45-day default, which
+    is the behaviour the per-indicator allowance removes everywhere else, so the
+    set was recorded rather than left to drift, with "shrinking it is the fix".
+
+    It shrank to nothing. Every one of the nine was a naming disagreement or a
+    missing entry, and all nine are closed, so no pillar input falls back to the
+    default any more and the allowance reaches every component.
+
+    ``tests/test_registry_pillar_agreement.py`` is now the authority on this
+    property. It asserts the same thing more precisely, parametrised per pillar
+    and key so a failure names which one drifted rather than reporting one set
+    difference. This test is kept for the moment because the empty set is the
+    record that the gap closed; it is redundant with that file and can be
+    removed once nobody needs the record.
     """
     unresolved = {
         key
@@ -241,17 +251,7 @@ def test_pillar_indicator_keys_without_a_registry_allowance_are_pinned() -> None
         for key in pillar.requires
         if key not in INDICATORS
     }
-    assert unresolved == {
-        "cot_net_pct_oi",
-        "commodity_price",
-        "current_account_gdp",
-        "employment_chg",
-        "indpro_yoy",
-        "pmi_composite",
-        "vol_index",
-        "yield_2y_chg_1m",
-        "yield_2y_chg_3m",
-    }
+    assert unresolved == set()
 
 
 # ----------------------------------------------------------------------

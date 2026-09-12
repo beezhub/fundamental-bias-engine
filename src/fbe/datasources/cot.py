@@ -172,7 +172,7 @@ touches eight contracts, so there is no reason to push."""
 class CotSource(BaseDataSource):
     """Fetches CFTC Commitments of Traders positioning.
 
-    Backs POSITIONING and nothing else. Emits ``cot_net_position``
+    Backs POSITIONING and nothing else. Emits ``cot_net_pct_oi``
     observations whose ``period`` is the Tuesday the positions were snapped and
     whose ``released_at`` is the Friday they were published, so that the
     staleness penalty downstream sees the real age of the number.
@@ -218,7 +218,7 @@ class CotSource(BaseDataSource):
         """Fetch weekly net positioning for the requested currencies.
 
         Args:
-            indicators: Canonical indicator keys. Only ``cot_net_position`` is
+            indicators: Canonical indicator keys. Only ``cot_net_pct_oi`` is
                 served; anything else is ignored.
             currencies: ISO 4217 codes. ``"USD"`` triggers the derived
                 complement rather than a lookup.

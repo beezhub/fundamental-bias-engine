@@ -67,7 +67,7 @@ Verification date for everything below: 2026-09-09.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 
 from fbe.types import Frequency, PillarName
@@ -134,6 +134,8 @@ TRANSFORMS: tuple[str, ...] = (
     "yoy",
     "diff",
     "net_position",
+    "chg_1m",
+    "chg_3m",
 )
 """Transform hints a source applies before emitting an `Observation`.
 
@@ -142,7 +144,17 @@ TRANSFORMS: tuple[str, ...] = (
 the year-on-year percentage change. ``diff`` means take the period-on-period
 change, which is how a stock of employed persons becomes an employment change.
 ``net_position`` is the COT-specific reduction of long and short contract
-counts to a single signed number.
+counts to a single signed number. ``chg_1m`` and ``chg_3m`` mean the source
+publishes a percent level and the caller must resample it to month-end (or
+quarter-end for the three-month case), difference over one or three periods,
+and rescale the percentage-point result into basis points by multiplying by
+100.
+
+The last two exist for one reason: no source anywhere publishes a
+pre-differenced government bond yield change. ``yield_2y_chg_1m`` and
+``yield_2y_chg_3m`` are not separate series with their own identifiers; they
+reuse ``yield_2y``'s own `SeriesRef` for each currency, unchanged, and differ
+from it only in this transform. See `_yield_change_series`.
 
 The hint lives here rather than in the pillar because the choice is a property
 of the series, not of the question being asked: ``CPIAUCSL`` is an index and
@@ -527,6 +539,91 @@ YIELD_2Y = IndicatorSpec(
             "accepting the manual route.",
         ),
     },
+)
+
+
+def _yield_change_series(transform: str, note_suffix: str) -> Mapping[str, SeriesRef]:
+    """Reuse `YIELD_2Y`'s identifiers for a momentum indicator derived from them.
+
+    Args:
+        transform: ``"chg_1m"`` or ``"chg_3m"``, from `TRANSFORMS`.
+        note_suffix: Appended to each ref's existing note, explaining the
+            derivation without losing the original per-currency context (the
+            AAA-curve caveat on EUR, the spreadsheet dependency on GBP, and so
+            on).
+
+    Returns:
+        One `SeriesRef` per currency in `YIELD_2Y.series`, identical to the
+        level ref in ``source``, ``series_id``, ``unit``, ``frequency``,
+        ``verified`` and ``last_observed``, differing only in ``transform``
+        and ``note``.
+
+    Why this exists rather than a second literal table. No source publishes a
+    pre-differenced two-year yield change for any G10 issuer, so
+    ``yield_2y_chg_1m`` and ``yield_2y_chg_3m`` cannot be verified against a
+    live endpoint the way every other indicator in this file was: there is
+    nothing to fetch that is not `yield_2y` itself. Building them from
+    `YIELD_2Y.series` rather than retyping eight entries twice keeps the two
+    change indicators unable to drift from the level they are computed from:
+    a currency added to, or dropped from, `YIELD_2Y` changes both change
+    indicators the moment this function runs again, rather than needing three
+    tables edited in step.
+
+    """
+    return {
+        code: replace(
+            ref,
+            transform=transform,
+            note=f"{ref.note}; {note_suffix}" if ref.note else note_suffix,
+        )
+        for code, ref in YIELD_2Y.series.items()
+    }
+
+
+YIELD_2Y_CHG_1M = IndicatorSpec(
+    key="yield_2y_chg_1m",
+    pillar=PillarName.MONETARY,
+    unit="basis_points",
+    frequency=Frequency.DAILY,
+    max_staleness_days=10,
+    description=(
+        "One-month change in the two-year government bond yield, in basis "
+        "points, resampled to month-end before differencing. Carries a fifth "
+        "of the monetary pillar on its own: the direction of repricing "
+        "typically leads the level in FX. There is no separately published "
+        "series for this anywhere; see `_yield_change_series` for how it is "
+        "derived from `yield_2y` rather than sourced independently. Coverage "
+        "and freshness are therefore identical to `yield_2y`'s currency by "
+        "currency: CHF and NZD are manual for the same reason the level is."
+    ),
+    series=_yield_change_series(
+        "chg_1m",
+        "derived: one-month, month-end-resampled change in this same series, "
+        "in basis points, not a separately published number",
+    ),
+)
+
+
+YIELD_2Y_CHG_3M = IndicatorSpec(
+    key="yield_2y_chg_3m",
+    pillar=PillarName.MONETARY,
+    unit="basis_points",
+    frequency=Frequency.DAILY,
+    max_staleness_days=10,
+    description=(
+        "Three-month change in the two-year government bond yield, in basis "
+        "points, resampled to quarter-end before differencing. The single "
+        "heaviest sub-indicator in the model at 0.25 of the monetary pillar, "
+        "which is itself the heaviest pillar in the composite. Derived from "
+        "`yield_2y` the same way `yield_2y_chg_1m` is; see "
+        "`_yield_change_series`. A currency without a live `yield_2y` cannot "
+        "have a live reading here either."
+    ),
+    series=_yield_change_series(
+        "chg_3m",
+        "derived: three-month, quarter-end-resampled change in this same "
+        "series, in basis points, not a separately published number",
+    ),
 )
 
 
@@ -961,8 +1058,8 @@ UNEMPLOYMENT_RATE = IndicatorSpec(
 )
 
 
-EMPLOYMENT_CHANGE = IndicatorSpec(
-    key="employment_change",
+EMPLOYMENT_CHG = IndicatorSpec(
+    key="employment_chg",
     pillar=PillarName.EMPLOYMENT,
     unit="persons",
     frequency=Frequency.MONTHLY,
@@ -984,7 +1081,7 @@ EMPLOYMENT_CHANGE = IndicatorSpec(
             note="total nonfarm payrolls; the differenced level is the NFP headline",
         ),
         "EUR": _manual(
-            "employment_change",
+            "employment_chg",
             "persons",
             Frequency.QUARTERLY,
             "no live euro-area or German employment level on FRED "
@@ -1135,8 +1232,8 @@ RETAIL_SALES_YOY = IndicatorSpec(
 )
 
 
-INDUSTRIAL_PRODUCTION_YOY = IndicatorSpec(
-    key="industrial_production_yoy",
+INDPRO_YOY = IndicatorSpec(
+    key="indpro_yoy",
     pillar=PillarName.GROWTH,
     unit="percent",
     frequency=Frequency.MONTHLY,
@@ -1187,7 +1284,7 @@ INDUSTRIAL_PRODUCTION_YOY = IndicatorSpec(
             note="",
         ),
         "CHF": _manual(
-            "industrial_production_yoy",
+            "indpro_yoy",
             "percent",
             Frequency.QUARTERLY,
             "no Swiss industrial production series on FRED in any live form",
@@ -1201,13 +1298,13 @@ INDUSTRIAL_PRODUCTION_YOY = IndicatorSpec(
             note="",
         ),
         "AUD": _manual(
-            "industrial_production_yoy",
+            "indpro_yoy",
             "percent",
             Frequency.QUARTERLY,
             "no Australian industrial production series on FRED",
         ),
         "NZD": _manual(
-            "industrial_production_yoy",
+            "indpro_yoy",
             "percent",
             Frequency.QUARTERLY,
             "no New Zealand industrial production series on FRED",
@@ -1216,24 +1313,37 @@ INDUSTRIAL_PRODUCTION_YOY = IndicatorSpec(
 )
 
 
-PMI_MANUFACTURING = IndicatorSpec(
-    key="pmi_manufacturing",
+PMI_COMPOSITE = IndicatorSpec(
+    key="pmi_composite",
     pillar=PillarName.GROWTH,
     unit="index",
     frequency=Frequency.MONTHLY,
     max_staleness_days=75,
     description=(
-        "Manufacturing purchasing managers' index, 50 being the expansion line. "
-        "The best leading indicator in the growth pillar and the one with zero "
-        "free coverage, which is why the manual source exists at all. The "
-        "allowance is 75 rather than 45 because 45 is the age of a punctual "
-        "monthly print under first-day period stamping, so the series was "
-        "expiring on the day it published. 75 is this table's own rule: a month "
-        "elapsing, the survey's own lag, and one more month before the next "
-        "print is due."
+        "Composite purchasing managers' index, manufacturing and services "
+        "blended, 50 being the expansion line. The best leading indicator in "
+        "the growth pillar and the one with zero free coverage, which is why "
+        "the manual source exists at all. "
+        "Named ``pmi_composite`` rather than ``pmi_manufacturing`` because "
+        "the growth pillar wants the whole-economy read, manufacturing being "
+        "a small and shrinking share of most G10 economies; see "
+        "`fbe.pillars.growth.GrowthPillar`. Until an operator has both a "
+        "manufacturing and a services print to blend, entering the "
+        "manufacturing headline alone under this key is a stated "
+        "approximation, not silent: record it as such in the manual entry's "
+        "``meta``, per `docs/answers/data.md` question 5, which found a free "
+        "OECD business-confidence proxy worth a future, separate indicator "
+        "rather than a value folded into this one, since its unit is a "
+        "percentage balance, not a 50-centred diffusion index, and blending "
+        "the two under one key would misscore every observation."
+        "The allowance is 75 rather than 45 because 45 is the age of a "
+        "punctual monthly print under first-day period stamping, so the "
+        "series was expiring on the day it published. 75 is this table's own "
+        "rule: a month elapsing, the survey's own lag, and one more month "
+        "before the next print is due."
     ),
     series={
-        code: _manual("pmi_manufacturing", "index", Frequency.MONTHLY, _PMI_LICENSED)
+        code: _manual("pmi_composite", "index", Frequency.MONTHLY, _PMI_LICENSED)
         for code in G10
     },
 )
@@ -1326,8 +1436,8 @@ TRADE_BALANCE = IndicatorSpec(
 )
 
 
-CURRENT_ACCOUNT = IndicatorSpec(
-    key="current_account",
+CURRENT_ACCOUNT_GDP = IndicatorSpec(
+    key="current_account_gdp",
     pillar=PillarName.EXTERNAL,
     unit="percent_of_gdp",
     frequency=Frequency.QUARTERLY,
@@ -1373,8 +1483,8 @@ found, and the external pillar leans on `trade_balance`, which is current for
 all eight."""
 
 
-COT_NET_POSITION = IndicatorSpec(
-    key="cot_net_position",
+COT_NET_PCT_OI = IndicatorSpec(
+    key="cot_net_pct_oi",
     pillar=PillarName.POSITIONING,
     unit="contracts",
     frequency=Frequency.WEEKLY,
@@ -1383,7 +1493,19 @@ COT_NET_POSITION = IndicatorSpec(
         "Net speculative position in CME currency futures from the CFTC "
         "Commitments of Traders report. A crowded position is a reason to fade "
         "a fundamental view, not to add to it, so this pillar usually works "
-        "against the others by design."
+        "against the others by design. "
+        "Named for what `fbe.pillars.positioning.PositioningPillar` and "
+        "`docs/scoring-spec.md` section 3.6 actually want: net non-commercial "
+        "positioning as a share of open interest, ``(long - short) / "
+        "open_interest``, not the raw contract count this key held under its "
+        "previous name. That division is not yet implemented anywhere: "
+        "`unit` below is still ``contracts`` because `fbe.datasources.cot` "
+        "returns raw net position and open interest and leaves the division "
+        "to the caller, and no caller performs it yet. Fetching under this "
+        "key today still yields raw contracts, not a percentage; the rename "
+        "makes the pillar's lookup resolve, it does not make the numbers "
+        "match the name. See the related collector work before trusting a "
+        "score built on it."
     ),
     series={
         "USD": _cftc(
@@ -1490,16 +1612,22 @@ EQUITY_INDEX = IndicatorSpec(
 )
 
 
-VIX = IndicatorSpec(
-    key="vix",
+VOL_INDEX = IndicatorSpec(
+    key="vol_index",
     pillar=PillarName.RISK,
     unit="index",
     frequency=Frequency.DAILY,
     max_staleness_days=7,
     description=(
-        "CBOE implied volatility on the S&P 500. A single global number, not a "
+        "A global volatility benchmark, currently the CBOE's implied "
+        "volatility on the S&P 500 (VIX). A single global number, not a "
         "per-currency one: it sets the risk regime, and the currencies then "
-        "sort themselves by `CurrencyMeta.risk_beta`."
+        "sort themselves by `CurrencyMeta.risk_beta`. "
+        "Named for what it measures, not for the vendor's ticker, matching "
+        "every other key in this registry: the day a non-US or a "
+        "cross-asset volatility measure is added instead or alongside, it "
+        "belongs under this same key, not a new one, or the risk pillar "
+        "would need to know which vendor is behind the number it asks for."
     ),
     series={
         GLOBAL: _ref(
@@ -1514,8 +1642,8 @@ VIX = IndicatorSpec(
 )
 
 
-COMMODITY_INDEX = IndicatorSpec(
-    key="commodity_index",
+COMMODITY_PRICE = IndicatorSpec(
+    key="commodity_price",
     pillar=PillarName.EXTERNAL,
     unit="index",
     frequency=Frequency.MONTHLY,
@@ -1552,7 +1680,7 @@ COMMODITY_INDEX = IndicatorSpec(
             note="IMF iron ore price index",
         ),
         "NZD": _manual(
-            "commodity_index",
+            "commodity_price",
             "index",
             Frequency.IRREGULAR,
             "no dairy price index on FRED, verified by search. The "
@@ -1569,21 +1697,23 @@ INDICATORS: Mapping[str, IndicatorSpec] = {
     for spec in (
         POLICY_RATE,
         YIELD_2Y,
+        YIELD_2Y_CHG_1M,
+        YIELD_2Y_CHG_3M,
         YIELD_10Y,
         CPI_YOY,
         CORE_CPI_YOY,
         GDP_YOY,
         UNEMPLOYMENT_RATE,
-        EMPLOYMENT_CHANGE,
+        EMPLOYMENT_CHG,
         RETAIL_SALES_YOY,
-        INDUSTRIAL_PRODUCTION_YOY,
-        PMI_MANUFACTURING,
+        INDPRO_YOY,
+        PMI_COMPOSITE,
         TRADE_BALANCE,
-        CURRENT_ACCOUNT,
-        COT_NET_POSITION,
+        CURRENT_ACCOUNT_GDP,
+        COT_NET_PCT_OI,
         EQUITY_INDEX,
-        VIX,
-        COMMODITY_INDEX,
+        VOL_INDEX,
+        COMMODITY_PRICE,
     )
 }
 """The registry. Keyed by canonical indicator key; this is what `Pillar.requires`
