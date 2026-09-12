@@ -15,8 +15,8 @@ figure adjusted until an assertion passes: a fixture quietly fitted to the code
 is worse than no fixture, because it then certifies whatever the code does.
 
 Every number here is transcribed from section 7 and from nowhere else, with its
-subsection beside it and a label into `SPEC_ANCHORS`, which carries the line and
-is itself checked. Nothing is computed and then written down.
+subsection beside it and a label into `SPEC_ANCHORS`, which carries the text that
+identifies it and is itself checked. Nothing is computed and then written down.
 
 Two kinds of assertion live here, and they fail for different reasons.
 
@@ -84,58 +84,57 @@ def _skip_if_scaffolded(*functions: Callable[..., object]) -> None:
 
 SPEC = Path(__file__).resolve().parents[1] / "docs" / "scoring-spec.md"
 
-SPEC_ANCHORS: Mapping[str, tuple[int, str]] = {
-    "7.1 raw inputs": (930, "| Currency | `policy_rate` % |"),
-    "7.1 z-scores": (945, "| `policy_rate` | 2.7250 | 1.5236 |"),
-    "7.1 sub-weights": (
-        951,
-        "Blending with sub-weights 0.15 / 0.25 / 0.20 / 0.25 / 0.15",
-    ),
-    "7.1 usd blend": (953, "0.15*(+1.165) + 0.25*(+1.104)"),
-    "7.1 blend sd": (970, "sd(blend) = 0.7001"),
-    "7.1 monetary scores": (985, "| MONETARY score |"),
-    "7.2 targets": (995, "Targets come from `CurrencyMeta.inflation_target`"),
-    "7.2 deviations": (998, "| Currency | `cpi_yoy` | headline deviation |"),
-    "7.2 stats": (1015, "Headline deviation: mean +0.4500, sd 0.5362."),
-    "7.2 sub-weights": (1016, "Blending 0.40 headline and 0.60 core"),
-    "7.3 growth inputs": (1044, "| Currency | `gdp_yoy` | `pmi_composite` |"),
-    "7.3 scores": (1068, "| Pillar | `sd(blend)` | scaling |"),
-    "7.4 positioning": (1079, "| Currency | net non-commercial, % of OI |"),
-    "7.4 jpy": (1094, "computed as `-(-1) * 1.5 * (2.40 - 2.00) = +0.60`"),
-    "7.4 saturation": (
-        1097,
-        "No currency in this run reaches the contrarian saturation",
-    ),
-    "7.5 components": (1106, "dd_component  = clip(-6.5 / 10.0)"),
-    "7.5 risk scores": (1112, "| Currency | `risk_beta` | RISK score |"),
-    "7.6 matrix": (1125, "| Currency | MON 0.30 | INF 0.15 |"),
-    "7.6 nzd staleness": (
-        1150,
-        "**NZD composite**, demonstrating the staleness discount.",
-    ),
-    "7.6 nzd dispersion": (1173, "**NZD dispersion**, with `w_tilde(p)"),
-    "7.6 no demotion": (1185, "Under the 1.20 threshold, so no dispersion demotion."),
-    "7.7 nzdusd": (1195, "**NZDUSD**"),
-    "7.7 nzdusd agreement": (1212, "considered = 0.300+0.150+0.150+0.100+0.075"),
-    "7.7 nzdusd cost": (1225, "expected_move = 62 * sqrt(10)"),
-    "7.7 usdjpy": (1239, "**USDJPY**"),
-    "7.7 eurcad": (1284, "For a clean NONE in the same run, take EURCAD"),
-    "7.7 nzdjpy": (1289, "**NZDJPY**"),
-    "7.7 nzdjpy cost": (1297, "so `expected_move = 88 * 3.1623 = 278.28`"),
-    "7.8 shortlist": (1325, "Shortlist for the run: NZDUSD short at MEDIUM"),
+SPEC_ANCHORS: Mapping[str, str] = {
+    "7.1 raw inputs": "| Currency | `policy_rate` % |",
+    "7.1 z-scores": "| `policy_rate` | 2.7250 | 1.5236 |",
+    "7.1 sub-weights": "Blending with sub-weights 0.15 / 0.25 / 0.20 / 0.25 / 0.15",
+    "7.1 usd blend": "0.15*(+1.165) + 0.25*(+1.104)",
+    "7.1 blend sd": "sd(blend) = 0.7001",
+    "7.1 monetary scores": "| MONETARY score |",
+    "7.2 targets": "Targets come from `CurrencyMeta.inflation_target`",
+    "7.2 deviations": "| Currency | `cpi_yoy` | headline deviation |",
+    "7.2 stats": "Headline deviation: mean +0.4500, sd 0.5362.",
+    "7.2 sub-weights": "Blending 0.40 headline and 0.60 core",
+    "7.3 growth inputs": "| Currency | `gdp_yoy` | `pmi_composite` |",
+    "7.3 scores": "| Pillar | `sd(blend)` | scaling |",
+    "7.4 positioning": "| Currency | net non-commercial, % of OI |",
+    "7.4 jpy": "computed as `-(-1) * 1.5 * (2.40 - 2.00) = +0.60`",
+    "7.4 saturation": "No currency in this run reaches the contrarian saturation",
+    "7.5 components": "dd_component  = clip(-6.5 / 10.0)",
+    "7.5 risk scores": "| Currency | `risk_beta` | RISK score |",
+    "7.6 matrix": "| Currency | MON 0.30 | INF 0.15 |",
+    "7.6 nzd staleness": "**NZD composite**, demonstrating the staleness discount.",
+    "7.6 nzd dispersion": "**NZD dispersion**, with `w_tilde(p)",
+    "7.6 no demotion": "Under the 1.20 threshold, so no dispersion demotion.",
+    "7.7 nzdusd": "**NZDUSD**",
+    "7.7 nzdusd agreement": "considered = 0.300+0.150+0.150+0.100+0.075",
+    "7.7 nzdusd cost": "expected_move = 62 * sqrt(10)",
+    "7.7 usdjpy": "**USDJPY**",
+    "7.7 eurcad": "For a clean NONE in the same run, take EURCAD",
+    "7.7 nzdjpy": "**NZDJPY**",
+    "7.7 nzdjpy cost": "so `expected_move = 88 * 3.1623 = 278.28`",
+    "7.8 shortlist": "Shortlist for the run: NZDUSD short at MEDIUM",
 }
-"""Where each transcribed table lives, as ``{label: (line, text on that line)}``.
+"""Where each transcribed table lives, as ``{label: text that identifies it}``.
 
-The issue asked for a line reference beside every constant. A bare line number
-is the wrong tool: section 6 grew by 29 lines the same morning this file was
-written and every reference in it silently became wrong, pointing at real lines
-with different content, which is worse than pointing at nothing.
+The issue asked for a line reference beside every constant, and this began as
+one: a line number paired with a snippet of what should be on it. A bare line
+number is the wrong tool, which that version already said, because section 6
+grew by 29 lines the same morning the file was written and every reference
+silently became wrong.
 
-So the references are labels into this table, the table carries the line number
-and a snippet of what should be on it, and
-``test_every_spec_anchor_points_at_what_it_claims`` checks all thirty. A line
-that drifts fails with the label and the true line number, which is a one-line
-correction rather than a hunt.
+Pairing the number with a snippet caught the drift instead of hiding it, but it
+did not stop it. The numbers went stale three times in one day as the spec grew
+above section 7, each time turning ``main`` red and costing a pull request to
+recompute. The snippet is the part doing the work; the number was a convenience
+that expired faster than anyone could use it.
+
+So the anchor is now the snippet alone, and
+``test_every_spec_anchor_points_at_what_it_claims`` asserts each one appears in
+the specification **exactly once**. That is what makes a reference a reference,
+and the old form never checked it: a snippet could occur twice and still pass
+as long as one occurrence sat on the claimed line. A reader locates the table by
+searching for the text, which works no matter how the document grows.
 """
 
 
@@ -376,22 +375,28 @@ def _direction(spread: float, config: ScoringConfig) -> Direction:
 
 
 def test_every_spec_anchor_points_at_what_it_claims() -> None:
-    """The references beside the transcribed tables are checked, not assumed.
+    """Every anchor identifies exactly one place in the specification.
 
-    A wrong line reference is worse than none: it sends the next reader to a
-    real line with unrelated content. If this fails, correct the line number in
-    `SPEC_ANCHORS` rather than deleting the anchor, and check whether the table
-    it points at moved in content as well as in position.
+    Two ways to fail, and they mean opposite things. **Absent** means the table
+    this file transcribes is gone or reworded, so the figures below may now be
+    transcribed from nothing: find what replaced it before touching either side.
+    **More than once** means the snippet no longer identifies a unique place, so
+    the anchor has stopped being a reference: lengthen it until it does.
+
+    Neither is fixed by deleting the anchor. The failure reports the label and
+    the line numbers found, so a reader can see which case they are in.
     """
     lines = SPEC.read_text().splitlines()
     wrong = []
-    for label, (line_number, snippet) in SPEC_ANCHORS.items():
-        actual = lines[line_number - 1] if line_number <= len(lines) else ""
-        if snippet not in actual:
-            found = [i + 1 for i, line in enumerate(lines) if snippet in line]
-            wrong.append(f"{label}: claims line {line_number}, found at {found}")
+    for label, snippet in SPEC_ANCHORS.items():
+        found = [i + 1 for i, line in enumerate(lines) if snippet in line]
+        if len(found) != 1:
+            where = f"found at {found}" if found else "not found"
+            wrong.append(f"{label}: {where}")
 
-    assert not wrong, "spec anchors have drifted:\n  " + "\n  ".join(wrong)
+    assert not wrong, "spec anchors no longer identify one place each:\n  " + (
+        "\n  ".join(wrong)
+    )
 
 
 def test_the_section_7_column_order_is_the_g10_order() -> None:
