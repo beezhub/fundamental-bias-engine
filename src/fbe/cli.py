@@ -774,6 +774,37 @@ def size(
     the rounding gap is routinely 10% or more, and the intended figure is the
     one that is never actually at risk.
 
+    The portfolio limits are checked against the journal, with no flag and no way
+    to skip the read. `fbe.risk.check_limits` can only compare against a book it
+    is given, and for as long as nothing gave it one it reported four limits as
+    passed on no evidence. So this command reads `fbe.journal.JOURNAL_PATH` at
+    call time, passes it explicitly to `fbe.journal.load`, keeps the records
+    whose ``closed_at`` is ``None``, and hands those to `check_limits` as
+    `fbe.risk.OpenPosition` views. `TradeRecord` satisfies that protocol as it
+    stands, so nothing is converted and nothing is invented. The dependency runs
+    one way: this layer reads the journal, `fbe.risk` never imports it.
+
+    What the limits block on the ticket says, and why each part is there:
+
+    * The count of open positions, the journal path, and when that file was last
+      written. A clear concurrent limit means nothing without them, because a
+      journal written up in the evening is behind the book by a whole session,
+      and only the reader knows whether they have a ticket open that is not in
+      the file yet.
+    * One line per limit, each reading clear, breached or not performed.
+      Not performed is printed as not performed. It is never folded into clear,
+      and it never blocks the ticket: today the daily-loss and drawdown limits
+      have no source at all, so refusing on absence would refuse every trade.
+      See section 4 of ``docs/risk-and-execution.md``.
+    * A breach prints as a warning on the ticket alongside the size, and does
+      not change the exit code. Issue #46 decides whether it should.
+
+    Missing and unreadable journals are different facts and print differently.
+    An absent file is a fresh install with no trades: zero open positions, path
+    named. A file that cannot be read or that holds a line `load` refuses to
+    parse means the open book is **not known**, and both position limits report
+    not performed rather than clear.
+
     Args:
         ctx: Typer context carrying the effective config.
         pair: Pair in market convention.

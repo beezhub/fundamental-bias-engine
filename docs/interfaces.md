@@ -306,12 +306,49 @@ Lots             0.004       (400 units, rounded down to the 0.001 step)
 At risk          ZAR 26.75   =  1.34% of balance
 Notional         ZAR 7,638
 
+Limits           1 open position from data/journal/trades.jsonl, written 2026-09-09 18:42 UTC
+  max_concurrent_positions  clear          1 open, limit 3
+  max_correlated_exposure   clear          USD 2.84% with this trade, limit 4.00%
+  max_daily_loss            not performed  today's realised profit and loss was not supplied
+  max_drawdown_pause        not performed  no equity peak is recorded anywhere
+
 Warnings
   Lot rounding cuts the risk by 11%. Size and R-multiples are measured on
   ZAR 26.75, not ZAR 30.00.
   If your broker's step is 0.01 lots, the smallest size it accepts is 1,000
   units, which risks ZAR 66.88 on this stop, 3.3% of balance and outside the
   plan's 1-2% band. Skip the trade rather than break the band.
+```
+
+The limits block is read from the journal on every run. There is no flag to skip
+it: `check_limits` can only compare against a book it is given, and a limit check
+run with nothing to check against used to come back clear. The command reads
+`data/journal/trades.jsonl`, keeps the records whose `closed_at` is empty, and
+prints the count, the path and the file's last write time, because a clear
+concurrent limit means nothing without them. The plan's routine allows the
+journal entry to be written in the evening, so a position opened this morning and
+not yet written is invisible to the count, and the basis is printed so the reader
+can see what the check could see.
+
+Each limit reads **clear**, **breached** or **not performed**, and not performed
+is never printed as clear. The last two limits read not performed on every run
+today, because nothing supplies the day's realised profit and loss and nothing
+records an equity peak. They are checked by hand, per section 4 of
+`docs/risk-and-execution.md`. A breach prints here as a warning and does not
+change the exit code; issue #46 decides whether it should.
+
+An absent journal and an unreadable one are different facts and print
+differently. No file is a fresh install with no trades. A file that will not
+parse means the book is not known, which is not the same as empty:
+
+```console
+$ fbe size EURUSD --entry 1.0850 --stop 1.0888
+...
+Limits           open positions not known: data/journal/trades.jsonl could not be parsed
+  max_concurrent_positions  not performed  the open book could not be read
+  max_correlated_exposure   not performed  the open book could not be read
+  max_daily_loss            not performed  today's realised profit and loss was not supplied
+  max_drawdown_pause        not performed  no equity peak is recorded anywhere
 ```
 
 Two risk figures, and the second one is the real one. `risk_amount` is what the
