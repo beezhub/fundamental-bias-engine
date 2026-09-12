@@ -22,6 +22,15 @@ ranking and the gaps, and the gaps are what `bias.py` differences into pairs.
 Everything in this module is pure. Pillars have already done the fetching and
 the economics; the scorer only weights, aggregates, penalises for age, and
 ranks.
+
+`series_loading` is the one function here that does not take part in a run. It
+answers what the model's total response to a single underlying series is, which
+is a different question from what a pillar weighs, and it lives at this layer
+because answering it needs both a pillar's sub-weights and the pillar weights in
+`ScoringConfig`. It exists because `real_policy_rate` puts a coefficient of
+minus one on ``cpi_yoy`` inside MONETARY while INFLATION loads on the same
+series positively, so no declared weight is the model's inflation response. See
+``docs/decisions/0003-publish-effective-loadings-rather-than-remove-real-policy-rate.md``.
 """
 
 from __future__ import annotations
@@ -37,6 +46,7 @@ __all__ = [
     "composite",
     "coverage",
     "dispersion",
+    "series_loading",
     "apply_staleness_penalty",
     "freshness",
 ]
@@ -237,6 +247,103 @@ def dispersion(
     """
     raise NotImplementedError(
         "fbe.scoring.dispersion is scaffolded; see docs/roadmap.md Phase 2"
+    )
+
+
+def series_loading(
+    pillar_weight: float,
+    sub_weight: float,
+    sub_indicator_sd: float,
+    blend_divisor: float,
+    universe_size: int,
+    coefficient: float = 1.0,
+) -> float:
+    """Return how far one unit of an underlying series moves a composite.
+
+    Args:
+        pillar_weight: The pillar's weight from ``ScoringConfig.weights``.
+        sub_weight: The component's sub-weight inside that pillar, from the
+            pillar's ``component_weights``.
+        sub_indicator_sd: Cross-sectional standard deviation of the component,
+            in the component's own units, from this run's stage 3.
+        blend_divisor: The pillar's divisor from `BasePillar.blend_divisor`,
+            whichever path it took. A loading computed under the ``run_local``
+            fallback is not on the same scale as one computed under the rolling
+            estimate, so quote the path alongside the figure.
+        universe_size: Number of currencies in the cross-section.
+        coefficient: The series' coefficient inside the component's
+            transformation. ``+1.0`` where the component is the series or a
+            constant offset of it, such as ``cpi_gap = cpi_yoy -
+            inflation_target``. ``-1.0`` for ``real_policy_rate =
+            policy_rate - cpi_yoy``.
+
+    Returns:
+        Composite band points per one unit of the series, in whatever unit the
+        series is published in: percentage points for ``cpi_yoy``, basis points
+        for ``yield_2y_chg_3m``. Sign convention is the engine's throughout, so
+        a positive result means a rise in the series raises the composite and is
+        currency-strengthening, and a negative result means the opposite.
+
+    Raises:
+        ValueError: If ``sub_indicator_sd`` or ``blend_divisor`` is not
+            positive, or ``universe_size`` is below 2. Each of those is a
+            cross-section that cannot be normalised, so there is no loading to
+            report. Returning zero would read as "this series does not matter",
+            which is a different statement and a false one.
+
+    The arithmetic:
+
+        ``loading = pillar_weight * sub_weight * coefficient *
+        ((n - 1) / n) / (sub_indicator_sd * blend_divisor)``
+
+    The ``(n - 1) / n`` factor is there because the normalisation is
+    cross-sectional. One currency's print moving by a unit also moves the mean
+    it is measured against, by a unit over ``n``, so its own z-score responds by
+    seven eighths of the naive amount at ``n = 8``. Omitting it overstates every
+    loading by about 14%.
+
+    There is no second such factor for the re-standardisation pass in section
+    2.3 of ``docs/scoring-spec.md``. Every component arrives at the blend
+    already centred on the cross-section, so the blend's mean is identically
+    zero and subtracting it is a no-op rather than a term with a derivative.
+
+    This is a local linearisation that holds both dispersions fixed. Both move
+    when the underlying data moves, so the figure describes the model's response
+    to a small change around one run's cross-section and not to a large one. It
+    is a property of the model, not a measurement of anything the model
+    predicts.
+
+    To get the model's total loading on a series that appears in more than one
+    pillar, call this once per appearance and sum. That total is the number a
+    reader assumes a declared weight gives them, and for ``cpi_yoy`` it does
+    not: MONETARY's ``real_policy_rate`` term carries a coefficient of minus one
+    on the same series INFLATION loads on positively. Section 3.2 of
+    ``docs/scoring-spec.md`` publishes both sides on the section 7 fixture.
+
+    """
+    if sub_indicator_sd <= 0.0:
+        raise ValueError(
+            f"sub_indicator_sd must be positive, got {sub_indicator_sd!r}; "
+            "a cross-section with no dispersion has no defined loading"
+        )
+    if blend_divisor <= 0.0:
+        raise ValueError(
+            f"blend_divisor must be positive, got {blend_divisor!r}; "
+            "a blend with no dispersion has no defined loading"
+        )
+    if universe_size < 2:
+        raise ValueError(
+            f"universe_size must be at least 2, got {universe_size!r}; "
+            "a cross-sectional z-score needs something to compare against"
+        )
+
+    own_share_of_the_move = (universe_size - 1) / universe_size
+    return (
+        pillar_weight
+        * sub_weight
+        * coefficient
+        * own_share_of_the_move
+        / (sub_indicator_sd * blend_divisor)
     )
 
 
