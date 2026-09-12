@@ -157,6 +157,19 @@ class ScoringConfig:
             PillarName.RISK: 0.10,
         }
     )
+    """Each pillar's share of the composite. Must sum to 1.0.
+
+    A weight here is a pillar's share of the blend. It is not the model's total
+    loading on any one underlying series, and the two come apart wherever a
+    series feeds more than one pillar. The live instance is headline CPI:
+    INFLATION at 0.15 loads on it positively, and MONETARY at 0.30 loads on it
+    negatively through ``real_policy_rate``, which is ``policy_rate - cpi_yoy``.
+    The two partly cancel, so the model's response to an inflation print is
+    smaller than 0.15 suggests, by roughly a fifth to a half depending on
+    whether core moved with headline. ``docs/scoring-spec.md`` section 3.2
+    publishes the figures, ``scoring.series_loading`` computes them, and ADR
+    0003 records why the opposing term was kept.
+    """
     score_clip: float = 3.0
     """Scores are clipped to +/- this before weighting, so one runaway pillar
     cannot carry a currency on its own."""
