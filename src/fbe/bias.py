@@ -32,9 +32,56 @@ __all__ = [
     "apply_filters",
     "shortlist",
     "AGREEMENT_TIE_EPSILON",
+    "BLOCKERS",
+    "UNCHECKED_SUFFIX",
     "CalendarGuard",
     "EventHorizonGuard",
 ]
+
+
+UNCHECKED_SUFFIX: str = ":unchecked"
+"""Suffix marking a blocker that records a check which did not run.
+
+A naming convention rather than a list, so the marker for a check that ran and
+failed, which ADR 0002 rule 4 requires and the calendar does not yet have, can
+be added by naming it rather than by editing every consumer. Anything carrying
+this suffix is a statement about the engine's knowledge, not about the pair.
+"""
+
+BLOCKERS: Mapping[str, bool] = {
+    "no_edge": True,
+    "cost": True,
+    "coverage": True,
+    "no_coverage": True,
+    "event": True,
+    "cost" + UNCHECKED_SUFFIX: False,
+    "event" + UNCHECKED_SUFFIX: False,
+}
+"""Every kind of blocker `apply_filters` can append, and whether it blocks.
+
+``True`` means the blocker sets ``PairBias.tradeable = False``. ``False`` means
+it is recorded and the pair stays tradeable, which is the `UNCHECKED_SUFFIX`
+case: an offline run still produces biases, and says which checks it could not
+perform.
+
+Kinds rather than literal strings, and the distinction matters for one entry.
+Six of these are emitted as the key itself. ``event`` is not: `CalendarGuard`
+returns a reason naming the event, its currency and its scheduled time, so the
+shortlist can say why an obvious setup was skipped, and `apply_filters` appends
+that reason. So a run's ``blockers`` can hold a string this mapping does not
+contain, and a consumer matching on exact equality will miss the blocked case.
+Both functions are still scaffolded and the reason's exact format is not fixed
+yet, which is why nothing here or in either renderer matches on it.
+
+This exists because the list was written out twice, here in the `apply_filters`
+docstring and in section 6 of ``docs/scoring-spec.md``, and the two had already
+drifted: the spec listed four of the seven. ``tests/test_blockers.py`` asserts
+this mapping and the spec table agree, so the next addition cannot land in one
+place only.
+
+Adding an entry here is a contract change. A renderer must show it, because a
+marker that is not rendered does not exist (ADR 0002 rule 3).
+"""
 
 
 AGREEMENT_TIE_EPSILON: float = 1e-9
@@ -367,8 +414,10 @@ def apply_filters(
         a pair blocked for three reasons is a different thing from a pair blocked
         for one, and the trader should see all three.
 
-    The filters, matching section 6 of ``docs/scoring-spec.md``. Each sets
-    ``tradeable = False`` unless noted:
+    The filters, matching section 6 of ``docs/scoring-spec.md``. `BLOCKERS` is
+    the enumeration of every string this function may append and whether each
+    one blocks; the prose below says why each exists. If the two disagree,
+    `BLOCKERS` is what the code emits and the prose is stale.
 
         ``no_edge``: direction is `Direction.NEUTRAL` or conviction is
         `Conviction.NONE`. Nothing to act on.
@@ -399,7 +448,9 @@ def apply_filters(
 
         ``event:unchecked`` and ``cost:unchecked``: recorded when the
         corresponding input was not supplied, and do not block, so an offline run
-        still produces biases.
+        still produces biases. Both renderers show these on a tradeable pair
+        rather than printing an unqualified "yes", because a marker that is not
+        rendered does not exist. See `UNCHECKED_SUFFIX` and ADR 0002 rule 3.
 
     What this function does not do. It never changes ``direction``, ``spread`` or
     ``conviction``. The model's view and the tradeability of that view are

@@ -53,11 +53,22 @@ the row currency is fundamentally stronger than the column currency.
 
 Ranked by conviction then by the width of the spread:
 
+{# The tradeable cell prints every blocker, not only the ones that blocked. A
+   tradeable pair carrying a marker reads "yes (event:unchecked)": the pair is
+   tradeable as far as the engine got, and the parenthesised part says how far
+   that was. Printing a bare "yes" there was issue #17, and it made an offline
+   run's 28 unchecked rows indistinguishable from 28 cleared ones. Nothing here
+   matches on the marker names, so a new one under ADR 0002 rule 4 renders
+   without touching this template. #}
 | Pair | Dir | Conviction | Spread | Base | Quote | Agreement | Tradeable |
 |---|---|---|---:|---:|---:|---:|---|
 {% for bias in pairs -%}
-| {{ bias.pair }} | {{ bias.direction.value }} | {{ bias.conviction.value }} | {{ '%+.2f' | format(bias.spread) }} | {{ '%+.2f' | format(bias.base_score) }} | {{ '%+.2f' | format(bias.quote_score) }} | {{ '%.0f%%' | format(bias.agreement * 100) }} | {{ 'yes' if bias.tradeable else bias.blockers | join(', ') }} |
+| {{ bias.pair }} | {{ bias.direction.value }} | {{ bias.conviction.value }} | {{ '%+.2f' | format(bias.spread) }} | {{ '%+.2f' | format(bias.base_score) }} | {{ '%+.2f' | format(bias.quote_score) }} | {{ '%.0f%%' | format(bias.agreement * 100) }} | {% if bias.tradeable %}yes{% if bias.blockers %} ({{ bias.blockers | join(', ') }}){% endif %}{% else %}{{ bias.blockers | join(', ') }}{% endif %} |
 {% endfor %}
+
+A marker in brackets beside `yes` is a check that did not run, not a reason the
+pair was rejected. `event:unchecked` on every row means the run had no calendar:
+the pairs are tradeable on fundamentals and nobody has looked at the news.
 
 ## 3. Tradeable shortlist
 
@@ -108,7 +119,7 @@ Stand aside until {{ idea.blackout_until.strftime('%Y-%m-%d %H:%M %Z') }}: a
 high-impact release touches one of the legs before then.
 {%- endif %}
 {% if idea.bias.blockers -%}
-Blockers: {{ idea.bias.blockers | join('; ') }}
+{{ 'Not checked' if idea.bias.tradeable else 'Blockers' }}: {{ idea.bias.blockers | join('; ') }}
 {%- endif %}
 {% endfor %}
 {% endif %}
