@@ -417,6 +417,10 @@ def test_an_unparseable_retry_after_falls_back_to_the_backoff(
 def test_a_minimum_interval_is_waited_between_requests(
     data_config: DataConfig, no_sleep: list[float]
 ) -> None:
+    """The wait is the interval minus however long the previous request took,
+    which is real wall-clock time and varies by runner, so the assertion is a
+    band rather than a figure. It is still tight enough that halving the
+    quantity, or reading it from the wrong field, falls outside."""
     respx.get(f"{BASE_URL}{PATH}").mock(return_value=httpx.Response(200, json=PAYLOAD))
 
     class _Spaced(_Source):
@@ -429,7 +433,7 @@ def test_a_minimum_interval_is_waited_between_requests(
     source._request(PATH, PARAMS)
 
     assert len(no_sleep) == 1
-    assert no_sleep[0] == pytest.approx(0.5, abs=1e-2)
+    assert 0.5 * 0.75 < no_sleep[0] <= 0.5
 
 
 @respx.mock
@@ -446,7 +450,7 @@ def test_the_request_budget_is_waited_out_when_exhausted(
         source._request(PATH, PARAMS)
 
     assert len(no_sleep) == 1
-    assert no_sleep[0] == pytest.approx(60.0, abs=1e-2)
+    assert 60.0 * 0.75 < no_sleep[0] <= 60.0
 
 
 @respx.mock
@@ -1100,7 +1104,7 @@ def test_the_throttle_applies_between_retries_not_just_between_requests(
     # second. A throttle outside the loop would leave only the backoff.
     assert len(no_sleep) == 2
     assert no_sleep[0] == 1.0
-    assert no_sleep[1] == pytest.approx(0.25, abs=1e-2)
+    assert 0.25 * 0.75 < no_sleep[1] <= 0.25
 
 
 @respx.mock
@@ -1119,4 +1123,5 @@ def test_the_window_length_is_read_from_the_rate_limit(
     source._request(PATH, PARAMS)
 
     assert len(no_sleep) == 1
-    assert no_sleep[0] == pytest.approx(120.0, abs=1e-2)
+    # A window hardcoded to the default 60.0 lands near 59.9, below the band.
+    assert 120.0 * 0.75 < no_sleep[0] <= 120.0
