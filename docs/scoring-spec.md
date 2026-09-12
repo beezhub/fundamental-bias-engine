@@ -717,18 +717,47 @@ pillar is arguing hard in the opposite direction.
 
 ## 6. Hard filters
 
-These set `PairBias.tradeable = False` and append a string to
-`PairBias.blockers`. They are hard: a `HIGH` conviction pair that trips one does
-not reach the shortlist. Conviction is a statement about the model's belief;
-tradeability is a statement about whether the trade can be executed sensibly, and
-the two are kept separate so a blocked pair still shows its reasoning.
+These append a string to `PairBias.blockers`, and most of them set
+`PairBias.tradeable = False`. The blocking ones are hard: a `HIGH` conviction
+pair that trips one does not reach the shortlist. Conviction is a statement about
+the model's belief; tradeability is a statement about whether the trade can be
+executed sensibly, and the two are kept separate so a blocked pair still shows
+its reasoning.
 
-| Blocker | Test | Rationale |
-| --- | --- | --- |
-| `cost` | `cost_ratio > 0.05` | Dealing cost eats too much of the plausible move |
-| `event` | The intended execution time falls inside a blackout window for either leg | The plan says do not trade around high-impact news |
-| `coverage` | `min(coverage_base, coverage_quote) < 0.60` | Under 60% of pillar weight, the composite is a guess |
-| `no_coverage` | Either leg has `coverage == 0.0` | No composite exists |
+The table below is every kind of blocker the engine emits. `fbe.bias.BLOCKERS`
+is the same list in code, and `tests/test_blockers.py` asserts the two match, so
+a blocker cannot be added to one and not the other.
+
+Kinds, not literal strings, because of one row. Six are emitted as the name
+given here. `event` is emitted as the reason `CalendarGuard` returns, which
+names the event, its currency and its scheduled time, so that a reader sees
+"EUR CPI at 09:00 UTC" rather than a bare flag. Anything reading `blockers`
+should therefore not match on exact equality for that row. The reason's format
+is not settled: both `apply_filters` and the guard are still scaffolded.
+
+| Blocker | Blocks | Test | Rationale |
+| --- | --- | --- | --- |
+| `cost` | yes | `cost_ratio > 0.05` | Dealing cost eats too much of the plausible move |
+| `event` | yes | The intended execution time falls inside a blackout window for either leg | The plan says do not trade around high-impact news |
+| `coverage` | yes | `min(coverage_base, coverage_quote) < 0.60` | Under 60% of pillar weight, the composite is a guess |
+| `no_coverage` | yes | Either leg has `coverage == 0.0` | No composite exists |
+| `no_edge` | yes | `direction` is `NEUTRAL` or `conviction` is `NONE` | Nothing to act on, whatever the spread |
+| `cost:unchecked` | no | No `cost_ratio` was supplied | The check did not run, so its silence is not an all-clear |
+| `event:unchecked` | no | No `CalendarGuard` was supplied | The same, for the calendar |
+
+**The two `:unchecked` markers do not block.** An offline run has no calendar and
+no cost input, and refusing to produce biases would throw away the fundamentals,
+which are the slow half of the model and still valid. So the run continues and
+records what it could not check. The suffix is a convention rather than a closed
+pair of names: a check that ran and failed, which ADR 0002 rule 4 requires and
+the calendar does not yet have, gets its own name under the same rule.
+
+Both renderers must show a marker on a tradeable pair rather than printing an
+unqualified "yes". A marker that reaches `PairBias` and stops there protects
+nobody, which is ADR 0002 rule 3 and was the defect in issue #17: an offline run
+showed `yes` in the tradeable column of all 28 rows, and a calendar that was
+never consulted looked exactly like a calendar that was consulted and found
+nothing.
 
 **Cost ratio.** Compare the round-trip dealing cost against the move the pair can
 plausibly produce over the bias horizon:

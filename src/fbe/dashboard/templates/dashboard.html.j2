@@ -331,7 +331,15 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
         {{ idea.blackout_until.strftime('%H:%M %Z on %d %b') }}.
       </p>
       {% endif %}
+      {#- A shortlisted idea is tradeable, so anything in blockers here is a
+          check that did not run rather than a reason to stand aside. Labelling
+          the list off idea.bias.tradeable rather than assuming it keeps the
+          heading honest if the shortlist rule ever changes. Unlabelled, the two
+          cases read identically, which is issue #17 on this surface. -#}
       {% if idea.bias.blockers %}
+      <p class="meta">
+        {{ 'Not checked on this run' if idea.bias.tradeable else 'Blocked' }}:
+      </p>
       <ul class="notes">
         {% for blocker in idea.bias.blockers %}<li>{{ blocker }}</li>{% endfor %}
       </ul>
