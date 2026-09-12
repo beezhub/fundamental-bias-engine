@@ -140,6 +140,19 @@ described below. On the rolling path a pillar lands near 1.0 and is left free to
 be louder or quieter on a day when its own components agree or disagree more
 than usual, which is the point of taking the divisor from history.
 
+**What the guarantee covers, and what it does not.** It is a guarantee about
+pillars. Every pillar reaches the aggregator on the same scale, so a pillar's
+declared weight is the share of the composite that pillar actually carries. It is
+not a guarantee about any underlying series. A series that appears in two pillars
+carries a loading from each, and where those loadings have opposite signs they
+partly cancel, so the model's total response to that series is neither pillar's
+declared weight. That happens once in the current model: `real_policy_rate` is
+`policy_rate - cpi_yoy`, which places a coefficient of minus one on headline CPI
+inside MONETARY, while INFLATION loads on the same series positively. Sections
+3.1 and 3.2 publish both loadings and the resulting cancellation, and
+`scoring.series_loading` computes them. ADR 0003 records why the term was kept
+rather than removed.
+
 Section 7.1 shows the size of the effect on real numbers: the blended MONETARY
 column has a standard deviation of 0.7001 and is scaled up by a factor of 1.43,
 while the two-component INFLATION column has a standard deviation of 0.9711 and
@@ -280,15 +293,26 @@ the level.
 | 2-year yield change, 3 months | `yield_2y_chg_3m` | Momentum, basis points | Rising is positive | 0.25 |
 | Real policy rate | `real_policy_rate` | `policy_rate - cpi_yoy`, percent | Higher is positive | 0.15 |
 
+**Effective loading on headline CPI.** `real_policy_rate` is
+`policy_rate - cpi_yoy`, so this pillar carries a coefficient of minus one on a
+series it does not name in the table above. On the section 7 fixture's own
+dispersions, the loading is **-0.0501** composite points per percentage point of
+headline CPI. It is the opposite sign to INFLATION's loading on the same series,
+and section 3.2 carries the full picture and the cancellation it produces.
+`scoring.series_loading` computes the figure and
+`tests/test_effective_loadings.py` pins it.
+
 **Sources.** FRED for US series and for those non-US yields it carries; a manual
 CSV under `data/manual` for the remainder, refreshed weekly. The registry of
 indicator keys to source series is owned by `docs/data-sources.md`.
 
-**Known failure mode.** The pillar is blind to the difference between a yield
-rising because policy is expected to tighten and a yield rising because the
-market is demanding a risk premium on that country's debt. In a fiscal or
-credibility event the two look identical in the data and mean opposite things for
-the currency. It is also blind to the level effect at the extremes: a move from
+**Known failure mode.** The pillar is partly an inflation pillar, with the
+opposite sign to INFLATION, and its sub-weight table does not show it. Beyond
+that it is blind to the difference between a yield rising because policy is
+expected to tighten and a yield rising because the market is demanding a risk
+premium on that country's debt. In a fiscal or credibility event the two look
+identical in the data and mean opposite things for the currency. It is also
+blind to the level effect at the extremes: a move from
 0.10% to 0.35% is a larger regime change than a move from 4.50% to 4.75%, and the
 model treats them as roughly equal.
 
@@ -327,6 +351,43 @@ real rate. It is a partial fix and it is listed as an open question in section 1
 Core carries the larger sub-weight because it is the series central banks act on.
 Headline is retained because it drives household expectations and, through them,
 the political pressure on the bank.
+
+**Effective loading, which is not 0.15.** The weight above is this pillar's share
+of the composite. It is not the model's response to an inflation print, because
+MONETARY's `real_policy_rate` term is `policy_rate - cpi_yoy` and therefore
+carries a coefficient of minus one on the same headline series. Per percentage
+point of headline CPI, on the section 7 fixture's own cross-sectional
+dispersions:
+
+| Term | Composite loading |
+| --- | --- |
+| INFLATION, headline sub-indicator | +0.1008 |
+| INFLATION, core sub-indicator, if core moves one for one with headline | +0.1666 |
+| MONETARY, real policy rate | -0.0501 |
+
+Two cases, and which one applies depends on the shape of the print:
+
+| Case | Same-sign loading | Net loading | Cancelled |
+| --- | --- | --- | --- |
+| Headline moves alone | +0.1008 | +0.0508 | 49.7% |
+| Headline and core move together | +0.2674 | +0.2174 | 18.7% |
+
+Read that as: the model's response to inflation is between roughly a fifth and a
+half smaller than the 0.15 weight implies, and a headline-only shock is the case
+where it is halved.
+
+Every column above is computed from unrounded loadings and displayed to four
+places, so subtracting the displayed figures differs in the last digit:
+`0.1008 - 0.0501` reads 0.0507 against the 0.0508 published. The same figures
+appear in ADR 0003 and in `docs/answers/framework.md` Q1 and are the same
+numbers, not a second set.
+
+This is arithmetic from the section 7 fixture, not a measurement of anything the
+model predicts. Every standard deviation in it is recomputed each run, so the
+figures drift; the direction and the rough magnitude do not.
+`scoring.series_loading` computes them, `tests/test_effective_loadings.py`
+reproduces all five figures from the fixture, and ADR 0003 records why the
+opposing term was kept rather than removed, reweighted or replaced.
 
 **Known failure mode.** The sign assumption inverts in a stagflationary
 situation, where inflation is high, growth is collapsing, and the market prices
@@ -1311,6 +1372,14 @@ An implementer should assert, at minimum:
   conviction tier than the same pair with fresh data.
 - The worked example in section 7 reproduces to two decimal places. It is a
   fixture, not an illustration.
+- The effective loadings on headline CPI in sections 3.1 and 3.2 reproduce from
+  the section 7 dispersions, to the precision published, and the sub-weights and
+  pillar weights they are computed from are read from the pillars and from
+  `ScoringConfig` rather than restated. A sub-weight edit that moves the
+  cancellation must fail the build, since that is the way the opposing loading
+  went unnoticed in the first place. Assert an equality, not a tolerance: the
+  arithmetic is exact given the fixture, and a tolerance wide enough to absorb a
+  sub-weight edit is wide enough to hide the defect.
 
 ## 10. Open questions
 
@@ -1414,9 +1483,13 @@ which was wrong as stated and is replaced by the three findings below.
 
   This matters beyond the gate. Section 2.3 exists so that the section 3 weights
   are the whole of the model's opinion about relative importance. The `-cpi_yoy`
-  inside `real_policy_rate` quietly breaks that guarantee for the one pillar it
-  touches. **Recorded here as a finding and deliberately not acted on**, to be
-  ruled on together with item 2, as this item already says it should be.
+  inside `real_policy_rate` breaks that guarantee for the one pillar it touches.
+  **Ruled on in ADR 0003**: the term stays, no sub-weight and no `ScoringConfig`
+  value changes, and the loadings are published in sections 3.1 and 3.2 with a
+  test that reproduces them. Section 2.3 now states that its guarantee is per
+  pillar and does not extend to a series appearing in two pillars with opposing
+  signs. The choice between this term and the gate is still open and still
+  belongs with item 2.
 
 **On the base sign and the credibility conditioning.** The base sign is supported
 by published work on the FX market in general: Clarida and Waldman, studying
