@@ -15,6 +15,15 @@ come from `DataConfig.calendar_blackout_before_min` and
 An event on either leg of a pair blacks out the pair: a EUR release moves
 EURUSD whether or not the dollar has anything scheduled.
 
+Whether a moment is inside a blackout window is decided by
+`fbe.calendar_guard.is_blacked_out`, not by this class. This source's job ends
+at producing `events` and, once wired up, a `fbe.calendar_guard.CalendarCoverage`
+naming how far those events reach and whether the fetch that produced them
+succeeded. A rate-limited export or a Friday run holding only the current week
+must be visible as `CalendarCoverage.fetch_ok = False` or a short
+`covers_through`, not as a bare `True`/`False` blackout flag that reads a
+failed or partial fetch the same as a genuinely clear one.
+
 The feed
 --------
 ``https://nfs.faireconomy.media/ff_calendar_thisweek.json``. Verified live:
@@ -338,27 +347,10 @@ class CalendarSource(BaseDataSource):
             "see docs/roadmap.md Phase 4"
         )
 
-    def is_blackout(
-        self,
-        pair: str,
-        at: datetime,
-        events: Sequence[CalendarEvent],
-    ) -> bool:
-        """Say whether a pair is inside a blackout window at a given moment.
-
-        Args:
-            pair: Six-character pair, e.g. ``"EURUSD"``.
-            at: The moment to test, timezone-aware.
-            events: Events from `events`.
-
-        Returns:
-            True when either leg of the pair has a qualifying event inside its
-            window. Checking both legs is the whole point: the plan names
-            EUR/USD, GBP/USD and USD/JPY, and every one of those carries two
-            economies' release schedules.
-
-        """
-        raise NotImplementedError(
-            "fbe.datasources.calendar.CalendarSource.is_blackout is scaffolded; "
-            "see docs/roadmap.md Phase 4"
-        )
+    # Whether a pair is inside a blackout window at a given moment is answered
+    # by fbe.calendar_guard.is_blacked_out, which returns three outcomes
+    # (blocked, clear, unknown) rather than the bare bool this class used to
+    # return here. A bool cannot represent "the fetch that produced these
+    # events failed" or "this cache does not reach that far", both of which
+    # this class can now report through CalendarCoverage, so the check itself
+    # does not belong on this class a second time. See issue #43.

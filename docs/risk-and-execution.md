@@ -280,6 +280,17 @@ FOMC minutes and ECB accounts, geopolitical events and summits. Feeds mislabel.
 An unscheduled ECB remark tagged medium impact still moves a pair forty pips.
 The keyword match catches those.
 
+**Clear and unknown are different answers, and only one of them is clear.**
+`is_blacked_out` can return three things: blocked, clear, or unknown. Unknown
+means the calendar it was given does not reach the moment being checked at
+all, most often because a fetch failed or a cached week does not extend to
+today, and it is not a quieter version of clear. Before this distinction
+existed, both cases returned the same value, `(False, None)`, so a broken
+scrape and a genuinely quiet morning were indistinguishable on the page. The
+pre-trade checklist below only lets the news box be ticked on a real clear
+answer; on unknown, it says to check the calendar by hand and to write down
+that the guard could not.
+
 ### Holding through an event is a different decision
 
 Entering into a window and holding through one are not the same choice, and the
@@ -435,13 +446,24 @@ Run this before every ticket. It takes about two minutes.
 
 - [ ] Pair is on today's shortlist with a direction and a conviction.
 - [ ] Conviction is not NONE.
-- [ ] `tradeable` is true and `blockers` is empty.
+- [ ] `tradeable` is true, and any strings in `blockers` are `:unchecked` or
+      `:unknown` markers only, not a real block. Read every one of them: a
+      tradeable pair can still carry `event:unknown`, and that is exactly the
+      case the News section below exists to catch.
 - [ ] Spread score is meaningful, not a rounding difference between two flat
       currencies.
 
 **News**
 
-- [ ] `is_blacked_out` is false for the pair, right now.
+- [ ] `is_blacked_out` returns clear, `(False, None)`, for the pair, right now.
+      This box may only be ticked on that exact answer.
+- [ ] If `is_blacked_out` returns unknown, `(None, reason)`, this box stays
+      unticked regardless of anything else on the page. Unknown means the
+      guard tried to check and could not, most often because the calendar
+      fetch failed or the cached week does not reach today; it is not a
+      quieter version of clear. Check the calendar by hand for **both** legs
+      before doing anything else, and write in the journal that the guard
+      could not check and why, using the reason it gave.
 - [ ] No high-impact event on **either** leg within the next few hours that would
       catch the trade mid-flight.
 - [ ] If something is scheduled, note `blackout_until` and decide now what

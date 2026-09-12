@@ -728,12 +728,16 @@ The table below is every kind of blocker the engine emits. `fbe.bias.BLOCKERS`
 is the same list in code, and `tests/test_blockers.py` asserts the two match, so
 a blocker cannot be added to one and not the other.
 
-Kinds, not literal strings, because of one row. Six are emitted as the name
-given here. `event` is emitted as the reason `CalendarGuard` returns, which
-names the event, its currency and its scheduled time, so that a reader sees
-"EUR CPI at 09:00 UTC" rather than a bare flag. Anything reading `blockers`
-should therefore not match on exact equality for that row. The reason's format
-is not settled: both `apply_filters` and the guard are still scaffolded.
+Kinds, not literal strings, because of two rows. Six of the eight are emitted
+as the name given here. `event` is emitted as the reason `CalendarGuard`
+returns, which names the event, its currency and its scheduled time, so that a
+reader sees "EUR CPI at 09:00 UTC" rather than a bare flag. `event:unknown` is
+emitted the same way, as `"event:unknown: <reason>"`, where the reason names
+why the guard could not check: a failed calendar fetch, a cached week that
+ends before the run's date, or a date beyond the horizon of the data supplied.
+Anything reading `blockers` should therefore not match on exact equality for
+either of those two rows. Neither reason's format is settled: `apply_filters`
+and the guard are both still scaffolded.
 
 | Blocker | Blocks | Test | Rationale |
 | --- | --- | --- | --- |
@@ -744,13 +748,26 @@ is not settled: both `apply_filters` and the guard are still scaffolded.
 | `no_edge` | yes | `direction` is `NEUTRAL` or `conviction` is `NONE` | Nothing to act on, whatever the spread |
 | `cost:unchecked` | no | No `cost_ratio` was supplied | The check did not run, so its silence is not an all-clear |
 | `event:unchecked` | no | No `CalendarGuard` was supplied | The same, for the calendar |
+| `event:unknown` | no | A `CalendarGuard` was supplied and could not determine either leg's status | A check that ran and failed is a different fact from a check that never ran, and the trader's response differs |
 
-**The two `:unchecked` markers do not block.** An offline run has no calendar and
-no cost input, and refusing to produce biases would throw away the fundamentals,
-which are the slow half of the model and still valid. So the run continues and
-records what it could not check. The suffix is a convention rather than a closed
-pair of names: a check that ran and failed, which ADR 0002 rule 4 requires and
-the calendar does not yet have, gets its own name under the same rule.
+**The two `:unchecked` markers do not block, and neither does `event:unknown`.**
+An offline run has no calendar and no cost input, and refusing to produce biases
+would throw away the fundamentals, which are the slow half of the model and
+still valid. So the run continues and records what it could not check. A guard
+that was supplied and tried and failed is the same principle applied to a
+different cause: refusing every pair on one bad fetch would cost a full trading
+day over an outage that may resolve on the next run. The suffix is a convention
+rather than a closed pair of names: `event:unknown` is that convention's second
+use, added under `UNKNOWN_SUFFIX` for exactly the case ADR 0002 rule 4
+anticipated, a check that ran and failed getting its own name rather than
+sharing `:unchecked` with a check that never ran at all.
+
+`event:unknown` not blocking is provisional, not settled. Whether unknown
+calendar coverage should instead refuse the pair, for some or all currencies,
+is open on issue #24 and is decided by the child of #41 that consumes this
+marker. What is settled here is only that the marker exists and is
+distinguishable, which is issue #43; the fail direction is a separate decision
+built on top of it.
 
 Both renderers must show a marker on a tradeable pair rather than printing an
 unqualified "yes". A marker that reaches `PairBias` and stops there protects
