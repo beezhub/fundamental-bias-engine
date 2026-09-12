@@ -16,11 +16,21 @@ All datetimes in this module are timezone-aware and UTC. Naive datetimes are
 rejected rather than assumed to be UTC or local: a calendar that quietly treats
 14:30 South African time as 14:30 UTC misses the NFP window by two hours, which
 is the entire window plus change.
+
+A calendar can fail as well as report. `CalendarCoverage` and `coverage_gap`
+exist because a bare `Sequence[CalendarEvent]` cannot say whether it was ever
+fetched: an empty sequence from a genuinely quiet week and an empty sequence
+from a feed that returned "Request Denied" are the same value, and
+`docs/decisions/0002-representing-not-known.md` rule 4 requires the two to be
+told apart. `is_blacked_out` therefore answers blocked, clear, or unknown, and
+`(False, None)` is never returned for a moment the supplied data does not
+cover.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
@@ -31,6 +41,9 @@ __all__ = [
     "HIGH_IMPACT_KEYWORDS",
     "TIGHTEN_BUFFER_R",
     "OpenPositionAction",
+    "CoverageGap",
+    "CalendarCoverage",
+    "coverage_gap",
     "is_high_impact",
     "blackout_windows",
     "is_blacked_out",
@@ -242,13 +255,133 @@ def blackout_windows(
     )
 
 
+class CoverageGap(StrEnum):
+    """Why `CalendarCoverage` cannot vouch for the moment it was asked about.
+
+    Three answers rather than one, because each calls for a different response
+    from the trader, not just a different word on the page.
+
+    Attributes:
+        FETCH_FAILED: The most recent fetch attempt errored and there is no
+            cached week to fall back on. Nothing to reason from at all; check
+            the calendar by hand before trading either leg.
+        STALE_CACHE: The most recent fetch attempt errored, but an earlier
+            successful fetch's coverage is being reused. The data is probably
+            still accurate, since a scheduled release rarely moves once
+            published, and it mainly needs a refresh when one becomes
+            convenient rather than an immediate manual check.
+        BEYOND_HORIZON: The most recent fetch succeeded and its coverage still
+            ends before the moment asked about. Not a fault: the feed
+            (`docs/data-sources.md`) publishes one week at a time by design, so
+            every Friday run is beyond horizon for the following Monday until
+            it is refetched. No amount of retrying helps; only time does.
+
+    """
+
+    FETCH_FAILED = "fetch_failed"
+    STALE_CACHE = "stale_cache"
+    BEYOND_HORIZON = "beyond_horizon"
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarCoverage:
+    """The calendar handed to the guard, with its own honesty attached.
+
+    Replaces a bare `Sequence[CalendarEvent]` everywhere the guard has to
+    decide whether a moment is covered. An empty sequence cannot say which of
+    two very different situations produced it: `docs/data-sources.md` records
+    both a genuinely quiet week with nothing scheduled, and an export that hit
+    the publisher's rate limit and came back as a "Request Denied" page, which
+    the parser is required to treat as an error rather than as an empty week.
+    `events` alone gives `is_blacked_out` no way to tell those apart, which is
+    exactly the defect issue #43 removes.
+
+    Attributes:
+        events: Whatever the source produced. Meaningful only when `fetch_ok`
+            is `True`. A failed fetch should carry an empty tuple here, and a
+            caller must check `fetch_ok` before reading `events`, not after,
+            or a failure sitting on top of a stale cache reads as an empty
+            week rather than as a fetch that failed.
+        covers_through: The latest moment, in UTC, that this data can vouch
+            for. A currency with no matching event before this time is
+            genuinely clear up to it. `None` means there is no usable coverage
+            at all: the state after a first-ever fetch fails with no cached
+            week underneath it.
+        fetch_ok: Whether the most recent fetch attempt for this run
+            succeeded. Defaults to `True` so a caller that never touches this
+            field, because its source never fails, does not accidentally claim
+            a failure it did not have.
+        fetch_error: Why the fetch failed, carried through to the report and
+            the journal. `None` when `fetch_ok` is `True`.
+
+    """
+
+    events: Sequence[CalendarEvent]
+    covers_through: datetime | None
+    fetch_ok: bool = True
+    fetch_error: str | None = None
+
+
+def coverage_gap(
+    calendar: CalendarCoverage,
+    when: datetime,
+) -> tuple[CoverageGap, str] | None:
+    """Say why `calendar` cannot vouch for `when`, or that it can.
+
+    `is_blacked_out` runs this before it looks at a single event, on each leg,
+    because a blocked or clear answer is only honest once the data is known to
+    reach `when` at all. Any future function in this module that decides
+    blocked-or-clear should run this first too, rather than re-deriving the
+    same three categories a second way.
+
+    Args:
+        calendar: The coverage supplied to the guard.
+        when: The moment being checked, timezone-aware UTC.
+
+    Returns:
+        `None` when `calendar.covers_through` is at or after `when`, the only
+        condition under which BLOCKED or CLEAR is an honest answer for it.
+        Otherwise a `(CoverageGap, reason)` pair. The reason names a concrete
+        time or error, not just the category, so it can be shown on the report
+        rather than the trader having to look the category up:
+
+            `CoverageGap.FETCH_FAILED`: `calendar.fetch_ok` is `False` and
+            `calendar.covers_through` is `None`.
+
+            `CoverageGap.STALE_CACHE`: `calendar.fetch_ok` is `False` and
+            `calendar.covers_through` is not `None`, naming the time that
+            older coverage ends.
+
+            `CoverageGap.BEYOND_HORIZON`: `calendar.fetch_ok` is `True` but
+            `calendar.covers_through` is still short of `when`, naming the
+            time the fresh coverage ends. The Friday-cache-queried-for-Monday
+            case is this one.
+
+    Raises:
+        ValueError: If `when` is naive.
+
+    """
+    raise NotImplementedError(
+        "fbe.calendar_guard.coverage_gap is scaffolded; see docs/roadmap.md Phase 4"
+    )
+
+
 def is_blacked_out(
     pair: str,
     when: datetime,
-    events: Sequence[CalendarEvent],
+    calendar: CalendarCoverage,
     config: DataConfig,
-) -> tuple[bool, str | None]:
-    """Whether a NEW entry in ``pair`` is blocked at ``when``, and why.
+) -> tuple[bool | None, str | None]:
+    """Whether a NEW entry in ``pair`` is blocked at ``when``, clear, or unknown.
+
+    Three answers, and ``(False, None)`` must never stand in for the third.
+    Before `CalendarCoverage` existed, this function took a bare
+    ``Sequence[CalendarEvent]`` and returned ``(False, None)`` whenever nothing
+    in it covered ``when``, which a genuinely clear calendar, a failed fetch
+    and a stale Friday cache all produce identically. ``calendar`` is what
+    makes the difference visible: `coverage_gap` is checked against ``when``
+    on both legs before a single event is inspected, because a blocked or
+    clear answer is only honest once the data is known to reach that far.
 
     A pair is blocked when EITHER leg has a high-impact event whose window
     contains ``when``. Both legs matter because a currency pair is a ratio and
@@ -269,11 +402,19 @@ def is_blacked_out(
     Args:
         pair: Six-character pair, e.g. ``"EURUSD"``.
         when: Proposed entry time, timezone-aware UTC.
-        events: Calendar events covering at least the surrounding window.
+        calendar: The coverage available for both legs. `coverage_gap` decides
+            per leg whether it reaches ``when`` at all before this function
+            considers a single event on either one.
         config: Supplies the blackout minutes.
 
     Returns:
-        ``(True, reason)`` when blocked, ``(False, None)`` when clear.
+        ``(True, reason)`` when blocked. ``(False, None)`` when the data
+        covers ``when`` for both legs and neither carries a qualifying event:
+        genuinely clear, and the only outcome the pre-trade checklist's news
+        box may be ticked on. ``(None, reason)`` when `coverage_gap` reports a
+        gap on either leg: the guard could not determine an answer, ``reason``
+        names why using `CoverageGap`'s categories, and this must not be read
+        as clear.
 
     Raises:
         ValueError: If ``when`` is naive or ``pair`` is malformed.
@@ -314,6 +455,16 @@ def next_clear_time(
 
     Raises:
         ValueError: If ``after`` is naive.
+
+    This function's ``None`` and `is_blacked_out`'s ``(None, reason)`` describe
+    the same gap and must not describe it two different ways. Both mean "the
+    data does not reach far enough to answer", and this function has meant
+    that since before `is_blacked_out` grew a matching third outcome. It still
+    takes a bare ``Sequence[CalendarEvent]`` rather than a `CalendarCoverage`,
+    so unlike `is_blacked_out` it cannot distinguish *why* the search ran out,
+    only that it did; a caller holding a `CalendarCoverage` should read
+    `coverage_gap` for the reason and treat this function's ``None`` as
+    confirmation, not as a second source of truth.
 
     """
     raise NotImplementedError(

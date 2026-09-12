@@ -1258,11 +1258,22 @@ fall back to the FRED equity refs, which are monthly.
 **Calendar returns "Request Denied"**
 The export rate limit. Stop refetching, use the cached copy, and check nothing
 is polling on a timer. Treat this as an error, never as an empty week: an empty
-calendar clears every blackout.
+calendar clears every blackout. `calendar_guard.is_blacked_out` reports this as
+unknown, not clear: `CalendarCoverage.fetch_ok = False`, and if a cached week is
+available underneath it, `CoverageGap.STALE_CACHE`; if there is nothing cached
+at all, `CoverageGap.FETCH_FAILED`. `apply_filters` records `event:unknown`
+naming the failure and leaves the pair tradeable, per issue #43. It does not
+block on its own; whether it should is open on issue #24.
 
 **Calendar shows nothing for Monday on a Friday run**
 Expected. The feed covers the current week only and there is no next-week feed.
-Fetch early in the week.
+Fetch early in the week. This is `CoverageGap.BEYOND_HORIZON`, not a failure:
+the fetch succeeded and `CalendarCoverage.covers_through` simply ends before
+Monday. `is_blacked_out` reports unknown for a Monday query made from this
+data, the same as a failed fetch would, because a pair being genuinely clear
+and a pair nobody could check for must not read the same on the page. The
+difference is in the reason string, not in whether the pair is marked
+tradeable.
 
 **COT data is over a week old**
 Expected and structural. Positions are snapped Tuesday and published Friday

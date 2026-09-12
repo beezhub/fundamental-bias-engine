@@ -1,12 +1,17 @@
 """The blocker vocabulary, and the two renderers that have to show all of it.
 
-`PairBias.blockers` carries two different kinds of string. Most of them say why
-a pair was rejected. Two say that a check did not run, and those do not set
-``tradeable``. Both renderers used to print `blockers` only on the untradeable
-branch, so an offline run, which is any run without a calendar guard, showed an
-unqualified "yes" on all 28 rows while `event:unchecked` sat on every one of
-them. A calendar nobody consulted looked exactly like a calendar consulted and
-found clear, which is the thing `apply_filters` says it exists to prevent.
+`PairBias.blockers` carries three different kinds of string. Most of them say
+why a pair was rejected. Two say that a check did not run at all, and one says
+a check ran and could not tell; none of those three set ``tradeable``. Both
+renderers used to print `blockers` only on the untradeable branch, so an
+offline run, which is any run without a calendar guard, showed an unqualified
+"yes" on all 28 rows while `event:unchecked` sat on every one of them. A
+calendar nobody consulted looked exactly like a calendar consulted and found
+clear, which is the thing `apply_filters` says it exists to prevent. A
+calendar the guard tried and failed to consult is the same defect wearing a
+different cause, which is what `event:unknown` exists to separate out
+(issue #43): a broken fetch and a genuinely quiet week must not look alike
+either.
 
 The templates are rendered here directly, with a hand-built context and a Jinja
 `Environment` pointed at the real template directory. `report.render_report` and
@@ -28,7 +33,7 @@ import pytest
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 import fbe
-from fbe.bias import BLOCKERS, UNCHECKED_SUFFIX
+from fbe.bias import BLOCKERS, UNCHECKED_SUFFIX, UNKNOWN_SUFFIX
 from fbe.types import Conviction, Direction, PairBias
 
 PACKAGE_ROOT = Path(fbe.__file__).resolve().parent
@@ -137,14 +142,32 @@ def test_the_spec_table_and_the_code_enumeration_match() -> None:
     assert _spec_blocker_table() == dict(BLOCKERS)
 
 
-def test_only_the_unchecked_markers_are_non_blocking() -> None:
+def test_only_the_suffixed_markers_are_non_blocking() -> None:
     """The suffix is the rule, not a hardcoded pair of names.
 
     A renderer or a reader can decide what a marker means from its name alone,
     which is what lets ADR 0002 rule 4 add one without editing consumers.
+    `UNKNOWN_SUFFIX` is the second name added under that rule, for a check
+    that ran and could not tell, distinct from `UNCHECKED_SUFFIX`'s check that
+    did not run at all.
     """
     for blocker, blocks in BLOCKERS.items():
-        assert blocks is not blocker.endswith(UNCHECKED_SUFFIX), blocker
+        is_provisional = blocker.endswith(UNCHECKED_SUFFIX) or blocker.endswith(
+            UNKNOWN_SUFFIX
+        )
+        assert blocks is not is_provisional, blocker
+
+
+def test_unknown_suffix_is_distinct_from_unchecked() -> None:
+    """Two different failures need two different names (ADR 0002 rule 4).
+
+    A guard that never ran and a guard that ran and could not tell call for
+    different responses from the trader, so the marker must say which one
+    happened rather than collapsing both into `event:unchecked`.
+    """
+    assert UNKNOWN_SUFFIX != UNCHECKED_SUFFIX
+    assert "event" + UNKNOWN_SUFFIX in BLOCKERS
+    assert "event" + UNKNOWN_SUFFIX != "event" + UNCHECKED_SUFFIX
 
 
 # --- the Markdown report ----------------------------------------------------
@@ -168,6 +191,30 @@ def test_several_unchecked_markers_all_show() -> None:
 
     assert _tradeable_cell(rendered, "EURUSD") == (
         "yes (cost:unchecked, event:unchecked)"
+    )
+
+
+def test_an_unknown_marker_shows_on_a_tradeable_pair_and_carries_its_reason() -> None:
+    """Issue #43. A guard that ran and failed is not the same as no guard at all.
+
+    `event:unknown` mirrors `event:unchecked` in that it does not block, but it
+    is a different marker with a different cause, and the reason travels with
+    it the same way the `event` blocker's reason does.
+    """
+    reason = "event:unknown: fetch failed for EUR"
+    rendered = _render_report((_bias(blockers=(reason,)),))
+
+    assert _tradeable_cell(rendered, "EURUSD") == f"yes ({reason})"
+
+
+def test_unknown_and_unchecked_markers_both_show_together() -> None:
+    """A run whose cost input is missing and whose calendar fetch failed."""
+    rendered = _render_report(
+        (_bias(blockers=("cost:unchecked", "event:unknown: fetch failed for EUR")),)
+    )
+
+    assert _tradeable_cell(rendered, "EURUSD") == (
+        "yes (cost:unchecked, event:unknown: fetch failed for EUR)"
     )
 
 
@@ -312,6 +359,20 @@ def test_the_dashboard_still_says_blocked_for_a_real_blocker() -> None:
     rendered = _render_dashboard(_idea(False, ("coverage",)))
 
     assert _blocker_label(rendered) == "Blocked"
+
+
+def test_the_dashboard_says_an_unknown_marker_was_not_checked_too() -> None:
+    """A guard that ran and failed reads the same as no guard, on this label.
+
+    Both are "we could not tell you", which is what the label promises; the
+    reason each one carries is what tells them apart, and that reason is
+    still shown in the list itself.
+    """
+    reason = "event:unknown: fetch failed for EUR"
+    rendered = _render_dashboard(_idea(True, (reason,)))
+
+    assert _blocker_label(rendered) == "Not checked on this run"
+    assert f"<li>{reason}</li>" in rendered
 
 
 # --- the renderers are still stubs, and this pull request left them that way -

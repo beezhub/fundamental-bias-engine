@@ -34,18 +34,36 @@ __all__ = [
     "AGREEMENT_TIE_EPSILON",
     "BLOCKERS",
     "UNCHECKED_SUFFIX",
+    "UNKNOWN_SUFFIX",
     "CalendarGuard",
     "EventHorizonGuard",
 ]
 
 
 UNCHECKED_SUFFIX: str = ":unchecked"
-"""Suffix marking a blocker that records a check which did not run.
+"""Suffix marking a blocker that records a check which did not run at all.
 
-A naming convention rather than a list, so the marker for a check that ran and
-failed, which ADR 0002 rule 4 requires and the calendar does not yet have, can
-be added by naming it rather than by editing every consumer. Anything carrying
-this suffix is a statement about the engine's knowledge, not about the pair.
+A naming convention rather than a list, so a marker for a different kind of
+absence can be added by naming it rather than by editing every consumer.
+Anything carrying this suffix is a statement about the engine's knowledge, not
+about the pair. Paired with `UNKNOWN_SUFFIX` for the other half of that
+statement: no guard supplied, versus a guard supplied that could not tell.
+"""
+
+UNKNOWN_SUFFIX: str = ":unknown"
+"""Suffix marking a blocker that records a check which ran and could not tell.
+
+`UNCHECKED_SUFFIX` was already documented, before this suffix existed, as "a
+naming convention rather than a list, so the marker for a check that ran and
+failed... can be added by naming it rather than editing every consumer"
+(ADR 0002 rule 4). This is that marker. It is a second suffix and not a reuse
+of `UNCHECKED_SUFFIX`, because the two failures call for different responses:
+no guard supplied is a configuration choice, usually a backtest or an offline
+run, and nothing is wrong. A guard supplied that could not check, which is
+`calendar_guard.is_blacked_out` reporting `(None, reason)` because the
+calendar fetch failed or the cached week does not reach the date in question,
+is not a choice, and a trader reading the report needs to be able to tell
+which one happened from the marker's name alone.
 """
 
 BLOCKERS: Mapping[str, bool] = {
@@ -56,22 +74,32 @@ BLOCKERS: Mapping[str, bool] = {
     "event": True,
     "cost" + UNCHECKED_SUFFIX: False,
     "event" + UNCHECKED_SUFFIX: False,
+    "event" + UNKNOWN_SUFFIX: False,
 }
 """Every kind of blocker `apply_filters` can append, and whether it blocks.
 
 ``True`` means the blocker sets ``PairBias.tradeable = False``. ``False`` means
-it is recorded and the pair stays tradeable, which is the `UNCHECKED_SUFFIX`
-case: an offline run still produces biases, and says which checks it could not
-perform.
+it is recorded and the pair stays tradeable, which is both the
+`UNCHECKED_SUFFIX` and `UNKNOWN_SUFFIX` cases: an offline run, and a run whose
+calendar fetch failed, both still produce biases, and both say which checks
+they could not perform or complete. Whether unknown calendar coverage should
+keep this pair tradeable at all is not settled: `apply_filters` marks this
+provisional pending issue #24 and the child of #41 that consumes its ruling.
 
-Kinds rather than literal strings, and the distinction matters for one entry.
-Six of these are emitted as the key itself. ``event`` is not: `CalendarGuard`
+Kinds rather than literal strings, and the distinction matters for two entries.
+Six of these eight are emitted as the key itself. ``event`` is not: `CalendarGuard`
 returns a reason naming the event, its currency and its scheduled time, so the
 shortlist can say why an obvious setup was skipped, and `apply_filters` appends
-that reason. So a run's ``blockers`` can hold a string this mapping does not
-contain, and a consumer matching on exact equality will miss the blocked case.
-Both functions are still scaffolded and the reason's exact format is not fixed
-yet, which is why nothing here or in either renderer matches on it.
+that reason as ``"event: <reason>"``. ``event:unknown`` is not either: it carries
+why the guard could not check, as ``"event:unknown: <reason>"``, from
+`calendar_guard.CoverageGap`'s categories. So a run's ``blockers`` can hold
+strings this mapping does not contain verbatim, and a consumer matching on
+exact equality will miss both the blocked case and the unknown case; matching
+on `str.startswith` against the mapping's keys, or on `UNCHECKED_SUFFIX` and
+`UNKNOWN_SUFFIX` for the two provisional kinds, is what a consumer should do
+instead. Both `apply_filters` and the guard are still scaffolded and the
+reasons' exact formats are not fixed yet, which is why nothing here or in
+either renderer matches on them.
 
 This exists because the list was written out twice, here in the `apply_filters`
 docstring and in section 6 of ``docs/scoring-spec.md``, and the two had already
@@ -104,13 +132,32 @@ _CONVICTION_RANK: Mapping[Conviction, int] = {
 spelled out here rather than relied on through declaration order.
 """
 
-CalendarGuard = Callable[[str, date], Sequence[str]]
+CalendarGuard = Callable[[str, date], tuple[Sequence[str], str | None]]
 """Injected hook reporting hard calendar blockers for one currency on one date.
 
-Returns zero or more blocker strings for high-impact releases inside the
-execution blackout window, which is ``DataConfig.calendar_blackout_before_min``
-(30) and ``calendar_blackout_after_min`` (60) either side of the release. Inside
-that window there is no order, full stop.
+Returns ``(blockers, unknown_reason)``.
+
+``blockers`` is zero or more reason strings for high-impact releases inside
+the execution blackout window, which is
+``DataConfig.calendar_blackout_before_min`` (30) and
+``calendar_blackout_after_min`` (60) either side of the release. Inside that
+window there is no order, full stop.
+
+``unknown_reason`` is ``None`` when the guard checked and ``blockers`` is the
+final answer. It is a reason string, never ``None``, when the guard could not
+determine whether this currency has a blocker on this date at all: a failed
+calendar fetch, a cached week that ends before the date, or a date beyond the
+horizon of the data supplied, in `calendar_guard.CoverageGap`'s own words. A
+guard reporting ``unknown_reason`` must return an empty ``blockers``, so the
+two fields are never in tension about whether this currency is clear.
+
+This tuple exists because a bare ``Sequence[str]`` cannot say "could not
+check" distinctly from "no blockers": an empty sequence from a guard that
+tried and failed to reach the calendar and an empty sequence from a guard that
+checked and found a genuinely quiet day were the same value, which is the
+ambiguity issue #43 removes. `apply_filters` reads ``unknown_reason`` and
+appends ``"event:unknown: <reason>"`` rather than treating the currency as
+clear.
 """
 
 EventHorizonGuard = Callable[[str, date], bool]
@@ -402,7 +449,13 @@ def apply_filters(
         calendar_guard: Optional `CalendarGuard` for the execution blackout
             window. When ``None`` the check is skipped and ``"event:unchecked"``
             is appended to ``blockers`` without setting ``tradeable`` to
-            ``False``. Silence and an all-clear must not look the same.
+            ``False``. Silence and an all-clear must not look the same. When a
+            guard is supplied but reports ``unknown_reason`` for either leg,
+            ``"event:unknown: <reason>"`` is appended instead, also without
+            setting ``tradeable`` to ``False``; a guard that tried and failed
+            is a different fact from no guard at all, and the two get
+            different names, but neither is currently allowed to block a pair
+            on its own. See `UNKNOWN_SUFFIX`.
         cost_ratio: Round-trip dealing cost as a share of the expected move over
             the bias horizon, supplied by the execution layer, which owns the ATR
             and the broker's spread table. ``None`` records
@@ -440,11 +493,11 @@ def apply_filters(
 
         ``no_coverage``: either leg has ``coverage == 0.0``. No composite exists.
 
-        ``event``: whatever `CalendarGuard` returns for either leg, for the
-        execution blackout window only. A pair has two legs, so an FOMC evening
-        blocks every dollar pair and not only the one the trader was watching.
-        The wider 24-hour test is not here: it is a conviction cap in
-        `conviction_for`, and the two are kept apart deliberately.
+        ``event``: whatever `CalendarGuard` returns as ``blockers`` for either
+        leg, for the execution blackout window only. A pair has two legs, so an
+        FOMC evening blocks every dollar pair and not only the one the trader
+        was watching. The wider 24-hour test is not here: it is a conviction
+        cap in `conviction_for`, and the two are kept apart deliberately.
 
         ``event:unchecked`` and ``cost:unchecked``: recorded when the
         corresponding input was not supplied, and do not block, so an offline run
@@ -452,11 +505,34 @@ def apply_filters(
         rather than printing an unqualified "yes", because a marker that is not
         rendered does not exist. See `UNCHECKED_SUFFIX` and ADR 0002 rule 3.
 
+        ``event:unknown``: recorded when `CalendarGuard` was supplied and
+        reported ``unknown_reason`` for either leg, meaning it tried to check
+        and could not, most commonly because the calendar fetch behind it
+        failed or a cached week does not reach `asof`. Distinct from
+        ``event:unchecked``, which means no guard ran at all: ADR 0002 rule 4
+        requires a check that ran and failed to be told apart from a check
+        that never ran, because a trader's response differs, check by hand
+        immediately versus nothing is wrong. Does not currently block, for the
+        same reason ``event:unchecked`` does not: refusing every pair on a
+        single failed fetch would cost a full trading day over an outage that
+        may resolve on the next run. **Provisional.** Whether unknown calendar
+        coverage should instead set ``tradeable = False``, for some or all
+        currencies, is open on issue #24 and is the child of #41 that consumes
+        this marker rather than the marker's own concern. This function's
+        behaviour today is the same non-blocking default `event:unchecked`
+        already documents, chosen because it is the only option that does not
+        pre-empt #24 by changing behaviour that already shipped, not because
+        it is the final answer. See `UNKNOWN_SUFFIX`.
+
     What this function does not do. It never changes ``direction``, ``spread`` or
     ``conviction``. The model's view and the tradeability of that view are
     separate facts, and a report that quietly neutralised a blocked pair would
     lose the record of what the engine actually thought, which is the only thing
-    a later review can learn from.
+    a later review can learn from. It also never chooses an entry time: the
+    blackout windows this function reads decide whether a pair is `tradeable`
+    at all, and when it is, the trendline or channel touch that starts the
+    trade stays with the trader's own technical rules, exactly as it does for
+    every other pair.
 
     """
     raise NotImplementedError(
