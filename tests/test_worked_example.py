@@ -15,8 +15,8 @@ figure adjusted until an assertion passes: a fixture quietly fitted to the code
 is worse than no fixture, because it then certifies whatever the code does.
 
 Every number here is transcribed from section 7 and from nowhere else, with its
-subsection beside it and the line number as of this commit. Nothing is computed
-and then written down.
+subsection beside it and a label into `SPEC_ANCHORS`, which carries the line and
+is itself checked. Nothing is computed and then written down.
 
 Two kinds of assertion live here, and they fail for different reasons.
 
@@ -47,6 +47,7 @@ import inspect
 import math
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -81,13 +82,70 @@ def _skip_if_scaffolded(*functions: Callable[..., object]) -> None:
             pytest.skip(f"{function.__qualname__} is still scaffolded")
 
 
+SPEC = Path(__file__).resolve().parents[1] / "docs" / "scoring-spec.md"
+
+SPEC_ANCHORS: Mapping[str, tuple[int, str]] = {
+    "7.1 raw inputs": (808, "| Currency | `policy_rate` % |"),
+    "7.1 z-scores": (823, "| `policy_rate` | 2.7250 | 1.5236 |"),
+    "7.1 sub-weights": (
+        829,
+        "Blending with sub-weights 0.15 / 0.25 / 0.20 / 0.25 / 0.15",
+    ),
+    "7.1 usd blend": (831, "0.15*(+1.165) + 0.25*(+1.104)"),
+    "7.1 blend sd": (848, "sd(blend) = 0.7001"),
+    "7.1 monetary scores": (863, "| MONETARY score |"),
+    "7.2 targets": (873, "Targets come from `CurrencyMeta.inflation_target`"),
+    "7.2 deviations": (876, "| Currency | `cpi_yoy` | headline deviation |"),
+    "7.2 stats": (893, "Headline deviation: mean +0.4500, sd 0.5362."),
+    "7.2 sub-weights": (894, "Blending 0.40 headline and 0.60 core"),
+    "7.3 growth inputs": (922, "| Currency | `gdp_yoy` | `pmi_composite` |"),
+    "7.3 scores": (946, "| Pillar | `sd(blend)` | scaling |"),
+    "7.4 positioning": (957, "| Currency | net non-commercial, % of OI |"),
+    "7.4 jpy": (972, "computed as `-(-1) * 1.5 * (2.40 - 2.00) = +0.60`"),
+    "7.4 saturation": (
+        975,
+        "No currency in this run reaches the contrarian saturation",
+    ),
+    "7.5 components": (984, "dd_component  = clip(-6.5 / 10.0)"),
+    "7.5 risk scores": (990, "| Currency | `risk_beta` | RISK score |"),
+    "7.6 matrix": (1003, "| Currency | MON 0.30 | INF 0.15 |"),
+    "7.6 nzd staleness": (
+        1028,
+        "**NZD composite**, demonstrating the staleness discount.",
+    ),
+    "7.6 nzd dispersion": (1048, "**NZD dispersion**, with `w_tilde(p)"),
+    "7.6 no demotion": (1060, "Under the 1.20 threshold, so no dispersion demotion."),
+    "7.7 nzdusd": (1070, "**NZDUSD**"),
+    "7.7 nzdusd agreement": (1087, "considered = 0.300+0.150+0.150+0.100+0.075"),
+    "7.7 nzdusd cost": (1100, "expected_move = 62 * sqrt(10)"),
+    "7.7 usdjpy": (1114, "**USDJPY**"),
+    "7.7 eurcad": (1159, "For a clean NONE in the same run, take EURCAD"),
+    "7.7 nzdjpy": (1164, "**NZDJPY**"),
+    "7.7 nzdjpy cost": (1172, "so `expected_move = 88 * 3.1623 = 278.28`"),
+    "7.8 shortlist": (1200, "Shortlist for the run: NZDUSD short at MEDIUM"),
+}
+"""Where each transcribed table lives, as ``{label: (line, text on that line)}``.
+
+The issue asked for a line reference beside every constant. A bare line number
+is the wrong tool: section 6 grew by 29 lines the same morning this file was
+written and every reference in it silently became wrong, pointing at real lines
+with different content, which is worse than pointing at nothing.
+
+So the references are labels into this table, the table carries the line number
+and a snippet of what should be on it, and
+``test_every_spec_anchor_points_at_what_it_claims`` checks all thirty. A line
+that drifts fails with the label and the true line number, which is a one-line
+correction rather than a hunt.
+"""
+
+
 # --- transcribed from section 7 ---------------------------------------------
 
 UNIVERSE: tuple[str, ...] = ("USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD")
 """Column order of every table in section 7. Not `universe.G10`'s order by luck:
 ``test_the_section_7_column_order_is_the_g10_order`` pins that they agree."""
 
-# 7.1, raw inputs, spec line 779.
+# 7.1, raw inputs. Anchor "7.1 raw inputs".
 MONETARY_RAW: Mapping[str, tuple[float, ...]] = {
     "policy_rate": (4.50, 2.50, 4.25, 0.50, 0.25, 3.00, 4.10, 2.70),
     "yield_2y": (4.10, 2.20, 4.05, 0.85, 0.30, 2.85, 3.95, 2.50),
@@ -96,7 +154,8 @@ MONETARY_RAW: Mapping[str, tuple[float, ...]] = {
     "real_policy_rate": (1.60, 0.40, 1.05, -2.30, -0.35, 0.80, 0.70, 0.80),
 }
 
-# 7.1, cross-sectional statistics, spec line 794. ``{key: (mean, sd)}``.
+# 7.1, cross-sectional statistics. Anchor "7.1 z-scores".
+# ``{key: (mean, sd)}``.
 MONETARY_STATS: Mapping[str, tuple[float, float]] = {
     "policy_rate": (2.7250, 1.5236),
     "yield_2y": (2.6000, 1.3583),
@@ -105,7 +164,7 @@ MONETARY_STATS: Mapping[str, tuple[float, float]] = {
     "real_policy_rate": (0.3375, 1.1233),
 }
 
-# 7.1, component z-scores, spec line 794. Published to three decimals.
+# 7.1, component z-scores, published to three decimals. Anchor "7.1 z-scores".
 MONETARY_Z: Mapping[str, tuple[float, ...]] = {
     "policy_rate": (1.165, -0.148, 1.001, -1.460, -1.624, 0.180, 0.902, -0.016),
     "yield_2y": (1.104, -0.294, 1.068, -1.288, -1.693, 0.184, 0.994, -0.074),
@@ -114,13 +173,13 @@ MONETARY_Z: Mapping[str, tuple[float, ...]] = {
     "real_policy_rate": (1.124, 0.056, 0.634, -2.348, -0.612, 0.412, 0.323, 0.412),
 }
 
-# 7.1, spec line 819. The run_local divisor, this run's own sd(blend).
+# 7.1, the run_local divisor, this run's own sd(blend). Anchor "7.1 blend sd".
 MONETARY_BLEND_SD = 0.7001
 
-# 7.1, the worked USD blend, spec lines 802 to 806.
+# 7.1, the worked USD blend. Anchor "7.1 usd blend".
 USD_MONETARY_BLEND = 1.13595
 
-# 7.2, targets, spec line 844. Also `CurrencyMeta.inflation_target`.
+# 7.2, targets, also `CurrencyMeta.inflation_target`. Anchor "7.2 targets".
 INFLATION_TARGETS: Mapping[str, float] = {
     "USD": 2.0,
     "EUR": 2.0,
@@ -132,7 +191,7 @@ INFLATION_TARGETS: Mapping[str, float] = {
     "NZD": 2.0,
 }
 
-# 7.2, deviations, spec line 847. ``{currency: (headline, core)}``.
+# 7.2, deviations. Anchor "7.2 deviations". ``{currency: (headline, core)}``.
 INFLATION_DEVIATIONS: Mapping[str, tuple[float, float]] = {
     "USD": (0.9, 1.1),
     "EUR": (0.1, 0.4),
@@ -144,14 +203,14 @@ INFLATION_DEVIATIONS: Mapping[str, tuple[float, float]] = {
     "NZD": (-0.1, 0.3),
 }
 
-# 7.2, spec line 864.
+# 7.2, deviation statistics. Anchor "7.2 stats".
 INFLATION_STATS: Mapping[str, tuple[float, float]] = {
     "headline": (0.4500, 0.5362),
     "core": (0.6250, 0.4867),
 }
 INFLATION_BLEND_SD = 0.9711
 
-# 7.3, growth inputs, spec line 893.
+# 7.3, growth inputs. Anchor "7.3 growth inputs".
 GROWTH_RAW: Mapping[str, tuple[float, ...]] = {
     "gdp_yoy": (2.4, 0.9, 1.1, 0.6, 1.3, 1.6, 1.8, 0.1),
     "pmi_composite": (53.1, 49.8, 51.2, 50.4, 48.9, 50.9, 51.8, 47.6),
@@ -159,7 +218,7 @@ GROWTH_RAW: Mapping[str, tuple[float, ...]] = {
     "retail_sales_yoy": (3.2, 1.1, 1.9, 1.4, 0.8, 2.2, 2.6, 0.2),
 }
 
-# 7.3, spec line 917. ``{pillar: sd(blend)}``.
+# 7.3, per-pillar blend spreads. Anchor "7.3 scores". ``{pillar: sd(blend)}``.
 BLEND_SD: Mapping[str, float] = {
     "MONETARY": MONETARY_BLEND_SD,
     "INFLATION": INFLATION_BLEND_SD,
@@ -168,7 +227,8 @@ BLEND_SD: Mapping[str, float] = {
     "EXTERNAL": 0.7669,
 }
 
-# 7.4, spec line 928. ``{currency: (net_pct_oi, mean_3y, sd_3y, p, f_of_p)}``.
+# 7.4. Anchor "7.4 positioning".
+# ``{currency: (net_pct_oi, mean_3y, sd_3y, p, f_of_p)}``.
 POSITIONING: Mapping[str, tuple[float, float, float, float, float]] = {
     "USD": (26.2, 9.8, 8.63, 1.90, 0.10),
     "EUR": (-2.4, 3.6, 10.00, -0.60, -0.60),
@@ -180,12 +240,12 @@ POSITIONING: Mapping[str, tuple[float, float, float, float, float]] = {
     "NZD": (18.4, 4.1, 11.00, 1.30, 0.70),
 }
 
-# 7.5, spec lines 952 to 959.
+# 7.5. Anchor "7.5 components".
 EQUITY_DRAWDOWN_PCT = -6.5
 VOL_SIGMA = 1.2
 RISK_R = -0.625
 
-# 7.5, spec line 961. ``{currency: (risk_beta, risk_score)}``.
+# 7.5. Anchor "7.5 risk scores". ``{currency: (risk_beta, risk_score)}``.
 RISK_SCORES: Mapping[str, tuple[float, float]] = {
     "USD": (-0.5, 0.62),
     "EUR": (0.1, -0.12),
@@ -197,7 +257,7 @@ RISK_SCORES: Mapping[str, tuple[float, float]] = {
     "NZD": (0.8, -1.00),
 }
 
-# 7.6, the pillar matrix, spec line 974. Column order matches PILLAR_ORDER.
+# 7.6, the pillar matrix. Anchor "7.6 matrix". Columns match PILLAR_ORDER.
 PILLAR_ORDER: tuple[PillarName, ...] = (
     PillarName.MONETARY,
     PillarName.INFLATION,
@@ -219,7 +279,8 @@ MATRIX: Mapping[str, tuple[float, ...]] = {
     "NZD": (-0.87, -0.84, -1.77, -1.93, -1.06, 0.70, -1.00),
 }
 
-# 7.6, spec line 974. ``{currency: (coverage, composite, dispersion, rank)}``.
+# 7.6, the same table's right-hand columns. Anchor "7.6 matrix".
+# ``{currency: (coverage, composite, dispersion, rank)}``.
 CURRENCY_RESULTS: Mapping[str, tuple[float, float, float, int]] = {
     "USD": (1.000, 0.9420, 0.7756, 1),
     "AUD": (1.000, 0.6925, 0.6607, 2),
@@ -231,15 +292,15 @@ CURRENCY_RESULTS: Mapping[str, tuple[float, float, float, int]] = {
     "NZD": (0.950, -0.9774, 0.7056, 8),
 }
 
-# 7.6, spec lines 996 to 1010. New Zealand's external data is 30 days old, so
+# 7.6, anchor "7.6 nzd staleness". New Zealand's external data is 30 days old, so
 # that pillar's effective weight is discounted and coverage falls below 1.0.
 NZD_STALE_PILLAR = PillarName.EXTERNAL
 NZD_STALE_DAYS = 30
 NZD_STALE_PHI = 0.500
 NZD_STALE_EFFECTIVE_WEIGHT = 0.050
 
-# 7.7, the three pairs carried to a conclusion, spec lines 1041, 1085 and 1135,
-# plus the clean NONE at spec line 1129.
+# 7.7, the three pairs carried to a conclusion, anchors "7.7 nzdusd",
+# "7.7 usdjpy" and "7.7 nzdjpy", plus the clean NONE at "7.7 eurcad".
 # ``{pair: (spread, direction, conviction, agreement)}``.
 PAIRS: Mapping[str, tuple[float, Direction, Conviction, float | None]] = {
     "NZDUSD": (-1.9194, Direction.SHORT, Conviction.MEDIUM, 0.8974),
@@ -248,12 +309,13 @@ PAIRS: Mapping[str, tuple[float, Direction, Conviction, float | None]] = {
     "EURCAD": (0.1635, Direction.NEUTRAL, Conviction.NONE, None),
 }
 
-# 7.7, spec lines 1044 to 1060. NZDUSD agreement, the only one worked in full.
+# 7.7, NZDUSD agreement, the only one worked in full.
+# Anchor "7.7 nzdusd agreement".
 NZDUSD_CONSIDERED = 0.975
 NZDUSD_AGREEING = 0.875
 NZDUSD_EXTERNAL_PAIR_WEIGHT = 0.075
 
-# 7.7, cost filter, spec lines 1070 to 1075 and 1145 to 1148.
+# 7.7, cost filter. Anchors "7.7 nzdusd cost" and "7.7 nzdjpy cost".
 # ``{pair: (spread_pips, atr_20d_pips, cost_ratio)}``.
 COSTS: Mapping[str, tuple[float, float, float]] = {
     "NZDUSD": (1.8, 62.0, 0.0092),
@@ -313,6 +375,25 @@ def _direction(spread: float, config: ScoringConfig) -> Direction:
 # --- the example against itself and against the committed config -------------
 
 
+def test_every_spec_anchor_points_at_what_it_claims() -> None:
+    """The references beside the transcribed tables are checked, not assumed.
+
+    A wrong line reference is worse than none: it sends the next reader to a
+    real line with unrelated content. If this fails, correct the line number in
+    `SPEC_ANCHORS` rather than deleting the anchor, and check whether the table
+    it points at moved in content as well as in position.
+    """
+    lines = SPEC.read_text().splitlines()
+    wrong = []
+    for label, (line_number, snippet) in SPEC_ANCHORS.items():
+        actual = lines[line_number - 1] if line_number <= len(lines) else ""
+        if snippet not in actual:
+            found = [i + 1 for i, line in enumerate(lines) if snippet in line]
+            wrong.append(f"{label}: claims line {line_number}, found at {found}")
+
+    assert not wrong, "spec anchors have drifted:\n  " + "\n  ".join(wrong)
+
+
 def test_the_section_7_column_order_is_the_g10_order() -> None:
     """Every table is read positionally, so the two orders must agree."""
     assert UNIVERSE == G10
@@ -347,7 +428,7 @@ def test_the_matrix_header_weights_are_the_configured_weights() -> None:
 @pytest.mark.parametrize(
     ("pillar", "sub_weights"),
     [
-        # 7.1 blends with 0.15 / 0.25 / 0.20 / 0.25 / 0.15, spec line 800.
+        # 7.1 blends with 0.15 / 0.25 / 0.20 / 0.25 / 0.15, anchor "7.1 sub-weights".
         (
             MonetaryPillar(),
             {
@@ -358,7 +439,7 @@ def test_the_matrix_header_weights_are_the_configured_weights() -> None:
                 "real_policy_rate": 0.15,
             },
         ),
-        # 7.2 blends 0.40 headline and 0.60 core, spec line 866.
+        # 7.2 blends 0.40 headline and 0.60 core, anchor "7.2 sub-weights".
         (InflationPillar(), {"cpi_gap": 0.40, "core_gap": 0.60}),
         # 7.3 uses the section 3.3 sub-weights.
         (
@@ -403,7 +484,7 @@ def test_the_monetary_z_scores_follow_from_the_raw_inputs(indicator: str) -> Non
 
     The z-scores are published to three decimals and the statistics to four, so
     the tolerances are half a unit in the last published place. If a raw input
-    in the table at spec line 779 is edited without recomputing the table at
+    in the table at anchor "7.1 raw inputs" is edited without recomputing
     line 794, this is what notices.
     """
     mean, sd, z = _population_z(MONETARY_RAW[indicator])
@@ -418,7 +499,7 @@ def test_the_monetary_z_scores_follow_from_the_raw_inputs(indicator: str) -> Non
 
 
 def test_the_usd_monetary_blend_is_the_published_working() -> None:
-    """Section 7.1 works this one by hand at spec lines 802 to 806."""
+    """Section 7.1 works this one by hand, at anchor "7.1 usd blend"."""
     weights = {
         "policy_rate": 0.15,
         "yield_2y": 0.25,
@@ -510,7 +591,7 @@ def test_the_positioning_responses_reproduce_through_the_pillar() -> None:
 
 
 def test_the_jpy_contrarian_case_is_still_past_the_boundary() -> None:
-    """Section 7.4 calls JPY "the one job it exists to do", at spec line 940.
+    """Section 7.4 calls JPY "the one job it exists to do", at anchor "7.4 jpy".
 
     The passage turns on `p = -2.40` sitting past the contrarian boundary of
     2.00 and short of the saturation point of 3.33, and on the sign of `f(p)`
@@ -528,7 +609,7 @@ def test_the_jpy_contrarian_case_is_still_past_the_boundary() -> None:
 
 
 def test_no_currency_in_the_run_reaches_positioning_saturation() -> None:
-    """Stated at spec line 946, and load-bearing for the column above.
+    """Stated at anchor "7.4 saturation", and load-bearing for the column above.
 
     If any reading were past saturation the published `f(p)` would be capped and
     the worked values would not follow from the formula the example quotes.
@@ -537,7 +618,7 @@ def test_no_currency_in_the_run_reaches_positioning_saturation() -> None:
 
 
 def test_the_risk_construction_follows_from_the_two_components() -> None:
-    """Section 7.5, spec lines 952 to 970. `risk_beta` comes from the universe.
+    """Section 7.5. `risk_beta` comes from the universe.
 
     Rounded rather than compared with a tolerance, because four of the eight sit
     exactly on a half: USD computes to +0.6250 and publishes as +0.62, not
@@ -560,7 +641,7 @@ def test_the_risk_construction_follows_from_the_two_components() -> None:
 
 
 def test_the_inflation_targets_are_the_universe_metadata() -> None:
-    """Section 7.2 quotes `CurrencyMeta.inflation_target` at spec line 844.
+    """Section 7.2 quotes `CurrencyMeta.inflation_target`, anchor "7.2 targets".
 
     The deviations in the table below it are computed from these, so a target
     changing in `fbe.universe` invalidates the whole of 7.2.
@@ -570,7 +651,7 @@ def test_the_inflation_targets_are_the_universe_metadata() -> None:
 
 
 def test_the_inflation_deviation_statistics_follow_from_the_deviations() -> None:
-    """Section 7.2, spec line 864."""
+    """Section 7.2, anchor "7.2 stats"."""
     headline = [INFLATION_DEVIATIONS[c][0] for c in UNIVERSE]
     core = [INFLATION_DEVIATIONS[c][1] for c in UNIVERSE]
 
@@ -618,7 +699,7 @@ def test_every_published_composite_follows_from_the_pillar_matrix() -> None:
 
 
 def test_the_nzd_staleness_discount_is_the_section_4_1_ramp() -> None:
-    """Section 7.6, spec lines 996 to 1000, against the configured ramp."""
+    """Section 7.6, anchor "7.6 nzd staleness", against the configured ramp."""
     config = ScoringConfig()
     phi = (config.max_staleness_days - NZD_STALE_DAYS) / (
         config.max_staleness_days - config.staleness_full_days
@@ -632,7 +713,7 @@ def test_the_nzd_staleness_discount_is_the_section_4_1_ramp() -> None:
 
 
 def test_every_published_dispersion_follows_from_the_pillar_matrix() -> None:
-    """Section 4.4's coverage-weighted spread, worked for NZD at spec line 1018."""
+    """Section 4.4's coverage-weighted spread, worked at "7.6 nzd dispersion"."""
     config = ScoringConfig()
     for currency, scores in MATRIX.items():
         weights = _effective_weights(currency, config)
@@ -649,7 +730,7 @@ def test_every_published_dispersion_follows_from_the_pillar_matrix() -> None:
 
 
 def test_no_dispersion_in_the_run_triggers_a_demotion() -> None:
-    """Stated at spec line 1032 for NZD. True of the whole matrix, so pinned."""
+    """Stated at "7.6 no demotion" for NZD. True of the matrix, so pinned."""
     config = ScoringConfig()
     for currency, (_, _, dispersion, _) in CURRENCY_RESULTS.items():
         assert dispersion < config.max_dispersion, currency
@@ -679,7 +760,7 @@ def test_every_published_pair_reproduces(pair: str) -> None:
 
 
 def test_the_nzdusd_agreement_is_the_published_working() -> None:
-    """Section 7.7, spec lines 1055 to 1060.
+    """Section 7.7, anchor "7.7 nzdusd agreement".
 
     The EXTERNAL pair weight is the mean of the two legs' effective weights,
     which is where New Zealand's stale pillar reaches the pair layer.
@@ -708,7 +789,7 @@ def test_no_published_agreement_triggers_a_conviction_cap() -> None:
 
 
 def test_the_published_cost_ratios_pass_the_filter() -> None:
-    """Section 6's cost filter, worked at spec lines 1070 and 1145."""
+    """Section 6's cost filter, worked at the two cost anchors."""
     config = ScoringConfig()
     for pair, (spread_pips, atr, published) in COSTS.items():
         expected_move = atr * math.sqrt(config.horizon_days)
@@ -770,7 +851,7 @@ def test_direction_and_conviction_never_disagree_across_all_28_pairs() -> None:
 
 
 def test_the_three_pairs_the_example_carries_all_clear_the_neutral_band() -> None:
-    """Section 7.8's shortlist, spec line 1171, against the full cross-section.
+    """Section 7.8's shortlist, anchor "7.8 shortlist", against all 28 pairs.
 
     Section 7.7 works three crosses because they are the three followed
     currencies, and 7.8 presents those three as the run's shortlist. Extending
