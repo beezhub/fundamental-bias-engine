@@ -65,7 +65,12 @@ def score_currencies(
         1. Call ``pillar.compute`` once per pillar over the whole universe. The
            full observation set goes to every pillar because normalisation is
            cross-sectional and no pillar can judge one currency in isolation.
-        2. Apply `apply_staleness_penalty` to each `PillarScore`.
+        2. Apply `apply_staleness_penalty` to each `PillarScore`, passing the
+           pillar's own `BasePillar.pillar_freshness` as the factor. The pillar
+           computes it because the per-indicator allowance is a registry fact and
+           the indicator keys are the pillar's, not the scorer's. Omitting it
+           falls back to the default ramp, which reads every series as if it
+           published monthly.
         3. Build each currency's `composite`, `coverage` and `dispersion`.
         4. Rank by composite, descending, so rank 1 is the strongest currency.
 
@@ -342,44 +347,83 @@ def series_loading(
     )
 
 
-def freshness(staleness_days: int, config: ScoringConfig) -> float:
-    """Return the freshness factor a pillar's weight is multiplied by.
+def freshness(
+    staleness_days: int,
+    config: ScoringConfig,
+    allowance_days: int | None = None,
+) -> float:
+    """Return the freshness factor a weight is multiplied by, in ``[0.0, 1.0]``.
 
     Args:
-        staleness_days: Age in days of the newest input the pillar used, from
-            ``PillarScore.staleness_days``.
-        config: Scoring configuration supplying ``staleness_full_days`` and
-            ``max_staleness_days``.
+        staleness_days: Age in days of the input being judged, measured from
+            ``Observation.period``, which is the first day of the span the
+            figure describes.
+        config: Scoring configuration supplying the ramp's shape,
+            ``staleness_full_days / max_staleness_days``.
+        allowance_days: How old this particular series may be and still count,
+            from ``IndicatorSpec.max_staleness_days``. ``None`` means the caller
+            has no per-series allowance and the ramp falls back to
+            ``ScoringConfig.max_staleness_days``, which is the right answer only
+            for a series that publishes about as often as the default assumes.
 
     Returns:
-        A factor in ``[0.0, 1.0]``. With the defaults of 15 and 45 days:
+        The factor, where ``S`` is the allowance and ``s0 = S * (
+        staleness_full_days / max_staleness_days)``, one third of ``S`` on the
+        shipped defaults:
 
-            ``s <= 15``: ``1.0``. Most G10 monthly macro is published inside
-            fifteen days of the period it describes, so data this age is simply
-            data, and there is nothing to penalise.
+            ``s <= s0``: ``1.0``. The series is inside its own schedule.
 
-            ``15 < s <= 45``: ``(45 - s) / 30``, falling linearly to zero. Past
-            fifteen days the release is late relative to its own schedule, which
-            usually means a source outage rather than a quiet month.
+            ``s0 < s <= S``: ``(S - s) / (S - s0)``, falling linearly to zero as
+            the release runs later and later.
 
-            ``s > 45``: ``0.0``. The pillar stops counting toward coverage
-            entirely.
+            ``s > S``: ``0.0``. Past the allowance the input stops counting
+            toward coverage.
+
+    Raises:
+        ValueError: If ``allowance_days`` is not positive. A zero or negative
+            allowance is a configuration error, not a stale series, and
+            returning 0.0 for it would hide the difference.
+
+    Why the ramp is scaled to the series rather than measured in absolute days.
+    ``period`` is the first day of the span a figure describes, so a punctual
+    monthly print is 30 to 45 days old the day it publishes and a punctual
+    quarterly print is about 120 days old. One 45-day ramp for everything gave
+    thirteen of the seventeen registered indicators a factor of 0.0 at the age
+    their own frequency says they publish at, which is every monthly and
+    quarterly series in the model. Scaling by the allowance the registry already
+    derives from each series' release calendar means a series that has just been
+    published counts as fresh and a series that has missed its release does not.
+
+    The allowance also keeps this function and `registry.coverage_report` from
+    giving two answers about the same series. ``SeriesRef.stale_on`` compares
+    ``age > allowance``, so the ramp reaches zero on the last day the registry
+    still counts a ref as usable: the scoring side is never the more permissive
+    of the two.
 
     Why a ramp rather than a cliff. A hard cutoff would let a currency's
     composite jump on a day when no data changed and nothing happened except the
-    calendar turning over. Spreading the adjustment over thirty days matches the
-    horizon the engine's output is held for.
+    calendar turning over.
 
     """
-    raise NotImplementedError(
-        "fbe.scoring.freshness is scaffolded; see docs/roadmap.md Phase 2"
-    )
+    allowance = config.max_staleness_days if allowance_days is None else allowance_days
+    if allowance <= 0:
+        raise ValueError(
+            f"allowance_days is {allowance}, expected above 0; "
+            "an indicator with no usable allowance cannot be scored"
+        )
+    full = allowance * (config.staleness_full_days / config.max_staleness_days)
+    if staleness_days <= full:
+        return 1.0
+    if staleness_days > allowance:
+        return 0.0
+    return (allowance - staleness_days) / (allowance - full)
 
 
 def apply_staleness_penalty(
     pillar_score: PillarScore,
     config: ScoringConfig,
     asof: date,
+    freshness_factor: float | None = None,
 ) -> PillarScore:
     """Discount a pillar's weight by the age of its inputs.
 
@@ -390,6 +434,15 @@ def apply_staleness_penalty(
         asof: The date the run represents. Present so the penalty can be
             recomputed against a date other than the one the pillar used, which
             a backtest replaying stored scores needs.
+        freshness_factor: The pillar's own freshness in ``[0.0, 1.0]``, from
+            `BasePillar.pillar_freshness`, which ages each component against its
+            own indicator allowance and averages over the sub-weights present.
+            ``None`` falls back to ``freshness(pillar_score.staleness_days,
+            config)``, which knows no allowance and therefore judges every
+            series as if it published monthly. That fallback is the conservative
+            answer, not the correct one: it is what produced a factor of 0.0 for
+            every quarterly series in the model, so a caller that can supply the
+            factor must.
 
     Returns:
         A new `PillarScore` whose ``weight`` is ``weight * freshness(...)``.
@@ -405,11 +458,15 @@ def apply_staleness_penalty(
     would drag the composite toward neutral, which is the exact error
     renormalisation exists to prevent.
 
-    Past ``max_staleness_days`` the freshness factor is ``0.0``, so the pillar's
+    Past its allowance the freshness factor is ``0.0``, so the pillar's
     effective weight is zero, it drops out of `coverage`, and the composite
     renormalises around it. ``z`` is also set to ``None`` at that point, since it
     is the ``None`` marker that the rest of the module tests for, and the reason
     is appended to ``notes``.
+
+    The allowance is per indicator and lives in the registry, so the lookup
+    happens on the pillar side where the indicator keys are known. This module
+    stays free of the registry: it takes a factor and a ramp, and computes.
 
     """
     raise NotImplementedError(

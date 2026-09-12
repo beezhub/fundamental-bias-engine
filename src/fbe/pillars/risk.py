@@ -149,6 +149,14 @@ class RiskPillar(BasePillar):
     requires: Sequence[str] = ("equity_index", "vol_index")
     headline_component = "regime"
 
+    component_indicators: Mapping[str, tuple[str, ...]] = {
+        "risk_response": ("equity_index", "vol_index"),
+    }
+    """The regime reading is built from both market series, so it is as stale as
+    the later of the two. Both are daily, so in practice this checks that
+    neither feed has stopped rather than asking a question about cadence.
+    """
+
     @property
     def component_weights(self) -> Mapping[str, float]:
         """Return the sub-weight map for this single-component pillar.

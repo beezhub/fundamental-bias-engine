@@ -1221,11 +1221,16 @@ PMI_MANUFACTURING = IndicatorSpec(
     pillar=PillarName.GROWTH,
     unit="index",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=45,
+    max_staleness_days=75,
     description=(
         "Manufacturing purchasing managers' index, 50 being the expansion line. "
         "The best leading indicator in the growth pillar and the one with zero "
-        "free coverage, which is why the manual source exists at all."
+        "free coverage, which is why the manual source exists at all. The "
+        "allowance is 75 rather than 45 because 45 is the age of a punctual "
+        "monthly print under first-day period stamping, so the series was "
+        "expiring on the day it published. 75 is this table's own rule: a month "
+        "elapsing, the survey's own lag, and one more month before the next "
+        "print is due."
     ),
     series={
         code: _manual("pmi_manufacturing", "index", Frequency.MONTHLY, _PMI_LICENSED)

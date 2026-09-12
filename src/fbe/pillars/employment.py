@@ -72,6 +72,16 @@ class EmploymentPillar(BasePillar):
     requires: Sequence[str] = ("unemployment_rate", "employment_chg")
     headline_component = "unemployment_chg_6m"
 
+    component_indicators: Mapping[str, tuple[str, ...]] = {
+        "unemployment_6m": ("unemployment_rate",),
+        "employment_trend": ("employment_chg",),
+    }
+    """Both components are monthly for most of the universe and quarterly for
+    CHF and NZD, so those two are aged against the same allowance as everyone
+    else and simply sit further along the ramp, which is the honest reading of a
+    series that publishes four times a year.
+    """
+
     @property
     def component_weights(self) -> Mapping[str, float]:
         """Return the sub-weights used to blend this pillar's components.
