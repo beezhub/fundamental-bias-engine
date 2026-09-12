@@ -24,6 +24,8 @@ from datetime import date
 from statistics import median
 
 from fbe.config import ScoringConfig
+from fbe.datasources.registry import INDICATORS
+from fbe.scoring import freshness
 from fbe.types import Frequency, Observation, PillarName, PillarScore
 
 __all__ = [
@@ -31,6 +33,7 @@ __all__ = [
     "MIN_CROSS_SECTION",
     "MIN_COMPONENT_WEIGHT",
     "DEFAULT_PUBLICATION_LAG_DAYS",
+    "staleness_allowance",
 ]
 
 
@@ -90,6 +93,43 @@ components are being asked to speak for the absent ones, not a judgement about
 any one pillar's economics. Exempting a pillar would be a conditional wearing a
 disguise.
 """
+
+
+def staleness_allowance(indicator: str, config: ScoringConfig) -> int:
+    """Return how old this indicator may be, in days, and still carry weight.
+
+    Args:
+        indicator: Canonical indicator key, as it appears on
+            ``Observation.indicator`` and in a pillar's ``requires``.
+        config: Scoring configuration, read only for the fallback.
+
+    Returns:
+        ``IndicatorSpec.max_staleness_days`` when the registry knows the key,
+        otherwise ``ScoringConfig.max_staleness_days``.
+
+    The registry wins because it is the only module that knows the release
+    calendar, and it says so in its own docstring: a 2-year yield stale by a
+    week means the feed broke, while a quarterly balance-of-payments figure is
+    routinely five months old on the day it is most current. The global figure
+    is the default for a key the registry has no entry for, not a ceiling over
+    the registry's values.
+
+    The fallback is worth reading twice. An unregistered key silently gets the
+    45-day default, which is the behaviour this function exists to remove, so a
+    pillar asking for a key the registry does not carry under that name is a
+    quiet under-weighting rather than an error.
+    ``tests/test_staleness_ramp.py`` pins the current set of such keys so that
+    it shrinks deliberately rather than growing by accident.
+
+    Importing the registry here is the allowed direction: the registry knows
+    nothing about pillars beyond which pillar consumes each indicator, and the
+    scorer stays free of it because the pillar passes the resulting factor on.
+
+    """
+    spec = INDICATORS.get(indicator)
+    if spec is None:
+        return config.max_staleness_days
+    return spec.max_staleness_days
 
 
 class BasePillar(ABC):
@@ -154,6 +194,24 @@ class BasePillar(ABC):
     whose blended components are all derived quantities may emit an extra
     report-only component from `_transform` purely to fill this field, which is
     what the positioning and risk pillars do.
+    """
+
+    component_indicators: Mapping[str, tuple[str, ...]] = {}
+    """Which indicators each component is aged against, for the freshness ramp.
+
+    ``{component: (indicator, ...)}`` over exactly the keys in
+    `component_weights`. The keys on the right are the ones `_extract` returns,
+    so a component built by differencing two series names both of them and a
+    component taken straight from one series names that one.
+
+    A component is as fresh as its stalest input, not its freshest. The monetary
+    pillar's real policy rate is a daily policy rate less a CPI print that may be
+    five months old, and reading it as one day old would carry the stale half
+    into the blend at full weight.
+
+    Every component must appear. A component with no entry is silently exempt
+    from the discount, which is the failure this table exists to prevent, and
+    ``tests/test_staleness_ramp.py`` fails the pillar that leaves one out.
     """
 
     def __init__(
@@ -237,6 +295,15 @@ class BasePillar(ABC):
         are holding. Second, how many inputs were admitted by the assumed
         publication lag rather than a real ``released_at``, which is how much of
         the run rests on `DEFAULT_PUBLICATION_LAG_DAYS` rather than on fact.
+
+        The per-component freshness factors from `component_freshness` belong in
+        ``PillarScore.diagnostics`` under ``freshness.<component>``, one key per
+        component the currency had data for. They are a per-run measurement about
+        the inputs rather than about the score, so nothing in `scoring.py` reads
+        them: the aggregator sees their effect only through the weight, once,
+        via `pillar_freshness`. Without them a reader cannot tell a pillar
+        carrying one stale component from a pillar that is uniformly late, and
+        the two call for different action.
 
         The run's own blend standard deviation should also be returned to the
         caller for storage, since it is the next run's history.
@@ -571,6 +638,7 @@ class BasePillar(ABC):
         self,
         component_z: Mapping[str, Mapping[str, float | None]],
         weights: Mapping[str, float] | None = None,
+        component_freshness: Mapping[str, Mapping[str, float]] | None = None,
     ) -> dict[str, float | None]:
         """Combine per-component z-scores into one z-score per currency.
 
@@ -582,6 +650,12 @@ class BasePillar(ABC):
                 `headline_component` without letting it into the arithmetic.
             weights: Sub-weights per component. Defaults to
                 `component_weights`.
+            component_freshness: ``{component: {currency: factor}}`` from
+                `BasePillar.component_freshness`, per currency. A component
+                missing from a currency's mapping is treated as fully fresh at
+                ``1.0``, so a pillar that passes nothing keeps the old
+                behaviour. See the renormalisation rule below for what the
+                factors change.
 
         Returns:
             ``{currency: z}``, centred on this run's own cross-section and
@@ -610,13 +684,35 @@ class BasePillar(ABC):
         ``0.0``.
 
         Renormalisation rule: for each currency the weighted mean runs over the
-        components that currency actually has, divided by the weight present
-        rather than the weight configured. A currency holding at or below
-        `MIN_COMPONENT_WEIGHT` of the pillar's sub-weight is returned as ``None``
-        instead, because at that point the surviving components are being
-        asked to speak for the ones that are absent. The comparison is ``<=``,
-        and the boundary is where it bites: a currency holding exactly half is
-        absent, not scored. `MIN_COMPONENT_WEIGHT` carries the reason.
+        components that currency actually has, and each enters at
+        ``u_j * phi_j`` rather than at ``u_j``, where ``phi_j`` is that
+        component's freshness factor. So a GROWTH blend holding a GDP print at
+        ``0.600`` and a retail sales print at ``1.000`` gives GDP
+        ``0.30 * 0.600 = 0.180`` against retail's ``0.20``, and GDP takes 0.474
+        of the blend where the configured sub-weights alone would give it 0.600.
+        A component at ``phi_j = 0.0`` is past its allowance and contributes
+        nothing to the blend, without any special case: its discounted weight is
+        already zero.
+
+        A currency holding at or below `MIN_COMPONENT_WEIGHT` of the pillar's
+        sub-weight is returned as ``None`` instead, because at that point the
+        surviving components are being asked to speak for the ones that are
+        absent. The comparison is ``<=``, and the boundary is where it bites: a
+        currency holding exactly half is absent, not scored.
+        `MIN_COMPONENT_WEIGHT` carries the reason.
+
+        The floor is judged on the sub-weight **present**, before the freshness
+        factors are applied, and the reason is worth stating because the other
+        reading is tempting. The floor exists for substitution: it asks whether
+        the components that are there are being made to speak for components
+        that are not. Uniform staleness creates no substitution. Every component
+        of INFLATION shares one release, so judging the floor on the discounted
+        total would make the whole pillar vanish the moment its factor crossed
+        0.5, which converts the ramp into exactly the cliff section 4.1 of
+        ``docs/scoring-spec.md`` says it exists to avoid. Old data with a small
+        weight and no data at all are different report lines, and the model
+        keeps them different: staleness moves the weight, absence moves the
+        ``None``.
 
         A component present for only part of the cross-section is z-scored
         across the currencies that have it, and the currencies that do not
@@ -657,10 +753,94 @@ class BasePillar(ABC):
             so an absent pillar sorts as stale rather than as fresh.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.base.BasePillar.staleness_days is scaffolded; "
-            "see docs/roadmap.md Phase 2"
-        )
+        if not observations:
+            return ScoringConfig().max_staleness_days + 1
+        newest = max(observation.period for observation in observations)
+        return max(0, (asof - newest).days)
+
+    def component_freshness(
+        self,
+        extracted: Mapping[str, Sequence[Observation]],
+        asof: date,
+    ) -> dict[str, float]:
+        """Return the freshness factor of each component, in ``[0.0, 1.0]``.
+
+        Args:
+            extracted: One currency's slice of `_extract`'s output,
+                ``{indicator: observations}``. The visibility rule has already
+                been applied there, so nothing here re-checks what was publishable
+                at ``asof``: these are the observations the run is allowed to see.
+            asof: Run date.
+
+        Returns:
+            ``{component: factor}`` over the components in
+            `component_indicators` that this currency has data for. A component
+            with no observations at all is **absent from the mapping**, not
+            present with a factor of ``0.0``. The two are different answers: an
+            absent component lowers the sub-weight the currency holds, which is
+            what `MIN_COMPONENT_WEIGHT` judges, while a component present at
+            ``0.0`` is a series that exists and has run past its allowance.
+
+        Each indicator is aged with `staleness_days`, from ``period``, and judged
+        against its own `staleness_allowance`. A component built from more than
+        one indicator takes the lowest of their factors, because a component is
+        as stale as its stalest input.
+
+        Sign and units do not enter here. This is an age in days turned into a
+        weight multiplier, and it never touches the sign of a score.
+
+        """
+        factors: dict[str, float] = {}
+        for component, indicators in self.component_indicators.items():
+            per_indicator = [
+                freshness(
+                    self.staleness_days(extracted[indicator], asof),
+                    self.config,
+                    staleness_allowance(indicator, self.config),
+                )
+                for indicator in indicators
+                if extracted.get(indicator)
+            ]
+            if per_indicator:
+                factors[component] = min(per_indicator)
+        return factors
+
+    def pillar_freshness(
+        self,
+        extracted: Mapping[str, Sequence[Observation]],
+        asof: date,
+    ) -> float:
+        """Return the factor this pillar's configured weight is multiplied by.
+
+        Args:
+            extracted: One currency's slice of `_extract`'s output.
+            asof: Run date.
+
+        Returns:
+            The sub-weighted mean of `component_freshness` over the components
+            the currency actually has, in ``[0.0, 1.0]``. ``0.0`` when the
+            currency has no component at all, since no data is not fresh data.
+
+        The mean runs over the components present rather than over all of them,
+        so a missing component is handled once, by `MIN_COMPONENT_WEIGHT` and the
+        renormalisation in `blend_components`, and is not charged again here as
+        if it were stale. Staleness and absence are separate facts and each is
+        counted in exactly one place.
+
+        The caller is `scoring.score_currencies`, which passes this to
+        `scoring.apply_staleness_penalty` as ``freshness_factor``. A pillar-level
+        scalar computed from ``PillarScore.staleness_days`` alone cannot do this
+        job: GROWTH holding a five-month-old GDP print and a five-day-old retail
+        sales print would report the age of the retail print and take full
+        weight.
+
+        """
+        factors = self.component_freshness(extracted, asof)
+        weights = self.component_weights
+        present = sum(weights[component] for component in factors)
+        if present <= 0.0:
+            return 0.0
+        return sum(weights[c] * phi for c, phi in factors.items()) / present
 
     def missing_score(
         self,

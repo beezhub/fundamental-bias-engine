@@ -115,8 +115,9 @@ For a pillar with sub-indicators `j` carrying sub-weights `u_j` that sum to 1.0:
     z_pillar(c) = ( blend(c) - mean(blend) ) / divisor
     score(c)    = clip(z_pillar(c), score_clip)
 
-where `u_j'` is `u_j` renormalised over the sub-indicators actually available for
-currency `c`, `mean` is taken across the currencies that have this pillar at all,
+where `u_j'` is `u_j * phi_j` renormalised over the sub-indicators actually
+available for currency `c`, `phi_j` is that component's freshness factor from
+section 4.1, `mean` is taken across the currencies that have this pillar at all,
 and `divisor` comes from `BasePillar.blend_divisor` in
 `src/fbe/pillars/base.py`. The mean is run-local and the divisor is not. That
 asymmetry is deliberate and is the subject of the second half of this section.
@@ -215,7 +216,10 @@ POSITIONING to have a non-zero spread across currencies even in a run where
 nothing is crowded, which is the opposite of what that pillar is for.
 
 **Minimum available sub-weight.** A currency must hold more than half of a
-pillar's total sub-weight for that pillar to be scored:
+pillar's total sub-weight for that pillar to be scored. The sum below is over the
+components the currency has data for, before the freshness factors are applied,
+because the floor asks about substitution and staleness does not substitute
+anything. Section 4.1 carries that argument:
 
     MIN_COMPONENT_WEIGHT = 0.5
     if sum of u_j over available j  <=  MIN_COMPONENT_WEIGHT:
@@ -586,23 +590,80 @@ drawdown that is the start of a crisis produce the same reading.
 
 ### 4.1 Staleness discount
 
-Let `s` be `PillarScore.staleness_days` (age of the newest input the pillar used),
-`S = ScoringConfig.max_staleness_days` (default 45), and `s0 = S / 3` (15 days).
+The discount is applied at two levels, and the ramp is scaled to each series'
+own release calendar rather than measured in absolute days.
+
+**The ramp.** For one input, let `s` be its age in days from `Observation.period`,
+`S` be that indicator's allowance, and `s0 = S * (staleness_full_days /
+max_staleness_days)`, one third of `S` on the shipped defaults:
 
     phi = 1.0                    for s <= s0
     phi = (S - s) / (S - s0)     for s0 < s <= S
     phi = 0.0                    for s > S
 
-Fresh data counts fully. Between 15 and 45 days a pillar's weight decays linearly
-to zero. Past 45 days it stops counting, which is what the `max_staleness_days`
-docstring means by "stop counting toward pillar coverage". The decay is gradual
-rather than a cliff so that a quarterly series does not cause the composite to
-jump the morning it crosses a threshold.
+`S` is `IndicatorSpec.max_staleness_days` from `datasources/registry.py`, which
+is the only module that knows the release calendar, and
+`ScoringConfig.max_staleness_days` (45) where the registry has no entry for the
+key. `ScoringConfig` supplies the shape of the ramp, the ratio of
+`staleness_full_days` to `max_staleness_days`, not its length. `scoring.freshness`
+computes it and `pillars/base.staleness_allowance` resolves `S`.
+
+**Why the ramp is not measured in absolute days.** `Observation.period` is the
+first day of the span a figure describes, so a punctual monthly print is 30 to 45
+days old on the day it publishes and a punctual quarterly print is about 120 days
+old. Against a single 45-day ramp, thirteen of the seventeen registered
+indicators had a freshness factor of 0.0 at the age their own frequency says they
+publish at: every monthly and quarterly series in the model, which is INFLATION,
+GROWTH, EMPLOYMENT, EXTERNAL and the CPI leg of MONETARY. Quarterly CPI for AUD
+and NZD was the visible case, at 162 days against a ramp that ended at 45, but it
+was not the only one.
+
+Worked: AUD headline CPI is stamped 2026-04-01 for 2026Q2. On a run dated
+2026-09-10 that is 162 days. `cpi_yoy` carries an allowance of 200 days, so
+`s0 = 200 * 15 / 45 = 66.67` and
+
+    phi = (200 - 162) / (200 - 66.67) = 38 / 133.33 = 0.285
+
+against 0.0 under a 45-day ramp. The INFLATION pillar's effective weight for AUD
+is `0.15 * 0.285 = 0.0428`.
+
+**One rule, two modules.** `registry.coverage_report` already ages every series
+against the same allowance, with `SeriesRef.stale_on` comparing `age > S`. The
+ramp reaches zero at `s = S`, the last day the registry still counts a series as
+usable, so the scoring side is never the more permissive of the two. Before this
+they gave two answers about the same series: the registry reported AUD CPI as
+covered while the scorer gave it no weight.
+
+**Two levels.** Inside a pillar each component is aged against its own
+indicator's allowance by `BasePillar.component_freshness`, and a component built
+from two series takes the lower of their factors. The components enter the blend
+of section 2.3 at `u_j * phi_j`, so a GROWTH blend holding a 162-day-old GDP
+print at `phi = 0.600` and a 5-day-old retail sales print at `phi = 1.000` gives
+GDP 0.474 of the blend where the sub-weights alone would give it 0.600. The
+pillar's own factor is the sub-weighted mean of its components' factors, from
+`BasePillar.pillar_freshness`, and that is what multiplies the pillar weight in
+section 4.2. A single pillar-level age cannot do this: GROWTH would report the
+age of whichever series updated last and carry the other at full weight.
+
+The per-component factors are published in `PillarScore.diagnostics` under
+`freshness.<component>`. Nothing in `scoring.py` reads them. `PillarScore.staleness_days`
+keeps its meaning, the age of the freshest input the pillar saw, and is reported
+rather than used to compute the discount.
+
+**Why a ramp rather than a cliff.** A hard cutoff would let a composite jump on a
+day when no data changed and nothing happened except the calendar turning over.
+The floor in section 2.3 is judged on the sub-weight present, before the factors
+are applied, for the same reason: every component of INFLATION shares one
+release, so judging the floor on the discounted total would reintroduce the cliff
+at `phi = 0.5`.
 
 ### 4.2 Effective weights and coverage
 
     w_eff(p) = weight(p) * phi(p)          , and 0.0 if the pillar has no data
     coverage = sum over p of w_eff(p)
+
+where `phi(p)` is the pillar's own factor from section 4.1, the sub-weighted mean
+over the components it has.
 
 Since the weights sum to 1.0, `coverage` is directly the fraction of pillar weight
 that had usable, fresh data. It is stored on `CurrencyScore.coverage`.
@@ -1026,8 +1087,11 @@ A mild but real risk-off. Then `score = 2.0 * R * risk_beta = -1.25 * risk_beta`
     = +0.1875  ->  +0.1875
 
 **NZD composite**, demonstrating the staleness discount. New Zealand's external
-data is 30 days old, so for that pillar `phi = (45 - 30) / (45 - 15) = 0.500` and
-`w_eff = 0.10 * 0.500 = 0.050`:
+inputs are late against their own allowances and the pillar's freshness factor
+comes to `phi = 0.500`, so `w_eff = 0.10 * 0.500 = 0.050`. Section 4.1 gives the
+ramp and the sub-weighted mean that produces the 0.500; the ages behind it are
+not part of this fixture, because they move whenever the registry's allowances
+are re-verified and the aggregation arithmetic below does not:
 
     coverage = 0.30 + 0.15 + 0.15 + 0.10 + 0.050 + 0.10 + 0.10 = 0.950
 
@@ -1298,6 +1362,18 @@ An implementer should assert, at minimum:
   both absent rather than scored. A currency missing only `cpi_yoy` holds 0.85
   of MONETARY and still scores, which is what keeps the widened comparison from
   sweeping up the ordinary missing-series case.
+- No registered indicator is born stale. For every entry in the registry, a print
+  at the age its own frequency publishes at, `DEFAULT_PUBLICATION_LAG_DAYS`,
+  carries a freshness factor above zero. An indicator that is admitted by the
+  visibility rule and then given no weight can never contribute to a score.
+- `scoring.freshness` and `registry.coverage_report` agree about every series on
+  every date, in the direction that matters: a factor above zero implies the
+  registry calls the series usable, and a series the registry calls stale has a
+  factor of exactly zero. Assert it for `cpi_yoy` on AUD, `gdp_yoy` on USD and
+  `yield_2y` on GBP at minimum.
+- Components of one pillar are aged separately, so a 162-day-old GDP print and a
+  5-day-old retail sales print produce two different factors and the older enters
+  the blend at a reduced sub-weight rather than at 0.30.
 - `f(p)` in POSITIONING is continuous at `|p| = 1.0` and `|p| = 2.0`, is odd, and
   has the sign changes stated in section 3.6.
 - `f(p)` saturates at magnitude 2.0 from `|p| = 3.33` upward, so it never reaches

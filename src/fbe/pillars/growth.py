@@ -101,6 +101,20 @@ class GrowthPillar(BasePillar):
     )
     headline_component = "gdp_yoy"
 
+    component_indicators: Mapping[str, tuple[str, ...]] = {
+        "gdp_yoy": ("gdp_yoy",),
+        "pmi_composite": ("pmi_composite",),
+        "indpro_yoy": ("indpro_yoy",),
+        "retail_sales_yoy": ("retail_sales_yoy",),
+    }
+    """Four components, four separate clocks.
+
+    This is the pillar the component-level discount was built for. GDP is
+    quarterly and lands one to two months after the quarter closes while retail
+    sales is monthly, so a single pillar-level age reports whichever happened to
+    update last and carries the other at full weight.
+    """
+
     @property
     def component_weights(self) -> Mapping[str, float]:
         """Return the sub-weights used to blend this pillar's components.

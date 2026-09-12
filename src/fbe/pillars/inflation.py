@@ -71,6 +71,18 @@ class InflationPillar(BasePillar):
     requires: Sequence[str] = ("cpi_yoy", "core_cpi_yoy")
     headline_component = "cpi_gap"
 
+    component_indicators: Mapping[str, tuple[str, ...]] = {
+        "cpi_gap": ("cpi_yoy",),
+        "core_gap": ("core_cpi_yoy",),
+    }
+    """Each gap ages with the print it is built from.
+
+    The target it is differenced against is a constant in `CurrencyMeta` and
+    cannot go stale, so the age of the component is the age of the CPI release.
+    Both series are quarterly for AUD and NZD, which is the case that exposed
+    the ramp.
+    """
+
     @property
     def component_weights(self) -> Mapping[str, float]:
         """Return the sub-weights used to blend this pillar's components.

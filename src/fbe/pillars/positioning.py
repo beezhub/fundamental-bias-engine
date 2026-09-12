@@ -145,6 +145,14 @@ class PositioningPillar(BasePillar):
     requires: Sequence[str] = ("cot_net_pct_oi",)
     headline_component = "net_share"
 
+    component_indicators: Mapping[str, tuple[str, ...]] = {
+        "positioning_response": ("cot_net_pct_oi",),
+    }
+    """One component, one weekly series. The COT report is published on Friday
+    for the Tuesday, so this is one of the two pillars whose inputs were never
+    at risk from the ramp.
+    """
+
     @property
     def component_weights(self) -> Mapping[str, float]:
         """Return the sub-weight map for this single-component pillar.
