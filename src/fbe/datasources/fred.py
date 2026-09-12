@@ -96,8 +96,13 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 
 from fbe.config import DataConfig
-from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy
-from fbe.datasources.registry import SeriesRef
+from fbe.datasources.base import (
+    BaseDataSource,
+    RateLimit,
+    RetryPolicy,
+    SourceError,
+)
+from fbe.datasources.registry import INDICATORS, SeriesRef
 from fbe.types import Observation
 
 __all__ = [
@@ -167,6 +172,8 @@ class FredSource(BaseDataSource):
     """
 
     name = "fred"
+    base_url = BASE_URL
+    api_key_param = "api_key"
     rate_limit = RATE_LIMIT
     retry = RetryPolicy(attempts=3, backoff_seconds=1.0)
 
@@ -180,6 +187,20 @@ class FredSource(BaseDataSource):
         """
         super().__init__(config)
 
+    def _api_key(self) -> str | None:
+        """Return the configured FRED key, or ``None`` when there is none.
+
+        ``None`` means the ``api_key`` parameter is not sent at all rather than
+        sent empty, which is what `BaseDataSource._fetch_with_retries` expects.
+        FRED answers such a request with a 400 naming the missing key, which is
+        a clearer failure than an empty credential would produce.
+
+        Returns:
+            The key from `fbe.config.DataConfig`, or ``None``.
+
+        """
+        return self.config.fred_api_key
+
     def available(self) -> bool:
         """Report whether an API key is configured, or the run is offline.
 
@@ -190,10 +211,7 @@ class FredSource(BaseDataSource):
             Whether this source can be used on this run.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.fred.FredSource.available is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        return self.config.offline or self.config.fred_api_key is not None
 
     def fetch(
         self,
@@ -218,10 +236,55 @@ class FredSource(BaseDataSource):
             SourceError: On repeated request failure or an unparseable body.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.fred.FredSource.fetch is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        wanted_indicators = set(indicators)
+        wanted_currencies = set(currencies)
+        emitted: list[Observation] = []
+        for (indicator, currency), ref in self.refs().items():
+            if indicator not in wanted_indicators:
+                continue
+            if currency not in wanted_currencies:
+                continue
+            units = self._units_for(indicator, currency, ref)
+            for period, value in self.fetch_series(
+                ref.series_id, start, end, units=units
+            ):
+                emitted.append(
+                    self._observation(indicator, currency, ref, period, value)
+                )
+        return emitted
+
+    def _units_for(self, indicator: str, currency: str, ref: SeriesRef) -> str:
+        """Map a registry transform onto FRED's ``units`` parameter.
+
+        Args:
+            indicator: Canonical indicator key, named in the error.
+            currency: ISO 4217 code, named in the error.
+            ref: The registry entry whose ``transform`` is being mapped.
+
+        Returns:
+            The `UNITS` value FRED should compute, so the arithmetic happens
+            server-side rather than here.
+
+        Raises:
+            SourceError: When `UNITS` has no entry for the transform. The two
+                that reach this today are ``chg_1m`` and ``chg_3m``, which the
+                registry defines as a month-end or quarter-end resample, then a
+                difference, then a rescale into basis points. FRED's ``chg`` is
+                the change from the previous observation, which on a daily
+                series is a one-day change, so mapping the two would emit a
+                number roughly thirty times too small under a label saying
+                otherwise. Refusing is the only safe answer until the
+                derivation is settled; see the note on issue #56.
+
+        """
+        try:
+            return UNITS[ref.transform]
+        except KeyError as error:
+            raise SourceError(
+                f"{self.name} cannot express the {ref.transform!r} transform "
+                f"that {indicator} / {currency} asks for as a FRED units "
+                "parameter, and will not approximate it with a different one"
+            ) from error
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is ``"fred"``.
@@ -230,10 +293,12 @@ class FredSource(BaseDataSource):
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.fred.FredSource.refs is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        return {
+            (spec.key, currency): ref
+            for spec in INDICATORS.values()
+            for currency, ref in spec.series.items()
+            if ref.source == self.name
+        }
 
     def fetch_series(
         self,
@@ -262,10 +327,73 @@ class FredSource(BaseDataSource):
             SourceError: On repeated request failure or an unparseable body.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.fred.FredSource.fetch_series is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        params: dict[str, str | int | float] = {
+            "series_id": series_id,
+            "observation_start": start.isoformat(),
+            "observation_end": end.isoformat(),
+            "units": units,
+            "file_type": "json",
+        }
+        if vintage is not None:
+            # Both bounds, not just the start: a window sets which vintages are
+            # returned, and leaving the end open returns every revision since
+            # rather than the one that stood on the day.
+            params["realtime_start"] = vintage.isoformat()
+            params["realtime_end"] = vintage.isoformat()
+        payload = self._request(ENDPOINTS["observations"], params)
+        return self._parse_observations(payload, series_id)
+
+    def _parse_observations(
+        self, payload: object, series_id: str
+    ) -> Sequence[tuple[date, float]]:
+        """Read ``(period, value)`` pairs out of an observations body.
+
+        Args:
+            payload: The decoded response body.
+            series_id: Named in any error, since the body does not carry it.
+
+        Returns:
+            Pairs in the order FRED returned them, with `MISSING_VALUE` rows
+            dropped. Values are in the series' published unit, after whatever
+            ``units`` was requested. An empty list means the series genuinely
+            holds nothing in the window, which is data.
+
+        Raises:
+            SourceError: When the body carries no ``observations`` list, when a
+                row is missing its date or value, or when a value is neither
+                `MISSING_VALUE` nor a number. Only ``"."`` is a documented
+                hole; anything else unreadable is a response shape that has
+                changed, and skipping it would turn that into a quiet coverage
+                gap.
+
+        """
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("observations"), list
+        ):
+            raise SourceError(
+                f"{self.name} returned no observations list for {series_id}"
+            )
+        parsed: list[tuple[date, float]] = []
+        for row in payload["observations"]:
+            if not isinstance(row, dict) or "date" not in row or "value" not in row:
+                raise SourceError(
+                    f"{self.name} returned a row without a date and a value "
+                    f"for {series_id}"
+                )
+            raw = str(row["value"])
+            if raw == MISSING_VALUE:
+                # FRED's null. Reading it as a number would put a zero in the
+                # middle of a yield series, which scores as a real collapse.
+                continue
+            try:
+                period = date.fromisoformat(str(row["date"]))
+                value = float(raw)
+            except ValueError as error:
+                raise SourceError(
+                    f"{self.name} returned an unreadable row for {series_id}: {error}"
+                ) from error
+            parsed.append((period, value))
+        return parsed
 
     def vintage_dates(self, series_id: str) -> Sequence[date]:
         """List every date on which a series was revised.
@@ -284,10 +412,25 @@ class FredSource(BaseDataSource):
             SourceError: On repeated request failure.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.fred.FredSource.vintage_dates is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        payload = self._request(
+            ENDPOINTS["vintage_dates"],
+            {"series_id": series_id, "file_type": "json"},
         )
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("vintage_dates"), list
+        ):
+            raise SourceError(
+                f"{self.name} returned no vintage_dates list for {series_id}"
+            )
+        try:
+            return sorted(
+                date.fromisoformat(str(day)) for day in payload["vintage_dates"]
+            )
+        except ValueError as error:
+            raise SourceError(
+                f"{self.name} returned an unreadable vintage date for "
+                f"{series_id}: {error}"
+            ) from error
 
     def last_updated(self, series_id: str) -> date | None:
         """Return the date of a series' most recent observation.
@@ -307,7 +450,29 @@ class FredSource(BaseDataSource):
             SourceError: On repeated request failure.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.fred.FredSource.last_updated is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        payload = self._request(
+            ENDPOINTS["series"],
+            {"series_id": series_id, "file_type": "json"},
         )
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("seriess"), list
+        ):
+            raise SourceError(
+                f"{self.name} returned no series metadata for {series_id}"
+            )
+        entries = payload["seriess"]
+        if not entries or not isinstance(entries[0], dict):
+            # An unknown series ID answers with an empty list. That is a broken
+            # registry entry, not a series that happens to hold nothing, and
+            # the two must not both read as None.
+            raise SourceError(f"{self.name} knows no series called {series_id}")
+        observation_end = entries[0].get("observation_end")
+        if not observation_end or observation_end == MISSING_VALUE:
+            return None
+        try:
+            return date.fromisoformat(str(observation_end))
+        except ValueError as error:
+            raise SourceError(
+                f"{self.name} returned an unreadable observation_end for "
+                f"{series_id}: {error}"
+            ) from error
