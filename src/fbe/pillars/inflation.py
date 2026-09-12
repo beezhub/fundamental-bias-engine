@@ -55,6 +55,14 @@ class InflationPillar(BasePillar):
     and getting that wrong would flip the sign of a 0.15-weight pillar on a
     signal that is not purely domestic.
 
+    The pillar's weight is not the model's inflation response. That
+    ``real_policy_rate`` term puts a coefficient of minus one on ``cpi_yoy``, the
+    same series ``cpi_gap`` loads on positively, so the two partly cancel. On the
+    fixture in section 7 of ``docs/scoring-spec.md`` the cancellation is 49.7%
+    when headline moves alone and 18.7% when headline and core move together.
+    Section 3.2 publishes the loadings, `scoring.series_loading` computes them,
+    and ADR 0003 records why the opposing term was kept rather than removed.
+
     Known failure modes: the sign assumption inverts in a stagflation, where
     inflation is high, growth is collapsing, and the market prices cuts anyway.
     The pillar reads the inflation as currency-positive at exactly the moment the

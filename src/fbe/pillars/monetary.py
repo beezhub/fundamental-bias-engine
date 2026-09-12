@@ -49,6 +49,13 @@ class MonetaryPillar(BasePillar):
     other seven currencies, and therefore a strong currency. All five components
     are already oriented that way, so no component is inverted.
 
+    ``real_policy_rate`` makes this pillar partly an inflation pillar with the
+    opposite sign to INFLATION, and the sub-weights above do not show it. Per
+    percentage point of headline CPI the term's composite loading on the section
+    7 fixture is -0.0501, against INFLATION's +0.1008 on the same series. Section
+    3.2 of ``docs/scoring-spec.md`` publishes both sides, `scoring.series_loading`
+    computes them, and ADR 0003 records why the term was kept.
+
     Known failure mode: the pillar is late to a turn. It reads a policy path
     that is already priced, so at the exact moment a central bank pivots, the
     2y yield gaps and the pillar swings hard after the FX move has happened.
