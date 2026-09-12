@@ -133,7 +133,7 @@ cache           warn      37 entries, oldest 19h (ttl 12h): run fbe refresh
 sources         ok        fred 240ms, stooq 310ms, cftc 890ms
                 warn      forexfactory unreachable (timeout after 5.0s)
 reports         ok        last report 2026-09-08, config digest matches
-1 warning. Calendar coverage is incomplete: treat blackouts as unknown.
+2 warnings.
 ```
 
 ### `fbe refresh`
