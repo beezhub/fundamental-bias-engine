@@ -1318,7 +1318,7 @@ PMI_COMPOSITE = IndicatorSpec(
     pillar=PillarName.GROWTH,
     unit="index",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=45,
+    max_staleness_days=75,
     description=(
         "Composite purchasing managers' index, manufacturing and services "
         "blended, 50 being the expansion line. The best leading indicator in "
@@ -1336,6 +1336,11 @@ PMI_COMPOSITE = IndicatorSpec(
         "rather than a value folded into this one, since its unit is a "
         "percentage balance, not a 50-centred diffusion index, and blending "
         "the two under one key would misscore every observation."
+        "The allowance is 75 rather than 45 because 45 is the age of a "
+        "punctual monthly print under first-day period stamping, so the "
+        "series was expiring on the day it published. 75 is this table's own "
+        "rule: a month elapsing, the survey's own lag, and one more month "
+        "before the next print is due."
     ),
     series={
         code: _manual("pmi_composite", "index", Frequency.MONTHLY, _PMI_LICENSED)

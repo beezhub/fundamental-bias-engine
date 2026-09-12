@@ -724,6 +724,24 @@ passes, converts a visible gap into an invisible one. It is the single easiest
 way to make this whole registry lie, and `current_account_gdp` below is the case
 where it would have been tempting.
 
+**The allowance is now read twice.** `coverage_report` uses it to decide whether
+a series is usable at all, and `scoring.freshness` uses it to scale the staleness
+ramp that sets how much weight the series carries, through
+`pillars.base.staleness_allowance`. The two agree by construction: the ramp
+reaches zero on the last day this table still counts a series as fresh. That
+makes an allowance more expensive to get wrong than it was. Too long and a frozen
+series both counts as covered and carries weight; too short and a punctual print
+is scored at zero on the day it publishes, which is what a 45-day allowance did
+to `pmi_manufacturing` under first-day period stamping. Derive it from the
+cadence, as this section already says, and never from what a series happens to
+need.
+
+One consequence to check when adding an indicator: a pillar asks for a key by
+the name in its own `requires`, and a key this table does not carry under that
+name falls back to `ScoringConfig.max_staleness_days`, 45 days, which is too
+short for anything monthly or slower. `tests/test_staleness_ramp.py` pins the
+keys currently in that position.
+
 ### Position as at 2026-09-09
 
 | Indicator | Fresh | Identifiers | Verdict |
@@ -882,7 +900,7 @@ a free machine-readable source, not the operator's typing.
 | `employment_chg` | employment | `persons` | monthly | 270d | 88% | 88% |
 | `retail_sales_yoy` | growth | `percent` | monthly | 270d | 88% | 100% |
 | `indpro_yoy` | growth | `percent` | monthly | 180d | 50% | 62% |
-| `pmi_composite` | growth | `index` | monthly | 45d | 0% | 0% |
+| `pmi_composite` | growth | `index` | monthly | 75d | 0% | 0% |
 | `trade_balance` | external | `usd` | monthly | 150d | 100% | 100% |
 | `current_account_gdp` | external | `percent_of_gdp` | quarterly | 210d | 0% | 100% |
 | `cot_net_pct_oi` | positioning | `contracts` | weekly | 21d | 100% | 100% |
@@ -1076,9 +1094,9 @@ Pillar: **growth**. Canonical unit: `percent`. Staleness allowance: 180 days. Fr
 
 #### `pmi_composite`
 
-Composite purchasing managers' index, manufacturing and services blended, 50 being the expansion line. The best leading indicator in the growth pillar and the one with zero free coverage, which is why the manual source exists at all. Until an operator has a services print to blend in, entering the manufacturing headline alone under this key is a stated approximation: note it as such in the manual entry's `meta` rather than presenting it as the real composite. See "Question 5" in `docs/answers/data.md` for a free OECD business-confidence proxy that is a different, real thing (a percentage balance, not a 50-centred diffusion index) and belongs under its own key rather than this one.
+Composite purchasing managers' index, manufacturing and services blended, 50 being the expansion line. The best leading indicator in the growth pillar and the one with zero free coverage, which is why the manual source exists at all. Until an operator has a services print to blend in, entering the manufacturing headline alone under this key is a stated approximation: note it as such in the manual entry's `meta` rather than presenting it as the real composite. See "Question 5" in `docs/answers/data.md` for a free OECD business-confidence proxy that is a different, real thing (a percentage balance, not a 50-centred diffusion index) and belongs under its own key rather than this one. The allowance is 75 rather than 45 because 45 is the age of a punctual monthly print under first-day period stamping, so the series was expiring on the day it published. 75 is this table's own rule: a month elapsing, the survey's own lag, and one more month before the next print is due.
 
-Pillar: **growth**. Canonical unit: `index`. Staleness allowance: 45 days. Fresh coverage: 0%.
+Pillar: **growth**. Canonical unit: `index`. Staleness allowance: 75 days. Fresh coverage: 0%.
 
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
