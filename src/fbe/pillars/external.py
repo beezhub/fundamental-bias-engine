@@ -82,6 +82,16 @@ class ExternalPillar(BasePillar):
     )
     headline_component = "current_account_gdp"
 
+    component_indicators: Mapping[str, tuple[str, ...]] = {
+        "current_account_gdp": ("current_account_gdp",),
+        "trade_trend": ("trade_balance",),
+        "terms_of_trade": ("commodity_price",),
+    }
+    """The current account is quarterly across the whole G10, which made it the
+    second series after quarterly CPI to take zero weight on every run for every
+    currency under a 45-day ramp.
+    """
+
     @property
     def component_weights(self) -> Mapping[str, float]:
         """Return the sub-weights used to blend this pillar's components.

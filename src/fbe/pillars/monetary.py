@@ -70,6 +70,22 @@ class MonetaryPillar(BasePillar):
     )
     headline_component = "yield_2y_chg_3m"
 
+    component_indicators: Mapping[str, tuple[str, ...]] = {
+        "policy_rate": ("policy_rate",),
+        "yield_2y": ("yield_2y",),
+        "yield_2y_chg_1m": ("yield_2y_chg_1m",),
+        "yield_2y_chg_3m": ("yield_2y_chg_3m",),
+        "real_policy_rate": ("policy_rate", "cpi_yoy"),
+    }
+    """The real policy rate names both of its inputs.
+
+    It is a policy rate less a headline CPI print, a daily series and a monthly
+    or quarterly one in the same component, and the CPI half is the one that
+    goes stale. It therefore takes the CPI factor, since a component is as stale
+    as its stalest input. The two change series arrive from the registry under
+    their own keys, as `_extract` describes, so each ages against itself.
+    """
+
     @property
     def component_weights(self) -> Mapping[str, float]:
         """Return the sub-weights used to blend this pillar's components.
