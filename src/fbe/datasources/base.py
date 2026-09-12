@@ -21,16 +21,29 @@ a source means editing the registry and one adapter, not every pillar.
 
 from __future__ import annotations
 
+import json
+import logging
+import math
+import time
 from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
+
+import httpx
 
 from fbe.config import DataConfig
+from fbe.datasources.cache import CREDENTIAL_PARAMS, CacheMiss, DiskCache
 from fbe.datasources.registry import SeriesRef
 from fbe.types import Observation
 
 __all__ = ["BaseDataSource", "RateLimit", "RetryPolicy", "SourceError"]
+
+REQUEST_TIMEOUT_SECONDS = 30.0
+"""Per-request timeout. The engine runs from a morning routine against a
+wall-clock deadline, so a source that has stopped answering must become a
+reported coverage gap quickly rather than holding up the run."""
 
 
 class SourceError(RuntimeError):
@@ -102,12 +115,20 @@ class BaseDataSource(ABC):
 
     Attributes:
         name: Short source key, matching ``SeriesRef.source``.
+        base_url: Root that the paths passed to `_request` resolve against.
+            Empty on the base itself, since only a concrete source has one.
+        api_key_param: Query parameter the source's credential belongs in, or
+            ``None`` for a source that needs none. Named here so `_request` can
+            add the key and `_cache_key` can leave it out, rather than every
+            source doing both and one of them forgetting.
         rate_limit: This source's request budget.
         retry: This source's retry policy.
 
     """
 
     name: str = "base"
+    base_url: str = ""
+    api_key_param: str | None = None
     rate_limit: RateLimit = RateLimit()
     retry: RetryPolicy = RetryPolicy()
 
@@ -120,6 +141,67 @@ class BaseDataSource(ABC):
 
         """
         self.config = config
+        self.cache = DiskCache(config)
+        self._client: httpx.Client | None = None
+        self._request_times: deque[float] = deque()
+
+    def _api_key(self) -> str | None:
+        """Return this source's credential, where it needs one.
+
+        Overridden by a source that takes a key, so `_request` can add it
+        without knowing which field of `DataConfig` holds it.
+
+        Returns:
+            The credential, or ``None`` when the source needs none or none is
+            configured. ``None`` means the parameter is not sent at all, which
+            is correct for the anonymous endpoints several sources expose.
+
+        """
+        return None
+
+    def close(self) -> None:
+        """Release the HTTP client, if one was opened.
+
+        Safe to call more than once, and safe on a source that never made a
+        request: an offline run opens no client at all.
+        """
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    def _decode(self, body: bytes) -> object:
+        """Turn a raw response body into the value `_request` returns.
+
+        JSON by default. A source whose endpoint publishes something else, such
+        as the CSV and the workbook the curve sources read, overrides this
+        rather than reimplementing the request path around it.
+
+        Args:
+            body: Raw response bytes, exactly as cached.
+
+        Returns:
+            The decoded body.
+
+        Raises:
+            SourceError: If the body is not the format this source expects. A
+                maintenance page served with a 200 is the common case, and
+                returning its text would push the failure downstream where it
+                is indistinguishable from missing data.
+
+        """
+        try:
+            decoded = json.loads(body)
+        except ValueError as error:
+            raise SourceError(
+                f"{self.name} returned a body that is not JSON: {error}"
+            ) from error
+        if decoded is None:
+            # A bare ``null`` is not an empty result. No endpoint in
+            # docs/data-sources.md publishes one on success, and returning it
+            # would hand a subclass a None to subscript, which surfaces as a
+            # TypeError rather than a recorded coverage gap.
+            raise SourceError(f"{self.name} returned a bare JSON null")
+        return decoded
 
     def available(self) -> bool:
         """Report whether this source can be used on this run.
@@ -131,13 +213,14 @@ class BaseDataSource(ABC):
         partial bias with an honest coverage number beats no bias at all.
 
         Returns:
-            True when the source is usable.
+            True when the source is usable. True on the base itself, which has
+            no credential and no directory to require. A source with a
+            prerequisite overrides this and answers for its own; the default is
+            not a stand-in for an unknown answer, it is the correct answer for
+            a source that needs nothing configured.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.base.BaseDataSource.available is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        return True
 
     @abstractmethod
     def fetch(
@@ -204,21 +287,240 @@ class BaseDataSource(ABC):
             The decoded response body.
 
         Raises:
-            SourceError: On exhausted retries, or when ``offline`` is set and
-                the cache holds nothing for this request.
+            SourceError: On exhausted retries, on a status that is not worth
+                retrying, on a body this source cannot decode, or when
+                ``offline`` is set and the cache holds nothing for this
+                request.
+
+                An empty body raises, because the default `_decode` cannot read
+                one. That is not a judgement that the source holds nothing: a
+                source reporting an empty result does so by returning an empty
+                sequence from `fetch`, which is data, and this is the request
+                failing to produce a body at all.
+
+                No message here carries a request parameter, so a credential
+                cannot reach one.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.base.BaseDataSource._request is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        key = self._cache_key(path, params)
+
+        if self.config.offline:
+            try:
+                entry = self.cache.get(self.name, key)
+            except CacheMiss as miss:
+                raise SourceError(
+                    f"{self.name} cannot serve {path} because the run is "
+                    f"offline and the cache holds no entry for it: {miss}"
+                ) from miss
+            return self._decode(entry.body_path.read_bytes())
+
+        try:
+            entry = self.cache.get(self.name, key)
+        except CacheMiss:
+            pass
+        else:
+            return self._decode(entry.body_path.read_bytes())
+
+        body = self._fetch_with_retries(path, params)
+        # Decode before writing. A body this source cannot read is not worth
+        # keeping: caching it first would serve the same failure back for the
+        # whole TTL, and offline never expires anything, so one maintenance
+        # page returned with a 200 would poison the key until a person deleted
+        # the file by hand.
+        value = self._decode(body)
+        self.cache.put(self.name, key, body, self._cacheable_params(params))
+        return value
+
+    def _cacheable_params(
+        self, params: Mapping[str, str | int | float]
+    ) -> Mapping[str, str]:
+        """Return the parameters that may be written to the cache sidecar.
+
+        The credential is never among them. `DiskCache.put` also strips the
+        names it knows, but a source is free to name its key something else, so
+        the credential is kept out here rather than relied on being caught
+        downstream.
+
+        Args:
+            params: The caller's query parameters.
+
+        Returns:
+            The same parameters as strings, with this source's credential
+            parameter removed.
+
+        """
+        return {
+            str(name): str(value)
+            for name, value in params.items()
+            if name != self.api_key_param
+        }
+
+    def _fetch_with_retries(
+        self, path: str, params: Mapping[str, str | int | float]
+    ) -> bytes:
+        """Perform the request, retrying what is worth retrying.
+
+        Args:
+            path: Path relative to ``base_url``.
+            params: Query parameters, without the credential.
+
+        Returns:
+            The raw response body.
+
+        Raises:
+            SourceError: When the attempts are exhausted, or on the first
+                response carrying a status outside ``retry_on_status``.
+
+        """
+        # The caller's parameters go on the wire as given. Stripping a
+        # credential the caller supplied would turn a configured request into a
+        # 401 reported as a malformed one. Only the sidecar and the cache key
+        # drop it, which is `_cacheable_params`.
+        wire_params = {str(name): str(value) for name, value in params.items()}
+        key = self._api_key()
+        if self.api_key_param is not None and key is not None:
+            wire_params[self.api_key_param] = key
+
+        if self._client is None:
+            # httpx logs every request at INFO with the full URL, query string
+            # included, and a credential travels as a query parameter here. The
+            # CLI documents -vv as showing every request, so leaving this at
+            # INFO would print the key to a terminal and into any log a bug
+            # report carries. This is the one place it can be fixed for every
+            # source at once.
+            logging.getLogger("httpx").setLevel(logging.WARNING)
+            self._client = httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
+
+        backoff = self.retry.backoff_seconds
+        last = "no attempt was made"
+        for attempt in range(1, self.retry.attempts + 1):
+            self._throttle()
+            failed: httpx.Response | None = None
+            try:
+                response = self._client.get(
+                    f"{self.base_url}{path}", params=wire_params
+                )
+            except httpx.HTTPError as error:
+                # A transport failure is the case a retry exists for, so it is
+                # treated like a retryable status rather than raised at once.
+                # httpx renders the failing URL into its message, query string
+                # and all, so the credential is redacted out before the text
+                # goes anywhere a person could read it.
+                last = f"{type(error).__name__}: {self._redact(str(error), key)}"
+            else:
+                if response.is_success:
+                    return response.content
+                if response.is_redirect:
+                    # Redirects are not followed, so the body here is empty. A
+                    # subclass decoding it would read zero rows and report a
+                    # coverage gap for a source that simply moved.
+                    raise SourceError(
+                        f"{self.name} redirected {path} to "
+                        f"{response.headers.get('Location', 'an unnamed URL')}, "
+                        "which is a moved endpoint rather than a failure to fix "
+                        "by retrying"
+                    )
+                last = f"HTTP {response.status_code}"
+                if response.status_code not in self.retry.retry_on_status:
+                    raise SourceError(
+                        f"{self.name} refused {path}: {last}. The request "
+                        "itself is wrong, so it was not retried."
+                    )
+                failed = response
+
+            if attempt < self.retry.attempts:
+                self._wait_before_retry(failed, backoff)
+                backoff = min(backoff * 2, self.retry.max_backoff_seconds)
+
+        raise SourceError(
+            f"{self.name} could not fetch {path} after "
+            f"{self.retry.attempts} attempts, last failure {last}"
         )
 
+    @staticmethod
+    def _redact(text: str, secret: str | None) -> str:
+        """Remove a credential from text that is about to be raised or logged.
+
+        Args:
+            text: The message to sanitise.
+            secret: The credential to remove, or ``None`` when the source has
+                none, in which case the text is returned unchanged.
+
+        Returns:
+            The text with every occurrence of the credential replaced. Applied
+            to anything built from a library's own message, because those
+            render the failing URL and this source's key travels in the query
+            string.
+
+        """
+        if not secret:
+            return text
+        return text.replace(secret, "[redacted]")
+
+    def _wait_before_retry(
+        self, response: httpx.Response | None, backoff: float
+    ) -> None:
+        """Sleep for the server's figure where it gave one, else the backoff.
+
+        Args:
+            response: The response that failed, or ``None`` for a transport
+                error, which carries no headers to read.
+            backoff: The computed delay in seconds for this attempt.
+
+        """
+        wait = backoff
+        if self.retry.respect_retry_after and response is not None:
+            header = response.headers.get("Retry-After")
+            if header is not None:
+                try:
+                    # Retry-After may also be an HTTP date, which is legal and
+                    # not handled here. Falling back to the computed backoff is
+                    # right; reading it as zero would hammer a source that has
+                    # just asked to be left alone.
+                    parsed = float(header)
+                except ValueError:
+                    parsed = backoff
+                if not math.isfinite(parsed):
+                    parsed = backoff
+                # Honoured in preference to the computed backoff, downward as
+                # well as upward, but still inside the policy's ceiling. A
+                # daily-quota endpoint answering "Retry-After: 86400" would
+                # otherwise hold a morning run for a day, which is the exact
+                # hang max_backoff_seconds exists to prevent. A negative figure
+                # from a skewed clock would otherwise reach time.sleep and
+                # raise ValueError rather than SourceError.
+                wait = min(max(parsed, 0.0), self.retry.max_backoff_seconds)
+        time.sleep(wait)
+
     def _throttle(self) -> None:
-        """Block until this source's rate limit allows another request."""
-        raise NotImplementedError(
-            "fbe.datasources.base.BaseDataSource._throttle is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        """Block until this source's rate limit allows another request.
+
+        Two limits, and the longer wins: the floor between consecutive requests
+        and the budget for the window. Only calls that actually reach the
+        network are counted, because the throttle protects the remote endpoint
+        and a cache read never touches it.
+
+        The wait is computed once and slept once rather than polled in a loop,
+        so a monkeypatched sleep in a test cannot spin.
+        """
+        window = self.rate_limit.per_seconds
+        now = time.monotonic()
+
+        while self._request_times and now - self._request_times[0] >= window:
+            self._request_times.popleft()
+
+        wait = 0.0
+        if self._request_times:
+            gap = now - self._request_times[-1]
+            wait = max(wait, self.rate_limit.min_interval_seconds - gap)
+        if len(self._request_times) >= self.rate_limit.requests:
+            wait = max(wait, window - (now - self._request_times[0]))
+
+        if wait > 0:
+            time.sleep(wait)
+            now = time.monotonic()
+
+        self._request_times.append(now)
 
     def _cache_key(
         self,
@@ -237,13 +539,16 @@ class BaseDataSource(ABC):
             params: Query parameters.
 
         Returns:
-            A filesystem-safe cache key.
+            A filesystem-safe cache key, identical to what
+            `DiskCache.key_for` derives for the same source, path and
+            parameters. The two must agree: one writes the entry and the other
+            looks for it.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.base.BaseDataSource._cache_key is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        excluded = frozenset(CREDENTIAL_PARAMS)
+        if self.api_key_param is not None:
+            excluded = excluded | {self.api_key_param}
+        return self.cache.key_for(self.name, path, params, exclude=excluded)
 
     def _observation(
         self,
@@ -252,6 +557,7 @@ class BaseDataSource(ABC):
         ref: SeriesRef,
         period: date,
         value: float,
+        released_at: datetime | None = None,
     ) -> Observation:
         """Build a canonical `Observation` from a raw value and its ref.
 
@@ -265,13 +571,30 @@ class BaseDataSource(ABC):
             currency: ISO 4217 code, or ``"GLOBAL"``.
             ref: The registry entry the value came from.
             period: The period the value describes, not the release date.
-            value: The published number, after ``ref.transform``.
+            value: The published number, in ``ref.unit``, after
+                ``ref.transform``.
+            released_at: When the number hit the tape, where the source
+                publishes it. Left ``None`` otherwise, and never derived from
+                ``period``: the period a figure describes and the day it was
+                published are different facts, and conflating them is exactly
+                the look-ahead bias Phase 6 has to avoid. A quarterly print
+                dated to the quarter it covers is weeks early.
 
         Returns:
-            A populated `Observation`.
+            A populated `Observation`. ``source``, ``series_id``, ``unit`` and
+            ``frequency`` are copied from ``ref`` rather than from anything the
+            caller re-typed, so those four cannot drift from the registry the
+            coverage report is computed against.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.base.BaseDataSource._observation is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        return Observation(
+            indicator=indicator,
+            currency=currency,
+            value=value,
+            period=period,
+            source=ref.source,
+            series_id=ref.series_id,
+            unit=ref.unit,
+            frequency=ref.frequency,
+            released_at=released_at,
         )
