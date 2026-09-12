@@ -1,0 +1,24 @@
+{
+  "_fixture_note": "Constructed body in the shape FRED's series/observations endpoint returns, NOT a live capture. No FRED_API_KEY is available in the environment this was written in, so the response could not be recorded from the API. Values below are illustrative and are not a claim about any published print. See tests/test_fred.py::test_the_spot_check_pins_value_and_unit_for_a_named_series and the note on issue #56: a human with a key should replace this file with a recorded response so that a vendor-side unit or scale change breaks the build, which is the half of that criterion a constructed body cannot deliver.",
+  "_fixture_written_on": "2026-09-12",
+  "_fixture_series_id": "DGS2",
+  "realtime_start": "2026-09-12",
+  "realtime_end": "2026-09-12",
+  "observation_start": "2026-06-01",
+  "observation_end": "2026-06-05",
+  "units": "lin",
+  "output_type": 1,
+  "file_type": "json",
+  "order_by": "observation_date",
+  "sort_order": "asc",
+  "count": 5,
+  "offset": 0,
+  "limit": 100000,
+  "observations": [
+    {"realtime_start": "2026-09-12", "realtime_end": "9999-12-31", "date": "2026-06-01", "value": "3.55"},
+    {"realtime_start": "2026-09-12", "realtime_end": "9999-12-31", "date": "2026-06-02", "value": "3.61"},
+    {"realtime_start": "2026-09-12", "realtime_end": "9999-12-31", "date": "2026-06-03", "value": "."},
+    {"realtime_start": "2026-09-12", "realtime_end": "9999-12-31", "date": "2026-06-04", "value": "3.58"},
+    {"realtime_start": "2026-09-12", "realtime_end": "9999-12-31", "date": "2026-06-05", "value": "3.62"}
+  ]
+}

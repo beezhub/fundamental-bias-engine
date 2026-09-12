@@ -36,6 +36,7 @@ from fbe.datasources.base import (
     SourceError,
 )
 from fbe.datasources.cache import DiskCache
+from fbe.datasources.fred import FredSource
 from fbe.datasources.registry import SeriesRef
 from fbe.types import Frequency, Observation
 
@@ -733,12 +734,12 @@ def test_observation_uses_the_ref_source_not_the_source_name(
 
 # --- availability -----------------------------------------------------------
 
-SCAFFOLDED_AVAILABLE = set(ALL_SOURCES)
+SCAFFOLDED_AVAILABLE = set(ALL_SOURCES) - {FredSource}
 """Sources whose ``available()`` is still a stub.
 
 Remove a class from this set in the change that implements its ``available()``,
 which is what makes the test below start demanding a real answer instead of a
-raise."""
+raise. `FredSource` came out in #56."""
 
 
 def test_available_is_true_when_the_base_has_no_prerequisite(source: _Source) -> None:
@@ -754,12 +755,12 @@ def test_available_never_reaches_the_network(
 ) -> None:
     """Availability is a question about configuration, not connectivity.
 
-    Every concrete source is still scaffolded, so each is listed in
-    ``SCAFFOLDED_AVAILABLE`` and asserted to raise. That set is a debt counter
-    rather than a blanket tolerance: landing a source means removing it from
-    the set in the same change, at which point this test starts requiring a
-    real answer. A bare ``except NotImplementedError`` here would assert
-    nothing and would never force that decision.
+    A source still scaffolded is listed in ``SCAFFOLDED_AVAILABLE`` and
+    asserted to raise. That set is a debt counter rather than a blanket
+    tolerance: landing a source means removing it from the set in the same
+    change, at which point this test starts requiring a real answer. A bare
+    ``except NotImplementedError`` here would assert nothing and would never
+    force that decision.
     """
     route = respx.route().mock(return_value=httpx.Response(200, json={}))
     source = source_class(data_config)
