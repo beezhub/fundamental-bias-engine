@@ -65,6 +65,7 @@ if TYPE_CHECKING:
 __all__ = [
     "TEMPLATE_NAME",
     "SIDECAR_FORMAT",
+    "SIDECAR_GLOB",
     "CurrencyChange",
     "PairChange",
     "ReportDiff",
@@ -88,6 +89,14 @@ SIDECAR_FORMAT = "bias-{asof:%Y-%m-%d}.json"
 """The serialised `fbe.types.BiasReport` written beside every Markdown report.
 Same stem, so the two are found together and lost together. ``--compare`` reads
 this, never the Markdown, which keeps the report layout free to change."""
+
+SIDECAR_GLOB = "bias-*.json"
+"""Glob matching every sidecar `SIDECAR_FORMAT` can produce.
+
+Kept beside the format rather than derived from it by string replacement: a
+change to the date spec would leave a derived pattern matching nothing, and a
+reader that finds no reports is indistinguishable from a directory that holds
+none. ``fbe doctor`` reads this to find the newest report."""
 
 
 @dataclass(frozen=True, slots=True)

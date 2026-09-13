@@ -71,15 +71,24 @@ script or a cron job without parsing output:
 
 from __future__ import annotations
 
+import json
+import logging
+import math
+import time
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
+import httpx
 import typer
 
 from fbe import config as config_module
+from fbe import report as report_module
+from fbe.datasources import ALL_SOURCES
+from fbe.datasources.cache import DiskCache
 from fbe.types import Conviction, Direction
 
 if TYPE_CHECKING:
@@ -95,6 +104,60 @@ EXIT_UNUSABLE = 1
 
 EXIT_BLOCKED = 3
 """A guard rule refused the request. Not an error, a decision."""
+
+LABEL_WIDTH = 16
+STATUS_WIDTH = 10
+"""Column widths for the ``doctor`` verdict lines, matching the layout
+published in ``docs/interfaces.md``. A continuation line leaves the label
+column blank, so a check that has several things to say still reads as one
+check."""
+
+KEY_PREFIX_LENGTH = 4
+"""Characters of a credential ``--show-keys`` prints. Enough to tell which key
+is loaded, not enough to use one."""
+
+CREDENTIAL_FIELDS: tuple[tuple[str, str], ...] = (("FRED_API_KEY", "fred_api_key"),)
+"""Credentials ``doctor`` reports on, as the name the vendor documents paired
+with the `fbe.config.DataConfig` field holding it. A source that gains a
+credential adds a row here, so that an absent key is named rather than showing
+up later as an unexplained coverage gap."""
+
+
+class CheckStatus(StrEnum):
+    """One verdict in the ``doctor`` output.
+
+    ``OK`` is nothing to do. ``WARN`` is usable but worth knowing, such as a
+    cache past its TTL. ``FAIL`` is a run whose output should not be traded on.
+    """
+
+    OK = "ok"
+    WARN = "warn"
+    FAIL = "fail"
+
+
+@dataclass(frozen=True, slots=True)
+class CheckLine:
+    """One printed line of the ``doctor`` report.
+
+    Attributes:
+        label: Check name, or the empty string for a continuation line under
+            the check above it.
+        status: This line's verdict.
+        detail: What was found, in plain words.
+
+    """
+
+    label: str
+    status: CheckStatus
+    detail: str
+
+    def render(self) -> str:
+        """Return the line in the published column layout."""
+        return (
+            f"{self.label:<{LABEL_WIDTH}}"
+            f"{self.status.value:<{STATUS_WIDTH}}"
+            f"{self.detail}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +336,353 @@ def _effective_config(ctx: typer.Context) -> Config:
     return resolved
 
 
+def _check_config(config: Config) -> list[CheckLine]:
+    """Report every `fbe.config.Config.validate` problem.
+
+    Args:
+        config: The effective config.
+
+    Returns:
+        One ``ok`` line, or one ``fail`` line per problem. Every problem is
+        printed rather than only the first, because they are independent and an
+        operator fixing them one run at a time is an operator running this five
+        times.
+
+    """
+    problems = config.validate()
+    if not problems:
+        weights = sum(config.scoring.weights.values())
+        # risk_per_trade_max is a fraction of account balance, 0.02 for the
+        # plan's 2%. The published layout prints a percentage, so it is scaled
+        # here and nowhere else.
+        cap_pct = config.risk.risk_per_trade_max * 100
+        return [
+            CheckLine(
+                "config",
+                CheckStatus.OK,
+                f"weights sum to {weights:.3f}, risk cap {cap_pct:.1f}%",
+            )
+        ]
+    return [
+        CheckLine("config" if index == 0 else "", CheckStatus.FAIL, problem)
+        for index, problem in enumerate(problems)
+    ]
+
+
+def _check_credentials(config: Config, show_keys: bool) -> list[CheckLine]:
+    """Say which credentials are configured, without printing one.
+
+    Args:
+        config: The effective config.
+        show_keys: Print the first `KEY_PREFIX_LENGTH` characters of each key
+            that is present.
+
+    Returns:
+        One line per credential in `CREDENTIAL_FIELDS`. An absent key is a
+        warning rather than a failure: the source it belongs to becomes a
+        recorded coverage gap, and an offline run needs no key at all.
+
+    """
+    lines: list[CheckLine] = []
+    for index, (name, field_name) in enumerate(CREDENTIAL_FIELDS):
+        # Direct access, not getattr with a default: a renamed field must be a
+        # loud contract break, not a key reported absent on a machine that has
+        # it configured.
+        value = getattr(config.data, field_name)
+        if value:
+            shown = f" ({value[:KEY_PREFIX_LENGTH]}...)" if show_keys else ""
+            lines.append(
+                CheckLine(
+                    "credentials" if index == 0 else "",
+                    CheckStatus.OK,
+                    f"{name} present{shown}",
+                )
+            )
+        else:
+            lines.append(
+                CheckLine(
+                    "credentials" if index == 0 else "",
+                    CheckStatus.WARN,
+                    f"{name} absent: that source will report as unavailable",
+                )
+            )
+    return lines
+
+
+def _check_cache(config: Config) -> list[CheckLine]:
+    """Report cache writability, entry count and the age of the oldest entry.
+
+    Args:
+        config: The effective config.
+
+    Returns:
+        A ``fail`` line when the cache directory cannot be written, since
+        nothing can be fetched into it. Testing that writes and removes one
+        empty probe file, and creates the directory if it is absent, which is
+        the one thing this command does to the disk.
+
+        Otherwise one line reporting the entry count and the oldest age in
+        completed hours against ``DataConfig.cache_ttl_hours``, warning when
+        the oldest is past it. An
+        empty cache is reported as zero entries rather than omitted: a run with
+        nothing cached is exactly what an operator is often looking for.
+
+    """
+    directory = config.data.cache_dir
+    ttl = config.data.cache_ttl_hours
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        probe = directory / ".doctor-write-probe"
+        probe.write_bytes(b"")
+        probe.unlink()
+    except OSError as error:
+        return [
+            CheckLine(
+                "cache",
+                CheckStatus.FAIL,
+                f"{directory} is not writable: {error}",
+            )
+        ]
+
+    stats = DiskCache(config.data).stats()
+    entries = int(sum(source["entries"] for source in stats.values()))
+    ages = [
+        source["oldest_hours"] for source in stats.values() if "oldest_hours" in source
+    ]
+    unreadable = int(sum(source.get("unreadable", 0.0) for source in stats.values()))
+
+    if not ages:
+        detail = f"{entries} entries (ttl {ttl}h)"
+        status = CheckStatus.OK
+    else:
+        oldest = max(ages)
+        # Rounded up, and the verdict below compares the exact figure. Up
+        # rather than down because this is a staleness number: a cache printed
+        # as younger than it is, is the false comfort that sends an operator
+        # looking at the model instead of the data. Rounding to nearest, or
+        # down, also prints the same figure either side of the TTL, so two
+        # lines showing "12h" would carry opposite verdicts.
+        detail = f"{entries} entries, oldest {math.ceil(oldest)}h (ttl {ttl}h)"
+        if oldest > ttl:
+            detail += ": run fbe refresh"
+            status = CheckStatus.WARN
+        else:
+            status = CheckStatus.OK
+
+    lines = [CheckLine("cache", status, detail)]
+    if unreadable:
+        lines.append(
+            CheckLine(
+                "",
+                CheckStatus.WARN,
+                f"{unreadable} unreadable entries: clear the cache to refetch",
+            )
+        )
+    return lines
+
+
+def _probe(source: object, timeout: float) -> tuple[CheckStatus, str]:
+    """Make one cheap request to a source, to see whether it answers.
+
+    Args:
+        source: An instantiated source carrying a ``base_url``.
+        timeout: Seconds to wait, applied to the request itself.
+
+    Returns:
+        The verdict and the detail to print. A probe that fails is a warning
+        rather than a failure: one dead source is a recorded coverage gap, not
+        a reason to refuse the whole run.
+
+    """
+    name = getattr(source, "name", "unknown")
+    url = getattr(source, "base_url", "")
+    if not url:
+        return CheckStatus.WARN, f"{name} names no base URL to probe"
+
+    # httpx logs the request line at INFO with the full URL, and a source is
+    # free to carry a credential in its base URL. `BaseDataSource` pins this
+    # when it builds its own client; this call does not go through that client.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    started = time.monotonic()
+    try:
+        response = httpx.get(url, timeout=timeout)
+    except httpx.TimeoutException:
+        return CheckStatus.WARN, f"{name} unreachable (timeout after {timeout}s)"
+    except Exception as error:  # noqa: BLE001
+        # Not just httpx.HTTPError: httpx.InvalidURL is not one of those, and a
+        # misconfigured base URL must be a reported warning rather than a
+        # traceback out of the command that exists to diagnose it.
+        return CheckStatus.WARN, f"{name} unreachable ({type(error).__name__})"
+
+    elapsed = (time.monotonic() - started) * 1000
+    if response.is_success:
+        return CheckStatus.OK, f"{name} {elapsed:.0f}ms"
+    if response.status_code in (401, 403):
+        # The commonest real failure, and it is a credential problem wearing a
+        # network problem's clothes. Saying so is the whole point of doctor.
+        return (
+            CheckStatus.WARN,
+            f"{name} refused the request (HTTP {response.status_code}): "
+            "check the credential, not the network",
+        )
+    return CheckStatus.WARN, f"{name} answered HTTP {response.status_code}"
+
+
+def _check_sources(config: Config, timeout: float) -> list[CheckLine]:
+    """Report availability for every source, then probe the usable ones.
+
+    Args:
+        config: The effective config.
+        timeout: Seconds per probe.
+
+    Returns:
+        One comma-joined line naming every source that answered, then one line
+        per source that did not, which is the layout the worked example in
+        ``docs/interfaces.md`` prints. A source whose ``available`` is still
+        scaffolded is reported as unavailable, which is the honest answer and
+        is why this command can land before the sources do.
+
+        A ``fail`` line when every source that was actually probed failed,
+        since ``docs/interfaces.md`` counts that among the conditions for exit
+        1. Every source being scaffolded is not that and stays a warning:
+        nothing failed, the phase has not landed yet.
+
+        Nothing here raises. A dead source is what the operator ran this to
+        find out about.
+
+    """
+    reached: list[str] = []
+    problems: list[tuple[CheckStatus, str]] = []
+    probed = 0
+
+    for source_class in ALL_SOURCES:
+        name = getattr(source_class, "name", source_class.__name__)
+        try:
+            source = source_class(config.data)
+        except Exception as error:  # noqa: BLE001
+            # A constructor that raises is a programming error rather than an
+            # operational one, so it fails rather than warns, and it says what
+            # happened instead of only naming the exception type.
+            problems.append(
+                (
+                    CheckStatus.FAIL,
+                    f"{name} could not be constructed: {type(error).__name__}: {error}",
+                )
+            )
+            continue
+
+        try:
+            usable = source.available()
+        except NotImplementedError:
+            problems.append((CheckStatus.WARN, f"{name} scaffolded, not yet built"))
+            continue
+        except Exception as error:  # noqa: BLE001
+            problems.append(
+                (
+                    CheckStatus.WARN,
+                    f"{name} could not report availability: "
+                    f"{type(error).__name__}: {error}",
+                )
+            )
+            continue
+
+        if not usable:
+            problems.append((CheckStatus.WARN, f"{name} unavailable, not configured"))
+            continue
+        if config.data.offline:
+            reached.append(f"{name} available, offline so no probe")
+            continue
+
+        probed += 1
+        status, detail = _probe(source, timeout)
+        if status is CheckStatus.OK:
+            reached.append(detail)
+        else:
+            problems.append((status, detail))
+
+    lines: list[CheckLine] = []
+    if reached:
+        lines.append(CheckLine("sources", CheckStatus.OK, ", ".join(reached)))
+    if probed and not reached:
+        lines.append(
+            CheckLine(
+                "sources" if not lines else "",
+                CheckStatus.FAIL,
+                f"all {probed} probed sources failed, so nothing can be fetched",
+            )
+        )
+    for status, detail in problems:
+        lines.append(CheckLine("sources" if not lines else "", status, detail))
+    if not lines:
+        lines.append(
+            CheckLine("sources", CheckStatus.WARN, "no sources are registered")
+        )
+    return lines
+
+
+def _check_reports(config: Config) -> list[CheckLine]:
+    """Say whether a previous report exists and whether its digest still matches.
+
+    Reads only the ``config_digest`` out of the newest JSON sidecar rather than
+    reconstructing a report through `fbe.report.load_report`, which is
+    scaffolded until Phase 5. The filename convention comes from
+    `fbe.report.SIDECAR_GLOB` so it is not restated here. The two keys this
+    reads, ``asof`` and ``config_digest``, are the only shape it assumes of the
+    sidecar, and Phase 5 should keep both at the top level or update this.
+
+    Args:
+        config: The effective config.
+
+    Returns:
+        An ``ok`` line saying there is nothing to diff against when the
+        directory is empty, which is the normal state of a fresh checkout. A
+        digest that no longer matches is a warning, because the weights have
+        moved since and the two runs are not comparable.
+
+    """
+    directory = config.data.reports_dir
+    if directory.exists() and not directory.is_dir():
+        return [
+            CheckLine(
+                "reports",
+                CheckStatus.FAIL,
+                f"{directory} is not a directory, so no report can be written",
+            )
+        ]
+    sidecars = sorted(directory.glob(report_module.SIDECAR_GLOB))
+    if not sidecars:
+        return [CheckLine("reports", CheckStatus.OK, "no previous report to diff")]
+
+    newest = sidecars[-1]
+    try:
+        payload = json.loads(newest.read_text(encoding="utf-8"))
+        recorded = str(payload["config_digest"])
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        return [
+            CheckLine(
+                "reports",
+                CheckStatus.WARN,
+                f"{newest.name} could not be read ({type(error).__name__})",
+            )
+        ]
+
+    asof = str(payload.get("asof", newest.stem))
+    if recorded == config.digest():
+        return [
+            CheckLine(
+                "reports", CheckStatus.OK, f"last report {asof}, config digest matches"
+            )
+        ]
+    return [
+        CheckLine(
+            "reports",
+            CheckStatus.WARN,
+            f"last report {asof} used digest {recorded}, not comparable",
+        )
+    ]
+
+
 @app.command(
     help=(
         "Check config, credentials, cache and source reachability. Run this "
@@ -334,12 +744,90 @@ def doctor(
         show_keys: Print truncated key prefixes to confirm which key is loaded.
 
     Raises:
-        NotImplementedError: Always, until the health checks land.
+        typer.Exit: With `EXIT_UNUSABLE` when a check fails outright, or when a
+            check warns and ``--strict`` is set. A warning on its own exits
+            `EXIT_OK`, because a stale cache or an unconfigured source is a run
+            worth looking at rather than a run that could not happen.
 
     """
-    raise NotImplementedError(
-        "fbe.cli.doctor is scaffolded; see docs/roadmap.md Phase 1"
-    )
+    failures = 0
+    warnings = 0
+
+    def emit(lines: Sequence[CheckLine]) -> None:
+        """Print one check's lines now and count their verdicts.
+
+        Printed as each check finishes rather than collected and printed at the
+        end, so a check that raises still leaves the verdicts already known on
+        the screen. This is the command an operator runs when everything else
+        is broken, and it has to be the last thing to withhold what it knows.
+        """
+        nonlocal failures, warnings
+        for line in lines:
+            typer.echo(line.render())
+            if line.status is CheckStatus.FAIL:
+                failures += 1
+            elif line.status is CheckStatus.WARN:
+                warnings += 1
+
+    try:
+        config = _effective_config(ctx)
+    except config_module.ConfigError as error:
+        # An unknown key or an unreadable file is the commonest config mistake
+        # there is, and it is precisely what doctor is run to find. Letting it
+        # reach the operator as a traceback, from the one command meant to be
+        # usable when nothing else is, would be the worst moment for it.
+        #
+        # This is the one case where the later checks do not run. They each
+        # need a setting the file was supposed to supply, and checking a cache
+        # directory the operator did not choose would report on somewhere they
+        # are not looking. The `validate` path below is different: that config
+        # loaded, so every other check has real settings to work from.
+        emit([CheckLine("config", CheckStatus.FAIL, str(error))])
+        emit(
+            [
+                CheckLine(
+                    "",
+                    CheckStatus.FAIL,
+                    "no other check can run until the config file loads",
+                )
+            ]
+        )
+        typer.echo(_summarise(failures, warnings))
+        raise typer.Exit(EXIT_UNUSABLE) from error
+
+    emit(_check_config(config))
+    emit(_check_credentials(config, show_keys))
+    emit(_check_cache(config))
+    emit(_check_sources(config, timeout))
+    emit(_check_reports(config))
+
+    typer.echo(_summarise(failures, warnings))
+
+    if failures or (warnings and strict):
+        raise typer.Exit(EXIT_UNUSABLE)
+
+
+def _summarise(failures: int, warnings: int) -> str:
+    """Return the closing line counting what was found.
+
+    Args:
+        failures: Lines at `CheckStatus.FAIL`.
+        warnings: Lines at `CheckStatus.WARN`.
+
+    Returns:
+        A count, and nothing about the quality of the engine's results.
+        ``doctor`` reports plumbing, and this is the line an operator reads
+        first when they already doubt the output.
+
+    """
+    if not failures and not warnings:
+        return "All checks passed."
+    parts = []
+    if failures:
+        parts.append(f"{failures} failure{'s' if failures != 1 else ''}")
+    if warnings:
+        parts.append(f"{warnings} warning{'s' if warnings != 1 else ''}")
+    return ", ".join(parts) + "."
 
 
 @app.command(

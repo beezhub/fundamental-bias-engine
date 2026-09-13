@@ -76,10 +76,14 @@ Then check the install:
 fbe doctor
 ```
 
-`doctor` reports which data sources are reachable, whether the FRED key works,
-what is in the cache, and which parts of the pipeline are not yet implemented.
-Until it lands, confirm the key with one direct request. A working key returns
-a JSON body with one observation; a bad one returns 400.
+`doctor` reports which data sources are reachable, whether each credential is
+present, what is in the cache, and which parts of the pipeline are not yet
+implemented. It reports the key as present, not as working: the probe does not
+spend a request carrying it. Where a source answers 401 or 403, `doctor` names
+that as a credential problem rather than a network one, which is the case a
+present but expired key produces. To confirm a key outright, make one direct
+request. A working key returns a JSON body with one observation; a bad one
+returns 400.
 
 ```bash
 curl -s "https://api.stlouisfed.org/fred/series/observations?series_id=FEDFUNDS&file_type=json&limit=1&sort_order=desc&api_key=$FRED_API_KEY"
