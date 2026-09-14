@@ -130,6 +130,31 @@ merges.
 Routines bound to a host session send no push notifications, so the trail on
 GitHub is the record of what a run did.
 
+## Working on it yourself
+
+The seven runs above are unattended. When the owner sits down to the project in
+their own time, two skills in `.claude/skills/` do the same work with them at
+the keyboard:
+
+| Skill | Does |
+| --- | --- |
+| `/status` | Where the project is, in plain language, in under a minute. Reads only. |
+| `/next` | Picks up one issue and takes it to a pull request. `/next 62` takes that one. |
+
+`/next` follows the same rules as the build desks and this file is its
+authority too. The differences are only the ones that follow from a person
+being present: it proposes one issue rather than listing eight, it asks before
+touching `src/fbe/types.py` or a configured value rather than refusing outright,
+and it stops and says so rather than guessing.
+
+Two things it must not do, the same as the desks: it does not merge, and it does
+not decide anything from the four kinds above that belong to the owner.
+
+A session at the keyboard and a scheduled run can collide, since the desks run
+on weekdays. Both claim by label and neither takes an issue already at
+`status:in-progress`, which is what keeps them apart. Claim before building, not
+after.
+
 ## Reused sessions, stale transcripts
 
 A host session is reused across runs, which means earlier turns sit above the
