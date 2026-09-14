@@ -419,3 +419,114 @@ def test_the_component_discount_is_documented_where_the_blend_happens() -> None:
     parameters = inspect.signature(BasePillar.blend_components).parameters
     assert "component_freshness" in parameters
     assert SCAFFOLD.search(inspect.getsource(BasePillar.blend_components))
+
+
+# ----------------------------------------------------------------------
+# The age of a set, and the age of no set at all
+# ----------------------------------------------------------------------
+#
+# `staleness_days` answers "how old is the freshest of these observations".
+# For an empty set there is no such age, and its docstring says it returns
+# `ScoringConfig.max_staleness_days + 1` so an absent pillar sorts as stale
+# rather than as fresh. It was a `@staticmethod`, so it had no `self.config`
+# to read that from and built a fresh `ScoringConfig()` instead, which ignores
+# every override.
+#
+# That is the config-drift trap, and it is quiet. An owner who sets
+# `max_staleness_days = 60` gets 46 back, which is inside the allowance, so the
+# ramp reports an absent pillar as a late release at partial weight instead of
+# as absent. See issue #28.
+
+
+def test_the_empty_set_sentinel_follows_the_pillars_own_config() -> None:
+    """Criterion 2. Override the ceiling and the sentinel must move with it.
+
+    65 rather than the default 45, so a sentinel that happens to equal
+    ``ScoringConfig().max_staleness_days + 1`` cannot pass. This is the wire,
+    not the constant.
+    """
+    pillar = MonetaryPillar(config=ScoringConfig(max_staleness_days=65))
+
+    assert pillar.staleness_days([], ASOF) == 66
+
+
+def test_the_empty_set_sentinel_is_the_one_missing_score_documents() -> None:
+    """One sentinel, one owner.
+
+    `missing_score` takes the same value as the default for its own
+    ``staleness_days`` argument. If these two ever disagree, a report shows one
+    number for an absent pillar and the aggregator acts on the other.
+    """
+    for ceiling in (30, 45, 65):
+        pillar = MonetaryPillar(config=ScoringConfig(max_staleness_days=ceiling))
+        assert pillar.staleness_days([], ASOF) == pillar.config.max_staleness_days + 1
+
+
+def test_staleness_days_reads_config_off_the_instance() -> None:
+    """Criterion 1, checked against the method rather than the whole module.
+
+    The two ways to honour the docstring from a static method were a literal
+    46 or a fresh `ScoringConfig()`. Neither may come back: the first drifts
+    silently from config, and the second ignores overrides while looking like
+    it reads them.
+
+    Scoped to this method's own source. `BasePillar.__init__` constructs a
+    default `ScoringConfig()` legitimately, since that is how ``self.config``
+    comes to exist when a caller passes none, and a module-wide ban would
+    forbid the one construction that has to happen.
+    """
+    source = inspect.getsource(BasePillar.staleness_days)
+
+    assert "self.config.max_staleness_days" in source
+    assert "ScoringConfig()" not in source, (
+        "building a default ScoringConfig here ignores any override the run "
+        "was given; read self.config instead"
+    )
+    assert not re.search(r"return\s+4[56]\b", source), (
+        "a bare staleness value here is a second copy of a number config holds"
+    )
+
+
+def test_the_age_of_a_non_empty_set_is_the_newest_period() -> None:
+    """Criterion 3, first half. The freshest observation decides, not the last."""
+    pillar = MonetaryPillar()
+    observations = [
+        _obs("yield_2y", "USD", _days_before(40)),
+        _obs("yield_2y", "USD", _days_before(3)),
+        _obs("yield_2y", "USD", _days_before(17)),
+    ]
+
+    assert pillar.staleness_days(observations, ASOF) == 3
+
+
+def test_a_forward_dated_period_is_floored_at_zero() -> None:
+    """Criterion 3, second half.
+
+    Survey data is routinely stamped ahead of the run date. A negative age
+    would read as fresher than fresh and, through the ramp, as a factor above
+    1.0, which would hand a pillar more weight than its configured share.
+    """
+    pillar = MonetaryPillar()
+    ahead = date.fromordinal(ASOF.toordinal() + 12)
+
+    assert pillar.staleness_days([_obs("yield_2y", "USD", ahead)], ASOF) == 0
+
+
+def test_a_period_stamped_on_the_run_date_is_zero_days_old() -> None:
+    """The boundary between the two branches above, pinned."""
+    pillar = MonetaryPillar()
+
+    assert pillar.staleness_days([_obs("yield_2y", "USD", ASOF)], ASOF) == 0
+
+
+def test_the_docstring_names_missing_score_as_the_path_for_an_absent_pillar() -> None:
+    """Criterion 4.
+
+    The sentinel exists so an absent pillar sorts as stale, but an absent
+    pillar should be reaching `missing_score`, which sets ``z`` to ``None`` and
+    is what the aggregator actually detects. A reader who finds only the
+    sentinel could reasonably build the absent case out of it instead.
+    """
+    doc = inspect.getdoc(BasePillar.staleness_days) or ""
+
+    assert "missing_score" in doc

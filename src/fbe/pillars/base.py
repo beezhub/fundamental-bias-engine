@@ -733,8 +733,7 @@ class BasePillar(ABC):
     # Freshness and absence
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def staleness_days(observations: Sequence[Observation], asof: date) -> int:
+    def staleness_days(self, observations: Sequence[Observation], asof: date) -> int:
         """Return the age in days of the freshest observation in a set.
 
         Age is measured from ``period``, the period the data describes, not from
@@ -749,12 +748,28 @@ class BasePillar(ABC):
         Returns:
             ``(asof - newest period).days``, floored at ``0`` for periods dated
             after ``asof``, which happens with forward-dated survey data.
-            Returns ``ScoringConfig.max_staleness_days + 1`` for an empty set,
+            Returns ``self.config.max_staleness_days + 1`` for an empty set,
             so an absent pillar sorts as stale rather than as fresh.
+
+        An instance method rather than a static one, and the reason is the empty
+        set. The sentinel is a configured value plus one, so a static method can
+        only reach it by writing the number out or by building a default
+        `ScoringConfig`, and both stop tracking a run that overrode the ceiling.
+        This one returned 46 against a configured 60, which is inside the
+        allowance, so the ramp reported an absent pillar as a late release at
+        partial weight rather than as absent. See issue #28.
+
+        **`missing_score` is the intended path for an absent pillar**, not this
+        sentinel. An absent pillar needs ``z`` set to ``None``, which is what the
+        aggregator detects and what excludes the weight from the composite; the
+        age is only how such a pillar sorts once it is already marked absent.
+        `missing_score` defaults its own ``staleness_days`` argument to the same
+        expression for that reason. Reaching for this value to build the absent
+        case would produce a pillar that looks stale and still carries weight.
 
         """
         if not observations:
-            return ScoringConfig().max_staleness_days + 1
+            return self.config.max_staleness_days + 1
         newest = max(observation.period for observation in observations)
         return max(0, (asof - newest).days)
 
