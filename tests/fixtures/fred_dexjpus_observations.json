@@ -1,0 +1,16 @@
+{
+  "_fixture_note": "Constructed body in the shape FRED's series/observations endpoint returns, NOT a live capture. DEXJPUS is quoted Japanese yen per US dollar, the opposite direction to DEXUSEU, and USDJPY is the market's own way of writing that pair. The values sit near 149, two orders of magnitude away from the DEXUSEU fixture, so a blanket inversion applied to either one cannot satisfy both assertions. Values are illustrative and are not a claim about any published print.",
+  "_fixture_written_on": "2026-09-14",
+  "_fixture_series_id": "DEXJPUS",
+  "realtime_start": "2026-09-14",
+  "realtime_end": "2026-09-14",
+  "observation_start": "2026-08-15",
+  "observation_end": "2026-09-14",
+  "units": "lin",
+  "count": 3,
+  "observations": [
+    {"realtime_start": "2026-09-14", "realtime_end": "2026-09-14", "date": "2026-09-08", "value": "148.72"},
+    {"realtime_start": "2026-09-14", "realtime_end": "2026-09-14", "date": "2026-09-09", "value": "149.35"},
+    {"realtime_start": "2026-09-14", "realtime_end": "2026-09-14", "date": "2026-09-11", "value": "149.08"}
+  ]
+}

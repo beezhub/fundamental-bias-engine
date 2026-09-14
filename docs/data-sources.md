@@ -750,7 +750,7 @@ keys currently in that position.
 | `yield_2y` | 6/8 | 6/8 | CHF and NZD manual, see below |
 | `yield_2y_chg_1m` | 6/8 | 6/8 | derived from `yield_2y`, not separately published; same 6/8 |
 | `yield_2y_chg_3m` | 6/8 | 6/8 | derived from `yield_2y`, not separately published; same 6/8 |
-| `yield_10y` | 8/8 | 8/8 | good |
+| `yield_10y` | 8/8 | 8/8 | good, but **consumed by no pillar**; see below |
 | `cpi_yoy` | 8/8 | 8/8 | good, was 2/8 before the OECD API |
 | `core_cpi_yoy` | 8/8 | 8/8 | good, was 2/8 |
 | `gdp_yoy` | 8/8 | 8/8 | good |
@@ -779,11 +779,25 @@ domain it owns.
 
 The cost is specific and it is the largest single risk in the data layer. The
 monetary pillar draws most of its sub-weight from the 2-year, and monetary is
-the heaviest pillar in the composite. Without it, those two currencies fail the
-pillar's component floor, lose the pillar outright, and take a conviction
-demotion for the reduced coverage. In practice that means CHF and NZD scores
-are built from policy rate and 10-year yield alone on the monetary side, which
-is a slower and less policy-sensitive read than the other six get.
+the heaviest pillar in the composite.
+
+Worked through, for either currency. The 2-year carries three of MONETARY's five
+components, `yield_2y` at 0.25 and the two change series at 0.20 and 0.25, so
+losing it leaves `policy_rate` 0.15 and `real_policy_rate` 0.15, which is 0.30
+of the sub-weight. That is at or below `MIN_COMPONENT_WEIGHT` (0.50), so MONETARY
+returns `missing_score`: `z` is `None` and there is no monetary read at all.
+Coverage then falls to 0.70, the other six pillars' weight. That is below
+`ScoringConfig.coverage_demotion` (0.80), so every pair with a CHF or NZD leg is
+demoted one conviction step, and above `ScoringConfig.min_coverage` (0.60), so
+those pairs are not blocked outright. The currency is scored on six pillars out
+of seven, and the report says so through coverage.
+
+**There is no 10-year fallback.** MONETARY has no `yield_10y` term at any
+sub-weight, in section 3.1 of `docs/scoring-spec.md` or in
+`MonetaryPillar.component_weights`, so nothing substitutes for the missing front
+end. The pillar is absent, not degraded. That distinction matters when deciding
+what to do about it: a degraded read is something to live with, an absent
+heaviest pillar is not.
 
 Three options, in order of preference: retry the RBNZ from another network,
 since a 403 from one runner is not proof of a policy; enter both by hand in
@@ -892,7 +906,7 @@ a free machine-readable source, not the operator's typing.
 | `yield_2y` | monetary | `percent` | daily | 10d | 75% | 75% |
 | `yield_2y_chg_1m` | monetary | `basis_points` | daily | 10d | 75% | 75% |
 | `yield_2y_chg_3m` | monetary | `basis_points` | daily | 10d | 75% | 75% |
-| `yield_10y` | monetary | `percent` | monthly | 75d | 100% | 100% |
+| `yield_10y` | monetary (unconsumed) | `percent` | monthly | 75d | 100% | 100% |
 | `cpi_yoy` | inflation | `percent` | monthly | 200d | 100% | 100% |
 | `core_cpi_yoy` | inflation | `percent` | monthly | 200d | 100% | 100% |
 | `gdp_yoy` | growth | `percent` | quarterly | 270d | 100% | 100% |
@@ -958,9 +972,13 @@ Pillar: **monetary**. Canonical unit: `basis_points`. Staleness allowance: 10 da
 
 #### `yield_10y`
 
-Ten-year benchmark government bond yield. Slower than the 2y and less directly tied to policy, but it has clean, current coverage across all eight, so it carries the monetary pillar for the two currencies whose front end is missing.
+Ten-year benchmark government bond yield. Registered and verified across all eight, with clean current coverage, and **consumed by no pillar today**.
 
-Pillar: **monetary**. Canonical unit: `percent`. Staleness allowance: 75 days. Fresh coverage: 100%.
+MONETARY is attributed to it in the registry but does not ask for it: section 3.1 of `docs/scoring-spec.md` and `MonetaryPillar.component_weights` both name five components and none is a 10-year series. Read its 100% coverage as a series held ready, not as a live input, and do not read it as covering the CHF and NZD front-end gap above.
+
+It is specifically **not** a fallback for `yield_2y`, and adding it as one would be a substitution error rather than a repair. Section 3.1 values the 2-year because it is the market's expectation of the policy path, already priced. A 10-year yield is dominated by term premium and by long-run growth and inflation expectations, so it answers a different question. Whether MONETARY should ever gain a 10-year term is a scoring decision for `quant-analyst` and is not settled here.
+
+Pillar: **monetary**, unconsumed. Canonical unit: `percent`. Staleness allowance: 75 days. Fresh coverage: 100%.
 
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

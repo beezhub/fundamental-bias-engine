@@ -90,6 +90,7 @@ __all__ = [
     "SOURCE_SNB",
     "SOURCE_STOOQ",
     "TRANSFORMS",
+    "UNCONSUMED_INDICATORS",
     "VERIFIED_ON",
     "coverage_report",
     "identifier_coverage",
@@ -634,10 +635,18 @@ YIELD_10Y = IndicatorSpec(
     frequency=Frequency.MONTHLY,
     max_staleness_days=75,
     description=(
-        "Ten-year benchmark government bond yield. Slower than the 2y and less "
-        "directly tied to policy, but it has clean, current coverage across "
-        "all eight, so it carries the monetary pillar for the two currencies "
-        "whose front end is missing."
+        "Ten-year benchmark government bond yield. Registered and verified "
+        "across all eight with clean current coverage, and consumed by no "
+        "pillar today: MONETARY is attributed here but asks for five "
+        "components and none is a 10-year series. Held ready, so read its "
+        "coverage as availability rather than as a live input. Specifically "
+        "not a fallback for yield_2y, and not what CHF and NZD fall back on "
+        "when their 2-year is missing, because there is no such fallback. "
+        "Section 3.1 of docs/scoring-spec.md values the 2-year as the priced "
+        "policy path, while a 10-year is dominated by term premium and "
+        "long-run growth and inflation expectations, so it answers a "
+        "different question. Whether MONETARY gains a 10-year term is a "
+        "scoring decision and is open."
     ),
     series={
         "USD": _ref(
@@ -1718,6 +1727,28 @@ INDICATORS: Mapping[str, IndicatorSpec] = {
 }
 """The registry. Keyed by canonical indicator key; this is what `Pillar.requires`
 entries name and what `Observation.indicator` carries."""
+
+
+UNCONSUMED_INDICATORS: frozenset[str] = frozenset({"yield_10y"})
+"""Registered indicators that name a pillar but that no pillar asks for.
+
+An `IndicatorSpec` carries a ``pillar`` field, and the natural reading of that
+field is that the pillar consumes the series. For everything in this set the
+reading is wrong: the attribution records which pillar the series would belong
+to if it were ever used, and nothing reads it today.
+
+The set exists so that a reader checking a coverage figure can tell a live input
+from a series held ready, and so that a second orphan cannot appear silently.
+``tests/test_registry_pillar_agreement.py`` asserts both directions: nothing
+attributed to a pillar is missing from both that pillar's ``requires`` and this
+set, and nothing in this set is in fact consumed. Adding a key here is a
+deliberate statement, not a way to quiet the test.
+
+``yield_10y`` is the only entry, and it is here rather than unregistered because
+its coverage is genuinely verified 8/8 and losing that would mean re-verifying
+eight sources if a scoring decision ever wants it. It is specifically not a
+fallback for ``yield_2y``; see its own description and issue #26.
+"""
 
 
 def series_for(indicator: str, currency: str) -> SeriesRef | None:

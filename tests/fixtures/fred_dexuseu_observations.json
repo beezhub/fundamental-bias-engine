@@ -1,0 +1,17 @@
+{
+  "_fixture_note": "Constructed body in the shape FRED's series/observations endpoint returns, NOT a live capture. No FRED_API_KEY is available in the environment this was written in. DEXUSEU is quoted US dollars per euro, so the values below sit near 1.08 and must come back unchanged: EURUSD is the market's own way of writing that pair. Values are illustrative and are not a claim about any published print.",
+  "_fixture_written_on": "2026-09-14",
+  "_fixture_series_id": "DEXUSEU",
+  "realtime_start": "2026-09-14",
+  "realtime_end": "2026-09-14",
+  "observation_start": "2026-08-15",
+  "observation_end": "2026-09-14",
+  "units": "lin",
+  "count": 4,
+  "observations": [
+    {"realtime_start": "2026-09-14", "realtime_end": "2026-09-14", "date": "2026-09-08", "value": "1.0812"},
+    {"realtime_start": "2026-09-14", "realtime_end": "2026-09-14", "date": "2026-09-09", "value": "1.0843"},
+    {"realtime_start": "2026-09-14", "realtime_end": "2026-09-14", "date": "2026-09-10", "value": "."},
+    {"realtime_start": "2026-09-14", "realtime_end": "2026-09-14", "date": "2026-09-11", "value": "1.0791"}
+  ]
+}

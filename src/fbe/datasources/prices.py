@@ -60,10 +60,11 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from fbe.config import DataConfig
 from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy, SourceError
+from fbe.datasources.fred import FredSource
 from fbe.datasources.registry import INDICATORS, SeriesRef
 from fbe.types import Observation
 
@@ -71,7 +72,9 @@ __all__ = [
     "FRED_COMMODITY_SERIES",
     "FRED_RISK_SERIES",
     "FRED_SPOT_SERIES",
+    "MAX_SPOT_STALENESS_DAYS",
     "RATE_LIMIT",
+    "SPOT_LOOKBACK_DAYS",
     "STOOQ_CLOSE_COLUMN",
     "STOOQ_CSV_HEADER",
     "STOOQ_CSV_URL",
@@ -171,6 +174,35 @@ free terms-of-trade proxy. The GlobalDairyTrade auction index is the right
 series and is published fortnightly on globaldairytrade.info. ``food`` is a poor
 substitute, since the dairy component is a small share of it."""
 
+SPOT_LOOKBACK_DAYS = 30
+"""How far back `PricesSource.spot` asks FRED for, in calendar days.
+
+Width matters only to the ``on=None`` path, which has to find the newest fixing
+and so needs more than one session in the window. Asking for a named session
+reads one row and ignores its neighbours, so the width is irrelevant there.
+
+These are Federal Reserve H.10 noon rates, published on US banking days, so the
+gaps are US holidays and weekends rather than the holidays of the other leg:
+Golden Week does not suspend ``DEXJPUS``. The longest US run is about four days.
+Thirty is therefore generous rather than tight, which is deliberate: the cost of
+too narrow is a window with no rows at all, and the cost of too wide is bounded
+by `MAX_SPOT_STALENESS_DAYS`, which refuses an answer that is too old whatever
+the window held."""
+
+MAX_SPOT_STALENESS_DAYS = 7
+"""How old the newest fixing may be before ``spot(pair)`` refuses to answer.
+
+A FRED series can stop updating while continuing to answer requests normally,
+which the `fbe.datasources.fred` module docstring records happening to several
+series already. Without this bound, ``on=None`` would hand back the last fixing
+it could find, up to `SPOT_LOOKBACK_DAYS` old, as though it were current. A rate
+weeks stale is the same defect as a conversion rate defaulting to 1.0: it sizes
+a position against a number nobody looked at, and nothing downstream can tell.
+
+Seven days rather than four, so an ordinary US holiday week plus its weekends
+cannot trip it. Past that, the series has stopped rather than the market having
+been shut, and those need different answers from the operator."""
+
 RATE_LIMIT = RateLimit(requests=20, per_seconds=60.0, min_interval_seconds=1.0)
 """Stooq throttles by IP and publishes no limit. One second between requests,
 and the whole daily refresh is a handful of symbols."""
@@ -186,6 +218,23 @@ class _BodyNotCsv(SourceError):
     answer from the operator, and telling all of them to open a browser and
     check the symbol sends them after the wrong thing.
     """
+
+
+def _today() -> date:
+    """Return the current date.
+
+    A seam, and the only reason it exists: ``spot(pair)`` with no session has to
+    ask "as of when", and a test that let that be the real today would pass in
+    the week it was written and fail the week after, as the fixture aged past
+    `MAX_SPOT_STALENESS_DAYS`. Pinning it here is cheaper and more honest than
+    patching the `datetime` module, and keeps the fixed-date rule the rest of
+    the suite already follows.
+
+    Returns:
+        Today's date in the system's local timezone.
+
+    """
+    return date.today()
 
 
 class PricesSource(BaseDataSource):
@@ -212,10 +261,47 @@ class PricesSource(BaseDataSource):
         """Store the run's data configuration.
 
         Args:
-            config: Effective `DataConfig`. No credential is needed.
+            config: Effective `DataConfig`. No credential is needed by the
+                Stooq endpoint. `spot` reads through FRED, which does take one,
+                and carries this same config so there is no second place for a
+                key to come from.
 
         """
         super().__init__(config)
+        self._fred_source: FredSource | None = None
+
+    def _fred(self) -> FredSource:
+        """Return the FRED source this one reads its spot fixings through.
+
+        Built once and reused, and deliberately not a second HTTP client. The
+        run keeps one key, one throttle and one cache for FRED that way, which
+        is what the module docstring asks for.
+
+        Returns:
+            The source, carrying this run's `DataConfig` and therefore its
+            cache directory, TTL, offline flag and credential. The throttle is
+            per instance, so a collector holding its own `FredSource` and this
+            one would count separately against the same endpoint. That is a
+            known limit of building one here rather than being handed one, and
+            it is the reason the cache is shared even though the throttle is
+            not.
+
+        """
+        if self._fred_source is None:
+            self._fred_source = FredSource(self.config)
+        return self._fred_source
+
+    def close(self) -> None:
+        """Release this source's HTTP client and the FRED one it reads through.
+
+        The base only knows about its own client. `spot` goes through a second
+        `FredSource`, which opens a client of its own, so closing only the base
+        leaks it. Safe to call more than once and safe on a source that never
+        made a request.
+        """
+        super().close()
+        if self._fred_source is not None:
+            self._fred_source.close()
 
     def _decode(self, body: bytes) -> object:
         """Parse a Stooq CSV body into session and close pairs.
@@ -493,8 +579,128 @@ class PricesSource(BaseDataSource):
             mixed quoting directions, and a second inversion downstream is how
             a bias ends up backwards.
 
+            ``None`` carries exactly one meaning, that the market published no
+            fixing for that session. It is never returned for a pair this
+            module does not serve, nor for a request that failed, nor for a
+            cold cache on an offline run: each of those raises instead. A
+            caller sizing a position has to be able to tell "the market was
+            shut" from "we could not ask", because the first is a fact about
+            the day and the second is a fact about the run.
+
+            The value is in the quote currency per one unit of the base
+            currency, which is the unit FRED publishes and which nothing here
+            rescales.
+
+            With ``on`` unset the newest fixing in the window comes back, which
+            may be a session or two old over a weekend or a holiday. It is
+            never more than `MAX_SPOT_STALENESS_DAYS` old: past that this
+            raises rather than returning a rate that is no longer current.
+
+        Raises:
+            SourceError: When ``on`` is a ``datetime`` rather than a ``date``,
+                since a fixing belongs to a session and not to a moment in one.
+
+                When no FRED credential is configured and the run is online,
+                named as a credential problem rather than left to arrive as the
+                bare 400 FRED answers a keyless request with.
+
+                When the newest fixing found is more than
+                `MAX_SPOT_STALENESS_DAYS` older than the session asked about,
+                which means the series stopped publishing rather than the
+                market having been shut.
+
+                When ``pair`` is not a key of `FRED_SPOT_SERIES`, and
+                the message lists what is served. An unserved pair answered
+                with ``None`` would make a typo and a data gap
+                indistinguishable at the call site, and ``"USDEUR"`` is in this
+                case: a pair written against market convention is refused
+                rather than quietly answered with the rate for its inverse.
+
+                Also raised, unchanged, for the failures the shared request
+                path reports: an exhausted retry, an unreadable body, or an
+                offline run whose cache holds nothing.
+
         """
-        raise NotImplementedError(
-            "fbe.datasources.prices.PricesSource.spot is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        if isinstance(on, datetime):
+            # datetime subclasses date, so this type-checks. It would then
+            # never match a period and would send an ISO timestamp as
+            # observation_end, which FRED rejects with an opaque 400.
+            raise SourceError(
+                f"spot takes a date for 'on', got a datetime ({on!r}). A "
+                "fixing belongs to a session, not to a moment in one."
+            )
+
+        try:
+            series_id = FRED_SPOT_SERIES[pair]
+        except KeyError as error:
+            served = ", ".join(sorted(FRED_SPOT_SERIES))
+            # Named for FRED rather than for self.name. This class is named
+            # "stooq" for the refs it owns, but the fixings come from FRED, and
+            # an operator sent to look at Stooq would find its anti-bot
+            # challenge and conclude that was the cause.
+            raise SourceError(
+                f"no FRED spot series is configured for {pair!r}. "
+                f"spot serves {served}. Pairs are named the way the market "
+                "writes them, so a pair is not served by asking for its "
+                "inverse: USDEUR is not EURUSD and will not be answered with "
+                "EURUSD's rate."
+            ) from error
+
+        # The window ends at the session asked for rather than at today, so no
+        # fixing dated after `on` can come back.
+        #
+        # That bounds the period, not the vintage. These rates are revised, and
+        # this call does not pass `vintage`, so a past session comes back as it
+        # reads today rather than as it read that day. `spot` is therefore not
+        # the entry point a Phase 6 backtest should use; `FredSource` takes a
+        # vintage and this signature has nowhere to put one.
+        end = on if on is not None else _today()
+        start = end - timedelta(days=SPOT_LOOKBACK_DAYS)
+
+        # Through FredSource rather than a second client, so the run keeps one
+        # key and one cache for FRED. Nothing here touches the value:
+        # FRED_SPOT_SERIES has already resolved the quoting direction by key,
+        # and a second normalisation is how a rate ends up inverted.
+        fred = self._fred()
+        if not fred.available():
+            # Asked before the request rather than after, because FRED answers
+            # a keyless call with a bare 400 that names no cause, and an
+            # operator reading that goes looking at the network.
+            raise SourceError(
+                f"no FRED credential is configured, so {series_id} cannot be "
+                f"fetched for {pair}. Set FRED_API_KEY, or run offline to read "
+                "what is already cached."
+            )
+        rows = fred.fetch_series(series_id, start, end)
+
+        if on is not None:
+            for period, value in rows:
+                if period == on:
+                    return value
+            # No row for that session. Not the previous session's rate: a stale
+            # fixing presented as this session's own is how a position gets
+            # sized against a number nobody looked at.
+            return None
+
+        if not rows:
+            return None
+
+        # The latest date, not the last row. FRED returns them ascending, but
+        # that is its choice rather than a promise worth leaning on.
+        period, value = max(rows, key=lambda row: row[0])
+
+        # A FRED series can stop publishing while still answering requests
+        # normally, which the fred module docstring records happening already.
+        # Without this the newest row in a thirty day window comes back as
+        # though it were today's rate, and the caller sizing a position against
+        # it has no way to tell: the return is a bare float with no date on it.
+        age = (end - period).days
+        if age > MAX_SPOT_STALENESS_DAYS:
+            raise SourceError(
+                f"the newest {series_id} fixing is {period.isoformat()}, "
+                f"{age} days before {end.isoformat()}. That is past the "
+                f"{MAX_SPOT_STALENESS_DAYS} day bound, so the series has "
+                "stopped publishing rather than the market having been shut. "
+                "Refusing rather than returning it as the current rate."
+            )
+        return value
