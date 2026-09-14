@@ -35,7 +35,7 @@ data sources        pillars           scorer            bias layer        output
 FRED, CFTC,   -->   7 pillars   -->   weighted    -->   difference   -->  CLI table
 Stooq/Yahoo,        compute           sum per           the two legs      HTML dashboard
 Forex Factory,      one score         currency          of each pair      JSON report
-manual CSV          per currency
+manual YAML         per currency
 
 Observation    -->  PillarScore  -->  CurrencyScore --> PairBias     -->  BiasReport
 ```
@@ -157,7 +157,7 @@ reads.
 data/
   cache/     Source responses, keyed by source and request. Git-ignored except .gitkeep.
              Lifetime is DataConfig.cache_ttl_hours. Safe to delete at any time.
-  manual/    Hand-maintained CSV inputs for series with no free API. Committed,
+  manual/    Hand-maintained YAML inputs for series with no free API. Committed,
              because losing them means re-keying them by hand.
   reports/   Dated BiasReport JSON and rendered Markdown. Committed on purpose:
              they are the audit trail, and --compare reads the previous run.

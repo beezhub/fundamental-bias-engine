@@ -628,7 +628,7 @@ Optional: `unit`, `frequency`, `released_at`, `revision`, `meta`.
 | `pmi.yaml` | Manufacturing and services PMIs for all eight. The largest manual burden, and a recurring monthly one. |
 | `yields.yaml` | 2y government yields for CHF and NZD only. The other six are fetched. |
 | `guidance.yaml` | Central bank guidance tone per currency, `-1..+1`, dovish to hawkish. |
-| `overrides.yaml` | Ad-hoc corrections and the one-off gaps: AUD retail sales, EUR employment change, NZD dairy. Read last, so it wins. |
+| `zz-overrides.yaml` | Ad-hoc corrections and the one-off gaps: AUD retail sales, EUR employment change, NZD dairy. Named to sort last, so it wins: precedence is filename order and nothing else, and `overrides.yaml` would sort ahead of `pmi.yaml` and `yields.yaml` and be overridden by the two files it exists to override. |
 
 An `inflation.yaml` used to be needed for six currencies. It no longer is: the
 OECD API supplies headline and core CPI for all eight. If you have one from an
