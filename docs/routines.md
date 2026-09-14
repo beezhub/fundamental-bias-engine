@@ -112,7 +112,7 @@ issue, which is not a failure.
 | Run | When (SAST) | Role | Does | Does not |
 | --- | --- | --- | --- | --- |
 | deliver | weekdays 05:00 | product-analyst | Counts open issues carrying `roadmap` and `status:ready` whose dependencies have all landed. Four or more: files nothing and stops. Fewer: decomposes the current phase of `docs/roadmap.md` into `type:requirement` issues, at most 5 in one run, aiming for roughly 6 unblocked. Posts the delivery order as a comment on the phase's lowest-numbered issue. | Apply `routine-safe`. File defects or proposals. Touch any source file. Change what a stub docstring says a function should do. |
-| triage | weekdays 06:00 and 12:00 | architect | Releases stranded `status:in-progress` claims with no open pull request. Answers `status:needs-decision` in a comment. Unblocks what has landed. Spot-checks `status:ready`. Widens the maintenance pool by labelling qualifying `p2` or `p3` issues `routine-safe`. Splits anything too big for one pull request. Files at most 3 defects. | Touch source. Open proposals. Advance anything past the approval gate. Add `routine-safe` to anything carrying `roadmap`. |
+| triage | weekdays 06:00 and 12:00 | architect | Releases stranded `status:in-progress` claims with no open pull request. **Rules** every `status:needs-decision` issue that is not the owner's to decide, and never leaves one longer than two days. Unblocks what has landed. Spot-checks `status:ready`. Widens the maintenance pool by labelling qualifying `p2` or `p3` issues `routine-safe`. Splits anything too big for one pull request. Files at most 3 defects. | Touch source. Open proposals. Advance anything past the approval gate. Add `routine-safe` to anything carrying `roadmap`. |
 | build lane 1 | weekdays 07:00, 11:00 and 15:00 | developer, then test-engineer, then code-reviewer | Looks after its own open pull requests first. Then claims **one** issue, the lowest-numbered that is `status:ready`, `routine-safe`, `p2` or `p3`. Branch, failing test, fix, four checks, pull request. | Take a second issue. Take an issue already at `status:in-progress`. Touch `types.py`. Change a value in `ScoringConfig` or `RiskConfig`. Take anything at `p0` or `p1`. Merge. |
 | implement lane A | weekdays 09:00, 13:00 and 17:00 | developer, then test-engineer, then code-reviewer | Looks after its own open pull requests first. Then claims **one** issue carrying `type:requirement`, `roadmap` and `status:ready`, at any priority, preferring the **lowest** number whose dependencies have all landed. Tests first, each shown to fail against the stub for the right reason, then the implementation, four checks, pull request. | Take a second issue. Claim an issue whose dependencies are still open. Change an existing default in `ScoringConfig` or `RiskConfig`. Change `types.py` without an architect ruling in the issue body naming every consumer. Force-push. Merge. |
 | implement lane B | weekdays 08:00, 12:00 and 16:00 | developer, then test-engineer, then code-reviewer | The same, preferring the **highest** number whose dependencies have all landed. | The same. |
@@ -161,6 +161,40 @@ issue is labelled `status:ready`. A pull request built on an unlanded
 dependency cannot be verified, and the lane would be writing against a stub it
 has assumed the shape of. If every ready issue is blocked, the lane says which
 and on what, and stops.
+
+## What goes to the owner, and what does not
+
+The owner is a working developer, not an economist. The `issue-workflow` skill
+carries the rule in full and it is the authority. In short, four kinds of
+decision are theirs: facts only they hold, their own habits and appetite,
+whether a thing is built at all, and what merges. Everything else belongs to
+the desk, and the architect rules it rather than parking it.
+
+**A `status:needs-decision` issue that is not one of those four is the
+architect's, and triage may not leave it unanswered for more than two calendar
+days.** The ruling goes on the issue, an ADR goes in `docs/decisions/` when the
+decision is cross-cutting, and the issue moves to `status:ready`. "I would
+rather a human decided" is not a ruling.
+
+This rule exists because it went wrong. #56, #58 and #59 each merged their work
+and then sat for two days on one question about a differencing convention,
+which nobody but the quant analyst and the data engineer could have answered.
+Three issues stopped, and the person they were waiting on could not have
+answered it.
+
+When a decision genuinely is the owner's, it reaches them as five lines with no
+jargon, a recommendation, and a default that applies if they say nothing:
+
+```
+What:            one sentence.
+Why you:         which of the four kinds this is.
+Options:         A or B, in plain words.
+Recommendation:  A, and the one reason why.
+If no reply:     A happens on <date>.
+```
+
+Every decision here is reversible, so a default that moves is better than a
+question that stops the work.
 
 ## How a human approves a proposal
 

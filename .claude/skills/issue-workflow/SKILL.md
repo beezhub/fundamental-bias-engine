@@ -63,6 +63,68 @@ Area labels (`area:data`, `area:scoring`, `area:risk`, `area:execution`,
 `docs/team.md`. Priority is `p0` through `p3`, where `p0` means a wrong number
 is reaching the trader right now.
 
+## Which decisions are the owner's
+
+The owner is a working developer, not an economist and not a trading
+specialist. A question they cannot answer from their own life is not theirs,
+and parking it in front of them stops the work without producing an answer.
+That has happened: three roadmap issues sat blocked for two days on a
+differencing convention, which is a question for the quant analyst and the data
+engineer.
+
+**Four kinds of decision are the owner's, and nothing else is.**
+
+1. **Facts only they hold.** Their broker's contract specification, their
+   account balance, what their platform actually offers.
+2. **Their own habits and appetite.** Whether they review the economic calendar
+   every morning, how much risk they will carry, when they trade.
+3. **Whether to build a thing at all.** This is the approval gate on
+   `type:proposal` and it has no agent override.
+4. **What merges.**
+
+Everything else belongs to the desk. Transformations, units, thresholds,
+conventions, which name is canonical, how a failure is represented, what a
+docstring should say, which pull request lands first: the specialists in
+`docs/team.md` own these, the architect arbitrates, and the answer is recorded
+rather than asked.
+
+**A `type:defect`, `type:debt` or `type:question` never needs the owner's
+approval.** Only `type:proposal` does. Asking for approval on the other three
+is a mistake that has been made and it costs the owner time for nothing.
+
+### The two-day rule
+
+A `status:needs-decision` issue that is **not** one of the four kinds above is
+the architect's to rule on, and it may not sit unanswered for more than two
+calendar days.
+
+When the architect rules, it records the ruling on the issue, writes an ADR in
+`docs/decisions/` if the decision is cross-cutting or would otherwise live only
+in a comment, and moves the issue to `status:ready`. "I would rather a human
+decided" is not a ruling. Ruling with the reason stated and the cost named is
+what the role is for, and a ruling can be reopened with evidence later.
+
+If the question **is** one of the four kinds, the architect says so plainly in a
+comment, names which kind, and leaves the label. It then goes to the owner in
+the form below rather than as a technical write-up.
+
+### Putting a decision to the owner
+
+Five lines. No jargon. If a term would send them to a search engine, the
+message is wrong, not the reader.
+
+```
+What:            one sentence.
+Why you:         which of the four kinds this is.
+Options:         A or B, in plain words.
+Recommendation:  A, and the one reason why.
+If no reply:     A happens on <date>.
+```
+
+A decision put to the owner always carries a default and a date. An unanswered
+question that stops work is a worse outcome than a reversible default, and
+every decision here is reversible.
+
 ## Definition of ready
 
 An issue is `status:ready` only when all of these hold. A developer that claims
