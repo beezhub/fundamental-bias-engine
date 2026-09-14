@@ -58,18 +58,14 @@ never in anything published.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 
 from fbe.config import DataConfig
-from fbe.datasources.base import (
-    BaseDataSource,
-    RateLimit,
-    RetryPolicy,
-    SourceError,
-)
+from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy, SourceError
 from fbe.datasources.fred import FredSource
-from fbe.datasources.registry import SeriesRef
+from fbe.datasources.registry import INDICATORS, SeriesRef
 from fbe.types import Observation
 
 __all__ = [
@@ -79,7 +75,10 @@ __all__ = [
     "MAX_SPOT_STALENESS_DAYS",
     "RATE_LIMIT",
     "SPOT_LOOKBACK_DAYS",
+    "STOOQ_CLOSE_COLUMN",
+    "STOOQ_CSV_HEADER",
     "STOOQ_CSV_URL",
+    "STOOQ_DATE_FORMAT",
     "STOOQ_SYMBOLS",
     "YAHOO_CHART_URL",
     "PricesSource",
@@ -89,6 +88,23 @@ __all__ = [
 STOOQ_CSV_URL = "https://stooq.com/q/d/l/"
 """Daily history download. Query: ``s`` symbol, ``d1``/``d2`` dates as
 ``YYYYMMDD``, ``i`` interval. Returns ``Date,Open,High,Low,Close,Volume``."""
+
+STOOQ_CSV_HEADER = "Date,Open,High,Low,Close,Volume"
+"""The first line every genuine response carries.
+
+This is the whole of the anti-bot defence. The challenge page arrives with HTTP
+200, so status alone says the request succeeded, and anything that is not this
+header is refused rather than parsed. Held as a constant because it is the one
+string that decides whether a body is data."""
+
+STOOQ_DATE_FORMAT = "%Y%m%d"
+"""How ``d1`` and ``d2`` are written. Not the format of the ``Date`` column in
+the response, which is ISO."""
+
+STOOQ_CLOSE_COLUMN = 4
+"""Zero-based index of ``Close`` in the response row. Open, high and low are all
+present and all plausible, so reading the wrong one produces a number nobody
+would question."""
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
 """Undocumented and unlicensed. See the module docstring before using it."""
@@ -192,6 +208,18 @@ RATE_LIMIT = RateLimit(requests=20, per_seconds=60.0, min_interval_seconds=1.0)
 and the whole daily refresh is a handful of symbols."""
 
 
+class _BodyNotCsv(SourceError):
+    """The response body is not a Stooq session history.
+
+    Private, and raised only by `PricesSource._decode`, so `fetch_stooq` can
+    tell a body it refused apart from the failures the shared request path
+    raises for its own reasons: an exhausted retry, a status that is not worth
+    retrying, or an offline run with a cold cache. Those need a different
+    answer from the operator, and telling all of them to open a browser and
+    check the symbol sends them after the wrong thing.
+    """
+
+
 def _today() -> date:
     """Return the current date.
 
@@ -225,6 +253,7 @@ class PricesSource(BaseDataSource):
     """
 
     name = "stooq"
+    base_url = STOOQ_CSV_URL
     rate_limit = RATE_LIMIT
     retry = RetryPolicy(attempts=2, backoff_seconds=2.0)
 
@@ -274,6 +303,103 @@ class PricesSource(BaseDataSource):
         if self._fred_source is not None:
             self._fred_source.close()
 
+    def _decode(self, body: bytes) -> object:
+        """Parse a Stooq CSV body into session and close pairs.
+
+        The base decodes JSON. This endpoint serves CSV, and a blocked request
+        serves the HTML challenge page at HTTP 200.
+
+        The whole parse lives here rather than in `fetch_stooq`, and that
+        placement is the point. `BaseDataSource._request` writes the cache only
+        after decoding succeeds, so every refusal here keeps the body off disk.
+        Checking only the header here and parsing rows one level up would let a
+        truncated body pass, be cached, and then fail identically for the whole
+        TTL with no network traffic; an offline run expires nothing, so that
+        entry would be permanent until someone deleted the file. The cost is
+        that this method does not know which symbol was requested, and
+        `fetch_stooq` catches and re-raises to add it.
+
+        Args:
+            body: Raw response bytes.
+
+        Returns:
+            ``(session_date, close)`` pairs, oldest first. Closes carry the
+            unit of the symbol they were fetched for, index points or a price
+            in the symbol's own currency, which is `SeriesRef.unit` for a
+            routed ref. Empty when the body is the header alone, which is a
+            window that held no sessions and is data.
+
+        Raises:
+            _BodyNotCsv: If the first line is not `STOOQ_CSV_HEADER`, if a row
+                is short or unreadable, if a close is not a finite number, or
+                if a session date appears twice. Each of those is a body this
+                source cannot use, and refusing keeps it out of the cache.
+
+        """
+        # utf-8-sig, not utf-8: a byte order mark is not whitespace, so a
+        # plain decode leaves it on the first line and the header check
+        # would refuse a genuine body as a challenge page.
+        text = body.decode("utf-8-sig", errors="replace")
+        lines = text.strip().splitlines()
+
+        # Known variant, not handled: Stooq is reported to omit the Volume
+        # column for some symbols, which would arrive as a five-field header
+        # and be refused here. docs/data-sources.md documents the six-column
+        # form and every symbol is unverified, so this follows the spec as
+        # written rather than guessing at the variant.
+        if not lines or lines[0].strip() != STOOQ_CSV_HEADER:
+            first = lines[0].strip()[:60] if lines else "an empty body"
+            raise _BodyNotCsv(
+                f"expected a body beginning {STOOQ_CSV_HEADER!r} and got {first!r}"
+            )
+
+        rows: list[tuple[date, float]] = []
+        seen: set[date] = set()
+        for number, line in enumerate(lines[1:], start=2):
+            if not line.strip():
+                continue
+            fields = line.split(",")
+            if len(fields) <= STOOQ_CLOSE_COLUMN:
+                raise _BodyNotCsv(
+                    f"a short row at line {number}: {line.strip()[:60]!r}"
+                )
+            try:
+                session = date.fromisoformat(fields[0].strip())
+                close = float(fields[STOOQ_CLOSE_COLUMN])
+            except ValueError as error:
+                raise _BodyNotCsv(
+                    f"an unreadable row at line {number}: {error}"
+                ) from error
+
+            # float() accepts "nan", "inf" and "-inf" without raising. A nan
+            # reaching a cross-sectional pillar makes the mean and the standard
+            # deviation nan for the whole universe, so every currency's score
+            # becomes nan and every comparison against a threshold silently
+            # reads False. An inf clips to the top of the band and hands a
+            # currency maximum conviction from nothing. Neither shows up as a
+            # coverage gap, which is what makes them worse than a missing row.
+            if not math.isfinite(close):
+                raise _BodyNotCsv(
+                    f"a close that is not a finite number at line {number}: "
+                    f"{fields[STOOQ_CLOSE_COLUMN].strip()!r}"
+                )
+
+            if session in seen:
+                # Two closes for one session is evidence of a concatenated or
+                # replayed body. Keeping both would give a pillar two
+                # contradictory values for one period and let iteration order
+                # decide; keeping one would be a guess about which.
+                raise _BodyNotCsv(
+                    f"the session {session.isoformat()} appears twice, at line {number}"
+                )
+            seen.add(session)
+            rows.append((session, close))
+
+        # The endpoint publishes oldest first and callers difference these, so
+        # the order is sorted rather than trusted.
+        rows.sort(key=lambda row: row[0])
+        return rows
+
     def available(self) -> bool:
         """Report whether the Stooq endpoint answers with CSV rather than HTML.
 
@@ -313,25 +439,51 @@ class PricesSource(BaseDataSource):
 
         Raises:
             SourceError: On repeated request failure, or when the response is
-                the anti-bot challenge rather than CSV.
+                the anti-bot challenge rather than CSV. Never raised for a
+                request this source does not serve: a pair the registry routes
+                elsewhere is skipped silently, because the collector fans the
+                same request out to every source.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.prices.PricesSource.fetch is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        wanted_indicators = set(indicators)
+        wanted_currencies = set(currencies)
+        emitted: list[Observation] = []
+
+        # Driven entirely by what the registry routes here. There is no
+        # fallback to STOOQ_SYMBOLS: that table is eight unverified guesses,
+        # and fetching one because the registry did not ask for it is how an
+        # unverified number reaches a pillar.
+        for (indicator, currency), ref in self.refs().items():
+            if indicator not in wanted_indicators:
+                continue
+            if currency not in wanted_currencies:
+                continue
+            for period, value in self.fetch_stooq(ref.series_id, start, end):
+                emitted.append(
+                    self._observation(indicator, currency, ref, period, value)
+                )
+        return emitted
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is ``"stooq"``.
 
+        Derived from `fbe.datasources.registry.INDICATORS` rather than from a
+        list kept here, so routing a ref to this source is a registry edit and
+        nothing in this module has to be remembered alongside it.
+
         Returns:
-            Mapping from ``(indicator, currency)`` to its `SeriesRef`.
+            Mapping from ``(indicator, currency)`` to its `SeriesRef`. Empty
+            today: the registry routes the equity indices to the monthly OECD
+            series, and moving one here needs the symbol confirmed in a browser
+            first. Empty is the honest answer, not a gap.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.prices.PricesSource.refs is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        return {
+            (spec.key, currency): ref
+            for spec in INDICATORS.values()
+            for currency, ref in spec.series.items()
+            if ref.source == self.name
+        }
 
     def fetch_stooq(
         self,
@@ -352,16 +504,66 @@ class PricesSource(BaseDataSource):
             ``(session_date, close)`` pairs, oldest first.
 
         Raises:
-            SourceError: If the body is not the expected CSV. Stooq answers a
-                blocked request with HTTP 200 and an HTML challenge, so the
-                parser must reject anything whose first line is not the
-                ``Date,Open,High,Low,Close,Volume`` header.
+            SourceError: If the body is not the expected CSV, naming the
+                symbol. Stooq answers a blocked request with HTTP 200 and an
+                HTML challenge, so anything whose first line is not the
+                ``Date,Open,High,Low,Close,Volume`` header is refused. It does
+                not return an empty sequence for one: empty means the window
+                held no sessions, which downstream is a currency with no equity
+                data, and a blocked source is not that. The two need different
+                responses from the operator, so they get different answers
+                here. A body that is the header alone is the empty case and
+                returns no rows.
+
+                Also raised, unchanged and without the browser advice, for the
+                failures the shared request path reports: an exhausted retry, a
+                status not worth retrying, or an offline run whose cache holds
+                nothing. Those are not the challenge page and must not be
+                described as it.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.prices.PricesSource.fetch_stooq is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        try:
+            body = self._request(
+                "",
+                {
+                    "s": symbol,
+                    "d1": start.strftime(STOOQ_DATE_FORMAT),
+                    "d2": end.strftime(STOOQ_DATE_FORMAT),
+                    "i": interval,
+                },
+            )
+        except _BodyNotCsv as error:
+            # `_decode` refused the body so it was never cached, but it does not
+            # know which symbol was asked for, and that is the first thing an
+            # operator needs: the fix is per symbol and starts with fetching it
+            # in a browser.
+            raise SourceError(
+                f"{self.name} did not return a session history for {symbol}: "
+                f"{error}. A blocked request arrives as HTTP 200 with the "
+                "anti-bot challenge page, so fetch this symbol in a browser "
+                "to confirm it before trusting the source again."
+            ) from error
+        except SourceError as error:
+            # Everything else the request path raises. Named with the symbol,
+            # because the caller asked for one, but not diagnosed as the
+            # challenge page, because it is not.
+            raise SourceError(
+                f"{self.name} could not fetch {symbol}: {error}"
+            ) from error
+
+        if not isinstance(body, list):
+            raise SourceError(
+                f"{self.name} decoded {symbol} to {type(body).__name__} rather "
+                "than a list of sessions"
+            )
+
+        # The window is enforced here rather than trusted to the endpoint. This
+        # module's premise is that this server cannot be relied on to return
+        # what was asked for, and a row dated after `end` is the one kind of
+        # surplus that matters: in Phase 6 `end` is the as-of date of a
+        # backtest bar, so a later session is a price the model could not have
+        # had.
+        return [(session, close) for session, close in body if start <= session <= end]
 
     def spot(self, pair: str, on: date | None = None) -> float | None:
         """Return the spot rate for a pair in market quoting convention.
