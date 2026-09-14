@@ -34,6 +34,8 @@ dev = [
   "respx>=0.21",
   # src now imports yaml under mypy, which has no inline types of its own.
   "types-PyYAML>=6.0",
+  # and openpyxl, for the Bank of England yield curve workbook.
+  "types-openpyxl>=3.1",
 ]
 
 [project.scripts]

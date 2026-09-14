@@ -131,6 +131,13 @@ class BaseDataSource(ABC):
             everyone. Never put a credential here: it would reach the cache
             sidecar and the logs, which is what ``api_key_param`` exists to
             prevent.
+        follow_redirects: Whether this source's client follows a 3xx. False by
+            default, which is what makes `_fetch_with_retries` treat a redirect
+            as a moved endpoint rather than parsing its empty body as no rows.
+            A source sets it True only where a provider's documented URL
+            redirects by design, as the Bank of England's interactive database
+            does on every request; there the redirect is the endpoint and
+            refusing it means never reaching the data.
         rate_limit: This source's request budget.
         retry: This source's retry policy.
 
@@ -140,6 +147,7 @@ class BaseDataSource(ABC):
     base_url: str = ""
     api_key_param: str | None = None
     default_headers: Mapping[str, str] = MappingProxyType({})
+    follow_redirects: bool = False
     rate_limit: RateLimit = RateLimit()
     retry: RetryPolicy = RetryPolicy()
 
@@ -403,6 +411,7 @@ class BaseDataSource(ABC):
             self._client = httpx.Client(
                 timeout=REQUEST_TIMEOUT_SECONDS,
                 headers=dict(self.default_headers),
+                follow_redirects=self.follow_redirects,
             )
 
         backoff = self.retry.backoff_seconds
