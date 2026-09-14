@@ -575,10 +575,16 @@ class BaseDataSource(ABC):
     ) -> Observation:
         """Build a canonical `Observation` from a raw value and its ref.
 
-        Every source funnels through this so that ``source``, ``series_id``,
-        ``unit`` and ``frequency`` are copied from the registry rather than
-        re-typed per source, which is how those four fields stay consistent
-        with what the documentation claims.
+        Every fetching source funnels through this so that ``source``,
+        ``series_id``, ``unit`` and ``frequency`` are copied from the registry
+        rather than re-typed per source, which is how those four fields stay
+        consistent with what the documentation claims.
+
+        `fbe.datasources.manual.ManualSource` is the one exception and builds
+        its own. A hand-typed row must carry ``source`` ``"manual"`` rather
+        than the ref's, so a report can separate typed numbers from fetched
+        ones, and must not borrow the ref's ``series_id``, which would claim a
+        vendor's provenance for a number somebody keyed in.
 
         Args:
             indicator: Canonical indicator key.

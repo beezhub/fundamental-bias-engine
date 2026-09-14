@@ -43,7 +43,7 @@ and provably correct against the source.
 - `src/fbe/datasources/fred.py`: FRED client covering policy rates, 2y and 10y yields, CPI, core CPI, GDP, unemployment, and the trade balance for all eight G10 economies.
 - `src/fbe/datasources/registry.py`: the canonical indicator registry mapping keys such as `yield_2y` and `cpi_yoy` to a source series per currency.
 - `src/fbe/datasources/prices.py`: spot and cross rates from Stooq or Yahoo.
-- `src/fbe/datasources/manual.py`: CSV loader for series with no free API.
+- `src/fbe/datasources/manual.py`: YAML loader for series with no free API.
 - `fbe doctor` reporting source reachability and cache state.
 
 **Definition of done.**
@@ -246,7 +246,7 @@ the repository.
 
 **Data**
 
-5. No free source covers G10 PMIs completely. Options: `data/manual/` CSV upkeep, drop PMI from `GROWTH`, or accept uneven coverage across currencies and let `coverage` reflect it.
+5. No free source covers G10 PMIs completely. Options: `data/manual/` YAML upkeep, drop PMI from `GROWTH`, or accept uneven coverage across currencies and let `coverage` reflect it.
    **Status: answered.** The OECD Business Tendency Surveys dataflow carries
    a composite business confidence balance for all eight currencies, fetched
    live: monthly for USD, EUR, GBP and CHF, quarterly for JPY, CAD, AUD and

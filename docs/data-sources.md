@@ -627,16 +627,23 @@ Optional: `unit`, `frequency`, `released_at`, `revision`, `meta`.
 | --- | --- |
 | `pmi.yaml` | Manufacturing and services PMIs for all eight. The largest manual burden, and a recurring monthly one. |
 | `yields.yaml` | 2y government yields for CHF and NZD only. The other six are fetched. |
-| `guidance.yaml` | Central bank guidance tone per currency, `-1..+1`, dovish to hawkish. |
-| `overrides.yaml` | Ad-hoc corrections and the one-off gaps: AUD retail sales, EUR employment change, NZD dairy. Read last, so it wins. |
+| `zz-overrides.yaml` | Ad-hoc corrections and the one-off gaps: AUD retail sales, EUR employment change, NZD dairy. Named to sort last, so it wins: precedence is filename order and nothing else, and `overrides.yaml` would sort ahead of `pmi.yaml` and `yields.yaml` and be overridden by the two files it exists to override. |
 
 An `inflation.yaml` used to be needed for six currencies. It no longer is: the
 OECD API supplies headline and core CPI for all eight. If you have one from an
 earlier run, delete it rather than leaving it to override live data.
 
 `cb_guidance_tone` is not in the registry, because it maps to no external
-series. It is a judgement. Record it as one, with the meeting date and a
-sentence of reasoning in `meta`.
+series. It is a judgement, and recording it as one, with the meeting date and
+the reasoning in `meta`, beats pretending it falls out of the data.
+
+**There is nowhere to put it today.** `ManualSource.load_file` validates every
+row against the registry, which is what makes a typo an error rather than a
+silent new indicator, and a key deliberately outside the registry fails that
+same check. A `guidance.yaml` written as described refuses the whole manual
+directory, not just that file. Carving the key out needs a unit and a frequency
+for a series the registry does not describe, and inventing those is what this
+source exists to prevent, so nothing does it yet. Tracked on #60.
 ---
 
 ## Cache
@@ -854,12 +861,12 @@ Affected: `unemployment_rate`, `retail_sales_yoy`,
 | --- | --- | --- |
 | 2y yields, CHF and NZD | `yields.yaml` | SNB and RBNZ publications, or a broker terminal |
 | PMIs, all eight | `pmi.yaml` | S&P Global releases, ISM for the US |
-| Retail sales AUD | `overrides.yaml` | ABS monthly retail turnover |
-| Employment change EUR | `overrides.yaml` | Eurostat quarterly employment release |
-| Industrial production CHF, AUD, NZD | none needed | drop the indicator for these; do not fake it |
+| Retail sales AUD | `zz-overrides.yaml` | ABS monthly retail turnover |
+| Employment change EUR | `zz-overrides.yaml` | Eurostat quarterly employment release |
+| Industrial production CHF, AUD, NZD | `pmi.yaml` or its own file | the registry carries manual refs for all three, so `ManualSource.missing()` lists them. Entering them is optional and leaving them out is a visible gap rather than a broken run; what is not acceptable is inventing a figure. |
 | Current account, all eight | none for now | leave the gap visible; find a live source |
-| NZD commodity link | `overrides.yaml` | GlobalDairyTrade index, fortnightly, globaldairytrade.info |
-| Guidance tone, all eight | `guidance.yaml` | your own reading of the last statement |
+| NZD commodity link | `zz-overrides.yaml` | GlobalDairyTrade index, fortnightly, globaldairytrade.info |
+| Guidance tone, all eight | nowhere yet, see above | your own reading of the last statement |
 
 ### For the integrator
 
