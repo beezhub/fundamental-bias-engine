@@ -810,21 +810,31 @@ A base tier from the size of the spread, then demotions. Never a promotion.
 
 **Base tier:**
 
+Every threshold below is a `ScoringConfig` field. The number in parentheses is
+that field's default, shown so the table can be read without opening the config,
+and the field name is what an implementation reads.
+
 | `abs(spread)` | Base `Conviction` |
 | --- | --- |
-| `< 0.75` (`min_spread_low`) | `NONE` |
-| `0.75 <= x < 1.50` (`min_spread_medium`) | `LOW` |
-| `1.50 <= x < 2.50` (`min_spread_high`) | `MEDIUM` |
-| `>= 2.50` | `HIGH` |
+| `< min_spread_low` (0.75) | `NONE` |
+| `min_spread_low <= x < min_spread_medium` (1.50) | `LOW` |
+| `min_spread_medium <= x < min_spread_high` (2.50) | `MEDIUM` |
+| `>= min_spread_high` | `HIGH` |
 
 **Demotions**, applied in order down the ladder `HIGH -> MEDIUM -> LOW -> NONE`:
 
 | Test | Effect | Reason |
 | --- | --- | --- |
 | `agreement < min_agreement` (0.60) | Cap at `LOW` | One pillar is carrying the whole spread |
-| `min(coverage_base, coverage_quote) < 0.80` | Demote one step | The view rests on partial data |
-| `max(dispersion_base, dispersion_quote) > 1.20` | Demote one step | A leg's own pillars contradict each other |
+| `min(coverage_base, coverage_quote) < coverage_demotion` (0.80) | Demote one step | The view rests on partial data |
+| `max(dispersion_base, dispersion_quote) > max_dispersion` (1.20) | Demote one step | A leg's own pillars contradict each other |
 | A high-impact `CalendarEvent` for either leg within the next 24 hours | Cap at `LOW` | The rate path could be repriced before the trade matures |
+
+The 24-hour horizon in the last row is the one threshold in this section with no
+`ScoringConfig` field behind it. It is written into the design rather than
+configured, and `bias.conviction_for` takes it as the boolean
+``event_within_24h`` rather than reading a number. Changing it means changing
+code, not config.
 
 Demotions compound. A pair with weak agreement, thin coverage and a central bank
 meeting due can fall from `HIGH` to `NONE`.
@@ -832,10 +842,10 @@ meeting due can fall from `HIGH` to `NONE`.
 If the final conviction is `NONE`, `Direction` is forced to `NEUTRAL` regardless
 of the spread. The two fields must never disagree.
 
-The dispersion threshold of 1.20 is a judgement, not a fitted value. On the score
-band, a weighted dispersion above 1.2 means the pillars are typically more than a
-full band unit apart from the composite, which in practice means at least one
-pillar is arguing hard in the opposite direction.
+`max_dispersion` is a judgement, not a fitted value. On the score band, a
+weighted dispersion above `max_dispersion` (1.20) means the pillars are
+typically more than a full band unit apart from the composite, which in practice
+means at least one pillar is arguing hard in the opposite direction.
 
 ## 6. Hard filters
 
@@ -863,9 +873,9 @@ and the guard are both still scaffolded.
 
 | Blocker | Blocks | Test | Rationale |
 | --- | --- | --- | --- |
-| `cost` | yes | `cost_ratio > 0.05` | Dealing cost eats too much of the plausible move |
+| `cost` | yes | `cost_ratio > max_cost_ratio` (0.05) | Dealing cost eats too much of the plausible move |
 | `event` | yes | The intended execution time falls inside a blackout window for either leg | The plan says do not trade around high-impact news |
-| `coverage` | yes | `min(coverage_base, coverage_quote) < 0.60` | Under 60% of pillar weight, the composite is a guess |
+| `coverage` | yes | `min(coverage_base, coverage_quote) < min_coverage` (0.60) | Under `min_coverage` of pillar weight, the composite is a guess |
 | `no_coverage` | yes | Either leg has `coverage == 0.0` | No composite exists |
 | `no_edge` | yes | `direction` is `NEUTRAL` or `conviction` is `NONE` | Nothing to act on, whatever the spread |
 | `cost:unchecked` | no | No `cost_ratio` was supplied | The check did not run, so its silence is not an all-clear |
@@ -899,18 +909,22 @@ never consulted looked exactly like a calendar that was consulted and found
 nothing.
 
 **Cost ratio.** Compare the round-trip dealing cost against the move the pair can
-plausibly produce over the bias horizon:
+plausibly produce over the bias horizon. Both thresholds here are
+`ScoringConfig` fields, `horizon_days` and `max_cost_ratio`, with their defaults
+in parentheses:
 
     expected_move_pips = atr_20d_pips * sqrt(horizon_days)      , horizon_days = 10
     cost_ratio = (typical_spread_pips + commission_pips) / expected_move_pips
+    blocked if cost_ratio > max_cost_ratio                      , max_cost_ratio = 0.05
 
 The square-root scaling is the standard random-walk approximation, which is
 adequate here because the filter only needs to separate viable pairs from
-obviously uneconomic ones. A ratio above 0.05 means more than 5% of the expected
-move is paid to the broker before the position starts, which on a R2000 account
-with 1-2% risk is decisive. This filter is why exotic-ish G10 crosses will
-usually fail even when the score spread is wide, and it is the mechanism by which
-the plan's "low spreads and trading costs" rule enters the model.
+obviously uneconomic ones. A ratio above `max_cost_ratio` means more than 5% of
+the expected move, at the default, is paid to the broker before the position
+starts, which on a R2000 account with 1-2% risk is decisive. This filter is why
+exotic-ish G10 crosses will usually fail even when the score spread is wide, and
+it is the mechanism by which the plan's "low spreads and trading costs" rule
+enters the model.
 
 **Event blackout.** Two timescales, handled at two different stages, and the
 distinction matters. The hard filter uses only the execution window:
