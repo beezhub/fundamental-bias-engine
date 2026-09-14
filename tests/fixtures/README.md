@@ -17,10 +17,27 @@ credential, `Accept: application/vnd.sdmx.data+csv`.
 | `oecd_gbr_cpi_monthly.csv` | `data/OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/GBR.M.N.CPI.PA._T.N.GY?startPeriod=2026-05&endPeriod=2026-07` | 200 |
 | `oecd_aus_cpi_quarterly.csv` | `data/OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/AUS.Q.N.CPI.PA._T.N.GY?startPeriod=2026-Q1&endPeriod=2026-Q2` | 200 |
 | `oecd_arity_error.txt` | the same monthly key with seven segments instead of eight | 403 |
+| `oecd_deu_bts_monthly.csv` | `data/OECD.SDD.STES,DSD_STES@DF_BTS,4.0/DEU.M.BCICP.PB.C.....?startPeriod=2026-05-01&endPeriod=2026-07-31` | 200 |
+| `oecd_aus_bts_quarterly.csv` | `data/OECD.SDD.STES,DSD_STES@DF_BTS,4.0/AUS.Q.BCICP.PB.C.....?startPeriod=2025-10-01&endPeriod=2026-06-30` | 200 |
 
-Both CSV bodies are byte-exact as returned. The monthly one arrives out of
-order (June, May, July), which is why the parser is not allowed to assume the
-API sorts.
+All four CSV bodies are byte-exact as returned. The monthly CPI one arrives out
+of order (June, May, July), which is why the parser is not allowed to assume the
+API sorts. Both BTS bodies arrive out of order too, from a second flow, so that
+is the API's habit rather than one flow's quirk.
+
+The two BTS bodies are the only fixtures here holding negative observations, and
+that is what they are for. Their unit is `PB`, a percentage balance, which is
+neutral at zero and sits either side of it. A purchasing managers' index is
+neutral at 50 and never negative. Any change that routed this material under
+`pmi_composite` would show up as sign, which is the only place it would show up:
+the cross-sectional z-score absorbs a constant offset, so the ranking would
+still look orderly downstream. See `docs/answers/data.md` question 5.
+
+The captured keys carry ten segments where `DIMENSIONS["DSD_STES"]` names nine,
+matching the registry's finmark refs and the discrepancy on #57. The endpoint
+tolerates the trailing empty and both forms return the same rows; the nine
+segment form `bts_key` builds was confirmed to answer 200 with an identical body
+before these were captured.
 
 `oecd_arity_error.txt` holds the body only. The OECD answered it with **HTTP
 403**, not the 422 that `src/fbe/datasources/oecd.py` documents. The body text

@@ -31,10 +31,15 @@ from fbe.datasources import registry
 from fbe.datasources.base import SourceError
 from fbe.datasources.oecd import (
     BASE_URL,
+    BTS_ACTIVITY_MANUFACTURING,
+    BTS_FLOW,
+    BTS_MEASURE,
+    BTS_UNIT_BALANCE,
     CORE_CPI_FLOW,
     CPI_FLOW,
     CSV_ACCEPT,
     DIMENSIONS,
+    FINMARK_FLOW,
     FLOW_AGENCIES,
     FLOW_VERSIONS,
     THROTTLE_MARKER,
@@ -45,6 +50,8 @@ FIXTURES = Path(__file__).parent / "fixtures"
 GBR_MONTHLY = (FIXTURES / "oecd_gbr_cpi_monthly.csv").read_text()
 AUS_QUARTERLY = (FIXTURES / "oecd_aus_cpi_quarterly.csv").read_text()
 ARITY_ERROR = (FIXTURES / "oecd_arity_error.txt").read_text()
+DEU_BTS_MONTHLY = (FIXTURES / "oecd_deu_bts_monthly.csv").read_text()
+AUS_BTS_QUARTERLY = (FIXTURES / "oecd_aus_bts_quarterly.csv").read_text()
 
 PRICES_FLOW = "DSD_PRICES@DF_PRICES_ALL"
 GBR_CPI_KEY = "GBR.M.N.CPI.PA._T.N.GY"
@@ -472,19 +479,22 @@ def test_the_finmark_key_arity_discrepancy_is_visible(source: OecdSource) -> Non
     This test exists so the disagreement fails loudly the day someone corrects
     one side of it, rather than being silently absorbed by the comparison
     above. Raised on #57.
+
+    Selected on `FINMARK_FLOW` rather than on the ``DSD_STES@`` prefix. The
+    prefix stood in for the flow while finmark was the only one built on that
+    structure; `BTS_FLOW` is the second, its refs are built to `DIMENSIONS`,
+    and the prefix form would have read them as eighteen more instances of a
+    defect they do not have. The BTS side is asserted below so that narrowing
+    the selector does not narrow what this test protects.
     """
-    finmark_refs = [
-        registry.INDICATORS[indicator].series[currency]
-        for indicator, currency in _oecd_pairs()
-        if registry.INDICATORS[indicator]
-        .series[currency]
-        .series_id.startswith("DSD_STES@")
-    ]
-    assert finmark_refs
-    registry_arity = {
-        len(ref.series_id.split("/")[1].split(".")) for ref in finmark_refs
-    }
-    assert registry_arity == {10}
+    by_arity: dict[str, set[int]] = {}
+    for indicator, currency in _oecd_pairs():
+        ref = registry.INDICATORS[indicator].series[currency]
+        flow, key = ref.series_id.split("/")
+        if flow in (FINMARK_FLOW, BTS_FLOW):
+            by_arity.setdefault(flow, set()).add(len(key.split(".")))
+    assert by_arity[FINMARK_FLOW] == {10}
+    assert by_arity[BTS_FLOW] == {len(DIMENSIONS["DSD_STES"])}
     assert len(DIMENSIONS["DSD_STES"]) == 9
     assert "DSD_PRICES_COICOP2018" not in DIMENSIONS
 
@@ -634,3 +644,130 @@ def test_the_fixture_provenance_is_recorded(source: OecdSource) -> None:
     assert "oecd_gbr_cpi_monthly.csv" in readme
     assert "oecd_aus_cpi_quarterly.csv" in readme
     assert "2026-09-14" in readme
+
+
+# ---------------------------------------------------------------------------
+# bts_key, the business tendency surveys
+# ---------------------------------------------------------------------------
+
+
+def test_bts_key_pins_the_measure_unit_and_activity(source: OecdSource) -> None:
+    """All three were read off a live response, not inferred from the name.
+
+    This module already refuses to build a key from an unverified unit, because
+    a wrong `UNIT_MEASURE` returns either nothing or a different series and the
+    second is indistinguishable from success. The same reasoning applies to
+    `ACTIVITY`: a wildcard there returns every activity the survey covers, and
+    the composite would be one row among many.
+    """
+    _flow, key = source.bts_key("EUR")
+    segments = key.split(".")
+    assert segments[2] == BTS_MEASURE == "BCICP"
+    assert segments[3] == BTS_UNIT_BALANCE == "PB"
+    assert segments[4] == BTS_ACTIVITY_MANUFACTURING == "C"
+
+
+def test_a_bts_key_carries_one_segment_per_dimension(source: OecdSource) -> None:
+    """Read off DIMENSIONS rather than a literal, so the table stays the authority."""
+    _flow, key = source.bts_key("JPY")
+    assert len(key.split(".")) == len(DIMENSIONS["DSD_STES"])
+
+
+def test_bts_key_pins_the_frequency_rather_than_wildcarding_it(
+    source: OecdSource,
+) -> None:
+    """The one place this key differs from `finmark_key`, and it is deliberate.
+
+    Half these countries survey monthly and half quarterly. A wildcarded
+    frequency would return both period shapes in one body where a country
+    publishes both, and `_key_frequency` would have nothing to read. Pinning it
+    is what makes the period unambiguous at parse time.
+    """
+    assert source.bts_key("GBP")[1].split(".")[1] == "M"
+    assert source.bts_key("AUD")[1].split(".")[1] == "Q"
+
+
+def test_bts_key_uses_germany_for_the_euro(source: OecdSource) -> None:
+    """The euro-area proxy convention this module already documents on REF_AREA."""
+    assert source.bts_key("EUR")[1].split(".")[0] == "DEU"
+
+
+def test_bts_key_refuses_a_currency_it_has_no_frequency_for(
+    source: OecdSource,
+) -> None:
+    """Guessing a cadence files a quarter under a month, silently."""
+    with pytest.raises(KeyError):
+        source.bts_key("ZAR")
+
+
+def test_bts_key_agrees_with_every_registry_business_confidence_ref(
+    source: OecdSource,
+) -> None:
+    """The builder and the registry must not be able to drift apart."""
+    spec = registry.INDICATORS["business_confidence_mfg"]
+    for currency, ref in spec.series.items():
+        flow, key = source.bts_key(currency)
+        ref_flow, ref_key = source.split_series_id(ref.series_id)
+        assert (flow, key) == (ref_flow, ref_key), currency
+
+
+def test_the_bts_flow_has_a_version_and_an_agency(source: OecdSource) -> None:
+    """A flow missing from either table cannot be turned into a URL at all."""
+    assert FLOW_VERSIONS[BTS_FLOW] == "4.0"
+    assert FLOW_AGENCIES[BTS_FLOW] == "OECD.SDD.STES"
+
+
+@respx.mock
+def test_a_monthly_bts_body_parses_to_first_day_stamped_periods(
+    source: OecdSource,
+) -> None:
+    """German manufacturing confidence, captured 2026-09-14.
+
+    The values are negative, which is the point of the unit assertion: a
+    percentage balance is neutral at zero and routinely below it, where a
+    diffusion index is neutral at 50 and never negative. A body parsed under
+    the wrong unit would be obvious here and nowhere downstream.
+    """
+    _route().mock(return_value=httpx.Response(200, text=DEU_BTS_MONTHLY))
+    emitted = source.fetch(["business_confidence_mfg"], ["EUR"], START, END)
+    by_period = {o.period: o.value for o in emitted}
+    assert by_period == {
+        date(2026, 5, 1): -15.4,
+        date(2026, 6, 1): -13.3,
+        date(2026, 7, 1): -12.9,
+    }
+    assert all(o.unit == "percentage_balance" for o in emitted)
+    assert all(o.value < 0 for o in emitted)
+
+
+@respx.mock
+def test_a_quarterly_bts_body_stamps_the_first_day_of_the_quarter(
+    source: OecdSource,
+) -> None:
+    """Australian manufacturing confidence, captured 2026-09-14.
+
+    `2026-Q2` is `2026-04-01` under the ruling on #27. Filing it on the quarter
+    end instead would make the series look three months fresher than it is, and
+    the staleness ramp would give it weight it has not earned.
+    """
+    _route().mock(return_value=httpx.Response(200, text=AUS_BTS_QUARTERLY))
+    emitted = source.fetch(
+        ["business_confidence_mfg"],
+        ["AUD"],
+        date(2025, 10, 1),
+        date(2026, 6, 30),
+    )
+    by_period = {o.period: o.value for o in emitted}
+    assert by_period == {
+        date(2025, 10, 1): 9.333333,
+        date(2026, 1, 1): 9.333333,
+        date(2026, 4, 1): 3.666667,
+    }
+    assert all(o.unit == "percentage_balance" for o in emitted)
+
+
+def test_the_bts_fixture_provenance_is_recorded(source: OecdSource) -> None:
+    """A fixture nobody can trace is indistinguishable from one somebody typed."""
+    readme = (FIXTURES / "README.md").read_text()
+    assert "oecd_deu_bts_monthly.csv" in readme
+    assert "oecd_aus_bts_quarterly.csv" in readme

@@ -1701,6 +1701,146 @@ COMMODITY_PRICE = IndicatorSpec(
 )
 
 
+BUSINESS_CONFIDENCE_MFG = IndicatorSpec(
+    key="business_confidence_mfg",
+    pillar=PillarName.GROWTH,
+    unit="percentage_balance",
+    frequency=Frequency.MONTHLY,
+    max_staleness_days=210,
+    description=(
+        "OECD composite business confidence for manufacturing, from the "
+        "Business Tendency Surveys the OECD harmonises out of each country's "
+        "own national survey. A net percentage: respondents answering "
+        "positively minus those answering negatively. "
+        "**Neutral is zero, not 50.** This is not a purchasing managers' "
+        "index and must never be blended with ``pmi_composite`` under one "
+        "key. A PMI is a diffusion index whose expansion line is 50; a "
+        "percentage balance sits either side of zero and is routinely "
+        "negative in a healthy economy. Code written against distance from 50 "
+        "and pointed at this series would shift every currency in the "
+        "universe the same way, the cross-sectional z-score would absorb the "
+        "offset, and the ranking would still look orderly with nothing "
+        "raising anywhere. That is why this is a separate key rather than a "
+        "second source behind the PMI one; see ``docs/answers/data.md`` "
+        "question 5 and issue #6. "
+        "Held for GROWTH's leading component, which ``pmi_composite`` cannot "
+        "fill because it is licensed and 0/8 on free coverage, so it arrives "
+        "only in months an operator keys eight numbers in by hand. Whether "
+        "GROWTH actually consumes this series, and at what sub-weight, is a "
+        "scoring decision that has not been taken: until it is, the key is "
+        "listed in ``UNCONSUMED_INDICATORS``. "
+        "The frequency field says monthly because that is the commoner "
+        "cadence, not because it is true of everyone. Four currencies survey "
+        "monthly and four quarterly, and each ``SeriesRef`` carries its own. "
+        "That mixed cadence is a real cost and not a rounding error: half the "
+        "universe would be compared on a number up to a quarter older than "
+        "the other half. The component-level freshness discount in "
+        "`fbe.pillars.base.BasePillar.component_freshness` is what makes it "
+        "visible, and it is one of the things the scoring decision above has "
+        "to weigh. "
+        "The allowance is 210 and is derived from the quarterly half, which "
+        "is the binding one. Under first-day stamping a quarterly print "
+        "covers 90 days, publishes roughly 30 days after its quarter ends, "
+        "and stands for one more quarter before the next arrives: 90 + 30 + "
+        "90. Measured rather than assumed, the quarterly legs were 161 days "
+        "old on ``VERIFIED_ON`` while entirely current. An allowance sized "
+        "from the monthly half would have failed four currencies on day one, "
+        "and one sized to let a missed release through would hide the gap "
+        "this indicator exists to close."
+    ),
+    series={
+        currency: _ref(
+            SOURCE_OECD,
+            f"DSD_STES@DF_BTS/{area}.{freq}.BCICP.PB.C....",
+            "percentage_balance",
+            frequency,
+            last_observed,
+            note=note,
+        )
+        for currency, area, freq, frequency, last_observed, note in (
+            (
+                "USD",
+                "USA",
+                "M",
+                Frequency.MONTHLY,
+                date(2026, 8, 1),
+                "US manufacturing business tendency survey as the OECD "
+                "compiles it. Not the ISM headline, which is licensed.",
+            ),
+            (
+                "EUR",
+                "DEU",
+                "M",
+                Frequency.MONTHLY,
+                date(2026, 8, 1),
+                "Germany standing in for the euro area, matching the "
+                "REF_AREA convention in fbe.datasources.oecd. The OECD "
+                "serves member states here rather than the bloc. Same "
+                "survey family as the ifo, not verified to be the ifo "
+                "headline number for number.",
+            ),
+            (
+                "GBP",
+                "GBR",
+                "M",
+                Frequency.MONTHLY,
+                date(2026, 8, 1),
+                "UK manufacturing business tendency survey.",
+            ),
+            (
+                "CHF",
+                "CHE",
+                "M",
+                Frequency.MONTHLY,
+                date(2026, 8, 1),
+                "Swiss manufacturing business tendency survey, the KOF "
+                "family, as the OECD compiles it.",
+            ),
+            (
+                "JPY",
+                "JPN",
+                "Q",
+                Frequency.QUARTERLY,
+                date(2026, 4, 1),
+                "Quarterly because Japan's survey is the Tankan, which is "
+                "quarterly. 2026-Q2 stamped on its first day per issue #27.",
+            ),
+            (
+                "CAD",
+                "CAN",
+                "Q",
+                Frequency.QUARTERLY,
+                date(2026, 4, 1),
+                "Quarterly: the Bank of Canada Business Outlook Survey "
+                "family, republished by the OECD.",
+            ),
+            (
+                "AUD",
+                "AUS",
+                "Q",
+                Frequency.QUARTERLY,
+                date(2026, 4, 1),
+                "Quarterly: the NAB business survey family. AUD is the "
+                "currency this indicator most changes, being the one holding "
+                "the least GROWTH sub-weight without it.",
+            ),
+            (
+                "NZD",
+                "NZL",
+                "Q",
+                Frequency.QUARTERLY,
+                date(2026, 4, 1),
+                "Quarterly: the ANZ business outlook family.",
+            ),
+        )
+    },
+)
+"""The free leading growth series, verified 8/8 live on ``VERIFIED_ON``.
+
+Registered and consumed by nothing. See `UNCONSUMED_INDICATORS`.
+"""
+
+
 INDICATORS: Mapping[str, IndicatorSpec] = {
     spec.key: spec
     for spec in (
@@ -1717,6 +1857,7 @@ INDICATORS: Mapping[str, IndicatorSpec] = {
         RETAIL_SALES_YOY,
         INDPRO_YOY,
         PMI_COMPOSITE,
+        BUSINESS_CONFIDENCE_MFG,
         TRADE_BALANCE,
         CURRENT_ACCOUNT_GDP,
         COT_NET_PCT_OI,
@@ -1729,7 +1870,9 @@ INDICATORS: Mapping[str, IndicatorSpec] = {
 entries name and what `Observation.indicator` carries."""
 
 
-UNCONSUMED_INDICATORS: frozenset[str] = frozenset({"yield_10y"})
+UNCONSUMED_INDICATORS: frozenset[str] = frozenset(
+    {"yield_10y", "business_confidence_mfg"}
+)
 """Registered indicators that name a pillar but that no pillar asks for.
 
 An `IndicatorSpec` carries a ``pillar`` field, and the natural reading of that
@@ -1744,10 +1887,21 @@ attributed to a pillar is missing from both that pillar's ``requires`` and this
 set, and nothing in this set is in fact consumed. Adding a key here is a
 deliberate statement, not a way to quiet the test.
 
-``yield_10y`` is the only entry, and it is here rather than unregistered because
-its coverage is genuinely verified 8/8 and losing that would mean re-verifying
-eight sources if a scoring decision ever wants it. It is specifically not a
-fallback for ``yield_2y``; see its own description and issue #26.
+``yield_10y`` is here rather than unregistered because its coverage is genuinely
+verified 8/8 and losing that would mean re-verifying eight sources if a scoring
+decision ever wants it. It is specifically not a fallback for ``yield_2y``; see
+its own description and issue #26.
+
+``business_confidence_mfg`` is here for a different reason, and the difference
+matters. It was added on purpose, to a pillar that has a gap shaped exactly like
+it, and the proposal that added it (issue #6) split the data question from the
+scoring one and approved only the first. Whether GROWTH takes this series, and
+at what sub-weight, is the macro strategist's decision and was explicitly not
+approved alongside the registry entry. So the series sits verified and fetchable
+and unused, which is an honest state rather than an oversight, and this is where
+it is said out loud. Consuming it means adding the key to
+`fbe.pillars.growth.GrowthPillar.component_indicators` and removing it from
+here, in one change, with the sub-weight decision recorded.
 """
 
 
