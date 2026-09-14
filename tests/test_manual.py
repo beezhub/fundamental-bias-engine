@@ -17,16 +17,19 @@ against. A written-out list would pass after a rename that broke the code.
 
 from __future__ import annotations
 
+import socket
 import textwrap
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 
 from fbe.config import DataConfig
 from fbe.datasources.base import SourceError
 from fbe.datasources.manual import FILE_GLOB, ManualSource
 from fbe.datasources.registry import INDICATORS, SOURCE_MANUAL
+from fbe.types import Frequency
 from fbe.universe import G10
 
 ASOF = date(2026, 9, 14)
@@ -294,28 +297,6 @@ def test_a_unit_that_contradicts_the_registry_raises(
     assert "index" in str(caught.value)
 
 
-def test_a_contradicting_unit_is_refused_rather_than_coerced(
-    source: ManualSource, manual_dir: Path
-) -> None:
-    """Stated separately: silently replacing the operator's unit with the
-    registry's would keep the wrong number and relabel it correctly, which is
-    the worst of the three available outcomes."""
-    path = _write(
-        manual_dir,
-        "pmi.yaml",
-        _file("""
-        - indicator: pmi_composite
-          currency: EUR
-          value: 49.8
-          period: 2026-08-01
-          unit: percent
-        """),
-    )
-
-    with pytest.raises(SourceError):
-        source.load_file(path)
-
-
 def test_a_frequency_that_contradicts_the_registry_raises(
     source: ManualSource, manual_dir: Path
 ) -> None:
@@ -485,14 +466,23 @@ def test_an_unknown_row_field_raises(source: ManualSource, manual_dir: Path) -> 
     assert "releasedat" in str(caught.value)
 
 
-def test_a_differenced_indicator_is_refused_until_its_derivation_is_settled(
+def test_a_differenced_indicator_takes_its_canonical_unit(
     source: ManualSource, manual_dir: Path
 ) -> None:
-    """``yield_2y_chg_1m``'s ref says percent and its spec says basis points,
-    because one describes what a source publishes and the other the canonical
-    value after the transform. An operator types the differenced number
-    directly, so neither is obviously the unit they used. `FredSource` refuses
-    these for its own reason; this refuses them rather than guessing."""
+    """`yield_2y_chg_1m` for CHF has a ref publishing percent under an
+    indicator declared in basis points, because the ref is the input a source
+    differences and the indicator is the value after. An operator types the
+    already-differenced figure, so the indicator's unit is the one that
+    describes it.
+
+    An earlier draft refused these outright and claimed `FredSource` does the
+    same. It does not: FRED maps `yoy` to `pc1` and `diff` to `chg` and fetches
+    them, and refuses `chg_1m` and `chg_3m` alone for a reason about FRED's own
+    `chg` parameter that has no bearing on a typed number.
+    """
+    spec = INDICATORS["yield_2y_chg_1m"]
+    assert spec.series["CHF"].unit == "percent"
+    assert spec.unit == "basis_points"
     path = _write(
         manual_dir,
         "yields.yaml",
@@ -504,10 +494,7 @@ def test_a_differenced_indicator_is_refused_until_its_derivation_is_settled(
         """),
     )
 
-    with pytest.raises(SourceError) as caught:
-        source.load_file(path)
-
-    assert "chg_1m" in str(caught.value)
+    assert source.load_file(path)[0].unit == "basis_points"
 
 
 # --- released_at ------------------------------------------------------------
@@ -696,9 +683,12 @@ def test_an_override_replaces_only_the_same_indicator_currency_and_period(
     assert by_key[("GBP", date(2026, 8, 1))] == 51.1
 
 
-def test_a_later_row_in_one_file_overrides_an_earlier_row(
+def test_one_key_twice_in_one_file_is_refused(
     source: ManualSource, manual_dir: Path
 ) -> None:
+    """Across files that is the override rule. Inside one file it has no use
+    and is a value typed twice, so resolving it by position would pick one of
+    two numbers the operator believes are both entered."""
     _write(
         manual_dir,
         "pmi.yaml",
@@ -714,9 +704,10 @@ def test_a_later_row_in_one_file_overrides_an_earlier_row(
         """),
     )
 
-    emitted = source.fetch([PMI], ["EUR"], date(2026, 8, 1), ASOF)
+    with pytest.raises(SourceError) as caught:
+        source.fetch([PMI], ["EUR"], date(2026, 8, 1), ASOF)
 
-    assert [o.value for o in emitted] == [50.4]
+    assert "twice" in str(caught.value)
 
 
 def test_only_the_documented_glob_is_read(
@@ -831,9 +822,21 @@ def test_fetch_raises_when_the_directory_does_not_exist(
     assert "manual" in str(caught.value)
 
 
-def test_fetch_reaches_no_network(source: ManualSource, manual_dir: Path) -> None:
-    """Reading local disk. The config is offline, so the shared request path
-    would raise if this ever tried to fetch."""
+def test_fetch_reaches_no_network(
+    source: ManualSource, manual_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An enforced guard rather than an assertion about a count.
+
+    The first version of this asserted that two observations came back, which
+    another test already covers and which nothing about the network could have
+    changed. This fails the moment anything in the call sends a request.
+    """
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ManualSource reached the network")
+
+    monkeypatch.setattr(httpx.Client, "send", refuse)
+    monkeypatch.setattr(socket.socket, "connect", refuse)
     _three_rows(manual_dir)
 
     assert len(source.fetch([PMI], ["EUR", "GBP"], date(2026, 1, 1), ASOF)) == 2
@@ -1190,3 +1193,572 @@ def test_a_null_required_field_is_reported_as_missing_not_as_a_bad_type(
         source.load_file(path)
 
     assert "has no period" in str(caught.value)
+
+
+# --- gaps the review pass found ---------------------------------------------
+
+
+def test_the_staleness_allowance_moves_with_the_indicator(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """Two indicators whose allowances differ by an order of magnitude, aged to
+    the same day, so no single hardcoded number can satisfy both.
+
+    The earlier version of this test used `pmi_composite` alone, whose
+    allowance is 75, and read that 75 out of the registry before asserting
+    against it. A literal 75 in the loader passed it.
+    """
+    assert INDICATORS[PMI].max_staleness_days == 75
+    assert INDICATORS["employment_chg"].max_staleness_days == 270
+    aged = ASOF - timedelta(days=100)
+    _write(
+        manual_dir,
+        "entries.yaml",
+        _file(f"""
+        - indicator: pmi_composite
+          currency: EUR
+          value: 49.8
+          period: {aged.isoformat()}
+        - indicator: employment_chg
+          currency: EUR
+          value: 180000
+          period: {aged.isoformat()}
+        """),
+    )
+
+    reported = source.missing(ASOF)
+
+    # 100 days is past pmi_composite's 75 and inside employment_chg's 270.
+    assert "EUR" in reported[PMI]
+    assert "employment_chg" not in reported
+
+
+def test_the_frequency_is_the_refs_and_not_the_indicators(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """`IndicatorSpec.frequency` is the typical cadence across the universe and
+    `SeriesRef.frequency` is what this currency actually publishes. They differ
+    on five manual pairs, and the ref is the one that is right: Swiss
+    industrial production is quarterly while the indicator is monthly.
+
+    Every earlier unit and frequency test used `pmi_composite`, the one manual
+    family where the two agree, so neither could tell which was read.
+    """
+    spec = INDICATORS["indpro_yoy"]
+    assert spec.frequency is Frequency.MONTHLY
+    assert spec.series["CHF"].frequency is Frequency.QUARTERLY
+    path = _write(
+        manual_dir,
+        "indpro.yaml",
+        _file("""
+        - indicator: indpro_yoy
+          currency: CHF
+          value: 1.4
+          period: 2026-04-01
+        """),
+    )
+
+    assert source.load_file(path)[0].frequency is Frequency.QUARTERLY
+
+
+def test_a_frequency_matching_the_indicator_but_not_the_ref_is_refused(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """The converse. An operator reading the indicator table rather than the
+    per-currency one would write `monthly` here, and that is exactly the
+    mismatch worth refusing."""
+    path = _write(
+        manual_dir,
+        "indpro.yaml",
+        _file("""
+        - indicator: indpro_yoy
+          currency: CHF
+          value: 1.4
+          period: 2026-04-01
+          frequency: monthly
+        """),
+    )
+
+    with pytest.raises(SourceError):
+        source.load_file(path)
+
+
+def test_staleness_is_measured_from_the_period_not_the_release(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """A figure published yesterday for a quarter that ended four months ago is
+    four months old to the model. Measuring from `released_at` would make every
+    lagging series look current on the day it prints, which is the direction
+    that flatters."""
+    _write(
+        manual_dir,
+        "pmi.yaml",
+        _file(f"""
+        - indicator: pmi_composite
+          currency: EUR
+          value: 49.8
+          period: 2026-03-01
+          released_at: {ASOF.isoformat()}
+        """),
+    )
+
+    assert "EUR" in source.missing(ASOF)[PMI]
+
+
+def test_a_zoneless_release_timestamp_is_read_as_utc(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """Stated in the docstring as a convention, so it is pinned here. A naive
+    datetime compares unusably against an aware one and raises rather than
+    quietly sorting wrong, but the convention is still a choice worth fixing in
+    a test."""
+    path = _write(
+        manual_dir,
+        "pmi.yaml",
+        _file("""
+        - indicator: pmi_composite
+          currency: EUR
+          value: 49.8
+          period: 2026-08-01
+          released_at: 2026-09-01T08:00:00
+        """),
+    )
+
+    assert source.load_file(path)[0].released_at == datetime(
+        2026, 9, 1, 8, 0, tzinfo=UTC
+    )
+
+
+def test_a_bare_release_date_is_midnight_utc(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    path = _write(
+        manual_dir,
+        "pmi.yaml",
+        _file("""
+        - indicator: pmi_composite
+          currency: EUR
+          value: 49.8
+          period: 2026-08-01
+          released_at: 2026-09-01
+        """),
+    )
+
+    assert source.load_file(path)[0].released_at == datetime(2026, 9, 1, tzinfo=UTC)
+
+
+def test_a_boolean_value_is_refused(source: ManualSource, manual_dir: Path) -> None:
+    """``value: yes`` is a bool to YAML, and bool subclasses int, so an
+    unguarded numeric check reads it as 1.0. For an index centred on 50 that is
+    a real print nobody typed."""
+    path = _write(
+        manual_dir,
+        "pmi.yaml",
+        _file("""
+        - indicator: pmi_composite
+          currency: EUR
+          value: yes
+          period: 2026-08-01
+        """),
+    )
+
+    with pytest.raises(SourceError) as caught:
+        source.load_file(path)
+
+    assert "bool" in str(caught.value)
+
+
+def test_a_boolean_revision_is_refused(source: ManualSource, manual_dir: Path) -> None:
+    path = _write(
+        manual_dir,
+        "pmi.yaml",
+        _file("""
+        - indicator: pmi_composite
+          currency: EUR
+          value: 49.8
+          period: 2026-08-01
+          revision: true
+        """),
+    )
+
+    with pytest.raises(SourceError):
+        source.load_file(path)
+
+
+def test_a_meta_block_that_is_not_a_mapping_is_refused(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """``meta`` is free in its keys, not in its shape. Accepting a bare string
+    and dropping it would discard the source URL, which is the only audit trail
+    a hand-typed number has."""
+    path = _write(
+        manual_dir,
+        "pmi.yaml",
+        _file("""
+        - indicator: pmi_composite
+          currency: EUR
+          value: 49.8
+          period: 2026-08-01
+          meta: "from investing.com"
+        """),
+    )
+
+    with pytest.raises(SourceError):
+        source.load_file(path)
+
+
+def test_an_empty_file_is_refused(source: ManualSource, manual_dir: Path) -> None:
+    """Distinct from an empty `observations` list, which is a topic nobody has
+    filled in yet. A zero-byte file is more likely a truncated write."""
+    path = _write(manual_dir, "pmi.yaml", "")
+
+    with pytest.raises(SourceError) as caught:
+        source.load_file(path)
+
+    # Named as empty rather than as a shape problem. Dropping the guard leaves
+    # the next one to refuse it as "NoneType rather than a mapping", which
+    # describes the symptom and not what the operator should do about it.
+    assert "pmi.yaml" in str(caught.value)
+    assert "empty" in str(caught.value)
+
+
+def test_a_document_that_is_not_a_mapping_is_refused(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    path = _write(manual_dir, "pmi.yaml", "- indicator: pmi_composite\n")
+
+    with pytest.raises(SourceError):
+        source.load_file(path)
+
+
+def test_a_period_written_as_a_timestamp_is_read_as_its_date(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """Otherwise a `datetime` lands in a field typed `date`, and two rows
+    meaning the same month key differently, so an intended override silently
+    does not apply."""
+    _write(
+        manual_dir,
+        "a-pmi.yaml",
+        _file("""
+        - indicator: pmi_composite
+          currency: EUR
+          value: 49.8
+          period: 2026-08-01T00:00:00Z
+        """),
+    )
+    _write(
+        manual_dir,
+        "b-overrides.yaml",
+        _file("""
+        - indicator: pmi_composite
+          currency: EUR
+          value: 50.4
+          period: 2026-08-01
+        """),
+    )
+
+    emitted = source.fetch([PMI], ["EUR"], date(2026, 8, 1), ASOF)
+
+    assert [(o.period, o.value) for o in emitted] == [(date(2026, 8, 1), 50.4)]
+
+
+def test_a_registry_that_contradicts_itself_is_refused(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """`commodity_price` for CAD is a `level` ref publishing dollars per barrel
+    under an indicator declared as an index. With no transform between them
+    there is no reading that makes both true, so there is no unit to put on a
+    typed number and the registry is what needs fixing.
+
+    The only such pair in the registry today, asserted here so this test tells
+    anyone reading it why it exists rather than looking arbitrary.
+    """
+    spec = INDICATORS["commodity_price"]
+    ref = spec.series["CAD"]
+    assert ref.transform == "level"
+    assert (ref.unit, spec.unit) == ("usd_per_barrel", "index")
+    path = _write(
+        manual_dir,
+        "zz-overrides.yaml",
+        _file("""
+        - indicator: commodity_price
+          currency: CAD
+          value: 71.4
+          period: 2026-08-01
+        """),
+    )
+
+    with pytest.raises(SourceError) as caught:
+        source.load_file(path)
+
+    assert "contradicts itself" in str(caught.value)
+
+
+def test_a_non_string_indicator_is_refused_rather_than_stringified(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """``indicator: 2026`` coerced with `str()` would become the key
+    ``"2026"``, refused a line later for a reason that names the wrong
+    problem."""
+    path = _write(
+        manual_dir,
+        "pmi.yaml",
+        _file("""
+        - indicator: 2026
+          currency: EUR
+          value: 49.8
+          period: 2026-08-01
+        """),
+    )
+
+    with pytest.raises(SourceError) as caught:
+        source.load_file(path)
+
+    assert "string" in str(caught.value)
+
+
+def test_fetch_returns_observations_in_a_stable_order(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """A report rendering an unordered sequence is not reproducible run to
+    run, and `_entries` is a dict keyed by a tuple."""
+    _three_rows(manual_dir)
+
+    emitted = source.fetch([PMI, "indpro_yoy"], list(G10), date(2026, 1, 1), ASOF)
+    keys = [(o.indicator, o.currency, o.period) for o in emitted]
+
+    assert keys == sorted(keys)
+
+
+def test_the_refused_differenced_refs_are_still_on_the_to_do_list(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """The two behaviours are in tension on purpose and neither is an
+    accident: `missing` reports four entries that `load_file` will not accept.
+    Pinned together so a later change cannot quietly drop one side."""
+    reported = source.missing(ASOF)
+
+    assert set(reported["yield_2y_chg_1m"]) == {"CHF", "NZD"}
+    assert set(reported["yield_2y_chg_3m"]) == {"CHF", "NZD"}
+
+
+# --- template ---------------------------------------------------------------
+
+
+def test_a_template_loads_unedited(source: ManualSource, manual_dir: Path) -> None:
+    """Criterion 9's round trip. The stanza is commented out under an empty
+    `observations` list, which is the one shape that both loads and leaves
+    `value` and `period` blank."""
+    path = _write(manual_dir, "pmi.yaml", source.template(PMI, "EUR"))
+
+    assert list(source.load_file(path)) == []
+
+
+def test_a_template_fabricates_no_value(source: ManualSource) -> None:
+    """The reason it is commented out rather than filled in. A template is the
+    worst place in the repository to put a number nobody typed, because its
+    whole purpose is to be copied."""
+    rendered = source.template(PMI, "EUR")
+
+    assert "#   value:\n" in rendered
+    assert "#   period:\n" in rendered
+    assert "observations: []" in rendered
+
+
+def test_a_template_prefills_the_registrys_unit_and_frequency(
+    source: ManualSource,
+) -> None:
+    """So an operator who uncomments the block cannot contradict them by
+    accident. Asserted on a pair where the ref and the indicator disagree."""
+    rendered = source.template("indpro_yoy", "CHF")
+
+    assert "#   unit: percent" in rendered
+    assert "#   frequency: quarterly" in rendered
+
+
+def test_an_uncommented_template_is_accepted_once_it_is_filled_in(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """The operator's actual workflow, so the commented form is not merely
+    loadable but usable: uncomment, fill two fields, load."""
+    rendered = source.template(PMI, "EUR")
+    body = rendered.replace("observations: []", "observations:")
+    body = "\n".join(
+        line[2:] if line.startswith("# ") else line
+        for line in body.splitlines()
+        if not line.startswith("# Uncomment") and not line.startswith("# and")
+    )
+    body = body.replace("  value:", "  value: 49.8").replace(
+        "  period:", "  period: 2026-08-01"
+    )
+    path = _write(manual_dir, "pmi.yaml", body)
+
+    emitted = source.load_file(path)
+
+    assert [o.value for o in emitted] == [49.8]
+
+
+def test_a_template_for_an_unknown_indicator_raises_key_error(
+    source: ManualSource,
+) -> None:
+    """The stub docstring says `KeyError`, not `SourceError`: nothing has been
+    read, so this is a caller mistake rather than a bad file."""
+    with pytest.raises(KeyError):
+        source.template("pmi_manufacturing", "EUR")
+
+
+def test_a_template_for_a_currency_outside_the_universe_raises(
+    source: ManualSource,
+) -> None:
+    with pytest.raises(ValueError):
+        source.template(PMI, "ZAR")
+
+
+def test_a_template_is_refused_for_a_pair_load_file_would_reject(
+    source: ManualSource,
+) -> None:
+    """Emitting a stanza this source refuses would waste the operator's typing
+    and teach them the format is wrong."""
+    with pytest.raises(ValueError):
+        source.template("commodity_price", "CAD")
+
+
+def test_a_template_for_a_differenced_indicator_gives_its_canonical_unit(
+    source: ManualSource,
+) -> None:
+    """These are on `missing`'s to-do list, so an operator will ask for one."""
+    rendered = source.template("yield_2y_chg_1m", "CHF")
+
+    assert "#   unit: basis_points" in rendered
+
+
+def test_a_future_dated_period_is_still_outstanding(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """A mistyped year is the case this whole module exists for.
+
+    Without a lower bound the age reads negative, so the pair drops off the
+    to-do list while `fetch` still filters the row out of its window: the
+    pillar loses the currency, coverage falls, and the one tool built to say
+    why reports nothing to do.
+    """
+    _write(
+        manual_dir,
+        "pmi.yaml",
+        _file("""
+        - indicator: pmi_composite
+          currency: EUR
+          value: 49.8
+          period: 2027-08-01
+        """),
+    )
+
+    assert list(source.fetch([PMI], ["EUR"], date(2026, 1, 1), ASOF)) == []
+    assert "EUR" in source.missing(ASOF)[PMI]
+
+
+def test_a_period_on_the_run_date_is_not_outstanding(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """The boundary between the two branches above, so the lower bound cannot
+    be off by a day and report a value typed this morning as missing."""
+    _write(
+        manual_dir,
+        "pmi.yaml",
+        _file(f"""
+        - indicator: pmi_composite
+          currency: EUR
+          value: 49.8
+          period: {ASOF.isoformat()}
+        """),
+    )
+
+    assert "EUR" not in source.missing(ASOF)[PMI]
+
+
+def test_the_uppercase_extension_is_refused_too(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """The glob is case-sensitive on Linux, so `pmi.YAML` is as unread as
+    `pmi.yml` and as silent about it."""
+    _write(
+        manual_dir,
+        "PMI.YAML",
+        _file("""
+        - indicator: pmi_composite
+          currency: EUR
+          value: 49.8
+          period: 2026-08-01
+        """),
+    )
+
+    with pytest.raises(SourceError) as caught:
+        source.fetch([PMI], ["EUR"], date(2026, 1, 1), ASOF)
+
+    assert "PMI.YAML" in str(caught.value)
+
+
+def test_a_backup_copy_is_left_alone(source: ManualSource, manual_dir: Path) -> None:
+    """The other side of that rule. A file somebody kept a copy of is not one
+    they expected to be loaded, and refusing it would make the directory
+    unusable as a working area."""
+    _write(
+        manual_dir,
+        "pmi.yaml",
+        _file("""
+        - indicator: pmi_composite
+          currency: EUR
+          value: 49.8
+          period: 2026-08-01
+        """),
+    )
+    _write(manual_dir, "pmi.yaml.bak", "anything at all, not even YAML: [\n")
+
+    assert [o.value for o in source.fetch([PMI], ["EUR"], date(2026, 8, 1), ASOF)] == [
+        49.8
+    ]
+
+
+def test_the_unit_is_the_indicators_and_not_the_refs(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """Stated as its own test because it is the half of the labelling rule that
+    the `pmi_composite` cases cannot see: there the ref and the indicator agree
+    exactly, so neither can tell which was read."""
+    spec = INDICATORS["yield_2y_chg_3m"]
+    assert spec.series["NZD"].unit != spec.unit
+    path = _write(
+        manual_dir,
+        "yields.yaml",
+        _file("""
+        - indicator: yield_2y_chg_3m
+          currency: NZD
+          value: 24.0
+          period: 2026-08-03
+        """),
+    )
+
+    assert source.load_file(path)[0].unit == spec.unit
+
+
+def test_a_unit_matching_the_ref_but_not_the_indicator_is_refused(
+    source: ManualSource, manual_dir: Path
+) -> None:
+    """The converse. An operator reading the per-currency source table rather
+    than the indicator table would write `percent` here, and a value typed in
+    basis points under that label is a hundredfold error."""
+    path = _write(
+        manual_dir,
+        "yields.yaml",
+        _file("""
+        - indicator: yield_2y_chg_3m
+          currency: NZD
+          value: 24.0
+          period: 2026-08-03
+          unit: percent
+        """),
+    )
+
+    with pytest.raises(SourceError):
+        source.load_file(path)

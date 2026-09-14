@@ -1,10 +1,16 @@
 """Operator-entered data: the escape hatch for what free APIs will not supply.
 
-Roughly a fifth of the registry has no free machine-readable source. PMIs are
-licensed. Two-year yields outside the United States are on no free API. FRED's
-OECD inflation complex stopped updating in early 2025, taking headline and core
-CPI for six of the eight currencies with it. Central bank guidance tone has
-never been a number at all.
+Nineteen of the registry's refs have no free machine-readable source. PMIs are
+licensed, for all eight currencies. Two-year yields for CHF and NZD are on no
+free API, the other six having landed on their issuing institutions' own feeds.
+Euro-area employment change, industrial production for three currencies and the
+New Zealand dairy link are the rest. Central bank guidance tone has never been a
+number at all.
+
+Inflation is no longer on that list. FRED's OECD complex did stop updating in
+early 2025, but the OECD's own API carries headline and core CPI for all eight,
+so an ``inflation.yaml`` left over from before that is not a gap being filled,
+it is live data being shadowed by a stale hand-typed copy.
 
 This source reads those values from YAML files the operator maintains by hand.
 It is not a workaround to be replaced later; it is a permanent part of the
@@ -54,21 +60,32 @@ Field rules:
 * ``unit`` and ``frequency`` should match the registry's `SeriesRef` for that
   pair. A mismatch is worth refusing rather than coercing: a PMI entered as a
   percentage instead of an index will score, and score wrongly.
-* ``released_at`` is optional but strongly wanted. Without it the staleness
-  penalty falls back to ``period``, which for a quarterly series overstates the
-  age of the data by up to three months.
+* ``released_at`` is optional but strongly wanted, and not for the reason this
+  file used to give. The staleness penalty measures from ``period`` either way,
+  as `fbe.pillars.base.BasePillar.staleness_days` says outright. What
+  ``released_at`` drives is visibility: absent, the pillar falls back to
+  `DEFAULT_PUBLICATION_LAG_DAYS` to decide whether a figure had been published
+  by a given date, which in Phase 6 is the difference between a backtest that
+  saw a number and one that could not have.
 * ``meta`` is free-form and is the right place for the URL the number came
   from. That provenance is the only audit trail a hand-typed number has.
 
 Guidance tone
 -------------
-``cb_guidance_tone`` is the one indicator here with no external number at all.
-It encodes what a central bank signalled at its last meeting, on ``-1..+1``,
-where negative is dovish and positive hawkish. It is a judgement, and recording
-it as one, with the meeting date and a sentence of reasoning in ``meta``, is
-better than pretending it falls out of the data. It is not in the registry
-because the registry maps indicators to external series and this has none; the
-monetary pillar reads it directly if it wants it.
+``cb_guidance_tone`` encodes what a central bank signalled at its last meeting,
+on ``-1..+1``, where negative is dovish and positive hawkish. It is a judgement,
+and recording it as one, with the meeting date and the reasoning in ``meta``, is
+better than pretending it falls out of the data. It is not in the registry,
+because the registry maps indicators to external series and this has none.
+
+**`load_file` refuses it today**, and that is a gap rather than a decision. Every
+row is validated against `fbe.datasources.registry.INDICATORS`, which is what
+makes a typo an error instead of a silent new indicator, and a key that is
+deliberately outside the registry fails the same check. Nothing here carves it
+out, because doing so needs a unit and a frequency for a series the registry
+does not describe, and inventing those is the thing this module exists to stop.
+So no ``guidance.yaml`` is suggested below, and one written anyway refuses the
+whole directory rather than that file alone. See #60.
 
 Operating discipline
 --------------------
@@ -93,7 +110,6 @@ from typing import Any
 
 import yaml
 
-from fbe.config import DataConfig
 from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy, SourceError
 from fbe.datasources.registry import INDICATORS, SeriesRef
 from fbe.types import Observation
@@ -103,7 +119,7 @@ __all__ = [
     "FILE_GLOB",
     "GLOBAL_CURRENCY",
     "GUIDANCE_TONE_KEY",
-    "IGNORED_GLOB",
+    "NEAR_MISS_SUFFIXES",
     "LEVEL_TRANSFORM",
     "REQUIRED_FIELDS",
     "SUGGESTED_FILES",
@@ -114,26 +130,43 @@ __all__ = [
 FILE_GLOB = "*.yaml"
 """Read in sorted filename order; later files override earlier ones."""
 
-IGNORED_GLOB = "*.yml"
-"""The other spelling, which is refused rather than skipped.
+NEAR_MISS_SUFFIXES: frozenset[str] = frozenset({".yml", ".yaml"})
+"""Suffixes that mean "this was meant to be read" and that `FILE_GLOB` misses.
 
-`FILE_GLOB` is the documented one, so a file named ``.yml`` would be read by
-nobody and noticed by nobody: the observations in it would simply not exist,
-and the gap would surface as low coverage weeks later with no cause attached.
-Naming it on sight costs an operator one rename and saves them that."""
+The glob is ``*.yaml`` and is case-sensitive, so ``pmi.yml`` and ``pmi.YAML``
+are both read by nobody and noticed by nobody: the observations in them would
+simply not exist, and the gap would surface as low coverage weeks later with
+nothing pointing at the cause. Both are refused on sight, which costs an
+operator one rename.
+
+The test is the suffix lower-cased, so it catches the case variants and the
+other spelling and nothing else. ``pmi.yaml.bak`` is deliberately outside it: a
+file somebody kept a copy of is not one they expected to be loaded, and
+refusing it would make the directory unusable as a working area."""
 
 GLOBAL_CURRENCY = "GLOBAL"
 """The one accepted code outside `fbe.universe.G10`, for cross-market series."""
 
 LEVEL_TRANSFORM = "level"
-"""The only registry transform an operator can type a value for.
+"""The transform value meaning the source publishes the canonical number itself.
 
-A ``chg_1m`` or ``chg_3m`` ref describes a number the source publishes and the
-engine then differences, so its ``unit`` is the published one while its
-`IndicatorSpec` unit is the canonical one after the transform. An operator
-types the differenced figure directly, so neither unit describes what they
-wrote, and the registry's own derivation for those two is still open on #56.
-`FredSource` refuses them rather than approximating; so does this."""
+It matters here only as a consistency check. A transformed ref carries the
+unit the source publishes, and `IndicatorSpec.unit` carries the canonical unit
+after the transform, so the two legitimately differ. A ``level`` ref whose unit
+differs from its indicator's is the registry contradicting itself, and a row
+under it is refused rather than labelled with a guess. One pair does that
+today, ``commodity_price`` for CAD, which is a FRED ref in dollars per barrel
+under an indicator declared as an index.
+
+This module does not read `SeriesRef.transform` for anything else, because a
+manual row never passes through a transform stage: only `fred.py` and
+`curves.py` read that field, both at fetch time, and a typed number is already
+the canonical value. An earlier draft refused every transformed ref and said
+`FredSource` does the same. That was wrong. `FredSource` maps ``yoy`` to
+``pc1`` and ``diff`` to ``chg`` and fetches them; it refuses ``chg_1m`` and
+``chg_3m`` alone, and for its own reason, which is that FRED's ``chg`` is a
+one-day change on a daily series. None of that bears on a figure an operator
+types."""
 
 REQUIRED_FIELDS: tuple[str, ...] = (
     "indicator",
@@ -170,19 +203,12 @@ SUGGESTED_FILES: Mapping[str, str] = {
         "burden and the one worth automating first if a licence is ever bought."
     ),
     "yields.yaml": (
-        "Two-year government bond yields for the seven non-US currencies. No "
-        "free FRED series exists for any of them, verified by search. These "
-        "carry the front end of the monetary pillar, which is where G10 FX is "
-        "actually driven, so they matter more than their count suggests."
-    ),
-    "inflation.yaml": (
-        "Headline and core CPI year-on-year for GBP, JPY, CHF, CAD, AUD and "
-        "NZD. FRED's OECD CPI complex stopped updating in 2025-03/04, so the "
-        "inflation pillar has no free current input outside USD and EUR."
-    ),
-    "guidance.yaml": (
-        "Central bank guidance tone per currency, on -1..+1. A judgement, "
-        "recorded with the meeting date and the reasoning."
+        "Two-year government bond yields for CHF and NZD only. The other six "
+        "are fetched: the ECB, the Bank of Canada, the RBA, the Bank of "
+        "England and the Japanese Ministry of Finance each publish their own. "
+        "These two carry the front end of the monetary pillar for their "
+        "currencies, which is the heaviest pillar in `ScoringConfig`, so they "
+        "matter more than their count suggests."
     ),
     "zz-overrides.yaml": (
         "Ad-hoc corrections. Named to sort last, so it wins over everything "
@@ -196,9 +222,9 @@ review at a glance.
 
 The override file is named ``zz-overrides.yaml`` rather than
 ``overrides.yaml`` because precedence is filename order and nothing else.
-``overrides.yaml`` sorts between ``inflation.yaml`` and ``pmi.yaml``, so under
-the name it used to carry it would have been overridden by the two files it
-exists to override, and the mistake would have shown as the original value
+``overrides.yaml`` sorts ahead of both ``pmi.yaml`` and ``yields.yaml``, so
+under the name it used to carry it would have been overridden by the two files
+it exists to override, and the mistake would have shown as the original value
 quietly surviving the correction."""
 
 GUIDANCE_TONE_KEY = "cb_guidance_tone"
@@ -224,16 +250,6 @@ class ManualSource(BaseDataSource):
     name = "manual"
     rate_limit = RATE_LIMIT
     retry = RetryPolicy(attempts=1)
-
-    def __init__(self, config: DataConfig) -> None:
-        """Store config and resolve the manual directory.
-
-        Args:
-            config: Effective `DataConfig`. ``manual_dir`` names the directory,
-                defaulting to ``data/manual`` under the repository root.
-
-        """
-        super().__init__(config)
 
     def available(self) -> bool:
         """Report whether the manual directory exists.
@@ -361,8 +377,13 @@ class ManualSource(BaseDataSource):
         as a low coverage figure after the fact.
 
         Args:
-            asof: The date to evaluate against, applying the same staleness
-                rule the scoring layer uses.
+            asof: The date to evaluate against. The rule here is a cliff at the
+                indicator's allowance, not the ramp `fbe.scoring.freshness`
+                applies: this answers "is there a usable value", while the ramp
+                answers "how much weight does it still carry". A PMI sixty days
+                old is not on this list and does carry a reduced weight in the
+                pillar, and those are both correct answers to different
+                questions.
 
         Returns:
             Indicator key to the currencies still missing a fresh value, each
@@ -378,11 +399,10 @@ class ManualSource(BaseDataSource):
             week old means the feed broke, while a quarterly figure five months
             old is routinely the most current one published.
 
-            The six `yield_2y_chg_1m` and `yield_2y_chg_3m` entries are
-            reported like any other, even though `load_file` refuses a value
-            for them while #56 is open. A gap nobody can fill today is still a
-            gap, and dropping it from the operator's list would be the quieter
-            error.
+            Every pair on this list can be filled in. An earlier draft
+            refused four of them on entry while still reporting them here,
+            which would have sent an operator to type something the loader
+            then rejected.
 
         Raises:
             SourceError: When `DataConfig.manual_dir` does not exist, or a file
@@ -400,7 +420,12 @@ class ManualSource(BaseDataSource):
         for (indicator, currency), _ in self.refs().items():
             entered = newest.get((indicator, currency))
             allowance = INDICATORS[indicator].max_staleness_days
-            if entered is None or (asof - entered).days > allowance:
+            # A period after `asof` is outstanding too. Without the lower bound
+            # a mistyped year reads as a negative age, so the pair drops off
+            # this list while `fetch` still filters the row out of its window:
+            # the pillar loses the currency, coverage falls, and the one tool
+            # built to say why reports nothing to do.
+            if entered is None or entered > asof or (asof - entered).days > allowance:
                 outstanding.setdefault(indicator, []).append(currency)
         return {
             indicator: tuple(sorted(currencies))
@@ -414,20 +439,71 @@ class ManualSource(BaseDataSource):
         cannot get those wrong, and leaves ``value``, ``period`` and
         ``released_at`` blank.
 
+        The row comes back **commented out**, under an ``observations`` list
+        that is empty and therefore loads. That shape is what lets the two
+        things asked of this method both hold at once: the blanks stay blank,
+        and `load_file` accepts the file unedited. The alternative, a row with
+        ``value`` filled in so the file parses, would put a number nobody typed
+        into the one file whose whole purpose is to be copied, which is the
+        first line of the prime directive. The operator's edit is uncommenting
+        the block and filling two fields.
+
         Args:
             indicator: Canonical indicator key.
             currency: ISO 4217 code, or ``"GLOBAL"``.
 
         Returns:
-            A YAML fragment.
+            A whole file, not a fragment: ``meta`` block, an empty
+            ``observations`` list, and the commented row. ``unit`` and
+            ``frequency`` are the registry's for this pair, so an operator who
+            uncomments the block cannot contradict them by accident.
 
         Raises:
             KeyError: If the indicator is not in the registry.
+            ValueError: If the currency is outside the universe, or the
+                registry contradicts itself for the pair in the way `load_file`
+                refuses. Emitting a stanza that this source rejects would waste
+                the operator's typing and teach them the format is wrong.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.manual.ManualSource.template is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        spec = INDICATORS[indicator]
+        if currency not in G10 and currency != GLOBAL_CURRENCY:
+            raise ValueError(
+                f"{currency!r} is outside the universe: {', '.join(G10)}, "
+                f"{GLOBAL_CURRENCY}"
+            )
+        ref = spec.series.get(currency)
+        if (
+            ref is not None
+            and ref.transform == LEVEL_TRANSFORM
+            and ref.unit != spec.unit
+        ):
+            raise ValueError(
+                f"{indicator} / {currency} publishes {ref.unit!r} under an "
+                f"indicator declared as {spec.unit!r} with no transform "
+                "between them, which load_file refuses; see the note there"
+            )
+        unit = spec.unit
+        frequency = ref.frequency if ref is not None else spec.frequency
+        return (
+            "meta:\n"
+            '  source: ""\n'
+            "  updated:\n"
+            '  updated_by: ""\n'
+            "\n"
+            "observations: []\n"
+            "\n"
+            "# Uncomment and fill in value and period. released_at is optional\n"
+            "# and strongly wanted: without it staleness falls back to period.\n"
+            f"# - indicator: {indicator}\n"
+            f"#   currency: {currency}\n"
+            "#   value:\n"
+            "#   period:\n"
+            f"#   unit: {unit}\n"
+            f"#   frequency: {frequency.value}\n"
+            "#   released_at:\n"
+            "#   meta:\n"
+            '#     source_url: ""\n'
         )
 
     # --- internals ---------------------------------------------------------
@@ -456,33 +532,52 @@ class ManualSource(BaseDataSource):
                 "empty one: create the directory, or point DataConfig."
                 "manual_dir somewhere else."
             )
-        wrong_spelling = sorted(directory.glob(IGNORED_GLOB))
-        if wrong_spelling:
-            names = ", ".join(path.name for path in wrong_spelling)
+        readable = sorted(directory.glob(FILE_GLOB))
+        near_misses = sorted(
+            path.name
+            for path in directory.iterdir()
+            if path.is_file()
+            and path not in readable
+            and path.suffix.lower() in NEAR_MISS_SUFFIXES
+        )
+        if near_misses:
             raise SourceError(
-                f"{names} would be read by nobody: this source globs "
-                f"{FILE_GLOB!r}. Rename to .yaml rather than leaving the "
-                "observations in it silently out of every run."
+                f"{', '.join(near_misses)} would be read by nobody: this "
+                f"source globs {FILE_GLOB!r}, case-sensitively. Rename rather "
+                "than leaving the observations in them silently out of every "
+                "run."
             )
-        return sorted(directory.glob(FILE_GLOB))
+        return readable
 
     def _entries(self) -> dict[tuple[str, str, date], Observation]:
         """Return every entered observation, overrides already applied.
 
         Returns:
             Mapping from ``(indicator, currency, period)`` to the observation
-            that wins for it. Files are applied in `_files` order and rows in
-            file order, so the last write for a key is the one kept, which is
-            what lets one small file correct a large one.
+            that wins for it. Files are applied in `_files` order, so the last
+            file to name a key is the one kept, which is what lets one small
+            file correct a large one.
 
         Raises:
-            SourceError: As `load_file`, plus the `_files` cases.
+            SourceError: As `load_file`, plus the `_files` cases, plus one key
+                appearing twice inside a single file.
 
         """
         entries: dict[tuple[str, str, date], Observation] = {}
         for path in self._files():
+            seen: set[tuple[str, str, date]] = set()
             for observation in self.load_file(path):
                 key = (observation.indicator, observation.currency, observation.period)
+                if key in seen:
+                    indicator, currency, period = key
+                    raise SourceError(
+                        f"{path.name} carries {indicator} / {currency} for "
+                        f"{period.isoformat()} twice. Across files that is the "
+                        "override rule; inside one file it has no use and is a "
+                        "value typed twice, so it is refused rather than "
+                        "resolved by position."
+                    )
+                seen.add(key)
                 entries[key] = observation
         return entries
 
@@ -579,16 +674,27 @@ class ManualSource(BaseDataSource):
 
         spec = INDICATORS[indicator]
         ref = spec.series.get(currency)
-        if ref is not None and ref.transform != LEVEL_TRANSFORM:
+        if (
+            ref is not None
+            and ref.transform == LEVEL_TRANSFORM
+            and ref.unit != spec.unit
+        ):
             raise SourceError(
-                f"{where} names {indicator}, whose registry ref carries the "
-                f"{ref.transform!r} transform. Its ref says {ref.unit!r} and "
-                f"its indicator says {spec.unit!r}, because one is what a "
-                "source publishes and the other is the value after the "
-                "transform. A typed figure is already differenced, so neither "
-                "describes it. Refused rather than guessed; see issue #56."
+                f"{where} names {indicator} / {currency}, whose registry ref "
+                f"publishes {ref.unit!r} under an indicator declared as "
+                f"{spec.unit!r} with no transform between them. The registry "
+                "contradicts itself for this pair, so there is no unit to put "
+                "on a typed number. Fix the registry rather than this row."
             )
-        unit = ref.unit if ref is not None else spec.unit
+        # The indicator's unit, not the ref's. `IndicatorSpec.unit` is
+        # documented as the canonical unit after any transform, which is what a
+        # pillar assumes; `SeriesRef.unit` is what a source publishes before
+        # one. A typed number never passes through a transform stage, so it is
+        # already the canonical value. The frequency goes the other way: the
+        # spec's is the typical cadence across the universe and the ref's is
+        # what this currency actually publishes, quarterly for Swiss industrial
+        # production against a monthly indicator.
+        unit = spec.unit
         frequency = ref.frequency if ref is not None else spec.frequency
         self._agrees(row, "unit", unit, where)
         self._agrees(row, "frequency", frequency, where)
