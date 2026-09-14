@@ -92,6 +92,7 @@ from fbe.types import Observation
 __all__ = [
     "BASE_URL",
     "BTS_ACTIVITY_MANUFACTURING",
+    "BTS_ADJUSTMENT",
     "BTS_FLOW",
     "BTS_FREQUENCY",
     "BTS_MEASURE",
@@ -309,6 +310,17 @@ BTS_ACTIVITY_MANUFACTURING = "C"
 """ISIC section C, manufacturing. Pinned rather than wildcarded: the survey
 covers several activities and a wildcard returns the composite as one row among
 many, which the CSV reader would emit as duplicate periods."""
+
+BTS_ADJUSTMENT = "Y"
+"""Calendar and seasonally adjusted, which is what this flow serves.
+
+Pinned for the same reason as the activity, and `cpi_key` pins `CPI_ADJUSTMENT`
+for the same reason again. Checked against the live flow one currency at a time:
+all eight return exactly one row per period and every row carries ``Y``. A
+wildcard is safe only for as long as that stays true, and `fetch` has no
+duplicate-period guard anywhere in its path, so a second adjustment appearing
+later would emit two `Observation`s for one period and nothing would raise.
+"""
 
 BTS_FREQUENCY: Mapping[str, str] = MappingProxyType(
     {
@@ -743,14 +755,18 @@ class OecdSource(BaseDataSource):
             `BTS_FREQUENCY` rather than left as a wildcard.
 
         Raises:
-            KeyError: If the currency is not in `REF_AREA` or not in
-                `BTS_FREQUENCY`. A currency with no verified cadence cannot get
-                a key here, because the alternative is to wildcard the frequency
+            KeyError: If the currency has no entry in `BTS_FREQUENCY`, or none
+                in `REF_AREA`. A currency with no verified cadence cannot get a
+                key here, because the alternative is to wildcard the frequency
                 and let `parse_period` decide what a period was, which is how a
                 quarter gets filed under a month.
 
+                The cadence is checked first and deliberately. The two tables
+                hold the same eight currencies today, so reading `REF_AREA`
+                first made this message unreachable and left the bare lookup
+                error standing in for it.
+
         """
-        area = REF_AREA[currency]
         if currency not in BTS_FREQUENCY:
             raise KeyError(
                 f"{currency!r} has no verified survey cadence in BTS_FREQUENCY, "
@@ -758,12 +774,12 @@ class OecdSource(BaseDataSource):
             )
         key = ".".join(
             (
-                area,
+                REF_AREA[currency],
                 BTS_FREQUENCY[currency],
                 BTS_MEASURE,
                 BTS_UNIT_BALANCE,
                 BTS_ACTIVITY_MANUFACTURING,
-                "",
+                BTS_ADJUSTMENT,
                 "",
                 "",
                 "",

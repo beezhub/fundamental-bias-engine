@@ -35,6 +35,7 @@ from fbe.datasources.registry import (
     SOURCE_OECD,
     UNCONSUMED_INDICATORS,
     VERIFIED_ON,
+    IndicatorSpec,
 )
 from fbe.types import Frequency, PillarName
 from fbe.universe import G10
@@ -51,7 +52,7 @@ Australian and New Zealand business outlooks the OECD republishes."""
 
 
 @pytest.fixture
-def spec():
+def spec() -> IndicatorSpec:
     return INDICATORS[KEY]
 
 
@@ -60,17 +61,22 @@ def spec():
 # ---------------------------------------------------------------------------
 
 
-def test_the_indicator_is_registered(spec) -> None:
-    assert spec.key == KEY
+def test_the_indicator_is_attributed_to_growth(spec: IndicatorSpec) -> None:
+    """The attribution is what `UNCONSUMED_INDICATORS` is checked against.
+
+    Not asserting ``spec.key == KEY`` alongside it: `INDICATORS` is built as a
+    comprehension keyed on ``spec.key``, so that holds by construction and
+    cannot fail.
+    """
     assert spec.pillar is PillarName.GROWTH
 
 
-def test_every_g10_currency_has_a_leg(spec) -> None:
+def test_every_g10_currency_has_a_leg(spec: IndicatorSpec) -> None:
     """Eight for eight is the whole point: the licensed PMI is zero for eight."""
     assert set(spec.series) == set(G10)
 
 
-def test_every_leg_is_fetchable_rather_than_manual(spec) -> None:
+def test_every_leg_is_fetchable_rather_than_manual(spec: IndicatorSpec) -> None:
     """A manual leg here would defeat the reason for adding the series at all."""
     for currency, ref in spec.series.items():
         assert ref.source == SOURCE_OECD, currency
@@ -82,13 +88,13 @@ def test_every_leg_is_fetchable_rather_than_manual(spec) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_unit_is_a_percentage_balance_not_an_index(spec) -> None:
+def test_the_unit_is_a_percentage_balance_not_an_index(spec: IndicatorSpec) -> None:
     assert spec.unit == "percentage_balance"
     for currency, ref in spec.series.items():
         assert ref.unit == "percentage_balance", currency
 
 
-def test_the_unit_differs_from_the_pmi_unit(spec) -> None:
+def test_the_unit_differs_from_the_pmi_unit(spec: IndicatorSpec) -> None:
     """The assertion that stops the two being blended under one key.
 
     Written as a comparison rather than as two literals so that renaming either
@@ -97,12 +103,9 @@ def test_the_unit_differs_from_the_pmi_unit(spec) -> None:
     assert spec.unit != INDICATORS[PMI_KEY].unit
 
 
-def test_no_leg_claims_the_diffusion_index_unit(spec) -> None:
-    """A single repointed ref is enough to misscore the whole cross-section."""
-    assert not [c for c, ref in spec.series.items() if ref.unit == "index"]
-
-
-def test_the_transform_is_level_because_a_balance_is_already_a_net(spec) -> None:
+def test_the_transform_is_level_because_a_balance_is_already_a_net(
+    spec: IndicatorSpec,
+) -> None:
     """A percentage balance is a level, not something to difference again."""
     for currency, ref in spec.series.items():
         assert ref.transform == "level", currency
@@ -127,18 +130,12 @@ def test_pmi_composite_is_still_registered_and_still_manual() -> None:
         assert ref.source == SOURCE_MANUAL, currency
 
 
-def test_the_two_indicators_are_separate_entries() -> None:
-    assert KEY in INDICATORS
-    assert PMI_KEY in INDICATORS
-    assert INDICATORS[KEY] is not INDICATORS[PMI_KEY]
-
-
 # ---------------------------------------------------------------------------
 # Frequency is per leg, because the surveys genuinely differ
 # ---------------------------------------------------------------------------
 
 
-def test_each_leg_carries_its_own_true_frequency(spec) -> None:
+def test_each_leg_carries_its_own_true_frequency(spec: IndicatorSpec) -> None:
     """`SeriesRef.frequency` is authoritative and the spec's is only typical.
 
     Four of these countries survey monthly and four quarterly. A single
@@ -162,12 +159,103 @@ def test_the_two_frequency_groups_cover_the_universe_exactly() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_no_leg_is_already_stale_on_the_day_it_was_verified(spec) -> None:
-    """An allowance below the quarterly cadence would report live data as dead.
+MAX_PUBLICATION_LAG_DAYS = (date(2026, 9, 9) - date(2026, 6, 30)).days
+"""Upper bound on how long after a quarter ends the survey publishes, in days.
 
-    The quarterly legs are first-day stamped, so on `VERIFIED_ON` the newest
-    print is around 160 days old while being entirely current. An allowance set
-    from the monthly half would fail every quarterly currency on day one.
+Bounded by observation, not known exactly. The 2026-Q2 print (quarter ending
+2026-06-30) was still the newest one on `VERIFIED_ON`, which puts the lag at no
+more than this. One observation cannot narrow it, so the bound is used as though
+it were the lag, which errs towards a longer allowance and is the direction that
+risks hiding a gap. That is why the other side is asserted too.
+"""
+
+
+def _next_quarter(start: date) -> date:
+    """First day of the quarter after the one beginning on ``start``."""
+    return date(start.year + (start.month + 3 > 12), (start.month + 2) % 12 + 1, 1)
+
+
+def _worst_fresh_age(stamp: date) -> int:
+    """Age of a first-day-stamped quarterly print on the day before it is replaced.
+
+    A print stays the newest one until its successor publishes, which is one
+    further quarter end plus `MAX_PUBLICATION_LAG_DAYS`. Computed on the real
+    calendar rather than from nominal 90-day quarters, because that is the
+    difference this test exists to catch: quarters run 90 to 92 days, so the
+    nominal arithmetic understates the answer by up to three days and leaves a
+    current series reading stale for the last days of its cycle.
+    """
+    successor_ends = _next_quarter(_next_quarter(stamp)) - timedelta(days=1)
+    successor_publishes = successor_ends + timedelta(days=MAX_PUBLICATION_LAG_DAYS)
+    return (successor_publishes - timedelta(days=1) - stamp).days
+
+
+QUARTER_STARTS = (
+    date(2026, 1, 1),
+    date(2026, 4, 1),
+    date(2026, 7, 1),
+    date(2026, 10, 1),
+)
+"""The four stamp positions. The worst case is not the same in each, which is
+the whole reason this is computed rather than written down once."""
+
+
+def test_the_allowance_covers_a_punctual_print_in_every_quarter(
+    spec: IndicatorSpec,
+) -> None:
+    """No day on which an entirely current series reads stale.
+
+    This is the assertion the earlier version of this file did not make. It
+    pinned only a range, and every value from 161 to 250 satisfied it, so the
+    allowance could be edited to any of them and the suite stayed green. The
+    number it is supposed to pin is a derivation, so derive it here and compare.
+    """
+    worst = max(_worst_fresh_age(stamp) for stamp in QUARTER_STARTS)
+    assert worst == 253
+    assert spec.max_staleness_days >= worst
+
+
+def test_the_allowance_still_expires_a_leg_that_missed_a_release(
+    spec: IndicatorSpec,
+) -> None:
+    """The other side, which is the side that lets a lie through.
+
+    An allowance wide enough that a series which missed a whole release still
+    counts converts a visible gap into an invisible one, and
+    `IndicatorSpec.max_staleness_days` names that as the single easiest way to
+    make the registry lie.
+    """
+    worst = max(_worst_fresh_age(stamp) for stamp in QUARTER_STARTS)
+    assert spec.max_staleness_days < worst + 90
+
+
+def test_the_allowance_is_the_value_the_description_derives(
+    spec: IndicatorSpec,
+) -> None:
+    """Pinned outright, in the style of `tests/test_manual.py`'s PMI assertion.
+
+    The two tests above leave a window, and 270 is one of several values in it.
+    The registry's description commits to a specific number and to a reason for
+    it, and both published coverage tables in ``docs/data-sources.md`` report
+    8/8 as a consequence. A literal here is what makes an edit to that number a
+    deliberate act rather than a silent one.
+
+    270 is also this table's own published figure for a quarterly series stamped
+    on its period's first day, and what ``gdp_yoy`` uses.
+    """
+    assert spec.max_staleness_days == 270
+    assert spec.max_staleness_days == INDICATORS["gdp_yoy"].max_staleness_days
+
+
+def test_no_leg_is_already_stale_on_the_day_it_was_verified(
+    spec: IndicatorSpec,
+) -> None:
+    """The measured case, as opposed to the derived worst case above.
+
+    The quarterly legs were 161 days old on `VERIFIED_ON` while entirely
+    current. An allowance sized from the monthly half would fail all four on day
+    one, and both published coverage tables would then report 4/8 for a series
+    that is fully covered.
     """
     stale = [
         currency
@@ -175,25 +263,12 @@ def test_no_leg_is_already_stale_on_the_day_it_was_verified(spec) -> None:
         if ref.stale_on(VERIFIED_ON, spec.max_staleness_days)
     ]
     assert not stale
+    assert (VERIFIED_ON - date(2026, 4, 1)).days == 161
 
 
-def test_a_leg_frozen_for_one_extra_period_does_go_stale(spec) -> None:
-    """The other side of the allowance, which is the side that lets a lie through.
-
-    An allowance wide enough that a series which missed a whole release still
-    counts converts a visible gap into an invisible one. One further quarter
-    past the quarterly legs' own cadence must expire them.
-    """
-    later = VERIFIED_ON + timedelta(days=90)
-    fresh = [
-        currency
-        for currency in QUARTERLY_CURRENCIES
-        if not spec.series[currency].stale_on(later, spec.max_staleness_days)
-    ]
-    assert not fresh
-
-
-def test_last_observed_is_stamped_on_the_first_day_of_its_period(spec) -> None:
+def test_last_observed_is_stamped_on_the_first_day_of_its_period(
+    spec: IndicatorSpec,
+) -> None:
     """The convention ruled on issue #27, applied to both cadences."""
     for currency, ref in spec.series.items():
         observed = ref.last_observed
@@ -203,7 +278,9 @@ def test_last_observed_is_stamped_on_the_first_day_of_its_period(spec) -> None:
             assert observed.month in (1, 4, 7, 10), currency
 
 
-def test_the_verified_observations_match_what_the_api_returned(spec) -> None:
+def test_the_verified_observations_match_what_the_api_returned(
+    spec: IndicatorSpec,
+) -> None:
     """Pins the fetch the registry entry was built from.
 
     These are the newest observations the OECD held for each leg on

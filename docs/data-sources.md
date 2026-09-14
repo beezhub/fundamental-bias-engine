@@ -739,7 +739,7 @@ reaches zero on the last day this table still counts a series as fresh. That
 makes an allowance more expensive to get wrong than it was. Too long and a frozen
 series both counts as covered and carries weight; too short and a punctual print
 is scored at zero on the day it publishes, which is what a 45-day allowance did
-to `pmi_composite` under first-day period stamping. Derive it from the
+to `pmi_manufacturing` under first-day period stamping. Derive it from the
 cadence, as this section already says, and never from what a series happens to
 need.
 
@@ -928,7 +928,7 @@ a free machine-readable source, not the operator's typing.
 | `retail_sales_yoy` | growth | `percent` | monthly | 270d | 88% | 100% |
 | `indpro_yoy` | growth | `percent` | monthly | 180d | 50% | 62% |
 | `pmi_composite` | growth | `index` | monthly | 75d | 0% | 0% |
-| `business_confidence_mfg` | growth (unconsumed) | `percentage_balance` | monthly | 210d | 100% | 100% |
+| `business_confidence_mfg` | growth (unconsumed) | `percentage_balance` | monthly | 270d | 100% | 100% |
 | `trade_balance` | external | `usd` | monthly | 150d | 100% | 100% |
 | `current_account_gdp` | external | `percent_of_gdp` | quarterly | 210d | 0% | 100% |
 | `cot_net_pct_oi` | positioning | `contracts` | weekly | 21d | 100% | 100% |
@@ -1153,20 +1153,20 @@ OECD composite business confidence for manufacturing, from the Business Tendency
 
 **What it is not.** Each leg is the country's own national survey as the OECD compiles it, which is a family relationship to the ifo, KOF, Tankan, NAB and ANZ headline figures rather than an identity. None was verified to match its national headline number for number. Anything describing this series should say what it is rather than calling it a PMI proxy.
 
-The allowance is 210 and is derived from the quarterly half, which is the binding one. Under first-day stamping a quarterly print covers 90 days, publishes roughly 30 days after its quarter ends, and stands for one more quarter before the next arrives: 90 + 30 + 90. Measured rather than assumed, the quarterly legs were 161 days old on the verification date while entirely current. An allowance sized from the monthly half would have failed four currencies on day one, and one sized to let a missed release through would hide the gap this indicator exists to close.
+The allowance is 270 and is derived from the quarterly half, which is the binding one. It is this table's own published figure for a quarterly series stamped on its period's first day, and what `gdp_yoy` uses, the other first-day-stamped quarterly input to this pillar. The derivation runs on the real calendar rather than on nominal 90-day quarters: a print is the newest one until its successor publishes, which is one further quarter end plus the survey's own lag. That lag is bounded by observation and not known exactly, because the 2026-Q2 print was still the newest on the verification date, which puts it at no more than 71 days past the quarter end. Taking that bound, the worst case across the four stamp positions is 253 days, reached by a Q3 print. So 270 covers a punctual print in every quarter with no day on which a current series reads stale, while a leg that misses a whole release reaches 253 + 90 and expires. An allowance sized from the monthly half would fail four currencies on day one: the quarterly legs were 161 days old on the verification date while entirely current.
 
-Pillar: **growth** (unconsumed). Canonical unit: `percentage_balance`. Staleness allowance: 210 days. Fresh coverage: 100%.
+Pillar: **growth** (unconsumed). Canonical unit: `percentage_balance`. Staleness allowance: 270 days. Fresh coverage: 100%.
 
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| USD | oecd | `DSD_STES@DF_BTS/USA.M.BCICP.PB.C....` | percentage_balance | monthly | level | yes | 2026-08-01 | US manufacturing business tendency survey as the OECD compiles it; not the ISM headline, which is licensed |
-| EUR | oecd | `DSD_STES@DF_BTS/DEU.M.BCICP.PB.C....` | percentage_balance | monthly | level | yes | 2026-08-01 | Germany standing in for the euro area, matching the `REF_AREA` convention; same survey family as the ifo, not verified to be the ifo headline number for number |
-| GBP | oecd | `DSD_STES@DF_BTS/GBR.M.BCICP.PB.C....` | percentage_balance | monthly | level | yes | 2026-08-01 | UK manufacturing business tendency survey |
-| JPY | oecd | `DSD_STES@DF_BTS/JPN.Q.BCICP.PB.C....` | percentage_balance | quarterly | level | yes | 2026-04-01 | quarterly because Japan's survey is the Tankan; 2026-Q2 stamped on its first day per #27 |
-| CHF | oecd | `DSD_STES@DF_BTS/CHE.M.BCICP.PB.C....` | percentage_balance | monthly | level | yes | 2026-08-01 | Swiss manufacturing business tendency survey, the KOF family |
-| CAD | oecd | `DSD_STES@DF_BTS/CAN.Q.BCICP.PB.C....` | percentage_balance | quarterly | level | yes | 2026-04-01 | quarterly: the Bank of Canada Business Outlook Survey family |
-| AUD | oecd | `DSD_STES@DF_BTS/AUS.Q.BCICP.PB.C....` | percentage_balance | quarterly | level | yes | 2026-04-01 | quarterly: the NAB business survey family |
-| NZD | oecd | `DSD_STES@DF_BTS/NZL.Q.BCICP.PB.C....` | percentage_balance | quarterly | level | yes | 2026-04-01 | quarterly: the ANZ business outlook family |
+| USD | oecd | `DSD_STES@DF_BTS/USA.M.BCICP.PB.C.Y...` | percentage_balance | monthly | level | yes | 2026-08-01 | US manufacturing business tendency survey as the OECD compiles it; not the ISM headline, which is licensed |
+| EUR | oecd | `DSD_STES@DF_BTS/DEU.M.BCICP.PB.C.Y...` | percentage_balance | monthly | level | yes | 2026-08-01 | Germany standing in for the euro area, matching the `REF_AREA` convention; same survey family as the ifo, not verified to be the ifo headline number for number |
+| GBP | oecd | `DSD_STES@DF_BTS/GBR.M.BCICP.PB.C.Y...` | percentage_balance | monthly | level | yes | 2026-08-01 | UK manufacturing business tendency survey |
+| JPY | oecd | `DSD_STES@DF_BTS/JPN.Q.BCICP.PB.C.Y...` | percentage_balance | quarterly | level | yes | 2026-04-01 | quarterly because Japan's survey is the Tankan; 2026-Q2 stamped on its first day per #27 |
+| CHF | oecd | `DSD_STES@DF_BTS/CHE.M.BCICP.PB.C.Y...` | percentage_balance | monthly | level | yes | 2026-08-01 | Swiss manufacturing business tendency survey, the KOF family |
+| CAD | oecd | `DSD_STES@DF_BTS/CAN.Q.BCICP.PB.C.Y...` | percentage_balance | quarterly | level | yes | 2026-04-01 | quarterly: the Bank of Canada Business Outlook Survey family |
+| AUD | oecd | `DSD_STES@DF_BTS/AUS.Q.BCICP.PB.C.Y...` | percentage_balance | quarterly | level | yes | 2026-04-01 | quarterly: the NAB business survey family |
+| NZD | oecd | `DSD_STES@DF_BTS/NZL.Q.BCICP.PB.C.Y...` | percentage_balance | quarterly | level | yes | 2026-04-01 | quarterly: the ANZ business outlook family |
 
 #### `trade_balance`
 

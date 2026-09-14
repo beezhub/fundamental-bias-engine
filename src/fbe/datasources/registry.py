@@ -1706,7 +1706,7 @@ BUSINESS_CONFIDENCE_MFG = IndicatorSpec(
     pillar=PillarName.GROWTH,
     unit="percentage_balance",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=210,
+    max_staleness_days=270,
     description=(
         "OECD composite business confidence for manufacturing, from the "
         "Business Tendency Surveys the OECD harmonises out of each country's "
@@ -1738,20 +1738,30 @@ BUSINESS_CONFIDENCE_MFG = IndicatorSpec(
         "`fbe.pillars.base.BasePillar.component_freshness` is what makes it "
         "visible, and it is one of the things the scoring decision above has "
         "to weigh. "
-        "The allowance is 210 and is derived from the quarterly half, which "
-        "is the binding one. Under first-day stamping a quarterly print "
-        "covers 90 days, publishes roughly 30 days after its quarter ends, "
-        "and stands for one more quarter before the next arrives: 90 + 30 + "
-        "90. Measured rather than assumed, the quarterly legs were 161 days "
-        "old on ``VERIFIED_ON`` while entirely current. An allowance sized "
-        "from the monthly half would have failed four currencies on day one, "
-        "and one sized to let a missed release through would hide the gap "
-        "this indicator exists to close."
+        "The allowance is 270 and is derived from the quarterly half, which "
+        "is the binding one. This is the figure this table's own rule gives "
+        "for a quarterly series stamped on its period's first day, and it is "
+        "what ``gdp_yoy`` uses, the other first-day-stamped quarterly input "
+        "to this pillar. "
+        "The derivation, on the real calendar rather than on nominal "
+        "90-day quarters: a print is the newest one until its successor "
+        "publishes, which is one further quarter end plus the survey's own "
+        "lag. That lag is bounded by observation and not known exactly. The "
+        "2026-Q2 print was still the newest on ``VERIFIED_ON``, which puts "
+        "the lag at no more than 71 days past the quarter end; one "
+        "observation cannot narrow it further. Taking that bound, the worst "
+        "case across the four stamp positions is 253 days, reached by a Q3 "
+        "print. So 270 covers a punctual print in every quarter, with no day "
+        "on which a current series reads stale, while a leg that misses a "
+        "whole release reaches 253 + 90 and expires. "
+        "An allowance sized from the monthly half would fail four currencies "
+        "on day one: the quarterly legs were 161 days old on ``VERIFIED_ON`` "
+        "while entirely current."
     ),
     series={
         currency: _ref(
             SOURCE_OECD,
-            f"DSD_STES@DF_BTS/{area}.{freq}.BCICP.PB.C....",
+            f"DSD_STES@DF_BTS/{area}.{freq}.BCICP.PB.C.Y...",
             "percentage_balance",
             frequency,
             last_observed,
@@ -1788,15 +1798,6 @@ BUSINESS_CONFIDENCE_MFG = IndicatorSpec(
                 "UK manufacturing business tendency survey.",
             ),
             (
-                "CHF",
-                "CHE",
-                "M",
-                Frequency.MONTHLY,
-                date(2026, 8, 1),
-                "Swiss manufacturing business tendency survey, the KOF "
-                "family, as the OECD compiles it.",
-            ),
-            (
                 "JPY",
                 "JPN",
                 "Q",
@@ -1804,6 +1805,15 @@ BUSINESS_CONFIDENCE_MFG = IndicatorSpec(
                 date(2026, 4, 1),
                 "Quarterly because Japan's survey is the Tankan, which is "
                 "quarterly. 2026-Q2 stamped on its first day per issue #27.",
+            ),
+            (
+                "CHF",
+                "CHE",
+                "M",
+                Frequency.MONTHLY,
+                date(2026, 8, 1),
+                "Swiss manufacturing business tendency survey, the KOF "
+                "family, as the OECD compiles it.",
             ),
             (
                 "CAD",
