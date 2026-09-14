@@ -865,14 +865,19 @@ Affected: `unemployment_rate`, `retail_sales_yoy`,
 
 Two things outside this package need attention.
 
-**`openpyxl` is not a project dependency.** The GBP 2-year yield lives in the
-Bank of England's yield curve archive, which is a ZIP of XLSX files and the
-only source in the registry that needs a spreadsheet reader. `pyproject.toml`
-is not owned by the data layer, so the dependency has not been added. Until it
-is, `CurvesSource.fetch_boe_curve` cannot run and the pound falls back to the
-same reduced monetary pillar as CHF and NZD. The workbook was parsed directly
-from its XML during verification, so a reader is a convenience rather than a
-strict requirement, but it is the sane way to do it.
+**`openpyxl` is a project dependency and the workbook reader is wired up.** The
+GBP 2-year yield lives in the Bank of England's yield curve archive, which is a
+ZIP of XLSX files and the only source in the registry that needs a spreadsheet
+reader. `pyproject.toml` declares `openpyxl`, `CurvesSource.fetch_boe_curve`
+reads the archive, and the pound therefore keeps its 2-year rather than falling
+back to the reduced monetary pillar CHF and NZD are on. This paragraph said the
+opposite until #59: the dependency was already declared and the claim had gone
+stale.
+
+One thing the workbook does not promise is its column layout. The maturity grid
+has been re-cut before, and the two-year header is published as
+`1.999999920000001` rather than `2.0`, so the column is located by nearest
+header maturity within a tolerance and never by position or by equality.
 
 **Sub-weight floors should account for the 2-year gap.** `MIN_COMPONENT_WEIGHT`
 scores a pillar missing when a currency holds at or below half its sub-weight.

@@ -49,6 +49,45 @@ rather than anything typed. Nothing else was changed: the point of keeping the
 header verbatim is that the `Series ID` row is what the parser locates, and its
 position within that block is exactly what has moved between releases before.
 
+## Curve providers, second set
+
+Captured 2026-09-14, no credential on any of them.
+
+| File | Request | Status |
+| --- | --- | --- |
+| `jgbcme.csv` | `https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/jgbcme.csv` | 200 |
+| `jgbcme_all.csv` | `.../interest_rate/historical/jgbcme_all.csv` | 200 |
+| `boe_iadb_bank_rate.csv` | `https://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp?csv.x=yes&Datefrom=01/Sep/2026&Dateto=11/Sep/2026&SeriesCodes=IUDBEDR&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N` | 302 then 200 |
+| `boe_yield_curve.zip` | `https://www.bankofengland.co.uk/-/media/boe/files/statistics/yield-curves/latest-yield-curve-data.zip` | 200 |
+| `snb_rendoblid.csv` | `https://data.snb.ch/api/cube/rendoblid/data/csv/en` | 200 |
+
+`jgbcme.csv` and `boe_iadb_bank_rate.csv` are byte-exact. The other three are
+truncated or narrowed, and nothing in any of them was typed:
+
+- `jgbcme_all.csv` keeps its real title and header rows, one real row where the
+  2-year tenor is `-`, and the four most recent real rows. The full file is
+  13,292 lines. Note that the real history file carries **no** footer row and
+  no non-ASCII byte anywhere, so this truncation removed nothing. The
+  Shift-JIS witness is `jgbcme.csv`, which keeps the blank row and the `※`
+  footer and genuinely fails a UTF-8 decode.
+- `boe_yield_curve.zip` is rebuilt from the live archive: the five real header
+  rows and four real data rows of the real `3. spot, short end` sheet, narrowed
+  to the first 27 columns so the fixture is 6 KB rather than 300 KB. The
+  maturity headers and the yields are the published ones. A second member is a
+  placeholder, present only so the member-selection test has something to not
+  pick.
+- `snb_rendoblid.csv` keeps the real two metadata lines, the real header, one
+  real blank-valued row from 1988 and the four most recent real rows. The cube
+  is frozen where the module docstring says it is: last observation
+  2025-07-31, `PublishingDate` 2025-09-01.
+
+Two things these captures settled that the spec did not. The workbook's
+2-year maturity header is `1.999999920000001`, not `2.0`, so the column is
+found by nearest-within-tolerance rather than by equality. And column A arrives
+as a `datetime` rather than an Excel serial, because `openpyxl` converts
+date-formatted cells; the serial path is still implemented and tested, because
+a workbook written another way would need it.
+
 ## FRED
 
 None of these three is a capture. Each is constructed in the shape FRED's

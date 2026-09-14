@@ -105,8 +105,12 @@ import csv
 import io
 import json
 import math
+import re
+import zipfile
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+
+import openpyxl
 
 from fbe.config import DataConfig
 from fbe.datasources.base import (
@@ -256,6 +260,86 @@ them for the same reason. Raised on issue #56 and not yet answered, and
 ``yield_2y_chg_3m`` is documented as the heaviest sub-indicator in the model,
 so guessing is the one thing not to do."""
 
+JGB_MISSING_TENOR = "-"
+"""How the Ministry of Finance publishes a tenor it did not price that day.
+Read as a number it becomes a zero JGB yield, which is not implausible enough
+for anyone to query."""
+
+JGB_SESSION_PATTERN = re.compile(r"\d{4}/\d{1,2}/\d{1,2}")
+"""Shape of a Ministry of Finance session date, used to tell a data row from
+the footer notice that shares its column."""
+
+JGB_DATE_FORMAT = "%Y/%m/%d"
+"""``2026/9/1``. Month and day are not zero padded, which `strptime` accepts."""
+
+JGB_ENCODING = "shift_jis"
+"""Both Ministry of Finance files. The current-month one carries a Japanese
+footer row and genuinely fails a UTF-8 decode."""
+
+BOE_IADB_DATE_FORMAT = "%d/%b/%Y"
+"""``Datefrom`` and ``Dateto`` in the query, for example ``01/Sep/2026``."""
+
+BOE_IADB_ROW_DATE_FORMAT = "%d %b %Y"
+"""Column one of the returned CSV, for example ``01 Sep 2026``. Not the same
+shape as the one the query takes."""
+
+BOE_IADB_HEADER_START = "DATE"
+"""First field of the CSV header. An unknown series code answers with HTTP 200
+and an HTML page, so the status proves nothing and the body must be checked."""
+
+BOE_GLC_YEARS_ROW_LABEL = "years:"
+"""Row of the spot sheet carrying each column's maturity in years. Found by
+label, because the rows above it are free text and their number is not
+promised."""
+
+BOE_GLC_MATURITY_TOLERANCE = 0.01
+"""How far a header maturity may sit from the one asked for. The real header
+holds ``1.999999920000001`` for the two-year point, so an equality test finds
+nothing; a tolerance this tight still cannot reach a neighbouring column, which
+is one month away."""
+
+SNB_DELIMITER = ";"
+SNB_HEADER_FIRST_FIELD = "Date"
+"""The cube opens with two metadata lines and a blank one before this header."""
+
+
+def _is_jgb_session(cell: str) -> bool:
+    """Say whether a Ministry of Finance first column holds a session date.
+
+    Args:
+        cell: The cell as published.
+
+    Returns:
+        True for ``YYYY/M/D``. False for the blank row and the Japanese footer
+        notice that close the current-month file, which are the two rows this
+        exists to drop.
+
+    """
+    return bool(JGB_SESSION_PATTERN.fullmatch(cell.strip()))
+
+
+HEALTH_PROBES: Mapping[str, str] = {
+    "ecb": TWO_YEAR_REFS["EUR"][1],
+    "boc": TWO_YEAR_REFS["CAD"][1],
+    "rba": TWO_YEAR_REFS["AUD"][1],
+    "mof_jp": TWO_YEAR_REFS["JPY"][1],
+    "boe": TWO_YEAR_REFS["GBP"][1],
+    "snb": SNB_TENOR_2Y,
+}
+"""One series per provider for `provider_health` to ask about. The 2-year point
+in each case, because that is the series the monetary pillar actually loses
+when a provider stops, so a health check on anything else could report a
+provider as alive while the number the engine needs is gone."""
+
+HEALTH_PROBE_FROM_YEAR = 1990
+"""How far back `provider_health` looks. Wide enough that a provider frozen
+years ago still reports the date it froze on rather than an absence, which is
+the distinction the method exists to draw."""
+
+BOE_HEALTH_MATURITY_YEARS = 2.0
+"""Maturity `provider_health` probes the gilt curve at, matching the tenor the
+registry reads."""
+
 RATE_LIMIT = RateLimit(requests=20, per_seconds=60.0, min_interval_seconds=1.0)
 """These are small public-sector servers, not commercial APIs. A daily run
 touches six URLs. There is nothing to gain by going faster and a real
@@ -281,6 +365,12 @@ class CurvesSource(BaseDataSource):
     """
 
     name = "curves"
+    follow_redirects = True
+    """The Bank of England's interactive database answers its documented URL
+    with a 302 on every request, so here the redirect is the endpoint rather
+    than a moved one. Opted into per source, which leaves the base's refusal in
+    place for every source whose provider does not do this."""
+
     base_url = ""
     """Empty on purpose. This source reads from six institutions, so there is no
     one root to hang a path off; each provider method passes its whole URL as
@@ -332,10 +422,28 @@ class CurvesSource(BaseDataSource):
             return body
         if any(line.startswith(RBA_SERIES_ID_ROW_LABEL) for line in lines):
             return body
+        if body[:2] == b"PK":
+            # A ZIP archive, which is how the Bank of England publishes its
+            # yield curve. Whether the member and sheet inside are the right
+            # ones is fetch_boe_curve's to say.
+            return body
+        if header.startswith(BOE_IADB_HEADER_START):
+            return body
+        if lines and lines[0].split(SNB_DELIMITER)[0].strip('"') == "CubeId":
+            return body
+        try:
+            decoded = body.decode(JGB_ENCODING)
+        except UnicodeDecodeError:
+            decoded = ""
+        if decoded and "Interest Rate" in decoded.splitlines()[0]:
+            return body
         raise SourceError(
-            f"{self.name} received a body that is neither Valet JSON, an ECB "
-            f"csvdata table, nor an RBA table carrying a "
-            f"{RBA_SERIES_ID_ROW_LABEL!r} row"
+            f"{self.name} received a body it cannot read. This source parses "
+            f"Valet JSON, an ECB csvdata table, an RBA table carrying a "
+            f"{RBA_SERIES_ID_ROW_LABEL!r} row, a Bank of England CSV whose "
+            f"header starts {BOE_IADB_HEADER_START!r}, a ZIP archive, an SNB "
+            f"cube, or a Ministry of Finance Shift-JIS table. An HTML page is "
+            f"how several of these report an unknown series code, at HTTP 200."
         )
 
     def _body(self, path: str, params: Mapping[str, str | int | float]) -> str:
@@ -651,10 +759,90 @@ class CurvesSource(BaseDataSource):
                 decoded as Shift-JIS.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.curves.CurvesSource.fetch_jgb is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        merged: dict[date, float] = {}
+        # History first, current month second: both can carry a day and the
+        # current-month file is the fresher publication of it.
+        for url in (MOF_JP_HISTORY_URL, MOF_JP_CURRENT_URL):
+            merged.update(self._jgb_rows(url, tenor, start, end))
+        return sorted(merged.items())
+
+    def _jgb_rows(
+        self, url: str, tenor: str, start: date, end: date
+    ) -> Mapping[date, float]:
+        """Read one Ministry of Finance file.
+
+        Args:
+            url: Either the current-month or the history file.
+            tenor: Column header, e.g. ``"2Y"``.
+            start: Earliest session wanted.
+            end: Latest session wanted.
+
+        Returns:
+            Session to yield in percent per annum, for rows inside the window
+            that priced this tenor.
+
+        Raises:
+            SourceError: When the body is not Shift-JIS, when the header names
+                no such tenor, or when a value is present and unreadable.
+
+        """
+        raw = self._request(url, {})
+        if not isinstance(raw, bytes):
+            raise SourceError(f"{self.name} decoded {url} into something unusable")
+        try:
+            text = raw.decode(JGB_ENCODING)
+        except UnicodeDecodeError as error:
+            raise SourceError(
+                f"mof_jp served a body that is not {JGB_ENCODING}: {error}"
+            ) from error
+        rows = list(csv.reader(io.StringIO(text)))
+        header = next((row for row in rows if row and row[0].strip() == "Date"), None)
+        if header is None:
+            raise SourceError("mof_jp served a body with no Date header row")
+        try:
+            column = header.index(tenor)
+        except ValueError as error:
+            raise SourceError(
+                f"mof_jp publishes no {tenor!r} tenor; it holds "
+                f"{', '.join(cell for cell in header[1:] if cell)}"
+            ) from error
+        readings: dict[date, float] = {}
+        for row in rows[rows.index(header) + 1 :]:
+            if not row or not _is_jgb_session(row[0]):
+                # The current-month file ends with a blank row and then a
+                # Japanese-language notice about clearing the browser cache.
+                # The notice sits in the first column, where a date goes, so an
+                # emptiness check does not catch it. Every data row in both
+                # files starts with a date, so anything else is not data.
+                continue
+            if len(row) <= column:
+                continue
+            cell = row[column].strip()
+            if cell == JGB_MISSING_TENOR:
+                continue
+            session = self._parse_jgb_date(row[0])
+            if not start <= session <= end:
+                continue
+            value = self._reading(cell, "mof_jp", row[0].strip())
+            if value is not None:
+                readings[session] = value
+        return readings
+
+    def _parse_jgb_date(self, raw: str) -> date:
+        """Read a Ministry of Finance session date.
+
+        Args:
+            raw: ``YYYY/M/D``, with month and day not zero padded.
+
+        Returns:
+            The session.
+
+        Raises:
+            SourceError: When the cell does not parse, rather than the bare
+                ``ValueError`` that would abort a whole refresh.
+
+        """
+        return self._session(raw, "mof_jp", JGB_DATE_FORMAT)
 
     def fetch_boe_iadb(
         self, codes: Sequence[str], start: date, end: date
@@ -676,10 +864,48 @@ class CurvesSource(BaseDataSource):
                 a ``DATE,`` header.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.curves.CurvesSource.fetch_boe_iadb is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        raw = self._request(
+            BOE_IADB_URL,
+            {
+                "csv.x": "yes",
+                "Datefrom": start.strftime(BOE_IADB_DATE_FORMAT),
+                "Dateto": end.strftime(BOE_IADB_DATE_FORMAT),
+                "SeriesCodes": ",".join(codes),
+                "CSVF": "TN",
+                "UsingCodes": "Y",
+                "VPD": "Y",
+                "VFD": "N",
+            },
         )
+        if not isinstance(raw, bytes):
+            raise SourceError(f"{self.name} decoded the IADB into something unusable")
+        text = raw.decode("utf-8-sig", errors="replace")
+        rows = list(csv.reader(io.StringIO(text)))
+        if not rows or not rows[0] or rows[0][0].strip() != BOE_IADB_HEADER_START:
+            raise SourceError(
+                "boe answered with a body whose first field is not "
+                f"{BOE_IADB_HEADER_START!r}, which is how this endpoint reports "
+                "an unknown series code: it serves an HTML page at HTTP 200, so "
+                "the status cannot be trusted and the body is what is checked"
+            )
+        header = [cell.strip() for cell in rows[0]]
+        collected: dict[str, list[tuple[date, float]]] = {code: [] for code in codes}
+        for row in rows[1:]:
+            if not row or not row[0].strip():
+                continue
+            session = self._session(row[0], "boe", BOE_IADB_ROW_DATE_FORMAT)
+            for code in codes:
+                if code not in header:
+                    continue
+                index = header.index(code)
+                if len(row) <= index:
+                    continue
+                value = self._reading(row[index], "boe", row[0].strip())
+                if value is not None:
+                    collected[code].append((session, value))
+        for series in collected.values():
+            series.sort()
+        return collected
 
     def fetch_boe_curve(
         self, maturity_years: float, start: date, end: date
@@ -709,10 +935,128 @@ class CurvesSource(BaseDataSource):
                 or when no header maturity is within tolerance of the request.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.curves.CurvesSource.fetch_boe_curve is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        raw = self._request(BOE_YIELD_CURVE_ZIP, {})
+        if not isinstance(raw, bytes):
+            raise SourceError(
+                f"{self.name} decoded the archive into something unusable"
+            )
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(raw))
+        except zipfile.BadZipFile as error:
+            raise SourceError(
+                f"boe served a body that is not an archive: {error}"
+            ) from error
+        if BOE_GLC_MEMBER not in archive.namelist():
+            raise SourceError(
+                f"boe archive holds no {BOE_GLC_MEMBER!r}; it holds "
+                f"{', '.join(archive.namelist())}"
+            )
+        workbook = openpyxl.load_workbook(
+            io.BytesIO(archive.read(BOE_GLC_MEMBER)), read_only=True, data_only=True
         )
+        if BOE_GLC_SHEET not in workbook.sheetnames:
+            raise SourceError(
+                f"boe workbook holds no {BOE_GLC_SHEET!r} sheet; it holds "
+                f"{', '.join(workbook.sheetnames)}"
+            )
+        rows = list(workbook[BOE_GLC_SHEET].iter_rows(values_only=True))
+        maturities = next(
+            (
+                row
+                for row in rows
+                if row and str(row[0]).strip() == BOE_GLC_YEARS_ROW_LABEL
+            ),
+            None,
+        )
+        if maturities is None:
+            raise SourceError(
+                f"boe spot sheet carries no {BOE_GLC_YEARS_ROW_LABEL!r} row, so "
+                "there is no way to tell which column holds which maturity"
+            )
+        column = self._nearest_maturity(maturities, maturity_years)
+        parsed: list[tuple[date, float]] = []
+        for row in rows[rows.index(maturities) + 1 :]:
+            if not row or row[0] is None or len(row) <= column:
+                continue
+            session = self._curve_session(row[0])
+            if session is None or not start <= session <= end:
+                continue
+            value = self._reading(str(row[column]), "boe", session.isoformat())
+            if value is not None:
+                parsed.append((session, value))
+        parsed.sort()
+        return parsed
+
+    def _nearest_maturity(self, maturities: Sequence[object], wanted: float) -> int:
+        """Find the column whose header maturity is the one asked for.
+
+        Args:
+            maturities: The ``years:`` row, as read.
+            wanted: Tenor in years.
+
+        Returns:
+            Index of the matching column.
+
+        Raises:
+            SourceError: When no header maturity sits within
+                `BOE_GLC_MATURITY_TOLERANCE`. Returning the nearest whatever
+                the distance would answer a two-year request with a forty-year
+                point the day the grid is re-cut, which is the failure this
+                whole registry exists to avoid.
+
+        """
+        candidates = [
+            (abs(float(value) - wanted), index)
+            for index, value in enumerate(maturities)
+            if isinstance(value, (int, float))
+        ]
+        if not candidates:
+            raise SourceError("boe spot sheet carries no numeric maturities")
+        distance, index = min(candidates)
+        if distance > BOE_GLC_MATURITY_TOLERANCE:
+            raise SourceError(
+                f"boe spot sheet holds no maturity within "
+                f"{BOE_GLC_MATURITY_TOLERANCE} years of {wanted}; the nearest is "
+                f"{distance:.4f} away"
+            )
+        return index
+
+    def _curve_session(self, cell: object) -> date | None:
+        """Read a date out of column A of the spot sheet.
+
+        Args:
+            cell: The cell as ``openpyxl`` returned it.
+
+        Returns:
+            The session, or ``None`` for a cell that is neither a date nor a
+            serial. The rows above the data carry free text in this column.
+
+        Raises:
+            SourceError: Never. An unreadable cell here is a header row rather
+                than a broken reading.
+
+        """
+        if isinstance(cell, datetime):
+            return cell.date()
+        if isinstance(cell, date):
+            return cell
+        if isinstance(cell, (int, float)) and not isinstance(cell, bool):
+            return self._excel_serial_to_date(cell)
+        return None
+
+    def _excel_serial_to_date(self, serial: float) -> date:
+        """Convert a spreadsheet serial to a date.
+
+        Args:
+            serial: Days since `BOE_GLC_DATE_EPOCH`.
+
+        Returns:
+            The date it names. ``openpyxl`` converts date-formatted cells for
+            us, so this is the path for a workbook written without that
+            formatting rather than the usual one.
+
+        """
+        return BOE_GLC_DATE_EPOCH + timedelta(days=int(serial))
 
     def fetch_rba(
         self, series_id: str, start: date, end: date
@@ -797,10 +1141,32 @@ class CurvesSource(BaseDataSource):
             SourceError: On repeated request failure or an unreadable body.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.curves.CurvesSource.fetch_snb is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        raw = self._request(SNB_CUBE_URL.format(cube=cube), {})
+        if not isinstance(raw, bytes):
+            raise SourceError(f"{self.name} decoded the cube into something unusable")
+        text = raw.decode("utf-8-sig", errors="replace")
+        rows = list(csv.reader(io.StringIO(text), delimiter=SNB_DELIMITER))
+        header = next(
+            (row for row in rows if row and row[0].strip() == SNB_HEADER_FIRST_FIELD),
+            None,
         )
+        if header is None:
+            raise SourceError(
+                f"snb cube {cube} carries no {SNB_HEADER_FIRST_FIELD!r} header "
+                "past its metadata lines"
+            )
+        parsed: list[tuple[date, float]] = []
+        for row in rows[rows.index(header) + 1 :]:
+            if len(row) < 3 or row[1].strip() != tenor:
+                continue
+            session = self._session(row[0], "snb", "iso")
+            if not start <= session <= end:
+                continue
+            value = self._reading(row[2], "snb", row[0].strip())
+            if value is not None:
+                parsed.append((session, value))
+        parsed.sort()
+        return parsed
 
     def provider_health(self) -> Mapping[str, date | None]:
         """Report each provider's newest observation.
@@ -821,7 +1187,45 @@ class CurvesSource(BaseDataSource):
                 diagnosing.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.curves.CurvesSource.provider_health is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        newest: dict[str, date | None] = {}
+        for provider, series_id in HEALTH_PROBES.items():
+            try:
+                readings = self._from_provider_series(provider, series_id)
+            except (SourceError, NotImplementedError):
+                # The point of this method is to survive the failure it is
+                # diagnosing, so every provider reports and none propagates.
+                newest[provider] = None
+                continue
+            newest[provider] = max((day for day, _ in readings), default=None)
+        return newest
+
+    def _from_provider_series(
+        self, provider: str, series_id: str
+    ) -> Sequence[tuple[date, float]]:
+        """Fetch a provider's probe series over a wide window.
+
+        Args:
+            provider: Provider key.
+            series_id: The identifier that provider takes.
+
+        Returns:
+            ``(session, value)`` pairs.
+
+        Raises:
+            SourceError: From the provider method, for `provider_health` to
+                turn into a ``None``.
+
+        """
+        start = date(HEALTH_PROBE_FROM_YEAR, 1, 1)
+        # Today, because the question this answers is how recently a provider
+        # published. A fixed end date would report every provider as frozen on
+        # it, which is the answer the method exists to distinguish.
+        end = date.today()
+        if provider == "snb":
+            # These two take a tenor and a maturity rather than a series ID,
+            # so they cannot go through the shared one-argument dispatch.
+            return self.fetch_snb(SNB_BOND_CUBE, SNB_TENOR_2Y, start, end)
+        if provider == "boe":
+            return self.fetch_boe_curve(BOE_HEALTH_MATURITY_YEARS, start, end)
+        fetcher = getattr(self, PROVIDER_FETCHERS[provider])
+        return fetcher(series_id, start, end)
