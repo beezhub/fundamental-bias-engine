@@ -30,6 +30,7 @@ from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from types import MappingProxyType
 
 import httpx
 
@@ -121,6 +122,15 @@ class BaseDataSource(ABC):
             ``None`` for a source that needs none. Named here so `_request` can
             add the key and `_cache_key` can leave it out, rather than every
             source doing both and one of them forgetting.
+        default_headers: Headers sent on every request this source makes. Empty
+            by default. Declared here rather than built per source so that a
+            source needing one, such as the OECD's
+            ``Accept: application/vnd.sdmx.data+csv``, does not have to
+            construct its own client and thereby drift from the timeout, the
+            logger setting and the offline behaviour this class fixes for
+            everyone. Never put a credential here: it would reach the cache
+            sidecar and the logs, which is what ``api_key_param`` exists to
+            prevent.
         rate_limit: This source's request budget.
         retry: This source's retry policy.
 
@@ -129,6 +139,7 @@ class BaseDataSource(ABC):
     name: str = "base"
     base_url: str = ""
     api_key_param: str | None = None
+    default_headers: Mapping[str, str] = MappingProxyType({})
     rate_limit: RateLimit = RateLimit()
     retry: RetryPolicy = RetryPolicy()
 
@@ -389,7 +400,10 @@ class BaseDataSource(ABC):
             # report carries. This is the one place it can be fixed for every
             # source at once.
             logging.getLogger("httpx").setLevel(logging.WARNING)
-            self._client = httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
+            self._client = httpx.Client(
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                headers=dict(self.default_headers),
+            )
 
         backoff = self.retry.backoff_seconds
         last = "no attempt was made"
