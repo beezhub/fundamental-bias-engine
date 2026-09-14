@@ -29,6 +29,26 @@ status differs, and it may differ because of the network this was captured
 from. Nothing depends on which it is: any 4xx outside `RetryPolicy.retry_on_status`
 raises without being retried.
 
+## Curve providers
+
+Captured 2026-09-14, no credential on any of them.
+
+| File | Request | Status |
+| --- | --- | --- |
+| `boc_2y_yield.json` | `https://www.bankofcanada.ca/valet/observations/BD.CDN.2YR.DQ.YLD/json?start_date=2026-09-01&end_date=2026-09-04` | 200 |
+| `ecb_2y_spot.csv` | `https://data-api.ecb.europa.eu/service/data/YC/B.U2.EUR.4F.G_N_A.SV_C_YM.SR_2Y?format=csvdata&startPeriod=2026-09-01&endPeriod=2026-09-04` | 200 |
+| `rba_f2_2y.csv` | `https://www.rba.gov.au/statistics/tables/csv/f2-data.csv` | 200 |
+
+The Bank of Canada and ECB bodies are byte-exact as returned.
+
+`rba_f2_2y.csv` is **truncated**, and that is the only edit made to it. Table
+F2 carries every session since May 2013, 64,777 lines. The eleven-line header
+block is byte-exact, including the byte order mark the RBA serves and the two
+blank rows inside it, and the six data rows are the last six of the real file
+rather than anything typed. Nothing else was changed: the point of keeping the
+header verbatim is that the `Series ID` row is what the parser locates, and its
+position within that block is exactly what has moved between releases before.
+
 ## FRED
 
 `fred_dgs2_observations.json` is **not** a capture. It is constructed in FRED's

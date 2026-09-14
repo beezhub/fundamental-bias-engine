@@ -101,12 +101,21 @@ every parser here is told to key off labels rather than positions.
 
 from __future__ import annotations
 
+import csv
+import io
+import json
+import math
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import date
+from datetime import date, datetime
 
 from fbe.config import DataConfig
-from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy
-from fbe.datasources.registry import SeriesRef
+from fbe.datasources.base import (
+    BaseDataSource,
+    RateLimit,
+    RetryPolicy,
+    SourceError,
+)
+from fbe.datasources.registry import CURVE_SOURCES, INDICATORS, SeriesRef
 from fbe.types import Observation
 
 __all__ = [
@@ -214,6 +223,39 @@ PROVIDER_FOR_CURRENCY: Mapping[str, str] = {
 correct even though its data is frozen; that distinction is what lets a health
 check tell "the SNB stopped publishing" apart from "we lost the URL"."""
 
+ECB_TIME_COLUMN = "TIME_PERIOD"
+ECB_VALUE_COLUMN = "OBS_VALUE"
+"""The two columns read out of the ECB csvdata body. Found by name: the capture
+carries forty columns and their order is the ECB's to change."""
+
+RBA_DATE_FORMAT = "%d-%b-%Y"
+"""Column A of table F2, for example ``04-Sep-2026``."""
+
+PROVIDER_FETCHERS: Mapping[str, str] = {
+    "ecb": "fetch_ecb",
+    "boc": "fetch_boc",
+    "rba": "fetch_rba",
+    "mof_jp": "fetch_jgb",
+    "boe": "fetch_boe_curve",
+    "snb": "fetch_snb",
+}
+"""Which method serves which provider key. A table rather than a chain of
+conditionals so that adding a provider is adding a row, and so that a ref
+naming a provider with no fetcher fails here by name instead of silently
+falling through to no observations."""
+
+SERVED_TRANSFORMS: frozenset[str] = frozenset({"level"})
+"""Transforms this source can emit today.
+
+``chg_1m`` and ``chg_3m`` reuse the same refs and are deliberately absent. The
+registry defines them as a resample, a difference and a rescale into basis
+points, and two things about that are unsettled: the differencing convention is
+ambiguous as written, and the emitted value would be in basis points while the
+ref it is built from says ``percent``. `fbe.datasources.fred` already refuses
+them for the same reason. Raised on issue #56 and not yet answered, and
+``yield_2y_chg_3m`` is documented as the heaviest sub-indicator in the model,
+so guessing is the one thing not to do."""
+
 RATE_LIMIT = RateLimit(requests=20, per_seconds=60.0, min_interval_seconds=1.0)
 """These are small public-sector servers, not commercial APIs. A daily run
 touches six URLs. There is nothing to gain by going faster and a real
@@ -239,6 +281,12 @@ class CurvesSource(BaseDataSource):
     """
 
     name = "curves"
+    base_url = ""
+    """Empty on purpose. This source reads from six institutions, so there is no
+    one root to hang a path off; each provider method passes its whole URL as
+    the path instead. That also means `fbe doctor` has no single base URL to
+    probe for this source, which is the honest answer for a fan-out."""
+
     rate_limit = RATE_LIMIT
     retry = RetryPolicy(attempts=3, backoff_seconds=2.0)
 
@@ -251,6 +299,131 @@ class CurvesSource(BaseDataSource):
 
         """
         super().__init__(config)
+
+    def _decode(self, body: bytes) -> object:
+        """Check the body is one of the three shapes this module parses.
+
+        Overridden because these providers serve JSON and two different CSV
+        layouts, so there is no single parse to do here. What this can do, and
+        the reason it is here rather than in each provider method, is refuse a
+        body no parser could read **before** `_request` writes the cache. A
+        maintenance page served at 200 and cached would come back for the whole
+        TTL, and an offline run expires nothing, so the entry would outlive the
+        outage that caused it.
+
+        Args:
+            body: Raw response bytes, exactly as cached.
+
+        Returns:
+            The same bytes, for the calling provider method to parse. Nothing
+            is interpreted here: which shape is expected depends on which
+            provider was asked, and this method does not know.
+
+        Raises:
+            SourceError: When the body matches none of the three known shapes.
+
+        """
+        text = body.decode("utf-8-sig", errors="replace")
+        if text.lstrip().startswith("{"):
+            return body
+        lines = text.splitlines()
+        header = lines[0] if lines else ""
+        if ECB_TIME_COLUMN in header and ECB_VALUE_COLUMN in header:
+            return body
+        if any(line.startswith(RBA_SERIES_ID_ROW_LABEL) for line in lines):
+            return body
+        raise SourceError(
+            f"{self.name} received a body that is neither Valet JSON, an ECB "
+            f"csvdata table, nor an RBA table carrying a "
+            f"{RBA_SERIES_ID_ROW_LABEL!r} row"
+        )
+
+    def _body(self, path: str, params: Mapping[str, str | int | float]) -> str:
+        """Fetch one URL through the shared request path and return its text.
+
+        Args:
+            path: The whole URL. ``base_url`` is empty on this source, so the
+                path carries the host as well.
+            params: Query parameters.
+
+        Returns:
+            The body decoded as UTF-8, with a byte order mark stripped. The RBA
+            serves one and `csv` would otherwise read it into the first cell,
+            which is the cell the ``Series ID`` row is found by.
+
+        Raises:
+            SourceError: From `_request`, or when the decoded body is not bytes.
+
+        """
+        body = self._request(path, params)
+        if not isinstance(body, bytes):
+            raise SourceError(f"{self.name} decoded {path} into something unusable")
+        return body.decode("utf-8-sig", errors="replace")
+
+    def _reading(self, raw: str, provider: str, period: str) -> float | None:
+        """Read one published yield, or report it absent.
+
+        Args:
+            raw: The cell or field as published.
+            provider: Provider key, named in any error.
+            period: The session the value belongs to, named in any error.
+
+        Returns:
+            The yield in percent per annum, or ``None`` when the provider
+            published nothing for that session. A blank cell is a session the
+            series does not cover, which is absence rather than a zero yield.
+
+        Raises:
+            SourceError: When a value is present and unreadable, or is not
+                finite. ``float`` accepts ``"nan"`` and ``"inf"``: a nan
+                reaching a cross-sectional pillar makes the mean and the
+                standard deviation nan for all eight currencies at once.
+
+        """
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            value = float(text)
+        except ValueError as error:
+            raise SourceError(
+                f"{provider} published an unreadable value for {period}: {text!r}"
+            ) from error
+        if not math.isfinite(value):
+            raise SourceError(
+                f"{provider} published a non-finite value for {period}: {text!r}"
+            )
+        return value
+
+    def _session(self, raw: str, provider: str, pattern: str) -> date:
+        """Read one session date, or raise rather than let a ValueError escape.
+
+        Args:
+            raw: The date cell as published.
+            provider: Provider key, named in any error.
+            pattern: A `datetime.strptime` pattern, or ``"iso"`` for
+                ``YYYY-MM-DD``.
+
+        Returns:
+            The session the reading belongs to.
+
+        Raises:
+            SourceError: When the cell does not match. Deliberately not the
+                bare ``ValueError`` the parser would otherwise emit: the
+                collector records a `SourceError` as a named coverage gap and
+                keeps going, while an unexpected exception type aborts the
+                whole refresh over one malformed row.
+
+        """
+        text = raw.strip()
+        try:
+            if pattern == "iso":
+                return date.fromisoformat(text)
+            return datetime.strptime(text, pattern).date()
+        except ValueError as error:
+            raise SourceError(
+                f"{provider} published an unreadable session date: {text!r}"
+            ) from error
 
     def available(self) -> bool:
         """Report whether at least one provider is reachable.
@@ -294,10 +467,58 @@ class CurvesSource(BaseDataSource):
                 lost series, so it must not be swallowed as an empty result.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.curves.CurvesSource.fetch is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        wanted_indicators = set(indicators)
+        wanted_currencies = set(currencies)
+        emitted: list[Observation] = []
+        for (indicator, currency), ref in self.refs().items():
+            if indicator not in wanted_indicators:
+                continue
+            if currency not in wanted_currencies:
+                continue
+            if ref.transform not in SERVED_TRANSFORMS:
+                raise SourceError(
+                    f"{self.name} cannot emit the {ref.transform!r} transform "
+                    f"that {indicator} / {currency} asks for: its derivation "
+                    "and the unit it would carry are both unsettled, so an "
+                    "approximation here would be a wrong number wearing the "
+                    "right label"
+                )
+            for period, value in self._from_provider(ref, currency, start, end):
+                emitted.append(
+                    self._observation(indicator, currency, ref, period, value)
+                )
+        return emitted
+
+    def _from_provider(
+        self, ref: SeriesRef, currency: str, start: date, end: date
+    ) -> Sequence[tuple[date, float]]:
+        """Dispatch one ref to the provider that publishes it.
+
+        Args:
+            ref: The registry entry, whose ``source`` names the provider.
+            currency: ISO 4217 code, named in any error.
+            start: Earliest session wanted.
+            end: Latest session wanted.
+
+        Returns:
+            ``(session, yield)`` pairs in percent per annum, oldest first.
+
+        Raises:
+            SourceError: When the provider fails, naming the provider and the
+                currency. No other provider is tried: each publishes only its
+                own country, so a fallback would be a different country's
+                curve presented as this one's.
+            NotImplementedError: For a provider still scaffolded. `fetch_jgb`,
+                `fetch_boe_curve` and `fetch_snb` are issue #59's.
+
+        """
+        fetcher = getattr(self, PROVIDER_FETCHERS[ref.source])
+        try:
+            return fetcher(ref.series_id, start, end)
+        except SourceError as error:
+            raise SourceError(
+                f"{ref.source} could not supply {currency}: {error}"
+            ) from error
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is one of the curve providers.
@@ -306,10 +527,12 @@ class CurvesSource(BaseDataSource):
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.curves.CurvesSource.refs is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        return {
+            (spec.key, currency): ref
+            for spec in INDICATORS.values()
+            for currency, ref in spec.series.items()
+            if ref.source in CURVE_SOURCES
+        }
 
     def fetch_boc(
         self, series_id: str, start: date, end: date
@@ -328,10 +551,37 @@ class CurvesSource(BaseDataSource):
             SourceError: On repeated request failure or an unreadable body.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.curves.CurvesSource.fetch_boc is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        text = self._body(
+            f"{BOC_BASE_URL}observations/{series_id}/json",
+            {"start_date": start.isoformat(), "end_date": end.isoformat()},
         )
+        try:
+            payload = json.loads(text)
+        except ValueError as error:
+            raise SourceError(
+                f"boc returned a body that is not JSON: {error}"
+            ) from error
+        rows = payload.get("observations") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise SourceError(f"boc returned no observations list for {series_id}")
+        parsed: list[tuple[date, float]] = []
+        for row in rows:
+            if not isinstance(row, dict) or "d" not in row:
+                raise SourceError(f"boc returned a row with no date for {series_id}")
+            if series_id not in row:
+                raise SourceError(
+                    f"boc returned a row carrying no {series_id} field; the "
+                    "value hangs off a key named after the series, so this is "
+                    "a different series or a changed shape"
+                )
+            cell = row[series_id]
+            raw = cell.get("v", "") if isinstance(cell, dict) else ""
+            session = self._session(str(row["d"]), "boc", "iso")
+            value = self._reading(str(raw), "boc", str(row["d"]))
+            if value is not None:
+                parsed.append((session, value))
+        parsed.sort()
+        return parsed
 
     def fetch_ecb(
         self, key: str, start: date, end: date
@@ -351,10 +601,33 @@ class CurvesSource(BaseDataSource):
             SourceError: On repeated request failure or an unreadable body.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.curves.CurvesSource.fetch_ecb is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        text = self._body(
+            f"{ECB_BASE_URL}{key}",
+            {
+                "format": "csvdata",
+                "startPeriod": start.isoformat(),
+                "endPeriod": end.isoformat(),
+            },
         )
+        reader = csv.DictReader(io.StringIO(text))
+        columns = reader.fieldnames or []
+        missing = [
+            name for name in (ECB_TIME_COLUMN, ECB_VALUE_COLUMN) if name not in columns
+        ]
+        if missing:
+            raise SourceError(
+                f"ecb returned a table with no {', '.join(missing)} column for {key}"
+            )
+        parsed: list[tuple[date, float]] = []
+        for row in reader:
+            period = (row.get(ECB_TIME_COLUMN) or "").strip()
+            if not period:
+                raise SourceError(f"ecb returned a row with no period for {key}")
+            value = self._reading(row.get(ECB_VALUE_COLUMN) or "", "ecb", period)
+            if value is not None:
+                parsed.append((self._session(period, "ecb", "iso"), value))
+        parsed.sort()
+        return parsed
 
     def fetch_jgb(
         self, tenor: str, start: date, end: date
@@ -461,10 +734,45 @@ class CurvesSource(BaseDataSource):
                 and have changed between releases.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.curves.CurvesSource.fetch_rba is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        text = self._body(RBA_F2_URL, {})
+        rows = list(csv.reader(io.StringIO(text)))
+        header = next(
+            (row for row in rows if row and row[0].strip() == RBA_SERIES_ID_ROW_LABEL),
+            None,
         )
+        if header is None:
+            raise SourceError(
+                f"rba table F2 carries no {RBA_SERIES_ID_ROW_LABEL!r} row, so "
+                "there is no way to tell which column holds which series"
+            )
+        try:
+            column = header.index(series_id)
+        except ValueError as error:
+            raise SourceError(
+                f"rba table F2 does not carry {series_id}; it holds "
+                f"{', '.join(cell for cell in header[1:] if cell)}"
+            ) from error
+        parsed: list[tuple[date, float]] = []
+        for row in rows[rows.index(header) + 1 :]:
+            if not row or not row[0].strip():
+                continue
+            if len(row) <= column:
+                # The published table omits trailing empty cells, so a short
+                # row is a session this series does not cover rather than a
+                # malformed one.
+                continue
+            session = self._session(row[0], "rba", RBA_DATE_FORMAT)
+            if not start <= session <= end:
+                # F2 is served whole whatever window was asked for, so the
+                # window is applied here. In a Phase 6 backtest ``end`` is the
+                # as-of date of a bar, and a later session is a price the model
+                # could not have had.
+                continue
+            value = self._reading(row[column], "rba", row[0].strip())
+            if value is not None:
+                parsed.append((session, value))
+        parsed.sort()
+        return parsed
 
     def fetch_snb(
         self, cube: str, tenor: str, start: date, end: date
