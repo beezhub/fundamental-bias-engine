@@ -72,12 +72,21 @@ FRED, redistributing the numbers is a different question from using them.
 
 from __future__ import annotations
 
+import csv
+import io
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
+from types import MappingProxyType
 
 from fbe.config import DataConfig
-from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy
-from fbe.datasources.registry import SeriesRef
+from fbe.datasources.base import (
+    BaseDataSource,
+    RateLimit,
+    RetryPolicy,
+    SourceError,
+)
+from fbe.datasources.registry import INDICATORS, SeriesRef
 from fbe.types import Observation
 
 __all__ = [
@@ -236,6 +245,40 @@ EXPENDITURE_ALL = "_T"
 EXPENDITURE_CORE = "_TXCP01_NRG"
 """All items, and all items less food and energy."""
 
+CPI_ADJUSTMENT = "N"
+"""Neither seasonally adjusted nor calendar adjusted, matching every CPI ref in
+the registry. Distinct from `CPI_METHODOLOGY`, which happens to share the
+letter and means national rather than harmonised."""
+
+FINMARK_UNITS: Mapping[str, str] = MappingProxyType(
+    {
+        "IRSTCI": "PA",
+        "IRLT": "PA",
+        "IR3TIB": "PA",
+        "SHARE": "IX",
+    }
+)
+"""``UNIT_MEASURE`` for each measure whose unit was verified against a live
+key. Interest rates are percent per annum, share prices an index.
+
+``CC`` and ``CCRE`` are deliberately absent. Both are in `MEASURES`, neither is
+routed to by any registry entry, and neither unit was confirmed. Guessing one
+produces a key that either returns nothing or returns a different series, and
+the second is the failure this module exists to prevent, so `finmark_key`
+refuses them instead."""
+
+TIME_PERIOD_COLUMN = "TIME_PERIOD"
+OBS_VALUE_COLUMN = "OBS_VALUE"
+"""The two columns read out of the SDMX CSV. Found by name rather than by
+position: the captured body carries sixteen columns and their order is the
+API's to change."""
+
+QUARTER_FIRST_MONTH: Mapping[str, int] = MappingProxyType(
+    {"1": 1, "2": 4, "3": 7, "4": 10}
+)
+"""Quarter number to the month it begins in, under the first-day stamping
+convention ruled on issue #27."""
+
 RATE_LIMIT = RateLimit(requests=10, per_seconds=60.0, min_interval_seconds=3.0)
 """Set from observed behaviour, not from documentation, because there is none.
 A burst of broad queries earned a 429 within a minute. Three seconds between
@@ -259,6 +302,8 @@ class OecdSource(BaseDataSource):
     """
 
     name = "oecd"
+    base_url = BASE_URL
+    default_headers = MappingProxyType({"Accept": CSV_ACCEPT})
     rate_limit = RATE_LIMIT
     retry = RetryPolicy(attempts=3, backoff_seconds=5.0)
 
@@ -270,6 +315,81 @@ class OecdSource(BaseDataSource):
 
         """
         super().__init__(config)
+
+    def _decode(self, body: bytes) -> object:
+        """Parse an SDMX CSV body into ``(time_period, value)`` pairs.
+
+        Overridden because this API serves CSV where the base expects JSON.
+        Doing it here rather than in `fetch_key` is deliberate: `_request`
+        writes the cache only after decoding succeeds, so a body this source
+        refuses never reaches disk. Caching a throttle would serve it back for
+        the whole TTL, and an offline run expires nothing.
+
+        Args:
+            body: Raw response bytes, exactly as cached.
+
+        Returns:
+            A tuple of ``(time_period, value)`` pairs, periods left as the
+            API's own strings. Values carry the unit of the series requested;
+            this method does not know which that is. An empty tuple means the
+            body was a well-formed CSV with no observation rows, which is a
+            window that held nothing and is data.
+
+        Raises:
+            SourceError: When the body carries `THROTTLE_MARKER`, when it is
+                not CSV with the two columns this source reads, or when a value
+                is present and unreadable. A throttle is prose rather than
+                SDMX, and parsing it as zero rows would report a live currency
+                as uncovered; that is the specific failure this module was
+                written for.
+
+        """
+        text = body.decode("utf-8-sig", errors="replace")
+        if THROTTLE_MARKER in text:
+            raise SourceError(
+                f"{self.name} was throttled: the response carries the API's "
+                "rate limit notice rather than data, so it is an error and not "
+                "an empty series"
+            )
+        reader = csv.DictReader(io.StringIO(text))
+        columns = reader.fieldnames or []
+        missing = [
+            name
+            for name in (TIME_PERIOD_COLUMN, OBS_VALUE_COLUMN)
+            if name not in columns
+        ]
+        if missing:
+            raise SourceError(
+                f"{self.name} returned a body with no {', '.join(missing)} "
+                f"column, so it is not the SDMX CSV this source asked for"
+            )
+        parsed: list[tuple[str, float]] = []
+        for row in reader:
+            period = (row.get(TIME_PERIOD_COLUMN) or "").strip()
+            raw = (row.get(OBS_VALUE_COLUMN) or "").strip()
+            if not period:
+                raise SourceError(f"{self.name} returned a row with no period")
+            if not raw:
+                # A blank observation is a hole in the series. Reading it as a
+                # zero would put a zero inflation print in the middle of a CPI
+                # series, which scores as a real collapse.
+                continue
+            try:
+                value = float(raw)
+            except ValueError as error:
+                raise SourceError(
+                    f"{self.name} returned an unreadable value for {period}: {raw!r}"
+                ) from error
+            if not math.isfinite(value):
+                # float() accepts "nan" and "inf". A nan reaching a
+                # cross-sectional pillar makes the mean and the standard
+                # deviation nan for the whole universe, so all eight currencies
+                # score nan and every threshold comparison quietly reads False.
+                raise SourceError(
+                    f"{self.name} returned a non-finite value for {period}: {raw!r}"
+                )
+            parsed.append((period, value))
+        return tuple(parsed)
 
     def available(self) -> bool:
         """Report whether the OECD API answers, or a warm cache exists.
@@ -312,10 +432,56 @@ class OecdSource(BaseDataSource):
                 or when the body contains `THROTTLE_MARKER`.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.oecd.OecdSource.fetch is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        wanted_indicators = set(indicators)
+        wanted_currencies = set(currencies)
+        emitted: list[Observation] = []
+        for (indicator, currency), ref in self.refs().items():
+            if indicator not in wanted_indicators:
+                continue
+            if currency not in wanted_currencies:
+                continue
+            flow, key = self.split_series_id(ref.series_id)
+            frequency = self._key_frequency(key, ref.series_id)
+            for period, value in self.fetch_key(flow, key, start, end):
+                emitted.append(
+                    self._observation(
+                        indicator,
+                        currency,
+                        ref,
+                        self.parse_period(period, frequency),
+                        value,
+                    )
+                )
+        return emitted
+
+    def _key_frequency(self, key: str, series_id: str) -> str:
+        """Read the ``FREQ`` segment out of a dimension key.
+
+        The key is what was actually asked of the API, so it is what decides
+        how to read the periods that come back, rather than the ref's own
+        ``frequency`` field.
+
+        Args:
+            key: Dot-separated dimension key.
+            series_id: The whole registry identifier, named in any error.
+
+        Returns:
+            The SDMX frequency letter, ``"M"``, ``"Q"`` or ``"A"``.
+
+        Raises:
+            SourceError: When the segment is empty. A wildcarded frequency
+                returns periods of more than one shape, and guessing which is
+                how a quarter gets filed under a month.
+
+        """
+        segments = key.split(".")
+        frequency = segments[1] if len(segments) > 1 else ""
+        if not frequency:
+            raise SourceError(
+                f"{self.name} cannot read periods for {series_id} because its "
+                "key names no frequency"
+            )
+        return frequency
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is ``"oecd"``.
@@ -324,10 +490,12 @@ class OecdSource(BaseDataSource):
             Mapping from ``(indicator, currency)`` to its `SeriesRef`.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.oecd.OecdSource.refs is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        return {
+            (spec.key, currency): ref
+            for spec in INDICATORS.values()
+            for currency, ref in spec.series.items()
+            if ref.source == self.name
+        }
 
     def split_series_id(self, series_id: str) -> tuple[str, str]:
         """Split a registry series ID into its dataflow and dimension key.
@@ -345,10 +513,16 @@ class OecdSource(BaseDataSource):
                 turned into a URL, so it fails here rather than as a 404 later.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.oecd.OecdSource.split_series_id is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        flow, separator, key = series_id.partition("/")
+        if not separator or not key:
+            raise ValueError(f"{series_id!r} is not a {{flow}}/{{key}} identifier")
+        if flow not in FLOW_VERSIONS:
+            raise ValueError(
+                f"{flow!r} is not a known dataflow, so it has no version and "
+                f"cannot be turned into a URL; known flows are "
+                f"{', '.join(sorted(FLOW_VERSIONS))}"
+            )
+        return flow, key
 
     def fetch_key(
         self,
@@ -378,10 +552,17 @@ class OecdSource(BaseDataSource):
                 is neither CSV nor a recognised error.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.oecd.OecdSource.fetch_key is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        agency = FLOW_AGENCIES[flow]
+        version = FLOW_VERSIONS[flow]
+        payload = self._request(
+            f"data/{agency},{flow},{version}/{key}",
+            {"startPeriod": start.isoformat(), "endPeriod": end.isoformat()},
         )
+        if not isinstance(payload, tuple):
+            raise SourceError(
+                f"{self.name} decoded {key} into something other than observation pairs"
+            )
+        return list(payload)
 
     def parse_period(self, period: str, frequency: str) -> date:
         """Convert an SDMX time period to the first day of the period it names.
@@ -399,9 +580,25 @@ class OecdSource(BaseDataSource):
             ValueError: On a period string that does not match the frequency.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.oecd.OecdSource.parse_period is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        year, _, remainder = period.partition("-")
+        if frequency == "A":
+            if remainder:
+                raise ValueError(f"{period!r} is not an annual period")
+            return date(int(year), 1, 1)
+        if frequency == "M":
+            month = int(remainder)
+            if not 1 <= month <= 12:
+                raise ValueError(f"{period!r} names no month")
+            return date(int(year), month, 1)
+        if frequency == "Q":
+            if not remainder.startswith("Q"):
+                raise ValueError(f"{period!r} is not a quarterly period")
+            quarter = remainder[1:]
+            if quarter not in QUARTER_FIRST_MONTH:
+                raise ValueError(f"{period!r} names no quarter")
+            return date(int(year), QUARTER_FIRST_MONTH[quarter], 1)
+        raise ValueError(
+            f"{frequency!r} is not a frequency this source reads; expected M, Q or A"
         )
 
     def cpi_key(self, currency: str, core: bool = False) -> tuple[str, str]:
@@ -421,10 +618,21 @@ class OecdSource(BaseDataSource):
                 states rather than the bloc.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.oecd.OecdSource.cpi_key is scaffolded; "
-            "see docs/roadmap.md Phase 1"
+        flow = (CORE_CPI_FLOW if core else CPI_FLOW)[currency]
+        expenditure = EXPENDITURE_CORE if core else EXPENDITURE_ALL
+        key = ".".join(
+            (
+                REF_AREA[currency],
+                "",
+                CPI_METHODOLOGY,
+                CPI_MEASURE,
+                CPI_UNIT_PERCENT,
+                expenditure,
+                CPI_ADJUSTMENT,
+                CPI_TRANSFORM_YOY,
+            )
         )
+        return flow, key
 
     def finmark_key(self, currency: str, measure: str) -> tuple[str, str]:
         """Build the flow and key for one currency's financial market series.
@@ -440,7 +648,16 @@ class OecdSource(BaseDataSource):
             KeyError: If the currency or measure is unknown.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.oecd.OecdSource.finmark_key is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        area = REF_AREA[currency]
+        if measure not in MEASURES.values():
+            raise KeyError(
+                f"{measure!r} is not a measure of {FINMARK_FLOW}; expected one "
+                f"of {', '.join(sorted(set(MEASURES.values())))}"
+            )
+        if measure not in FINMARK_UNITS:
+            raise KeyError(
+                f"{measure!r} has no verified unit, so a key for it would be a "
+                "guess; see FINMARK_UNITS"
+            )
+        key = ".".join((area, "", measure, FINMARK_UNITS[measure], "", "", "", "", ""))
+        return FINMARK_FLOW, key
