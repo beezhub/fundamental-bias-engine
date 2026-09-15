@@ -112,9 +112,9 @@ issue, which is not a failure.
 | Run | When (SAST) | Role | Does | Does not |
 | --- | --- | --- | --- | --- |
 | deliver | weekdays 05:00 | product-analyst | Counts open issues carrying `roadmap` and `status:ready` whose dependencies have all landed. Four or more: files nothing and stops. Fewer: decomposes the current phase of `docs/roadmap.md` into `type:requirement` issues, at most 5 in one run, aiming for roughly 6 unblocked. Posts the delivery order as a comment on the phase's lowest-numbered issue. | Apply `routine-safe`. File defects or proposals. Touch any source file. Change what a stub docstring says a function should do. |
-| triage | weekdays 06:00 and 12:00 | architect | Releases stranded `status:in-progress` claims with no open pull request. **Rules** every `status:needs-decision` issue that is not the owner's to decide, and never leaves one longer than two days. Unblocks what has landed. Spot-checks `status:ready`. Widens the maintenance pool by labelling qualifying `p2` or `p3` issues `routine-safe`. Splits anything too big for one pull request. Files at most 3 defects. | Touch source. Open proposals. Advance anything past the approval gate. Add `routine-safe` to anything carrying `roadmap`. |
-| build lane 1 | weekdays 07:00, 11:00 and 15:00 | developer, then test-engineer, then code-reviewer | Looks after its own open pull requests first. Then claims **one** issue, the lowest-numbered that is `status:ready`, `routine-safe`, `p2` or `p3`. Branch, failing test, fix, four checks, pull request. | Take a second issue. Take an issue already at `status:in-progress`. Touch `types.py`. Change a value in `ScoringConfig` or `RiskConfig`. Take anything at `p0` or `p1`. Merge. |
-| implement lane A | weekdays 09:00, 13:00 and 17:00 | developer, then test-engineer, then code-reviewer | Looks after its own open pull requests first. Then claims **one** issue carrying `type:requirement`, `roadmap` and `status:ready`, at any priority, preferring the **lowest** number whose dependencies have all landed. Tests first, each shown to fail against the stub for the right reason, then the implementation, four checks, pull request. | Take a second issue. Claim an issue whose dependencies are still open. Change an existing default in `ScoringConfig` or `RiskConfig`. Change `types.py` without an architect ruling in the issue body naming every consumer. Force-push. Merge. |
+| triage | weekdays 06:00 and 12:00 | architect | Releases stranded `status:in-progress` claims with no open pull request. **Rules** every `status:needs-decision` issue that is not the owner's to decide, and never leaves one longer than two days. Unblocks what has landed. Spot-checks `status:ready`. Widens the maintenance pool by labelling qualifying `p2` or `p3` issues `routine-safe`. Splits anything too big for one pull request. Files at most 3 defects. | Touch source. Open proposals. Advance anything past the approval gate. Add `routine-safe` to anything carrying `roadmap`, or to anything carrying `routine-hold`. |
+| build lane 1 | weekdays 07:00, 11:00 and 15:00 | developer, then test-engineer, then code-reviewer | Looks after its own open pull requests first. Then claims **one** issue, the lowest-numbered that is `status:ready`, `routine-safe`, `p2` or `p3`. Branch, failing test, fix, four checks, pull request. | Take a second issue. Take an issue already at `status:in-progress` or carrying `routine-hold`. Touch `types.py`. Change a value in `ScoringConfig` or `RiskConfig`. Take anything at `p0` or `p1`. Merge. |
+| implement lane A | weekdays 09:00, 13:00 and 17:00 | developer, then test-engineer, then code-reviewer | Looks after its own open pull requests first. Then claims **one** issue carrying `type:requirement`, `roadmap` and `status:ready`, at any priority, preferring the **lowest** number whose dependencies have all landed. Tests first, each shown to fail against the stub for the right reason, then the implementation, four checks, pull request. | Take a second issue. Claim an issue carrying `routine-hold`, or one whose dependencies are still open. Change an existing default in `ScoringConfig` or `RiskConfig`. Change `types.py` without an architect ruling in the issue body naming every consumer. Force-push. Merge. |
 | implement lane B | weekdays 08:00, 12:00 and 16:00 | developer, then test-engineer, then code-reviewer | The same, preferring the **highest** number whose dependencies have all landed. | The same. |
 | improve | Sunday 08:00 | product-analyst | Converts every `type:proposal` carrying `approved` into a `type:requirement`. Then files at most 3 new proposals at `status:needs-approval`. | Approve anything. Convert a proposal without the `approved` label. |
 | audit | Saturday 08:00 | architect | Reads the whole repository against the standards and the specifications. Files at most 10 issues, verified present. Read-only checkout, writes nothing. | Fix anything. Refile something already open or already closed. |
@@ -303,10 +303,28 @@ repository that sizes real positions is that a person reads the diff.
 
 ## Stopping a run
 
-Disable the routine. For one maintenance issue only, remove `routine-safe` and
-build lane 1 will not claim it. For one roadmap issue only, move it off
-`status:ready`. There is no other pause mechanism on purpose: two ways to stop
-something means one of them will be forgotten.
+Disable the routine to stop it altogether.
+
+**For one issue only, add `routine-hold`.** No unattended run claims an issue
+carrying it, in either pool, and triage never adds `routine-safe` to one. Only
+a person adds or removes it.
+
+That is the only per-issue pause, and the two this section used to document are
+gone. Removing `routine-safe` no longer pauses a maintenance issue. Triage adds
+that label back when it widens the pool, and nothing it is handed can
+distinguish a label never applied from one a person removed an hour earlier, so
+the pause ended at 06:00 the next weekday without anyone being told. Moving a
+roadmap issue off `status:ready` had the same shape. A control that appears to
+work and does not is worse than no control, and two ways to stop something
+still means one of them will be forgotten.
+
+**The label has no effect until the routine prompts carry the rule.** The label
+lives in this repository. The behaviour lives in four routine definitions
+outside it, and a prompt changes only by recreating its routine. Until triage,
+build lane 1, implement lane A and implement lane B have each been recreated
+with the rule in their prompts, adding `routine-hold` marks the issue on the
+board and stops nothing. Recreating those four routines is the step that makes
+it live, and only the owner can take it.
 
 ## Bounds, restated
 
