@@ -21,6 +21,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from datetime import date
+from math import fsum, sqrt
 from statistics import median
 
 from fbe.config import ScoringConfig
@@ -31,6 +32,7 @@ from fbe.types import Frequency, Observation, PillarName, PillarScore
 __all__ = [
     "BasePillar",
     "MIN_CROSS_SECTION",
+    "MIN_TIME_SERIES_WINDOW",
     "MIN_COMPONENT_WEIGHT",
     "DEFAULT_PUBLICATION_LAG_DAYS",
     "staleness_allowance",
@@ -57,6 +59,20 @@ a little realism at the margin; one that is too short manufactures profit out of
 numbers nobody had, and that error flatters rather than penalises, so it survives
 review. Where a source can supply a real ``released_at``, it should, and this
 table should never be reached.
+"""
+
+
+MIN_TIME_SERIES_WINDOW: int = 12
+"""Fewest in-window observations a time-series z-score will accept.
+
+Most of these series are monthly, so twelve is one year: the shortest window
+that can tell a level shift from a seasonal one. Below it the standard deviation
+is dominated by whichever part of the year the window happens to cover, and the
+z-score it produces describes the calendar rather than the currency.
+
+`BasePillar.time_series_z` returns ``None`` below this count rather than scoring
+a short window, for the same reason `MIN_CROSS_SECTION` refuses a thin
+cross-section: a confident number from too little data is worse than no number.
 """
 
 
@@ -139,6 +155,35 @@ def staleness_allowance(indicator: str, config: ScoringConfig) -> int:
     if spec is None:
         return config.max_staleness_days
     return spec.max_staleness_days
+
+
+def _years_earlier(when: date, years: int) -> date:
+    """Return the same calendar day ``years`` before ``when``.
+
+    Args:
+        when: The date to count back from.
+        years: Whole years, from `ScoringConfig.lookback_years`.
+
+    Returns:
+        The same day and month, ``years`` earlier. 29 February steps back to
+        28 February where the earlier year is not a leap year, which shortens
+        the window by a day rather than lengthening it: a window a day short
+        drops one observation, and one a day long admits an observation from
+        outside the lookback the config asked for.
+
+    Raises:
+        ValueError: If ``years`` is negative, which would put the start of the
+            window after its end and return an empty history from a series that
+            has one.
+
+    """
+    if years < 0:
+        raise ValueError(f"a lookback cannot be negative, got {years} years")
+    try:
+        return when.replace(year=when.year - years)
+    except ValueError:
+        # 29 February in a year whose counterpart is not a leap year.
+        return when.replace(year=when.year - years, month=2, day=28)
 
 
 class BasePillar(ABC):
@@ -499,10 +544,37 @@ class BasePillar(ABC):
             not be reported as missing data.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.base.BasePillar.cross_sectional_z is scaffolded; "
-            "see docs/roadmap.md Phase 2"
-        )
+        usable = {
+            currency: value for currency, value in values.items() if value is not None
+        }
+        if len(usable) < MIN_CROSS_SECTION:
+            return dict.fromkeys(values)
+
+        if len(set(usable.values())) == 1:
+            # Every usable currency reported the same value. That is a finding
+            # and not a gap, so they score zero rather than coming back absent.
+            #
+            # Tested on the inputs rather than on the variance they produce. The
+            # mean of three values of 0.1 is 0.10000000000000002, so each
+            # deviation is about -1.4e-17 and the standard deviation is the same
+            # size, and dividing one by the other returns -1.0 for all three: a
+            # confident score off a cross-section that holds no information,
+            # which is the failure this whole module is built to avoid. Only
+            # values that happen to be exactly representable, such as 2.5, reach
+            # a variance of exactly zero.
+            return {
+                currency: (0.0 if currency in usable else None) for currency in values
+            }
+
+        mean = fsum(usable.values()) / len(usable)
+        variance = fsum((value - mean) ** 2 for value in usable.values()) / len(usable)
+        deviation = sqrt(variance)
+        return {
+            currency: (
+                (usable[currency] - mean) / deviation if currency in usable else None
+            )
+            for currency in values
+        }
 
     @staticmethod
     def time_series_z(
@@ -538,11 +610,37 @@ class BasePillar(ABC):
             are monthly and a shorter window cannot distinguish a level shift
             from a seasonal one.
 
+        Raises:
+            ValueError: If ``lookback_years`` is negative, which would put the
+                start of the window after its end and return ``None`` from a
+                series that has the history the caller asked for. An empty
+                answer and a misconfigured window are different facts.
+
         """
-        raise NotImplementedError(
-            "fbe.pillars.base.BasePillar.time_series_z is scaffolded; "
-            "see docs/roadmap.md Phase 2"
-        )
+        if not series:
+            return None
+
+        when = asof if asof is not None else max(item.period for item in series)
+        earliest = _years_earlier(when, lookback_years)
+        window = [item for item in series if earliest <= item.period <= when]
+        if len(window) < MIN_TIME_SERIES_WINDOW:
+            return None
+
+        readings = [item.value for item in window]
+        if len(set(readings)) == 1:
+            # A series that has not moved says nothing about whether its newest
+            # print is high or low. Tested on the readings rather than on their
+            # variance, for the reason `cross_sectional_z` records: a flat
+            # history of a value like 0.1 reaches a variance near 1e-34 rather
+            # than zero, and dividing by its root would answer a confident
+            # number built on no movement at all.
+            return None
+
+        mean = fsum(readings) / len(readings)
+        # ddof=1: the history is a sample of the process, not the whole of it.
+        variance = fsum((value - mean) ** 2 for value in readings) / (len(readings) - 1)
+        newest = max(window, key=lambda item: item.period)
+        return (newest.value - mean) / sqrt(variance)
 
     @staticmethod
     def momentum(series: Sequence[Observation], periods: int) -> float | None:
@@ -569,10 +667,15 @@ class BasePillar(ABC):
             the common case for a newly onboarded currency.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.base.BasePillar.momentum is scaffolded; "
-            "see docs/roadmap.md Phase 2"
-        )
+        if periods < 0:
+            raise ValueError(
+                f"momentum needs a horizon of zero periods or more, got {periods}. "
+                "A negative one indexes back from the front of the series and "
+                "returns a real-looking change against the wrong end of it."
+            )
+        if len(series) < periods + 1:
+            return None
+        return series[-1].value - series[-1 - periods].value
 
     @staticmethod
     def clip_and_scale(z: float | None, clip: float) -> float:
