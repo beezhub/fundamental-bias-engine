@@ -46,4 +46,5 @@
 - { name: "run:proposals",   color: "35e8ff", description: "Filed by the Sunday proposals desk" }
 
 - { name: "routine-safe", color: "bfd4f2", description: "An unattended agent may take this without a human" }
+- { name: "routine-hold", color: "b60205", description: "Stops any unattended run from claiming this issue. Only a human adds or removes it" }
 - { name: "approved",     color: "0e8a16", description: "A human approved this proposal. The improve routine converts it to a requirement" }
