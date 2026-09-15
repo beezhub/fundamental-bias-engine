@@ -75,9 +75,9 @@ import json
 import logging
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -89,6 +89,13 @@ from fbe import config as config_module
 from fbe import report as report_module
 from fbe.datasources import ALL_SOURCES
 from fbe.datasources.cache import DiskCache
+from fbe.datasources.collect import (
+    CollectionResult,
+    SourceOutcome,
+    SourceStatus,
+    collect,
+    lookback_start,
+)
 from fbe.types import Conviction, Direction
 
 if TYPE_CHECKING:
@@ -111,6 +118,17 @@ STATUS_WIDTH = 10
 published in ``docs/interfaces.md``. A continuation line leaves the label
 column blank, so a check that has several things to say still reads as one
 check."""
+
+SOURCE_WIDTH = 14
+"""Column width for the ``refresh`` per-source lines. Wide enough for
+``forexfactory``, which is the longest source key in ``ALL_SOURCES``."""
+
+COUNT_WIDTH = 10
+"""Column width for the series and observation counts on a ``refresh`` line, so
+the two numbers stay in their columns when one source returns far more than
+another."""
+
+MINUTES_PER_HOUR = 60
 
 KEY_PREFIX_LENGTH = 4
 """Characters of a credential ``--show-keys`` prints. Enough to tell which key
@@ -888,12 +906,149 @@ def refresh(
         since: Earliest period to request from each source.
 
     Raises:
-        NotImplementedError: Always, until the source layer lands.
+        typer.BadParameter: With exit code 2 when ``--source`` names a source
+            that does not exist, when ``--since`` is in the future, or when
+            ``--force`` is combined with a global ``--offline``. Each would
+            otherwise produce an empty run that looked like a successful one.
+        typer.Exit: With `EXIT_UNUSABLE` when the run reconciled no
+            observations at all, which is every source failing and coverage
+            collapsing both, per ``docs/interfaces.md``.
 
     """
-    raise NotImplementedError(
-        "fbe.cli.refresh is scaffolded; see docs/roadmap.md Phase 1"
-    )
+    config = _effective_config(ctx)
+
+    if force and config.data.offline:
+        raise typer.BadParameter(
+            "--force drops the cached copies so they can be fetched again, and "
+            "an offline run cannot fetch them. Together they would empty the "
+            "cache and refill none of it. Drop one of the two.",
+            param_hint="--force",
+        )
+
+    today = date.today()
+    try:
+        start = (
+            since.date()
+            if since is not None
+            else lookback_start(today, config.scoring.lookback_years)
+        )
+    except ValueError as error:
+        # A negative lookback is a config mistake, and nothing validates it.
+        # Reaching the operator as a traceback out of the first command of the
+        # morning would be the worst moment for it.
+        raise typer.BadParameter(
+            f"scoring.lookback_years is unusable: {error}",
+            param_hint="--since",
+        ) from error
+    if start > today:
+        raise typer.BadParameter(
+            f"--since {start} is in the future, so no source could return "
+            "anything for the window",
+            param_hint="--since",
+        )
+
+    try:
+        result = collect(
+            config.data,
+            start=start,
+            end=today,
+            sources=ALL_SOURCES,
+            selected=source,
+            force=force,
+        )
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--source") from error
+
+    _render_refresh(result, config, today)
+
+    if not result.usable:
+        raise typer.Exit(EXIT_UNUSABLE)
+
+
+def _render_refresh(result: CollectionResult, config: Config, asof: date) -> None:
+    """Print what a collection did, in the layout ``docs/interfaces.md`` shows.
+
+    Args:
+        result: What the collection produced.
+        config: The effective config, read for the cache directory only.
+        asof: The date the coverage gaps were aged against.
+
+    """
+    for outcome in result.outcomes:
+        typer.echo(_render_outcome(outcome))
+    for line in _render_gaps(result.gaps, asof):
+        typer.echo(line)
+    typer.echo(_render_cache(config))
+
+
+def _render_outcome(outcome: SourceOutcome) -> str:
+    """Return one source's line.
+
+    Args:
+        outcome: What that source did.
+
+    Returns:
+        For a completed source, its series and observation counts and the time
+        inside its fetch. For anything else, the word and the reason, because a
+        source that was skipped and a source that returned nothing are
+        different facts and an operator chasing a missing currency needs to
+        know which one they have.
+
+    """
+    label = outcome.source.ljust(SOURCE_WIDTH)
+    if outcome.status is SourceStatus.COMPLETED:
+        series = f"{outcome.series:,} series".ljust(COUNT_WIDTH + 7)
+        observations = f"{outcome.observations:,} observations".ljust(COUNT_WIDTH + 13)
+        return f"{label}{series}{observations}{outcome.elapsed_seconds:.1f}s"
+    return f"{label}{outcome.status.value} ({outcome.detail})"
+
+
+def _render_gaps(gaps: Mapping[str, tuple[str, ...]], asof: date) -> list[str]:
+    """Return the coverage gap block.
+
+    Args:
+        gaps: Indicator key to the currencies with no usable ref, exactly as
+            `fbe.datasources.registry.stale_refs` returned it.
+        asof: The date the refs were aged against.
+
+    Returns:
+        One heading line and one line per indicator, every indicator the
+        registry reported and not a sample of them. An empty mapping still
+        prints its heading: a silent gap block and a healthy registry would
+        otherwise look identical, and that is the difference this command
+        exists to show.
+
+    """
+    if not gaps:
+        return [f"Coverage: no gaps, aged at {asof}."]
+    lines = [f"Coverage gaps, aged at {asof}:"]
+    for indicator, currencies in sorted(gaps.items()):
+        lines.append(f"  {indicator.ljust(SOURCE_WIDTH + 8)}{', '.join(currencies)}")
+    return lines
+
+
+def _render_cache(config: Config) -> str:
+    """Return the closing cache summary line.
+
+    Args:
+        config: The effective config, read for the cache directory.
+
+    Returns:
+        The total entry count and the age of the newest entry across every
+        source. A cache holding nothing says so rather than reporting zero
+        entries newest zero minutes old, which reads as just fetched.
+
+    """
+    stats = DiskCache(config.data).stats()
+    entries = int(sum(source["entries"] for source in stats.values()))
+    ages = [
+        source["newest_hours"] for source in stats.values() if "newest_hours" in source
+    ]
+    if not entries or not ages:
+        return "Cache: empty."
+    newest = min(ages)
+    age = f"{newest * MINUTES_PER_HOUR:.0f}m" if newest < 1.0 else f"{newest:.1f}h"
+    return f"Cache: {entries:,} entries, newest {age} old."
 
 
 @app.command(

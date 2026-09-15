@@ -140,15 +140,39 @@ reports         ok        last report 2026-09-08, config digest matches
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--source`, `-s` | all available | Repeatable subset, for example `-s fred -s cftc`. |
-| `--force`, `-f` | off | Refetch inside the TTL. Use after a data correction or a source outage. |
-| `--since` | scoring lookback | Earliest period to request, `YYYY-MM-DD`. |
+| `--source`, `-s` | all available | Repeatable subset, for example `-s fred -s cftc`. A name no source answers to is a usage error, not a silently narrower run. |
+| `--force`, `-f` | off | Drop the selected sources' cached responses, so a request inside the TTL goes back to the provider. Use after a data correction or a source outage. Refused with `--offline`, which could empty the cache and refill none of it. |
+| `--since` | scoring lookback | Earliest period to request, `YYYY-MM-DD`. Defaults to `scoring.lookback_years` before today. |
+
+Each `(indicator, currency)` is requested from the one source its `SeriesRef`
+names and from no other. `manual` is the exception: it is asked for the whole
+request and runs last, so an operator's entry overrides a fetched value for the
+same indicator, currency and period. That is what makes a known-bad vendor print
+correctable without editing the registry.
+
+A source that fails is a named gap rather than the end of the run: the other
+sources still complete, and the failure is printed against the source that
+raised it. A source that is not configured, or whose code has not landed yet,
+is printed as skipped with the reason, because a source missing from the output
+and a source that returned nothing are different facts.
+
+The closing block lists every indicator that `registry.stale_refs` reports a gap
+for, aged against the run date rather than against the date the registry was
+last verified. A registry that has not been re-checked in a year reports its
+staleness here rather than passing as healthy.
+
+Exit 1 means the run reconciled no observations at all, which covers both every
+source failing and coverage collapsing.
 
 ```console
-$ fbe refresh -s fred --force
-fred        142 series   1,284 observations   8.2s   cached
-stooq       skipped (not selected)
-cftc        skipped (not selected)
+$ fbe refresh -s fred -s cftc
+fred          142 series       1,284 observations     8.2s
+oecd          skipped (not selected)
+curves        skipped (not selected)
+cftc          failed (SourceError: cftc could not fetch ... after 3 attempts)
+Coverage gaps, aged at 2026-09-15:
+  pmi_composite         USD, EUR, GBP, JPY, CHF, CAD, AUD, NZD
+  yield_2y              CHF, AUD, NZD
 Cache: 41 entries, newest 0m old.
 ```
 

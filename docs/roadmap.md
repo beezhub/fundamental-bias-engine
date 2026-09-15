@@ -49,7 +49,7 @@ and provably correct against the source.
 **Definition of done.**
 
 - [ ] Every indicator key in the registry resolves to a live series for every currency that should have one, and the gaps are listed explicitly rather than silently empty.
-- [ ] `fbe fetch --all` populates `data/cache/` and a second run inside the TTL makes zero network calls, verified by a test with the network mocked.
+- [ ] `fbe refresh` populates `data/cache/` and a second run inside the TTL makes zero network calls, verified by a test with the network mocked.
 - [ ] `DataConfig(offline=True)` never touches the network, and fails loudly when the cache is cold rather than returning an empty set.
 - [ ] For at least three series, a spot-check test asserts a specific known value against the published number, so a silent unit or scale change breaks the build.
 - [ ] `released_at` is populated wherever the source publishes it, because Phase 6 cannot avoid look-ahead bias without it.
