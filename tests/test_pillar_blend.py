@@ -73,9 +73,11 @@ class Double(BasePillar):
         weights: Mapping[str, float],
         config: ScoringConfig | None = None,
         blend_sd_history: Sequence[float] | None = None,
+        name: PillarName = PillarName.GROWTH,
     ) -> None:
         super().__init__(config, blend_sd_history)
         self._weights = dict(weights)
+        self.name = name
 
     @property
     def component_weights(self) -> Mapping[str, float]:
@@ -179,9 +181,17 @@ def test_a_run_local_divisor_is_used_only_when_history_is_too_short() -> None:
 def test_the_worked_growth_figure_reproduces_to_its_published_precision() -> None:
     """The figure `blend_components` publishes in its own docstring.
 
-    A GDP print at freshness 0.600 carrying sub-weight 0.30, against a retail
-    sales print at 1.000 carrying 0.20, leaves GDP with 0.474 of the blend where
-    the configured sub-weights alone would give it 0.600.
+    A two-component blend carrying GROWTH's GDP and retail sales sub-weights,
+    0.30 and 0.20. A GDP print at freshness 0.600 against a retail sales print
+    at 1.000 leaves GDP with 0.474 of the blend where those two sub-weights
+    alone would give it 0.600.
+
+    Not the real `GrowthPillar`, which carries four components: there the same
+    print takes 0.205, and a currency holding only these two sits exactly on
+    `MIN_COMPONENT_WEIGHT` and is refused. The docstring and section 4.1 of
+    ``docs/scoring-spec.md`` both say so now. This fixture is the illustration
+    they describe, and naming that here is what stops the test laundering the
+    stronger claim.
 
     Asserted as the gap between a currency whose GDP z is 1.0 and one whose GDP
     z is 0.0, with retail flat across the run. The run-local mean cancels in a
@@ -211,6 +221,13 @@ def test_the_worked_growth_figure_reproduces_to_its_published_precision() -> Non
     assert share == pytest.approx(0.4736842105263158)
     assert round(share, 3) == 0.474
     assert share != pytest.approx(0.600)
+
+    # The absolute figures, which the difference above cannot see. The handed-in
+    # component z-scores are not centred, so the blend's mean is 9/76 rather
+    # than zero even at full coverage, and the subtraction is visible here and
+    # nowhere else in this file: without it USD reads 9/19 and EUR reads 0.0.
+    assert result["USD"] == pytest.approx(27 / 76)
+    assert result["EUR"] == pytest.approx(-9 / 76)
 
 
 def test_a_component_at_zero_freshness_contributes_nothing() -> None:
@@ -343,10 +360,11 @@ def test_a_currency_just_above_the_floor_still_scores() -> None:
 def test_the_floor_is_a_fraction_of_the_weight_the_pillar_declares() -> None:
     """Not of 1.0, which is the same number only while the weights sum to one.
 
-    `blend_components` takes a ``weights`` override, and a caller that passes a
-    subset is not thereby putting every currency below the floor. Both
-    components here are present for every currency, so every currency holds all
-    of the weight on offer and the ratio is 1.0, even though the sum is 0.5.
+    The pillar declares 0.3 and 0.2, summing to 0.5. Both components are present
+    for every currency, so every currency holds all of the weight on offer and
+    the ratio is 1.0. An implementation comparing the absolute weight present
+    against `MIN_COMPONENT_WEIGHT` would read 0.5, call it the boundary, and
+    return every currency as absent on a run with complete data.
     """
     pillar = Double({"alpha": 0.3, "beta": 0.2}, blend_sd_history=STEADY_HISTORY)
 
@@ -500,6 +518,117 @@ def test_a_report_only_component_does_not_put_a_currency_into_the_run() -> None:
     assert set(result) == set(UNIVERSE)
 
 
+def test_the_weights_override_is_the_map_the_blend_actually_uses() -> None:
+    """The ``weights`` argument is a contract and nothing was exercising it.
+
+    Every other test here lets the map default to `component_weights`, so an
+    implementation that took the argument and then ignored it, or that fell back
+    to the pillar's own map whenever the override was falsy, passed the whole
+    file. Both are plausible: the second is what ``weights or
+    self.component_weights`` does, and it is the shorter thing to write.
+
+    The override swaps the two sub-weights, so the answer must swap with it.
+    """
+    pillar = even_split()
+    component_z: Mapping[str, Mapping[str, float | None]] = {
+        "alpha": {"USD": 1.0, "EUR": 0.0, "GBP": -1.0, "JPY": 0.0},
+        "beta": {"USD": 0.0, "EUR": 1.0, "GBP": 0.0, "JPY": -1.0},
+    }
+
+    swapped = pillar.blend_components(component_z, weights={"alpha": 0.4, "beta": 0.6})
+
+    # blends 0.4, 0.6, -0.4, -0.6 against the default map's 0.6, 0.4, -0.6, -0.4.
+    assert swapped["USD"] == pytest.approx(0.8)
+    assert swapped["EUR"] == pytest.approx(1.2)
+
+
+def test_blend_components_refuses_a_weight_map_that_declares_nothing() -> None:
+    """A refusal that is never exercised is a refusal nobody can rely on.
+
+    The floor is a fraction of what the weight map declares, so a map summing to
+    zero leaves no scale to judge coverage against and every currency would
+    divide by it. That is a pillar misconfigured rather than a currency with no
+    data, so it raises rather than reporting an outage.
+
+    `_normalise` has its own refusal and its own message. This one is reached
+    through the ``weights`` override, which is the natural way for a caller to
+    arrive at an empty map by accident, by filtering one.
+    """
+    pillar = even_split()
+
+    with pytest.raises(ValueError, match="no scale to judge coverage"):
+        pillar.blend_components(
+            {"alpha": {"USD": 1.0, "EUR": 2.0, "GBP": 3.0}}, weights={}
+        )
+
+
+def test_a_component_absent_for_the_whole_universe_still_costs_its_weight() -> None:
+    """The denominator of the floor is what the pillar declares, not what arrived.
+
+    If a pillar's `_transform` omits a component for every currency, an
+    implementation measuring the floor against the components it was handed
+    would rescale around the gap and never fire. Every currency here holds one
+    of two equal components, which is exactly the floor, so every currency is
+    absent. Under the rescaling each would hold all of the weight that turned up
+    and every one of them would score.
+    """
+    pillar = Double({"alpha": 0.5, "beta": 0.5}, blend_sd_history=STEADY_HISTORY)
+
+    result = pillar.blend_components(
+        {"alpha": {"USD": 1.0, "EUR": 0.0, "GBP": -1.0, "JPY": 0.5}}
+    )
+
+    assert result == dict.fromkeys(UNIVERSE)
+
+
+def test_a_run_nobody_can_be_scored_on_still_names_every_currency() -> None:
+    """An absent currency and a currency never asked about are different facts.
+
+    When no currency clears the floor there is no cross-section to centre on and
+    the method returns early. It must still report each currency as ``None``
+    rather than returning an empty mapping, because the caller reads absence
+    from the marker and cannot tell a missing key from a currency outside the
+    run.
+    """
+    pillar = Double({"alpha": 0.5, "beta": 0.5}, blend_sd_history=STEADY_HISTORY)
+
+    result = pillar.blend_components(
+        {
+            "alpha": {"USD": 1.0, "EUR": 0.0, "GBP": -1.0, "JPY": 0.5},
+            "beta": dict.fromkeys(UNIVERSE, None),
+        }
+    )
+
+    assert result == dict.fromkeys(UNIVERSE)
+    assert set(result) == set(UNIVERSE)
+
+
+def test_a_divisor_below_the_guard_but_above_zero_is_still_degenerate() -> None:
+    """The guard is ``< 1e-9``, not ``<= 0.0``, and only this tells them apart.
+
+    Every other degenerate case in this file has the divisor at exactly zero,
+    so weakening the comparison to ``<= 0.0`` passes them all. Here the four
+    blends differ by about ``1e-9``, which is a spread far below anything the
+    inputs could mean, and dividing by it would return a full standard deviation
+    either side of the mean: a confident pillar built on rounding. That is the
+    same hazard `cross_sectional_z` documents on its own inputs.
+
+    It is only reachable on the run-local path. `blend_divisor` filters history
+    to entries above ``1e-9`` before taking the median, so the rolling path can
+    never produce a divisor this small.
+    """
+    pillar = Double({"alpha": 0.6, "beta": 0.4})
+
+    result = pillar.blend_components(
+        {
+            "alpha": {"USD": 1.0, "EUR": 1.0, "GBP": 1.0, "JPY": 1.0 + 1e-9},
+            "beta": dict.fromkeys(UNIVERSE, 1.0),
+        }
+    )
+
+    assert result == dict.fromkeys(UNIVERSE, 0.0)
+
+
 # --- _normalise -------------------------------------------------------------
 
 
@@ -537,18 +666,28 @@ def test_normalise_blends_a_multi_component_pillar() -> None:
 def test_normalise_falls_through_to_cross_sectional_z_for_one_component() -> None:
     """A single-component pillar is not re-standardised at all.
 
-    POSITIONING and RISK carry one component at 1.0 each. Sending them through
-    the blend would divide by `blend_divisor`, which is a correction for having
-    several components and has nothing to correct here. The history is set to
-    0.5 so the two answers differ by a factor of two and the test can tell them
-    apart.
+    Re-standardising corrects for how many parts a pillar is built from, and
+    there is nothing to correct when it is built from one. The history is set to
+    0.5 so that going through the blend instead would double every figure and
+    the test can tell the two apart.
+
+    POSITIONING and RISK are the pillars shaped this way, one component at 1.0
+    each, but both override `_normalise` outright and never reach this branch,
+    so they are the motivation for the shape and not users of it.
+
+    The fixture carries a report-only ``headline`` key alongside the weighted
+    component, and it has to: without it every currency has exactly one key, and
+    an implementation reading whichever key it finds first is indistinguishable
+    from one reading the key that carries the sub-weight. `headline_component`
+    is explicitly allowed not to appear in `component_weights`, so that is a
+    shape this path will meet.
     """
     pillar = Double({"alpha": 1.0}, blend_sd_history=STEADY_HISTORY)
     components: Mapping[str, Mapping[str, float | None]] = {
-        "USD": {"alpha": 5.0},
-        "EUR": {"alpha": 3.0},
-        "GBP": {"alpha": 2.0},
-        "JPY": {"alpha": 1.0},
+        "USD": {"headline": -40.0, "alpha": 5.0},
+        "EUR": {"headline": 90.0, "alpha": 3.0},
+        "GBP": {"headline": -7.0, "alpha": 2.0},
+        "JPY": {"headline": 12.0, "alpha": 1.0},
     }
 
     result = pillar._normalise(components)
@@ -580,6 +719,48 @@ def test_normalise_ignores_a_component_carrying_no_sub_weight() -> None:
     }
 
     assert pillar._normalise(padded) == pillar._normalise(core)
+
+
+def test_normalise_scores_a_currency_that_is_missing_one_component() -> None:
+    """Partial coverage, which both other `_normalise` fixtures lack.
+
+    "Only score currencies with complete data" is a plausible reading and it
+    passes every full-coverage test. It is destructive twice over: the thin
+    currency disappears from the result instead of being reported as absent or
+    renormalised, and every component is then z-scored across a smaller
+    universe, so the currencies that did not move have their numbers moved for
+    them. That second half is the coupling failure worth guarding, because it is
+    invisible in the currency it happens to.
+
+    JPY holds alpha alone, which is 0.6 of the sub-weight and clears the floor.
+    """
+    pillar = even_split()
+    components: Mapping[str, Mapping[str, float | None]] = {
+        "USD": {"alpha": 5.0, "beta": 1.0},
+        "EUR": {"alpha": 3.0, "beta": 2.0},
+        "GBP": {"alpha": 2.0, "beta": 3.0},
+        "JPY": {"alpha": 1.0, "beta": None},
+    }
+
+    result = pillar._normalise(components)
+
+    assert set(result) == set(UNIVERSE)
+    assert result["JPY"] is not None
+    # Alpha is still z-scored across all four, so its cross-section is the same
+    # one `test_normalise_falls_through...` uses: mean 2.75, population sd
+    # sqrt(2.1875), USD at 1.52127765851133. Dropping JPY would move it.
+    assert pillar._normalise(components)["USD"] == pytest.approx(
+        even_split().blend_components(
+            {
+                "alpha": BasePillar.cross_sectional_z(
+                    {"USD": 5.0, "EUR": 3.0, "GBP": 2.0, "JPY": 1.0}
+                ),
+                "beta": BasePillar.cross_sectional_z(
+                    {"USD": 1.0, "EUR": 2.0, "GBP": 3.0, "JPY": None}
+                ),
+            }
+        )["USD"]
+    )
 
 
 def test_normalise_refuses_a_pillar_that_declares_no_sub_weights() -> None:
@@ -617,8 +798,22 @@ def test_missing_score_marks_absence_with_none_on_both_raw_and_z(
     assert score.z is None
     assert score.score == 0.0
     assert score.currency == "AUD"
-    assert score.pillar is PillarName.GROWTH
     assert score.asof == asof
+
+
+def test_missing_score_carries_the_pillar_it_was_called_on(asof: date) -> None:
+    """Which pillar is absent, read from the pillar rather than assumed.
+
+    Every other fixture in this file is named GROWTH, so an implementation
+    writing that name in as a constant is indistinguishable from one reading
+    `name`. A `PillarScore` attributed to the wrong pillar would take the wrong
+    weight out of the composite and name the wrong row as missing in the report.
+    """
+    growth = even_split()
+    inflation = Double({"alpha": 1.0}, name=PillarName.INFLATION)
+
+    assert growth.missing_score("AUD", asof).pillar is PillarName.GROWTH
+    assert inflation.missing_score("AUD", asof).pillar is PillarName.INFLATION
 
 
 def test_missing_score_carries_the_pillars_configured_weight(asof: date) -> None:
@@ -708,5 +903,14 @@ def test_the_floor_constant_is_the_one_the_comparison_uses() -> None:
     Two components at 0.5 each sit exactly on the floor only while the floor is
     0.5. If the constant moves, the boundary tests stop testing the boundary and
     would keep passing, so the premise is asserted rather than assumed.
+
+    `STEADY_HISTORY` and `UNIT_HISTORY` rest on the same kind of premise: twenty
+    entries is enough for `blend_divisor` to take the rolling path only while
+    `min_restandardisation_runs` is twenty. Raising it would send every fixture
+    here onto the run-local fallback, which fails loudly rather than quietly,
+    but the file has already decided to pin this class of premise rather than
+    state it in prose.
     """
     assert MIN_COMPONENT_WEIGHT == 0.5
+    assert ScoringConfig().min_restandardisation_runs == len(STEADY_HISTORY)
+    assert ScoringConfig().min_restandardisation_runs == len(UNIT_HISTORY)

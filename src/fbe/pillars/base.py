@@ -878,10 +878,21 @@ class BasePillar(ABC):
         Renormalisation rule: for each currency the weighted mean runs over the
         components that currency actually has, and each enters at
         ``u_j * phi_j`` rather than at ``u_j``, where ``phi_j`` is that
-        component's freshness factor. So a GROWTH blend holding a GDP print at
-        ``0.600`` and a retail sales print at ``1.000`` gives GDP
-        ``0.30 * 0.600 = 0.180`` against retail's ``0.20``, and GDP takes 0.474
-        of the blend where the configured sub-weights alone would give it 0.600.
+        component's freshness factor. Take a two-component blend carrying
+        GROWTH's GDP and retail sales sub-weights, 0.30 and 0.20: a GDP print at
+        ``0.600`` against a retail sales print at ``1.000`` gives GDP
+        ``0.30 * 0.600 = 0.180`` against retail's ``0.20``, so GDP takes 0.474
+        of the blend where those two sub-weights alone would give it 0.600.
+
+        That illustrates the arithmetic and is not a state GROWTH can reach, a
+        distinction worth drawing because the figure has been read as the
+        latter. GROWTH carries four components, so the same GDP print beside
+        three fresh ones takes ``0.180 / 0.880``, which is 0.205 against the
+        0.300 its sub-weight alone would give it. A GROWTH currency holding only
+        GDP and retail sales holds exactly `MIN_COMPONENT_WEIGHT` of the
+        sub-weight, so this method returns ``None`` for it and there is no blend
+        to take a share of.
+
         A component at ``phi_j = 0.0`` is past its allowance and contributes
         nothing to the blend, without any special case: its discounted weight is
         already zero. A currency whose components are *all* at ``phi_j = 0.0``
