@@ -36,10 +36,13 @@ series positively, so no declared weight is the model's inflation response. See
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import date
+from math import fsum, sqrt
 
 from fbe.config import ScoringConfig
 from fbe.types import CurrencyScore, Observation, Pillar, PillarName, PillarScore
+from fbe.universe import G10
 
 __all__ = [
     "score_currencies",
@@ -101,8 +104,141 @@ def score_currencies(
     coverage figure is what tells the reader which case they are looking at.
 
     """
-    raise NotImplementedError(
-        "fbe.scoring.score_currencies is scaffolded; see docs/roadmap.md Phase 2"
+    seen: set[PillarName] = set()
+    for pillar in pillars:
+        if pillar.name in seen:
+            raise ValueError(
+                f"two pillars share the name {pillar.name.value}; the second "
+                "would silently overwrite the first in the weight map"
+            )
+        seen.add(pillar.name)
+
+    if not pillars:
+        return ()
+
+    # The universe is the G10 rather than whichever currencies the observations
+    # happen to mention. Deriving it from the data would drop a currency whose
+    # every source failed, turning an absence of data into an absence of
+    # opportunity, and would also try to score ``GLOBAL``, which is the key
+    # cross-market series such as the VIX are filed under and is not a leg of
+    # any pair.
+    currencies = list(G10)
+    per_currency: dict[str, dict[PillarName, PillarScore]] = {
+        currency: {} for currency in currencies
+    }
+
+    for pillar in pillars:
+        weight = config.weights[pillar.name]
+        try:
+            produced = pillar.compute(observations, currencies, asof)
+        except Exception as error:  # noqa: BLE001
+            # One pillar is not allowed to take the run down. The engine is more
+            # useful on six pillars than not running at all, and the coverage
+            # figure beside each composite is what tells a reader which of the
+            # two they are looking at.
+            reason = (
+                f"{pillar.name.value} raised {type(error).__name__}: {error}; "
+                "every currency scored without it"
+            )
+            for currency in currencies:
+                per_currency[currency][pillar.name] = _unscored(
+                    pillar.name, currency, weight, config, asof, reason
+                )
+            continue
+
+        for currency in currencies:
+            score = produced.get(currency)
+            if score is not None and score.currency != currency:
+                # The currency is stated twice, as the mapping's key and on the
+                # score itself, and two statements of one fact can disagree.
+                # Trusting the key would file one currency's reading under
+                # another's name, which inverts a currency's standing with
+                # nothing in the output to show for it.
+                raise ValueError(
+                    f"{pillar.name.value} returned a score for "
+                    f"{score.currency} under the key {currency}"
+                )
+            if score is None:
+                per_currency[currency][pillar.name] = _unscored(
+                    pillar.name,
+                    currency,
+                    weight,
+                    config,
+                    asof,
+                    f"{pillar.name.value} returned no score for {currency}",
+                )
+                continue
+            # The weights are the run's, not the pillar's. This module weights
+            # and the pillars do the economics, so a pillar emitting a weight
+            # that disagrees with `ScoringConfig` does not get to change the
+            # composite.
+            per_currency[currency][pillar.name] = apply_staleness_penalty(
+                replace(score, weight=weight), config, asof
+            )
+
+    scored = [
+        CurrencyScore(
+            currency=currency,
+            composite=composite(scores, config.weights),
+            pillars=scores,
+            asof=asof,
+            dispersion=dispersion(scores, config.weights),
+            coverage=coverage(scores, config.weights),
+        )
+        for currency, scores in per_currency.items()
+    ]
+    # Descending by composite, then by ISO code, so two identical runs produce
+    # identical output and a tie is never broken by dictionary order.
+    scored.sort(key=lambda row: (-row.composite, row.currency))
+    return tuple(
+        replace(row, rank=position) for position, row in enumerate(scored, start=1)
+    )
+
+
+def _unscored(
+    pillar: PillarName,
+    currency: str,
+    weight: float,
+    config: ScoringConfig,
+    asof: date,
+    reason: str,
+) -> PillarScore:
+    """Build the neutral score a currency gets when a pillar could not score it.
+
+    Args:
+        pillar: The pillar that could not answer.
+        currency: ISO code the score belongs to.
+        weight: The pillar's configured weight, carried so a report can say what
+            the run lost. It does not reach the composite, because ``z`` is
+            ``None`` and every consumer here tests that first.
+        config: Scoring configuration, for the staleness marker.
+        asof: Run date.
+        reason: Why, naming the pillar. Reaches a reader through
+            ``PillarScore.notes``.
+
+    Returns:
+        A `PillarScore` with ``raw`` and ``z`` both ``None`` and ``score`` of
+        ``0.0``. Those markers are how the aggregator tells absence of evidence
+        from evidence of neutrality, which are the same number and opposite
+        facts.
+
+    This mirrors `fbe.pillars.base.BasePillar.missing_score`, and does not call
+    it: ``missing_score`` is not on the `fbe.types.Pillar` protocol this
+    function is specified to read, so a pillar that implements the protocol
+    without inheriting the base class has none. Asking a pillar that has just
+    raised to build another object would also be the wrong moment to trust it.
+
+    """
+    return PillarScore(
+        pillar=pillar,
+        currency=currency,
+        raw=None,
+        z=None,
+        score=0.0,
+        weight=weight,
+        asof=asof,
+        staleness_days=config.max_staleness_days + 1,
+        notes=reason,
     )
 
 
@@ -153,8 +289,16 @@ def composite(
     effect achieved once instead of twice.
 
     """
-    raise NotImplementedError(
-        "fbe.scoring.composite is scaffolded; see docs/roadmap.md Phase 2"
+    present = coverage(pillar_scores, weights)
+    if present <= 0.0:
+        return 0.0
+    return (
+        fsum(
+            score.weight * score.score
+            for score in pillar_scores.values()
+            if score.z is not None
+        )
+        / present
     )
 
 
@@ -194,9 +338,13 @@ def coverage(
     ``no_coverage``.
 
     """
-    raise NotImplementedError(
-        "fbe.scoring.coverage is scaffolded; see docs/roadmap.md Phase 2"
-    )
+    # ``weights`` is not read. A pillar that did not run is absent from
+    # ``pillar_scores`` and so contributes nothing here either way, which is the
+    # same answer knowing the configured set would give. It stays in the
+    # signature because the worked example and `composite` both call this
+    # alongside the configured weights, and because a future rule that needs to
+    # tell "absent from the run" from "ran and failed" would need it.
+    return fsum(score.weight for score in pillar_scores.values() if score.z is not None)
 
 
 def dispersion(
@@ -245,8 +393,16 @@ def dispersion(
     `bias.conviction_for`.
 
     """
-    raise NotImplementedError(
-        "fbe.scoring.dispersion is scaffolded; see docs/roadmap.md Phase 2"
+    usable = [score for score in pillar_scores.values() if score.z is not None]
+    if len(usable) < 2:
+        return 0.0
+    present = coverage(pillar_scores, weights)
+    if present <= 0.0:
+        return 0.0
+
+    centre = composite(pillar_scores, weights)
+    return sqrt(
+        fsum((score.weight / present) * (score.score - centre) ** 2 for score in usable)
     )
 
 
@@ -469,6 +625,41 @@ def apply_staleness_penalty(
     stays free of the registry: it takes a factor and a ramp, and computes.
 
     """
-    raise NotImplementedError(
-        "fbe.scoring.apply_staleness_penalty is scaffolded; see docs/roadmap.md Phase 2"
+    # ``asof`` is accepted because the docstring above promises a penalty that
+    # can be recomputed against a date other than the one the pillar used. The
+    # age itself arrives on the score, as ``staleness_days``, so nothing here
+    # needs to derive it; a replay passes the score it stored and the factor it
+    # wants.
+    factor = (
+        freshness(pillar_score.staleness_days, config)
+        if freshness_factor is None
+        else freshness_factor
+    )
+    if not 0.0 <= factor <= 1.0:
+        # Above 1.0 the pillar leaves with more weight than the configuration
+        # gave it, so coverage can exceed 1.0 and the composite is divided by a
+        # number nobody chose. Below 0.0 it flips the pillar's contribution.
+        # Neither is a stale series, so neither is answered.
+        raise ValueError(
+            f"freshness factor {factor} is outside [0.0, 1.0]; a weight cannot "
+            "be discounted by more than all of it or inflated past what the "
+            "configuration gave it"
+        )
+    penalised = replace(pillar_score, weight=pillar_score.weight * factor)
+    if factor > 0.0:
+        return penalised
+
+    # Past the allowance the weight is zero, but weight alone is not the marker
+    # the rest of this module reads. `composite`, `coverage` and `dispersion`
+    # all test ``z is None``, so an expired pillar that kept a number in ``z``
+    # would still be counted as a pillar with an opinion by anything counting
+    # pillars rather than weight.
+    expired = (
+        f"{pillar_score.pillar.value} is past its staleness allowance at "
+        f"{pillar_score.staleness_days} days and carries no weight"
+    )
+    return replace(
+        penalised,
+        z=None,
+        notes=f"{pillar_score.notes}; {expired}" if pillar_score.notes else expired,
     )
