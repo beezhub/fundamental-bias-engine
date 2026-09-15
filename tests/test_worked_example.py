@@ -217,6 +217,32 @@ GROWTH_RAW: Mapping[str, tuple[float, ...]] = {
     "retail_sales_yoy": (3.2, 1.1, 1.9, 1.4, 0.8, 2.2, 2.6, 0.2),
 }
 
+GROWTH_SLOT_RENAMES: Mapping[str, str] = {"pmi_composite": "business_confidence_mfg"}
+"""Columns section 7.3 published under a key GROWTH no longer reads.
+
+Issue #23 moved GROWTH's leading-survey slot from ``pmi_composite`` to
+``business_confidence_mfg`` at the same 0.30. The worked example is kept as it
+was computed, because the whole of sections 7.3 to 8 derives from these inputs
+and restating them would mean inventing eight percentage-balance figures that no
+run produced. So the example's column and the pillar's component are one slot
+under two names, and this maps between them.
+
+The two raw scales are not interchangeable and nothing here treats them as such:
+a percentage balance is neutral at zero, a diffusion index at 50, and writing
+either under the other's key is the defect
+``tests/test_business_confidence_indicator.py`` exists to prevent. What survives
+the substitution is the arithmetic, because every column is z-scored across the
+eight before the blend, so only the slot's sub-weight reaches the result. The
+published values and the published column name both stay; only the lookup into
+the pillar is translated.
+"""
+
+
+def _slot(column: str) -> str:
+    """Map a section 7.3 column name to the component key GROWTH reads today."""
+    return GROWTH_SLOT_RENAMES.get(column, column)
+
+
 # 7.3, per-pillar blend spreads. Anchor "7.3 scores". ``{pillar: sd(blend)}``.
 BLEND_SD: Mapping[str, float] = {
     "MONETARY": MONETARY_BLEND_SD,
@@ -446,12 +472,15 @@ def test_the_matrix_header_weights_are_the_configured_weights() -> None:
         ),
         # 7.2 blends 0.40 headline and 0.60 core, anchor "7.2 sub-weights".
         (InflationPillar(), {"cpi_gap": 0.40, "core_gap": 0.60}),
-        # 7.3 uses the section 3.3 sub-weights.
+        # 7.3 states that it blends with the section 3.3 sub-weights rather than
+        # publishing its own, so these are section 3.3's, including the leading
+        # slot's key after issue #23. 7.3's raw-input table still prints that
+        # column as `pmi_composite`; see GROWTH_SLOT_RENAMES.
         (
             GrowthPillar(),
             {
                 "gdp_yoy": 0.30,
-                "pmi_composite": 0.30,
+                "business_confidence_mfg": 0.30,
                 "indpro_yoy": 0.20,
                 "retail_sales_yoy": 0.20,
             },
@@ -560,7 +589,7 @@ def test_the_growth_scores_follow_from_the_growth_inputs() -> None:
     sub_weights = GrowthPillar().component_weights
     columns = {key: _population_z(values)[2] for key, values in GROWTH_RAW.items()}
     blend = [
-        sum(sub_weights[key] * columns[key][i] for key in GROWTH_RAW)
+        sum(sub_weights[_slot(key)] * columns[key][i] for key in GROWTH_RAW)
         for i in range(len(UNIVERSE))
     ]
     mean, sd, _ = _population_z(blend)

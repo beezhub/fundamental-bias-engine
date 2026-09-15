@@ -24,60 +24,68 @@ class GrowthPillar(BasePillar):
     Components and sub-weights:
         ``gdp_yoy`` (0.30): headline real GDP year on year, in percent. The
             lagging but comprehensive measure.
-        ``pmi_composite`` (0.30): the composite PMI level, in index points. The
+        ``business_confidence_mfg`` (0.30): OECD business confidence for
+            manufacturing, as a percentage balance with zero as neutral. The
             leading survey, and the only forward-looking series in the pillar.
         ``indpro_yoy`` (0.20): industrial production year on year, in percent.
         ``retail_sales_yoy`` (0.20): in percent.
 
     The mix is one lagging and comprehensive measure, one leading survey, and two
-    coincident hard-data series. The composite PMI is used rather than the
-    manufacturing series alone because manufacturing is a small and shrinking
-    share of most G10 economies, and a composite that includes services is a
-    better read on the activity that actually sets the policy path.
+    coincident hard-data series.
 
     Sign rule: positive means faster activity than the rest of the universe, and
     therefore a strong currency. No component is inverted.
 
-    The PMI coverage gap. The composite PMI is the most useful series in this
-    pillar, being monthly, forward-looking and released within days of month end,
-    and it is the one series here with no free and consistent G10-wide source.
-    The US ISM indices are public; the S&P Global national PMIs are licensed and
-    published only in headline form. So ``pmi_composite`` arrives through the
-    manual drop at ``DataConfig.manual_dir`` for whichever currencies the trader
-    has filled in, and is simply absent for the rest. Until an operator is
-    entering a genuine manufacturing-plus-services blend for a currency, the
-    registry's note on this indicator says to record the manufacturing print
-    alone as a stated approximation rather than a silent one; see
-    `fbe.datasources.registry.PMI_COMPOSITE` and `docs/answers/data.md`
-    question 5 for a free proxy that may replace the manual entry for some
-    currencies.
+    Why the leading slot holds business confidence rather than a PMI. The slot is
+    defined by role, and both candidates fill that role, so the question is which
+    one is actually present. ``pmi_composite`` is licensed: the US ISM indices are
+    public, but the S&P Global national PMIs are published only in headline form,
+    so the key had no free G10 source and arrived through the manual drop at
+    ``DataConfig.manual_dir`` only in months an operator keyed eight numbers in by
+    hand. In practice that was no month, the file holds no values, and the slot
+    was empty for every currency on almost every run. Issue #23 ruled the
+    substitution and ADR 0005 records it. ``pmi_composite`` stays registered and
+    is listed in `fbe.datasources.registry.UNCONSUMED_INDICATORS`, so re-adopting
+    it if it is ever licensed is a one-line change.
 
-    The fallback, per section 3.3 of ``docs/scoring-spec.md``: where the PMI is
-    missing for a currency, that currency's sub-weights renormalise across the
-    remaining three, which hold 0.70 between them and clear
+    The two are never interchangeable as raw values. A percentage balance is
+    neutral at zero and a diffusion index at 50, so a balance scored as an index
+    would shift every currency the same way, the cross-sectional z-score would
+    absorb the offset, and the ranking would still look orderly with nothing
+    raising. That is why they are separate keys, and why the substitution is safe
+    only at this layer: each component is z-scored across the universe before the
+    blend, so the slot carries a rank rather than a unit.
+
+    The cadence split, which is this component's real cost. USD, EUR, GBP and CHF
+    survey monthly; JPY, CAD, AUD and NZD survey quarterly, following the Tankan
+    and the Australian, Canadian and New Zealand business outlooks. Both halves
+    stay present in the cross-section, because the indicator carries its own
+    270-day allowance from the registry rather than the global 45, but they do not
+    enter at the same weight: at its freshest a monthly leg enters at the declared
+    0.30 and a quarterly leg at an effective 0.192. So GROWTH is more
+    hard-data-weighted for those four currencies than for the other four, on every
+    run. That is a permanent cross-sectional inconsistency, accepted because the
+    alternative was a slot holding nothing for all eight. The discount is not a
+    property of this series: ``s0`` derives from a global 15/45 ratio calibrated on
+    monthly data, so any punctual quarterly print starts on the declining part of
+    the ramp. Issue #126 carries that, and fixing it raises the quarterly half to
+    0.30 with no further decision here.
+
+    When a component is missing for a currency, that currency's sub-weights
+    renormalise across the remaining three, which hold 0.70 between them and clear
     `MIN_COMPONENT_WEIGHT`. Coverage is unaffected, because the pillar still has
-    data. The engine must not substitute a proxy silently. Filling the manual PMI
-    file improves the pillar; leaving it empty does not by itself break it.
+    data. The engine must not substitute a proxy silently.
 
-    A second missing component does break it, and that is the live case. The
-    floor is "at or below", so a currency holding one 0.30 component and one 0.20
-    component sits at exactly 0.50 and the pillar is absent for it. On the
-    registry as it stands, ``indpro_yoy`` is manual-only for CHF,
-    AUD and NZD and the manual PMI file holds no values, so those three hold GDP
-    plus retail sales and GROWTH is absent for them until one of the two manual
-    files is filled. That is the honest reading: a score built from GDP and
-    retail sales alone would otherwise be presented with the same confidence as
-    one built from four series, and nothing in the report would say which the
-    reader was holding.
-
-    One caveat to hold in mind when reading a run with partial PMI coverage. The
-    PMI z-score is computed across whichever currencies have the series, so a
-    cross-section of four sits on a different scale from one of eight, and the
-    currencies inside the smaller sample are being ranked against a different
-    yardstick from the ones outside it. The effect is second-order at a 0.30
-    sub-weight inside a 0.15 pillar, and the alternative, dropping the component
-    for everyone, throws away the best series in the pillar whenever one country
-    is missing. Filling the manual file for all eight removes the question.
+    A second missing component does break it. The floor is "at or below", so a
+    currency holding one 0.30 component and one 0.20 component sits at exactly
+    0.50 and the pillar is absent for it. That was live before the substitution:
+    ``indpro_yoy`` is manual-only for CHF, AUD and NZD, and with the manual PMI
+    file empty those three held GDP plus retail sales alone and lost GROWTH
+    entirely. ``business_confidence_mfg`` is verified 8 of 8, so they now clear the
+    floor. The combination is still reachable and the reasoning still stands: a
+    score built from GDP and retail sales alone would otherwise be presented with
+    the same confidence as one built from four series, and nothing in the report
+    would say which the reader was holding.
 
     Known failure modes: GDP is quarterly and lands one to two months after the
     quarter closes, so in the worst case this component describes activity that
@@ -101,7 +109,7 @@ class GrowthPillar(BasePillar):
     name = PillarName.GROWTH
     requires: Sequence[str] = (
         "gdp_yoy",
-        "pmi_composite",
+        "business_confidence_mfg",
         "indpro_yoy",
         "retail_sales_yoy",
     )
@@ -109,7 +117,7 @@ class GrowthPillar(BasePillar):
 
     component_indicators: Mapping[str, tuple[str, ...]] = {
         "gdp_yoy": ("gdp_yoy",),
-        "pmi_composite": ("pmi_composite",),
+        "business_confidence_mfg": ("business_confidence_mfg",),
         "indpro_yoy": ("indpro_yoy",),
         "retail_sales_yoy": ("retail_sales_yoy",),
     }
@@ -132,7 +140,7 @@ class GrowthPillar(BasePillar):
         """
         return {
             "gdp_yoy": 0.30,
-            "pmi_composite": 0.30,
+            "business_confidence_mfg": 0.30,
             "indpro_yoy": 0.20,
             "retail_sales_yoy": 0.20,
         }
@@ -152,8 +160,9 @@ class GrowthPillar(BasePillar):
 
         Returns:
             ``{currency: {indicator: observations}}``, sorted by period
-            ascending. ``pmi_composite`` may be absent for some currencies and
-            its absence is not an error.
+            ascending. Any of the four may be absent for a currency and an
+            absence is not an error; the blend renormalises over what is present
+            and the pillar goes absent below `MIN_COMPONENT_WEIGHT`.
 
         """
         raise NotImplementedError(
@@ -173,15 +182,26 @@ class GrowthPillar(BasePillar):
             asof: Run date.
 
         Returns:
-            ``{currency: {component: value}}``. ``pmi_composite`` is the index
-            level; the other three are year-on-year percentages. A currency with
-            no PMI inside ``ScoringConfig.max_staleness_days`` returns ``None``
-            for that component only and is renormalised over the remaining 0.70.
+            ``{currency: {component: value}}``. ``business_confidence_mfg`` is a
+            percentage balance, neutral at zero and routinely negative in a
+            healthy economy; the other three are year-on-year percentages. A
+            currency whose newest print for a component is older than that
+            indicator's own allowance returns ``None`` for that component only
+            and is renormalised over the rest.
+
+        The allowance comes from the registry, per
+        `fbe.pillars.base.staleness_allowance`, not from
+        ``ScoringConfig.max_staleness_days``. That matters most here: this
+        pillar's survey is quarterly for half the universe and carries 270 days,
+        so the global 45 would expire four currencies' legs on the day they
+        published.
 
         All four components are levels, taken as published. The three
-        year-on-year series are already in comparable percent units and the PMI
-        is a diffusion index on a common scale, so none of them needs
-        per-currency rebasing before the cross-sectional z-score.
+        year-on-year series are in comparable percent units and the survey
+        balance is on a common scale across countries, so none of them needs
+        per-currency rebasing before the cross-sectional z-score. The balance is
+        not comparable with a diffusion index as a raw value, and nothing here
+        mixes the two; see `fbe.datasources.registry.BUSINESS_CONFIDENCE_MFG`.
 
         """
         raise NotImplementedError(

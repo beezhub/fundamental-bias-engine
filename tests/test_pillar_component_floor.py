@@ -103,15 +103,23 @@ def test_employment_holds_exactly_the_floor_when_either_component_is_missing() -
 
 
 def test_growth_holds_exactly_the_floor_on_gdp_and_retail_sales() -> None:
-    """The live instance, per the ruling on issue #15.
+    """The arithmetic from the ruling on issue #15, which the shape still allows.
 
-    ``indpro_yoy`` is manual-only for CHF, AUD and NZD and the manual PMI file
-    holds no values, so those three currencies hold GDP plus retail sales today:
-    0.30 + 0.20, exactly the floor.
+    A currency holding only the leading survey and industrial production sits at
+    0.30 + 0.20, exactly the floor, and GROWTH is absent for it.
+
+    This was the live instance until issue #23: ``indpro_yoy`` is manual-only for
+    CHF, AUD and NZD and the manual PMI file held no values, so those three held
+    GDP plus retail sales and lost the pillar. Substituting
+    ``business_confidence_mfg``, which is verified 8 of 8, is what rescued them.
+    The combination is still reachable, so the boundary still needs pinning.
     """
     weights = GrowthPillar().component_weights
 
-    assert _present(weights, ("pmi_composite", "indpro_yoy")) == MIN_COMPONENT_WEIGHT
+    assert (
+        _present(weights, ("business_confidence_mfg", "indpro_yoy"))
+        == MIN_COMPONENT_WEIGHT
+    )
 
 
 def test_monetary_missing_only_cpi_clears_the_floor() -> None:
@@ -148,8 +156,8 @@ def test_the_subsets_sitting_exactly_on_the_floor_are_the_recorded_ones() -> Non
         "GROWTH": {
             frozenset({"gdp_yoy", "indpro_yoy"}),
             frozenset({"gdp_yoy", "retail_sales_yoy"}),
-            frozenset({"pmi_composite", "indpro_yoy"}),
-            frozenset({"pmi_composite", "retail_sales_yoy"}),
+            frozenset({"business_confidence_mfg", "indpro_yoy"}),
+            frozenset({"business_confidence_mfg", "retail_sales_yoy"}),
         },
         "EMPLOYMENT": {
             frozenset({"unemployment_6m"}),

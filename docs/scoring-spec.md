@@ -407,28 +407,48 @@ the other way, which is one reason the two pillars carry equal weight.
 strengthening economy pulls policy expectations up, and the currency follows. It
 also drives portfolio flow directly, since capital chases the return on real
 assets. The pillar mixes one lagging and comprehensive measure (GDP), one leading
-survey (PMI), and two coincident hard-data series.
+survey, and two coincident hard-data series.
 
 | Sub-indicator | Key | Transformation | Sign rule | Sub-weight |
 | --- | --- | --- | --- | --- |
 | GDP year on year | `gdp_yoy` | Level, percent | Higher is positive | 0.30 |
-| Composite PMI | `pmi_composite` | Level, index | Higher is positive | 0.30 |
+| Business confidence, manufacturing | `business_confidence_mfg` | Level, percentage balance, neutral at zero | Higher is positive | 0.30 |
 | Industrial production year on year | `indpro_yoy` | Level, percent | Higher is positive | 0.20 |
 | Retail sales year on year | `retail_sales_yoy` | Level, percent | Higher is positive | 0.20 |
 
-PMI is not available on a free feed for every G10 country. Where it is missing
-the sub-weight is renormalised across the remaining three, which hold 0.70
-between them, per section 2.3, and coverage is unaffected because the pillar
-still has data. The engine must not substitute a proxy silently.
+**The leading-survey slot holds business confidence, not PMI.** Issue #23 ruled
+the substitution and ADR 0005 records it. The slot is defined by role rather than
+by series, and `pmi_composite` is licensed with no free G10 coverage, so it
+arrived only in months an operator hand-keyed eight numbers and the slot held
+nothing on almost every run. `pmi_composite` stays registered and is listed in
+`UNCONSUMED_INDICATORS`. The two are not interchangeable as raw values: a
+percentage balance is neutral at zero and a diffusion index at 50, so a value of
+one must never be recorded under the other's key. They are comparable only after
+the cross-sectional z-score, which is what makes the substitution safe at this
+layer.
+
+**The survey is monthly for four currencies and quarterly for four.** USD, EUR,
+GBP and CHF publish monthly; JPY, CAD, AUD and NZD publish quarterly, following
+each country's own survey cadence. Both halves stay present in the cross-section,
+because the indicator carries its own staleness allowance of 270 days from the
+registry rather than the global 45, but they do not enter at the same weight. At
+its freshest a monthly leg enters at the declared 0.30 and a quarterly leg at an
+effective 0.192, so GROWTH is more hard-data-weighted for those four currencies
+than for the other four, on every run. That is a permanent cross-sectional
+inconsistency and it is accepted because the alternative is a slot holding
+nothing for all eight. The discount is not a property of this series: `s0`
+derives from a global 15/45 ratio calibrated on monthly data, so any punctual
+quarterly print starts on the declining part of the ramp. Issue #126 carries
+that, and fixing it raises the quarterly half to 0.30 with no further decision
+here.
 
 **GROWTH is absent for a currency holding exactly half its sub-weight.** Any one
 0.30 component plus one 0.20 component sums to 0.50, which is at the floor of
-section 2.3 and therefore absent rather than scored. The live instance:
-`indpro_yoy` is manual-only for CHF, AUD and NZD, and the manual PMI file holds
-no values, so those three currencies hold GDP plus retail sales today and GROWTH
-is absent for all three. Their composite renormalises around the gap and their
-coverage falls to 0.85, which is above `coverage_demotion`. Filling either
-manual file for those currencies restores the pillar.
+section 2.3 and therefore absent rather than scored. Before the substitution this
+was live for three currencies: `indpro_yoy` is manual-only for CHF, AUD and NZD
+and the manual PMI file held no values, so those three held GDP plus retail sales
+and GROWTH was absent for all three. The substitution is what rescues them, since
+`business_confidence_mfg` is verified 8 of 8.
 
 **Known failure mode.** GDP is published quarterly and heavily revised, so a
 third of the pillar can be describing a world two quarters old. The staleness
@@ -1103,6 +1123,16 @@ with the sub-weights in section 3):
 | CAD | 1.6 | 50.9 | +0.9 | 2.2 |
 | AUD | 1.8 | 51.8 | +1.4 | 2.6 |
 | NZD | 0.1 | 47.6 | -1.1 | 0.2 |
+
+The leading-survey column here is `pmi_composite`, on the 50-centred diffusion
+scale. This worked example was computed before issue #23 moved GROWTH's leading
+slot to `business_confidence_mfg`, and it is kept as computed rather than
+restated, because the whole of sections 7.3 to 8 derives from these inputs and
+restating them would mean inventing eight percentage-balance figures that no run
+produced. The arithmetic it demonstrates is unaffected: each column is z-scored
+across the eight before the blend, so the worked example exercises the
+leading-survey slot at 0.30 whichever series occupies it. Read the column as that
+slot, not as a claim about which key GROWTH reads today.
 
 | Currency | unemployment 6m change (pp) | employment momentum (% ann.) | `current_account_gdp` | trade balance 3m change | terms of trade 3m % |
 | --- | --- | --- | --- | --- | --- |
@@ -2081,7 +2111,7 @@ stands exactly as written, with no evidence behind it in either direction.
 ### Findings from the same passes that are not items in this section
 
 Recorded here so they are not lost, and because two of them bear on the body of
-this document. None has been applied.
+this document. One of the three has since been applied, and says so.
 
 - **A free business-confidence series covering all eight currencies exists**, in
   the OECD Business Tendency Surveys dataflow, monthly for USD, EUR, GBP and CHF
@@ -2089,8 +2119,9 @@ this document. None has been applied.
   that PMI is unavailable on a free feed for every G10 country. It is not a
   drop-in: the unit is a percentage balance centred on zero, not a diffusion index
   centred on 50, so it cannot sit under `pmi_composite` without misscoring every
-  observation. Whether GROWTH takes it as a separate component is a scoring
-  decision that has not been made. Evidence: `docs/answers/data.md` question 5.
+  observation. **Applied.** Issue #23 ruled that GROWTH's leading slot takes it
+  at 0.30 in place of `pmi_composite`; see section 3.3 and ADR 0005. Evidence:
+  `docs/answers/data.md` question 5.
 - **GDP revisions are large enough to move the cross-sectional ranking.** The
   current cross-sectional standard deviation of `gdp_yoy` across the G10 is 0.636
   percentage points with adjacent currencies as close as 0.004, against a US

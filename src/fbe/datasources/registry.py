@@ -1330,9 +1330,18 @@ PMI_COMPOSITE = IndicatorSpec(
     max_staleness_days=75,
     description=(
         "Composite purchasing managers' index, manufacturing and services "
-        "blended, 50 being the expansion line. The best leading indicator in "
-        "the growth pillar and the one with zero free coverage, which is why "
-        "the manual source exists at all. "
+        "blended, 50 being the expansion line. "
+        "**Registered but consumed by nothing**, and listed in "
+        "``UNCONSUMED_INDICATORS``. It held GROWTH's leading-survey slot until "
+        "issue #23, which ruled that the slot takes "
+        "``business_confidence_mfg`` at the same 0.30 instead. The reason is "
+        "coverage rather than quality: this series is licensed, 0/8 on free "
+        "coverage, and arrives only in months an operator keys eight numbers "
+        "in by hand, so a slot the spec describes as holding one leading "
+        "survey held nothing on almost every run, and three currencies fell "
+        "through the component floor and lost GROWTH outright. It is kept "
+        "registered rather than deleted because re-adopting it if it is ever "
+        "licensed is then a one-line change. See ADR 0005. "
         "Named ``pmi_composite`` rather than ``pmi_manufacturing`` because "
         "the growth pillar wants the whole-economy read, manufacturing being "
         "a small and shrinking share of most G10 economies; see "
@@ -1723,12 +1732,12 @@ BUSINESS_CONFIDENCE_MFG = IndicatorSpec(
         "raising anywhere. That is why this is a separate key rather than a "
         "second source behind the PMI one; see ``docs/answers/data.md`` "
         "question 5 and issue #6. "
-        "Held for GROWTH's leading component, which ``pmi_composite`` cannot "
-        "fill because it is licensed and 0/8 on free coverage, so it arrives "
-        "only in months an operator keys eight numbers in by hand. Whether "
-        "GROWTH actually consumes this series, and at what sub-weight, is a "
-        "scoring decision that has not been taken: until it is, the key is "
-        "listed in ``UNCONSUMED_INDICATORS``. "
+        "GROWTH's leading component, at a sub-weight of 0.30, which "
+        "``pmi_composite`` cannot fill because it is licensed and 0/8 on free "
+        "coverage, so it arrived only in months an operator keyed eight "
+        "numbers in by hand. Issue #23 took that scoring decision and ruled "
+        "substitution rather than addition: the slot holds one leading "
+        "survey, and this is the one that is present. See ADR 0005. "
         "The frequency field says monthly because that is the commoner "
         "cadence, not because it is true of everyone. Four currencies survey "
         "monthly and four quarterly, and each ``SeriesRef`` carries its own. "
@@ -1736,8 +1745,11 @@ BUSINESS_CONFIDENCE_MFG = IndicatorSpec(
         "universe would be compared on a number up to a quarter older than "
         "the other half. The component-level freshness discount in "
         "`fbe.pillars.base.BasePillar.component_freshness` is what makes it "
-        "visible, and it is one of the things the scoring decision above has "
-        "to weigh. "
+        "visible, and issue #23 weighed it: at its freshest a quarterly leg "
+        "enters at an effective 0.192 against the monthly half's 0.30, which "
+        "is a permanent cross-sectional inconsistency accepted because the "
+        "slot otherwise holds nothing. Issue #126 is where the discount "
+        "itself is wrong, and fixing it raises the quarterly half to 0.30. "
         "The allowance is 270 and is derived from the quarterly half, which "
         "is the binding one. This is the figure this table's own rule gives "
         "for a quarterly series stamped on its period's first day, and it is "
@@ -1880,9 +1892,7 @@ INDICATORS: Mapping[str, IndicatorSpec] = {
 entries name and what `Observation.indicator` carries."""
 
 
-UNCONSUMED_INDICATORS: frozenset[str] = frozenset(
-    {"yield_10y", "business_confidence_mfg"}
-)
+UNCONSUMED_INDICATORS: frozenset[str] = frozenset({"yield_10y", "pmi_composite"})
 """Registered indicators that name a pillar but that no pillar asks for.
 
 An `IndicatorSpec` carries a ``pillar`` field, and the natural reading of that
@@ -1902,16 +1912,15 @@ verified 8/8 and losing that would mean re-verifying eight sources if a scoring
 decision ever wants it. It is specifically not a fallback for ``yield_2y``; see
 its own description and issue #26.
 
-``business_confidence_mfg`` is here for a different reason, and the difference
-matters. It was added on purpose, to a pillar that has a gap shaped exactly like
-it, and the proposal that added it (issue #6) split the data question from the
-scoring one and approved only the first. Whether GROWTH takes this series, and
-at what sub-weight, is the macro strategist's decision and was explicitly not
-approved alongside the registry entry. So the series sits verified and fetchable
-and unused, which is an honest state rather than an oversight, and this is where
-it is said out loud. Consuming it means adding the key to
-`fbe.pillars.growth.GrowthPillar.component_indicators` and removing it from
-here, in one change, with the sub-weight decision recorded.
+``pmi_composite`` is here for a different reason, and the difference matters. It
+is not held in reserve for want of a decision; it is retired from GROWTH by one.
+Issue #23 ruled that GROWTH's single leading-survey slot takes
+``business_confidence_mfg`` at 0.30 instead, on the ground that the slot's stated
+role in section 3.3 of ``docs/scoring-spec.md`` is "one leading survey" and a
+licensed series at 0/8 free coverage fills it on almost no run. The entry stays
+registered rather than being deleted so that re-adopting it, if it is ever
+licensed, is a one-line change, and so that its coverage figure stops reading as
+a live input while it is not one. See ADR 0005.
 """
 
 

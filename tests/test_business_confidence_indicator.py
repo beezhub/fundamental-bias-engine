@@ -14,11 +14,14 @@ ranking still looks orderly. Nothing downstream would report an error. That is
 the failure this module exists to make impossible to reach by accident, and it
 is why the two are separate keys rather than one key with two sources behind it.
 
-The second thing asserted here is that nothing consumes the new series yet.
-Whether GROWTH uses it, and at what sub-weight, is the scoring layer's decision
-and was explicitly excluded from the work that added it. `UNCONSUMED_INDICATORS`
-is where that state is declared, and the tests in
-``tests/test_registry_pillar_agreement.py`` hold both directions of it.
+The second thing asserted here is which of the two the growth pillar consumes.
+Issue #23 took the scoring decision that the work adding this series explicitly
+excluded: GROWTH's leading-survey slot holds `business_confidence_mfg` at 0.30
+and `pmi_composite` is retired into `UNCONSUMED_INDICATORS`. The direction of
+that swap is the thing worth pinning, because reversing it by accident would
+restore a slot that is empty on almost every run while every test about units
+kept passing. ``tests/test_registry_pillar_agreement.py`` holds both directions
+of the unconsumed declaration itself.
 
 No test here reaches the network. Every assertion reads the registry.
 """
@@ -37,6 +40,7 @@ from fbe.datasources.registry import (
     VERIFIED_ON,
     IndicatorSpec,
 )
+from fbe.pillars.growth import GrowthPillar
 from fbe.types import Frequency, PillarName
 from fbe.universe import G10
 
@@ -294,16 +298,51 @@ def test_the_verified_observations_match_what_the_api_returned(
 
 
 # ---------------------------------------------------------------------------
-# Nothing consumes it yet, and that is a declared state
+# Which of the two GROWTH consumes
 # ---------------------------------------------------------------------------
 
 
-def test_the_indicator_is_declared_unconsumed() -> None:
-    """Whether GROWTH uses this is the scoring layer's call, not the data layer's.
+def test_growth_consumes_this_series_and_not_the_pmi() -> None:
+    """The substitution ruled by issue #23, asserted in both directions.
 
-    The proposal that added the series said the sub-weight question "should not
-    be taken as approved along with it". Until that decision is taken and
-    recorded, the honest state is registered and consumed by nothing, and this
-    set is where that is said out loud.
+    The series was registered and deliberately unconsumed while the sub-weight
+    question was open, because the work that added it excluded that decision.
+    The decision has since been taken and recorded in ADR 0005: the slot is
+    defined by role, "one leading survey", and it holds the series that is
+    present rather than the one that is licensed and 0/8 on free coverage.
+
+    Asserting both halves matters more than asserting either. A revert that put
+    `pmi_composite` back would leave every unit assertion in this module passing
+    while GROWTH's leading slot went empty again on almost every run.
     """
-    assert KEY in UNCONSUMED_INDICATORS
+    pillar = GrowthPillar()
+
+    assert KEY in pillar.requires
+    assert PMI_KEY not in pillar.requires
+    assert pillar.component_weights[KEY] == 0.30
+    assert PMI_KEY not in pillar.component_weights
+
+    assert KEY not in UNCONSUMED_INDICATORS
+    assert PMI_KEY in UNCONSUMED_INDICATORS
+
+
+def test_the_substitution_left_growths_sub_weights_summing_to_one() -> None:
+    """The fence on issue #23: swap the occupant, change no number.
+
+    The ruling said that if the four no longer sum to 1.0 after the swap, stop
+    and say so rather than adjusting one to fit. Asserting the sum alone would
+    not catch that, because a set that never summed to 1.0 would fail the same
+    way. So the three untouched sub-weights are pinned at their section 3.3
+    values as well, and the slot that changed occupant is pinned at the value the
+    occupant it replaced held.
+    """
+    weights = GrowthPillar().component_weights
+
+    assert weights == {
+        "gdp_yoy": 0.30,
+        KEY: 0.30,
+        "indpro_yoy": 0.20,
+        "retail_sales_yoy": 0.20,
+    }
+    assert round(sum(weights.values()), 10) == 1.0
+    assert len(weights) == 4
