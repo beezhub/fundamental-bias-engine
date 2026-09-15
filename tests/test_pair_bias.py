@@ -1035,3 +1035,177 @@ def test_a_guard_that_changes_its_mind_still_answers_once(config: Config) -> Non
 
     assert len(carrying_eur) == 7
     assert len({b.conviction for b in carrying_eur if abs(b.spread) >= 2.5}) <= 1
+
+
+def test_a_pillar_with_no_data_is_excluded_from_the_agreement() -> None:
+    """The exclusion that matters in a real run, and the one a review pass
+    found missing.
+
+    `test_a_pillar_only_one_leg_carries_is_excluded` tests a shape that cannot
+    occur: `BasePillar.compute` returns one `PillarScore` per currency
+    including the ones with no usable data, so an absent pillar is present in
+    the mapping carrying `missing_score`'s neutral `0.0` with `z` of `None` and
+    an effective weight the staleness penalty has taken to zero.
+
+    Left in, its difference is `0.0 - score(other leg)`, a sign the leg with
+    data decides on its own, and it is counted as an opinion.
+    """
+    scores = {PillarName.MONETARY: 2.0, PillarName.POSITIONING: 0.0}
+    base = leg(
+        "EUR",
+        1.0,
+        pillars=scores,
+        weights={PillarName.MONETARY: 0.30, PillarName.POSITIONING: 0.0},
+    )
+    quote = leg(
+        "USD",
+        0.0,
+        pillars={PillarName.MONETARY: 0.0, PillarName.POSITIONING: -1.2},
+        weights={PillarName.MONETARY: 0.30, PillarName.POSITIONING: 0.10},
+    )
+    # POSITIONING has no data on the base leg.
+    absent = PillarScore(
+        pillar=PillarName.POSITIONING,
+        currency="EUR",
+        raw=None,
+        z=None,
+        score=0.0,
+        weight=0.0,
+        asof=ASOF,
+    )
+    base = CurrencyScore(
+        currency="EUR",
+        composite=1.0,
+        pillars={**base.pillars, PillarName.POSITIONING: absent},
+        asof=ASOF,
+        coverage=0.90,
+    )
+
+    # MONETARY alone is considered, and it agrees with the positive spread.
+    # Counting POSITIONING would add 0.05 of agreeing weight on the strength of
+    # the quote leg's -1.2 against a neutral that is not a reading.
+    assert agreement(base, quote) == pytest.approx(1.0)
+
+
+def test_a_no_data_pillar_cannot_raise_the_conviction_a_tier(
+    scoring: ScoringConfig,
+) -> None:
+    """The consequence, priced. The worked case in section 5.3 of
+    `docs/scoring-spec.md`: a EUR leg missing POSITIONING reads 0.6154 with the
+    pillar counted, which clears `min_agreement` and returns MEDIUM, against
+    0.5833 with it excluded, which does not and returns LOW.
+
+    `docs/risk-and-execution.md` puts MEDIUM at 1.5% of the account and LOW at
+    1.0%, so the difference is half as much again at risk on a pair whose
+    seventh pillar had nothing to say.
+    """
+    eur_scores = {
+        PillarName.MONETARY: 1.1,
+        PillarName.INFLATION: -2.8,
+        PillarName.GROWTH: 2.0,
+        PillarName.EMPLOYMENT: -1.0,
+        PillarName.EXTERNAL: 0.7,
+        PillarName.RISK: -2.2,
+    }
+    usd_scores = {
+        PillarName.MONETARY: 1.1,
+        PillarName.INFLATION: 2.7,
+        PillarName.GROWTH: 1.1,
+        PillarName.EMPLOYMENT: 2.1,
+        PillarName.EXTERNAL: 0.3,
+        PillarName.POSITIONING: 1.2,
+        PillarName.RISK: 2.7,
+    }
+    weights = ScoringConfig().weights
+    absent = PillarScore(
+        pillar=PillarName.POSITIONING,
+        currency="EUR",
+        raw=None,
+        z=None,
+        score=0.0,
+        weight=0.0,
+        asof=ASOF,
+    )
+    base = CurrencyScore(
+        currency="EUR",
+        composite=sum(eur_scores[p] * weights[p] for p in eur_scores),
+        pillars={
+            **{
+                p: pillar(p, "EUR", value, weights[p])
+                for p, value in eur_scores.items()
+            },
+            PillarName.POSITIONING: absent,
+        },
+        asof=ASOF,
+        coverage=0.90,
+    )
+    quote = leg(
+        "USD", sum(usd_scores[p] * weights[p] for p in usd_scores), pillars=usd_scores
+    )
+    spread = base.composite - quote.composite
+    share = agreement(base, quote)
+
+    assert share == pytest.approx(0.5833, abs=5e-5)
+    assert share < scoring.min_agreement
+    assert conviction_for(spread, share, 0.90, 0.0, False, scoring) is Conviction.LOW
+
+
+def test_a_no_data_pillar_on_the_quote_leg_is_excluded_too(
+    scoring: ScoringConfig,
+) -> None:
+    """The mirror. Testing the base leg alone cannot tell "either leg" from
+    "the base leg", which is the pair-convention rule again, this time inside
+    the agreement loop."""
+    absent = PillarScore(
+        pillar=PillarName.POSITIONING,
+        currency="USD",
+        raw=None,
+        z=None,
+        score=0.0,
+        weight=0.0,
+        asof=ASOF,
+    )
+    # The base-side POSITIONING leans the other way from the spread, so
+    # counting the pair at all changes the fraction. With it leaning the same
+    # way, including it and excluding it both give 1.0 and the test cannot see
+    # a guard that checks only the base leg.
+    base = leg(
+        "EUR",
+        1.0,
+        pillars={PillarName.MONETARY: 2.0, PillarName.POSITIONING: -1.2},
+        weights={PillarName.MONETARY: 0.30, PillarName.POSITIONING: 0.10},
+    )
+    quote = CurrencyScore(
+        currency="USD",
+        composite=0.0,
+        pillars={
+            PillarName.MONETARY: pillar(PillarName.MONETARY, "USD", 0.0, 0.30),
+            PillarName.POSITIONING: absent,
+        },
+        asof=ASOF,
+        coverage=0.90,
+    )
+
+    # Only MONETARY is considered, at 0.30, and it agrees. Counting POSITIONING
+    # would add 0.05 of dissenting weight from a quote-side neutral that is not
+    # a reading, giving 0.30 / 0.35.
+    assert agreement(base, quote) == pytest.approx(1.0)
+
+
+def test_a_missing_currency_stops_the_run_before_the_guard_is_called(
+    config: Config,
+) -> None:
+    """The guard may be a calendar fetch per currency, and a run missing a leg
+    raises either way, so it should raise before spending them."""
+    calls: list[str] = []
+
+    def record(currency: str, when: date) -> bool:
+        calls.append(currency)
+        return False
+
+    partial = [s for s in universe() if s.currency != "EUR"]
+
+    with pytest.raises(KeyError):
+        build_pair_biases(partial, config, ASOF, record)
+
+    assert calls == []

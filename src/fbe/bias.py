@@ -238,6 +238,17 @@ def build_pair_biases(
 
     """
     by_currency = {score.currency: score for score in scores}
+    # Checked before the guard runs. The guard may be a calendar fetch per
+    # currency, and a run missing a leg is going to raise either way, so it
+    # should raise before spending them.
+    for pair in ALL_PAIRS:
+        for currency in split_pair(pair):
+            if currency not in by_currency:
+                raise KeyError(
+                    f"{currency} has no CurrencyScore, so {pair} cannot be "
+                    "built. Skipping it would leave a hole in the report that "
+                    "reads as an absence of opportunity rather than of data."
+                )
     event_near = _events_within_24h(by_currency, asof, event_horizon_guard)
     built: list[PairBias] = []
     for pair in ALL_PAIRS:
@@ -514,6 +525,15 @@ def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:
         A value in ``[0.0, 1.0]``. ``0.0`` when no pillar is considered, which
         pairs with a coverage figure low enough to block the trade anyway.
 
+        Two exclusions, and they are different rules. A pillar scoring the two
+        legs identically has no opinion on this pair. A pillar with ``z`` of
+        ``None`` on either leg had no data at all, and `missing_score` gives it
+        a neutral ``0.0`` that would otherwise read as an opinion held by
+        whichever leg does have data. See section 5.3 of
+        ``docs/scoring-spec.md`` for the worked case: a missing POSITIONING on
+        one leg moves a pair from LOW to MEDIUM, which is half as much of the
+        account again at risk.
+
     The arithmetic, matching section 5.3 of ``docs/scoring-spec.md``:
 
         ``d(p)       = score(base, p) - score(quote, p)``
@@ -554,10 +574,11 @@ def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:
     independent, but they are far from collinear, and they fail for different
     reasons at different times. When all of them lean the same way, no single
     input can reverse the call, and the errors that would have to line up to make
-    the call wrong are errors in unrelated data sets. That is a smaller edge held
-    with more conviction, which on a small account with 1-2% risk per trade is the
-    only kind worth taking: survival comes from the hit rate, not from the size of
-    the occasional outlier.
+    the call wrong are errors in unrelated data sets. The model's prior is that a
+    smaller signal held with more confidence is the one worth taking on a small
+    account at 1-2% risk per trade, because survival comes from being right
+    consistently rather than from the size of the occasional outlier. None of
+    that has been measured; Phase 6 is the first point at which it could be.
 
     This is why agreement caps conviction rather than adding to it. A broad,
     modest signal reaches MEDIUM on its spread alone and stays there; a narrow,
@@ -573,6 +594,16 @@ def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:
             # A pillar only one leg carries cannot be differenced, so it has no
             # d(p) to have an opinion with. It is absent from both sides rather
             # than counted as a disagreement, for the same reason a tie is.
+            continue
+        if base_pillar.z is None or quote_pillar.z is None:
+            # A pillar with no usable data still arrives here, carrying
+            # `missing_score`'s neutral 0.0 and an effective weight the
+            # staleness penalty has taken to zero. Its difference would be
+            # `0.0 - score(other leg)`, whose sign the leg with data decides on
+            # its own, so counting it turns an absence into half an opinion.
+            # `z` is the marker rather than a zero weight: a pillar whose weight
+            # decayed through staleness still had data, and a fresh pillar can
+            # genuinely score zero.
             continue
         difference = base_pillar.score - quote_pillar.score
         if abs(difference) <= AGREEMENT_TIE_EPSILON:
