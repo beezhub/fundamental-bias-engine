@@ -415,8 +415,11 @@ def conviction_for(
 
     Demotions compound, and conviction never rises. A pair at ``|spread| = 2.8``
     with coverage 0.70, dispersion 1.4 and weak agreement falls from HIGH to
-    NONE: the two one-step demotions take it to LOW and the agreement cap holds
-    it there, or reaches it by another route to the same place. Every input to
+    NONE: the agreement cap takes it to LOW first, and the coverage and
+    dispersion demotions then take LOW to NONE. The order above is not
+    presentational. Applying the two demotions before the cap lands on LOW
+    instead, two tiers apart on the same four inputs, and section 5.4 of
+    ``docs/scoring-spec.md`` lists them in the order used here. Every input to
     this function is a reason to doubt the spread, and none of them is a reason
     to believe it more than the spread already says.
 
@@ -576,11 +579,37 @@ def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:
             continue
         pair_weight = (base_pillar.weight + quote_pillar.weight) / 2.0
         considered += pair_weight
-        if (difference > 0.0) == (spread > 0.0):
+        if _sign(difference) == _sign(spread):
             agreeing += pair_weight
     if considered <= 0.0:
         return 0.0
     return agreeing / considered
+
+
+def _sign(value: float) -> int:
+    """Return -1, 0 or +1, matching the spec's ``sign`` rather than a boolean.
+
+    Args:
+        value: Any float.
+
+    Returns:
+        The sign, with zero as its own answer.
+
+    Section 5.3 compares ``sign(d(p))`` against ``sign(spread)``, and a spread
+    of exactly zero has sign zero, which no pillar's difference can match. A
+    boolean test such as ``(d > 0) == (spread > 0)`` reads differently there: it
+    counts every pillar leaning negative as agreeing with a spread that leans
+    neither way. The pair is `Conviction.NONE` and `Direction.NEUTRAL` at a zero
+    spread whatever this returns, so nothing downstream moves, but
+    ``PairBias.agreement`` is rendered and would show a number the published
+    formula does not produce.
+
+    """
+    if value > 0.0:
+        return 1
+    if value < 0.0:
+        return -1
+    return 0
 
 
 def apply_filters(

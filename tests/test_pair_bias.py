@@ -688,16 +688,29 @@ def test_no_guard_applies_no_cap(config: Config) -> None:
     assert eurusd.conviction is Conviction.HIGH
 
 
-def test_a_guard_reporting_an_event_caps_the_pair(config: Config) -> None:
+def test_a_guard_reporting_an_event_caps_only_the_pairs_carrying_it(
+    config: Config,
+) -> None:
+    """The cap reaches the pairs holding that currency and no others.
+
+    AUDCAD carries a real spread here on purpose. An earlier version left it at
+    zero, which puts it at the floor of the ladder where a cap cannot show, so
+    an implementation capping every pair in the run passed. It now sits at HIGH
+    and has somewhere to fall from.
+    """
+
     def due(currency: str, when: date) -> bool:
         return currency == "EUR"
 
-    biases = build_pair_biases(universe(EUR=1.6, USD=-1.4), config, ASOF, due)
+    biases = build_pair_biases(
+        universe(EUR=1.6, USD=-1.4, AUD=1.6, CAD=-1.4), config, ASOF, due
+    )
     eurusd = next(b for b in biases if b.pair == "EURUSD")
     audcad = next(b for b in biases if b.pair == "AUDCAD")
 
     assert eurusd.conviction is Conviction.LOW
-    assert audcad.conviction is Conviction.NONE
+    assert audcad.spread == pytest.approx(3.0)
+    assert audcad.conviction is Conviction.HIGH
 
 
 def test_an_event_on_either_leg_caps_the_pair(config: Config) -> None:
@@ -760,3 +773,265 @@ def test_the_run_date_reaches_every_bias(config: Config) -> None:
     biases: Sequence[object] = build_pair_biases(universe(), config, ASOF)
 
     assert all(b.asof == ASOF for b in biases)
+
+
+# --- gaps the review pass found ----------------------------------------------
+
+
+def test_the_run_config_is_the_one_used(config: Config) -> None:
+    """`build_pair_biases` takes a whole `Config` and must read its scoring
+    section rather than building a default.
+
+    Nothing else in this file passes a non-default config to it, so a module
+    ignoring the run's configuration entirely passed every other test here.
+    That is the config-drift row of the prime directive table one layer up: the
+    thresholds exist in `ScoringConfig`, and a second copy reached by
+    constructing a fresh one would disagree with the run silently.
+    """
+    scores = universe(EUR=1.6, USD=0.1)
+    widened = Config(scoring=ScoringConfig(min_spread_low=2.0, min_spread_medium=3.0))
+
+    default = next(
+        b for b in build_pair_biases(scores, config, ASOF) if b.pair == "EURUSD"
+    )
+    under_widened = next(
+        b for b in build_pair_biases(scores, widened, ASOF) if b.pair == "EURUSD"
+    )
+
+    assert default.direction is Direction.LONG
+    assert default.conviction is Conviction.MEDIUM
+    assert under_widened.direction is Direction.NEUTRAL
+    assert under_widened.conviction is Conviction.NONE
+
+    # The widened case alone cannot see a direction built from a default
+    # config, because it lands at NONE and the forcing rule makes the direction
+    # NEUTRAL either way. Narrowing instead separates them: the spread is below
+    # the default threshold and above this run's, so the direction is LONG only
+    # if this run's config was the one read.
+    narrowed = Config(scoring=ScoringConfig(min_spread_low=0.25))
+    under_narrowed = next(
+        b
+        for b in build_pair_biases(universe(EUR=0.5, USD=0.0), narrowed, ASOF)
+        if b.pair == "EURUSD"
+    )
+
+    assert under_narrowed.conviction is not Conviction.NONE
+    assert under_narrowed.direction is Direction.LONG
+
+
+def test_the_worse_covered_leg_decides_on_either_side(config: Config) -> None:
+    """The mirror of `test_the_worse_covered_leg_decides`.
+
+    That one degrades EUR, which is EURUSD's base, so taking the base leg's
+    coverage and taking the lower of the two are indistinguishable. Degrading
+    the quote leg instead is what separates them, and it is the pair-convention
+    rule applied to the leg selectors rather than to the pair string.
+    """
+    scores = [
+        leg("USD", -1.4, coverage=0.60) if s.currency == "USD" else s
+        for s in universe(EUR=1.6, USD=-1.4)
+    ]
+
+    eurusd = next(
+        b for b in build_pair_biases(scores, config, ASOF) if b.pair == "EURUSD"
+    )
+
+    assert eurusd.quote == "USD"
+    assert eurusd.conviction is Conviction.MEDIUM
+
+
+def test_the_more_dispersed_leg_decides_on_either_side(config: Config) -> None:
+    """The mirror of `test_the_more_dispersed_leg_decides`, same reason."""
+    scores = [
+        leg("USD", -1.4, dispersion=2.4) if s.currency == "USD" else s
+        for s in universe(EUR=1.6, USD=-1.4)
+    ]
+
+    eurusd = next(
+        b for b in build_pair_biases(scores, config, ASOF) if b.pair == "EURUSD"
+    )
+
+    assert eurusd.conviction is Conviction.MEDIUM
+
+
+def test_the_computed_agreement_reaches_the_conviction(config: Config) -> None:
+    """Every other pair in this file has all seven pillars equal to its
+    composite, so agreement is 1.0 everywhere and passing a constant 1.0 into
+    `conviction_for` was indistinguishable from passing the computed share.
+
+    Here MONETARY dissents at 0.30 against four agreeing pillars worth 0.10
+    each, which is 0.571 and below `min_agreement`, so the cap must fire.
+    """
+    dissenting = {
+        PillarName.MONETARY: -3.0,
+        PillarName.EMPLOYMENT: 3.0,
+        PillarName.EXTERNAL: 3.0,
+        PillarName.POSITIONING: 3.0,
+        PillarName.RISK: 3.0,
+    }
+    scores = [
+        leg("EUR", 1.6, pillars=dissenting) if s.currency == "EUR" else s
+        for s in universe(EUR=1.6, USD=-1.4)
+    ]
+
+    eurusd = next(
+        b for b in build_pair_biases(scores, config, ASOF) if b.pair == "EURUSD"
+    )
+
+    assert eurusd.agreement < ScoringConfig().min_agreement
+    assert eurusd.spread == pytest.approx(3.0)
+    assert eurusd.conviction is Conviction.LOW
+
+
+def test_the_event_cap_applies_after_the_demotions(scoring: ScoringConfig) -> None:
+    """The fourth rule's position in the ladder, which the other three have
+    pinned and this one did not: every event test ran with full coverage and no
+    dispersion, so the cap was never combined with a demotion.
+
+    HIGH, demoted once by thin coverage to MEDIUM, then capped to LOW. Moved to
+    the front of the sequence the cap would take HIGH to LOW first and the
+    demotion would then take it to NONE, one tier lower on the same inputs.
+    """
+    assert (
+        clear(2.8, scoring, coverage_fraction=0.70, event_within_24h=True)
+        is Conviction.LOW
+    )
+
+
+def test_a_pillar_only_one_leg_carries_is_excluded() -> None:
+    """It has no difference to have an opinion with, so it belongs on neither
+    side of the fraction. Substituting a zero for the missing side would invent
+    a disagreement out of an absence, which is the rule this repository is
+    built around.
+
+    Nothing else in this file gives the two legs different pillar sets.
+    """
+    base = leg(
+        "EUR",
+        1.0,
+        pillars={PillarName.MONETARY: 1.0, PillarName.GROWTH: -1.0},
+        weights={PillarName.MONETARY: 0.30, PillarName.GROWTH: 0.15},
+    )
+    quote = leg(
+        "USD",
+        0.0,
+        pillars={PillarName.MONETARY: 0.0},
+        weights={PillarName.MONETARY: 0.30},
+    )
+
+    # Only MONETARY can be differenced, and it agrees with the positive spread.
+    assert agreement(base, quote) == pytest.approx(1.0)
+
+
+def test_the_pair_weight_is_the_mean_of_the_two_legs() -> None:
+    """`w_pair(p)` is the mean of the two legs' effective weights, so a pillar
+    stale on one side counts for less on this pair than one fresh on both.
+
+    `test_the_effective_weights_are_the_ones_used` hands both legs the same
+    mapping, so it cannot tell the mean from either leg's own weight. Here they
+    differ, and the three readings give three different answers.
+    """
+    base = leg(
+        "EUR",
+        1.0,
+        pillars={PillarName.MONETARY: 1.0, PillarName.GROWTH: -1.0},
+        weights={PillarName.MONETARY: 0.30, PillarName.GROWTH: 0.15},
+    )
+    quote = leg(
+        "USD",
+        0.0,
+        pillars={PillarName.MONETARY: 0.0, PillarName.GROWTH: 0.0},
+        weights={PillarName.MONETARY: 0.10, PillarName.GROWTH: 0.15},
+    )
+
+    # MONETARY agrees at a pair weight of (0.30 + 0.10) / 2 = 0.20, GROWTH
+    # dissents at (0.15 + 0.15) / 2 = 0.15. The base leg's own weights would
+    # give 0.30 / 0.45 and the quote leg's 0.10 / 0.25.
+    assert agreement(base, quote) == pytest.approx(0.20 / 0.35)
+
+
+def test_a_tie_is_excluded_from_the_denominator_as_well() -> None:
+    """The earlier tie test asserts 1.0, which an implementation counting ties
+    into both numerator and denominator also returns. A dissenting pillar
+    alongside the tie separates them: excluded gives 0.5, counted into both
+    gives 0.667."""
+    base = leg(
+        "EUR",
+        1.0,
+        pillars={
+            PillarName.MONETARY: 1.0,
+            PillarName.GROWTH: -1.0,
+            PillarName.RISK: 0.5,
+        },
+        weights={
+            PillarName.MONETARY: 0.10,
+            PillarName.GROWTH: 0.10,
+            PillarName.RISK: 0.10,
+        },
+    )
+    quote = leg(
+        "USD",
+        0.0,
+        pillars={
+            PillarName.MONETARY: 0.0,
+            PillarName.GROWTH: 0.0,
+            PillarName.RISK: 0.5,
+        },
+        weights={
+            PillarName.MONETARY: 0.10,
+            PillarName.GROWTH: 0.10,
+            PillarName.RISK: 0.10,
+        },
+    )
+
+    assert agreement(base, quote) == pytest.approx(0.5)
+
+
+def test_a_zero_spread_gives_no_agreement() -> None:
+    """Section 5.3 compares ``sign(d(p))`` against ``sign(spread)``, and a
+    spread of exactly zero has sign zero, which no difference can match. A
+    boolean test would count every negative-leaning pillar as agreeing with a
+    spread that leans neither way, and `PairBias.agreement` is rendered."""
+    base = leg("EUR", 1.0, pillars={PillarName.MONETARY: 1.0, PillarName.GROWTH: -1.0})
+    quote = leg("USD", 1.0, pillars={PillarName.MONETARY: 0.0, PillarName.GROWTH: 0.0})
+
+    assert base.composite - quote.composite == 0.0
+    assert agreement(base, quote) == 0.0
+
+
+def test_the_guard_is_asked_once_per_currency(config: Config) -> None:
+    """Not once per pair. Each currency sits in seven of the 28 pairs, and the
+    reason is correctness rather than cost: two calls for one currency could
+    disagree inside a run, putting two pairs that share a leg on opposite sides
+    of the cap with nothing recording why."""
+    calls: list[str] = []
+
+    def record(currency: str, when: date) -> bool:
+        calls.append(currency)
+        return False
+
+    build_pair_biases(universe(), config, ASOF, record)
+
+    assert len(calls) == len(set(calls)) == len(G10)
+
+
+def test_a_guard_that_changes_its_mind_still_answers_once(config: Config) -> None:
+    """The case the rule above exists for, stated as behaviour rather than as a
+    call count: every pair carrying the currency lands on the same side of the
+    cap, whichever answer the guard gave first."""
+    seen: list[str] = []
+
+    def flip_flop(currency: str, when: date) -> bool:
+        seen.append(currency)
+        return seen.count(currency) == 1
+
+    biases = build_pair_biases(
+        universe(**{c: 1.6 if i % 2 else -1.4 for i, c in enumerate(G10)}),
+        config,
+        ASOF,
+        flip_flop,
+    )
+    carrying_eur = [b for b in biases if "EUR" in (b.base, b.quote)]
+
+    assert len(carrying_eur) == 7
+    assert len({b.conviction for b in carrying_eur if abs(b.spread) >= 2.5}) <= 1
