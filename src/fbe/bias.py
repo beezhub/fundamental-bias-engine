@@ -23,6 +23,7 @@ from datetime import date
 
 from fbe.config import Config, ScoringConfig
 from fbe.types import Conviction, CurrencyScore, Direction, PairBias
+from fbe.universe import ALL_PAIRS, split_pair
 
 __all__ = [
     "build_pair_biases",
@@ -132,6 +133,15 @@ _CONVICTION_RANK: Mapping[Conviction, int] = {
 spelled out here rather than relied on through declaration order.
 """
 
+_LADDER: tuple[Conviction, ...] = tuple(
+    sorted(_CONVICTION_RANK, key=lambda tier: _CONVICTION_RANK[tier])
+)
+"""The same ladder as a sequence, weakest first, for stepping down it.
+
+Derived from `_CONVICTION_RANK` rather than written out again, so a tier added
+to one cannot be missing from the other.
+"""
+
 CalendarGuard = Callable[[str, date], tuple[Sequence[str], str | None]]
 """Injected hook reporting hard calendar blockers for one currency on one date.
 
@@ -227,9 +237,78 @@ def build_pair_biases(
     discrete levels instead of passing the number through.
 
     """
-    raise NotImplementedError(
-        "fbe.bias.build_pair_biases is scaffolded; see docs/roadmap.md Phase 2"
-    )
+    by_currency = {score.currency: score for score in scores}
+    event_near = _events_within_24h(by_currency, asof, event_horizon_guard)
+    built: list[PairBias] = []
+    for pair in ALL_PAIRS:
+        base, quote = split_pair(pair)
+        # Indexed rather than fetched with a default, so a currency the scorer
+        # did not produce raises here and names itself. A skipped row reads as
+        # an absence of opportunity when it is an absence of data.
+        base_leg = by_currency[base]
+        quote_leg = by_currency[quote]
+        spread = base_leg.composite - quote_leg.composite
+        share = agreement(base_leg, quote_leg)
+        conviction = conviction_for(
+            spread,
+            share,
+            # The worse-covered and the more-dispersed leg, never the mean of
+            # the two. `conviction_for` documents why; picking them is this
+            # function's job because only it holds both legs.
+            min(base_leg.coverage, quote_leg.coverage),
+            max(base_leg.dispersion, quote_leg.dispersion),
+            event_near[base] or event_near[quote],
+            config.scoring,
+        )
+        direction = direction_for(spread, config.scoring)
+        if conviction is Conviction.NONE:
+            # Direction and conviction must never disagree. A pair the model
+            # will not back at any size has no direction worth printing.
+            direction = Direction.NEUTRAL
+        built.append(
+            PairBias(
+                pair=pair,
+                base=base,
+                quote=quote,
+                spread=spread,
+                direction=direction,
+                conviction=conviction,
+                asof=asof,
+                base_score=base_leg.composite,
+                quote_score=quote_leg.composite,
+                agreement=share,
+            )
+        )
+    return tuple(built)
+
+
+def _events_within_24h(
+    by_currency: Mapping[str, CurrencyScore],
+    asof: date,
+    guard: EventHorizonGuard | None,
+) -> Mapping[str, bool]:
+    """Ask the guard once per currency rather than once per pair.
+
+    Args:
+        by_currency: The run's scores, keyed by ISO code.
+        asof: The date the run represents.
+        guard: The injected `EventHorizonGuard`, or ``None``.
+
+    Returns:
+        ``{currency: True}`` when a high-impact event is due within 24 hours.
+        All ``False`` when no guard was supplied, which applies no cap: the
+        right default for a backtest and the wrong one for a live run.
+
+    Each currency appears in seven of the 28 pairs, so asking per pair would
+    make the same call seven times. A guard is a calendar lookup and may be a
+    fetch, and more importantly two calls for one currency could disagree
+    inside a single run, which would put two pairs sharing a leg on different
+    sides of the cap with nothing recording why.
+
+    """
+    if guard is None:
+        return dict.fromkeys(by_currency, False)
+    return {currency: bool(guard(currency, asof)) for currency in by_currency}
 
 
 def direction_for(spread: float, config: ScoringConfig) -> Direction:
@@ -263,9 +342,11 @@ def direction_for(spread: float, config: ScoringConfig) -> Direction:
     conviction lands at `Conviction.NONE`. This function only reads the spread.
 
     """
-    raise NotImplementedError(
-        "fbe.bias.direction_for is scaffolded; see docs/roadmap.md Phase 2"
-    )
+    if spread >= config.min_spread_low:
+        return Direction.LONG
+    if spread <= -config.min_spread_low:
+        return Direction.SHORT
+    return Direction.NEUTRAL
 
 
 def conviction_for(
@@ -345,9 +426,64 @@ def conviction_for(
     whether there is a number at all.
 
     """
-    raise NotImplementedError(
-        "fbe.bias.conviction_for is scaffolded; see docs/roadmap.md Phase 2"
-    )
+    size = abs(spread)
+    if size >= config.min_spread_high:
+        tier = Conviction.HIGH
+    elif size >= config.min_spread_medium:
+        tier = Conviction.MEDIUM
+    elif size >= config.min_spread_low:
+        tier = Conviction.LOW
+    else:
+        tier = Conviction.NONE
+
+    # Applied in the order the docstring lists, and the order is load-bearing
+    # rather than presentational: a cap before two one-step demotions lands two
+    # tiers below the same cap after them. The issue's own case is
+    # |spread| 2.8 with weak agreement, coverage 0.70 and dispersion 1.4, which
+    # reaches NONE this way round and LOW the other.
+    if agreement_fraction < config.min_agreement:
+        tier = _cap(tier, Conviction.LOW)
+    if coverage_fraction < config.coverage_demotion:
+        tier = _demote(tier)
+    if dispersion_value > config.max_dispersion:
+        tier = _demote(tier)
+    if event_within_24h:
+        tier = _cap(tier, Conviction.LOW)
+    return tier
+
+
+def _demote(tier: Conviction) -> Conviction:
+    """Move one step down the ladder, stopping at `Conviction.NONE`.
+
+    Args:
+        tier: The tier before this demotion.
+
+    Returns:
+        The next tier down, or `Conviction.NONE` if already there. The bottom
+        absorbs rather than wrapping or raising, because a pair can attract
+        more reasons to doubt it than there are steps to take.
+
+    """
+    return _LADDER[max(0, _CONVICTION_RANK[tier] - 1)]
+
+
+def _cap(tier: Conviction, ceiling: Conviction) -> Conviction:
+    """Hold a tier at or below a ceiling, never raising it.
+
+    Args:
+        tier: The tier before this cap.
+        ceiling: The highest tier this objection permits.
+
+    Returns:
+        The lower of the two. A cap differs from a demotion in that it does not
+        get worse as the spread widens: one pillar carrying the whole spread is
+        the same objection at 1.6 as at 2.8, so it sets a ceiling rather than
+        subtracting a step.
+
+    """
+    if _CONVICTION_RANK[tier] <= _CONVICTION_RANK[ceiling]:
+        return tier
+    return ceiling
 
 
 def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:
@@ -425,9 +561,26 @@ def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:
     dramatic one gets pulled back down to LOW.
 
     """
-    raise NotImplementedError(
-        "fbe.bias.agreement is scaffolded; see docs/roadmap.md Phase 2"
-    )
+    spread = base_leg.composite - quote_leg.composite
+    considered = 0.0
+    agreeing = 0.0
+    for name, base_pillar in base_leg.pillars.items():
+        quote_pillar = quote_leg.pillars.get(name)
+        if quote_pillar is None:
+            # A pillar only one leg carries cannot be differenced, so it has no
+            # d(p) to have an opinion with. It is absent from both sides rather
+            # than counted as a disagreement, for the same reason a tie is.
+            continue
+        difference = base_pillar.score - quote_pillar.score
+        if abs(difference) <= AGREEMENT_TIE_EPSILON:
+            continue
+        pair_weight = (base_pillar.weight + quote_pillar.weight) / 2.0
+        considered += pair_weight
+        if (difference > 0.0) == (spread > 0.0):
+            agreeing += pair_weight
+    if considered <= 0.0:
+        return 0.0
+    return agreeing / considered
 
 
 def apply_filters(
