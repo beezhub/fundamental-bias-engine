@@ -98,10 +98,39 @@ pillar was not designed to hold, and it keeps the intermittent component.
 ## Consequences
 
 Four currencies carry a leading survey updated quarterly where four carry one
-updated monthly. That asymmetry is real and permanent. Under the per-indicator
-allowance from #8 the quarterly legs are discounted by their own freshness and
-remain present in the cross-section, so the component is z-scored across all
-eight rather than across four, which is the property that makes this acceptable.
+updated monthly. That asymmetry is real, permanent, and larger than a
+qualitative statement makes it sound. Measured against `fbe.scoring.freshness`
+and the registry, with the indicator's allowance of 270 giving `s0 = 90`:
+
+    punctual monthly print,   age  ~40 days  ->  phi = 1.0000
+    punctual quarterly print, age ~155 days  ->  phi = 0.6389
+
+So the component enters at a declared 0.30 for USD, EUR, GBP and CHF and at an
+effective 0.192 for JPY, CAD, AUD and NZD, on every run, at its freshest.
+`blend_components` renormalises over the sub-weight actually present, so the
+other three components absorb the difference and GROWTH is more heavily
+hard-data-weighted for those four currencies than for the other four. The pillar
+means slightly different things across the cross-section, and that is a cost
+this decision accepts rather than avoids.
+
+It is accepted because the comparison is not against a perfect component. The
+slot holds `pmi_composite` today, which is 0.0 effective for all eight on almost
+every run, and takes three currencies below the component floor entirely. An
+effective 0.192 for half the universe and 0.30 for the other half is a smaller
+asymmetry than zero for all of it.
+
+The discount is also not caused by this decision. `s0` derives from a global
+ratio of `staleness_full_days / max_staleness_days`, which is 15/45, calibrated
+on monthly data, so a punctual quarterly print always begins on the declining
+part of the ramp whatever its allowance. Nine registry indicators are affected,
+which is filed separately as issue #126. Fixing that raises the quarterly half
+of this component to 0.30 with no further decision here, so the two should not
+be coupled: this decision is correct on its own and #126 improves its outcome.
+
+Under the per-indicator allowance from #8 the quarterly legs remain present in
+the cross-section rather than dropping out, so the component is z-scored across
+all eight rather than across four, which is the property that made this
+acceptable at all.
 
 The substitution is not measured. The correlation between the OECD balance and
 the manual PMI cannot be computed, because the manual PMI file holds no values,
@@ -114,6 +143,17 @@ diffusion index, so the component may speak at a different volume than the PMI
 would have. `PillarScore.diagnostics["emit_sd"]` is where that becomes visible,
 and issue #12 is the work that populates it.
 
+One test proposed on issue #119 has not been run and is worth running once
+`GrowthPillar._transform` lands: rank the eight currencies by the new series and
+by the existing three-component GROWTH score across a few historical
+cross-sections. If the rankings agree closely, the series carries little the
+pillar does not already hold. That would not reverse this decision, because a
+redundant survey that is present still beats an informative one that is absent
+eleven months a year, still removes a monthly manual chore and still rescues
+three currencies from the component floor. What it would argue is the
+sub-weight, and that is the argument to reopen this with.
+
 This record is reopened if `emit_sd` shows the component materially quieter than
-the 0.30 sub-weight implies, or if a free PMI feed appears, or if the two series
-turn out to disagree about the cross-section once both have values.
+the 0.30 sub-weight implies, if a free PMI feed appears, if the two series turn
+out to disagree about the cross-section once both have values, or if the ranking
+test above shows the series is redundant.
