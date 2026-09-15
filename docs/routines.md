@@ -201,6 +201,13 @@ days.** The ruling goes on the issue, an ADR goes in `docs/decisions/` when the
 decision is cross-cutting, and the issue moves to `status:ready`. "I would
 rather a human decided" is not a ruling.
 
+**The same test applies to anything a lane writes on a pull request**, not only
+to an issue at `status:needs-decision`. The `writing` skill lists the phrases
+that give it away and settles merge mechanics, which is the case that went
+wrong: "what merges" is the decision to merge the diff at all, not the
+bookkeeping that follows from it. A lane that cannot rule on its own
+bookkeeping should not be opening pull requests.
+
 This rule exists because it went wrong. #56, #58 and #59 each merged their work
 and then sat for two days on one question about a differencing convention,
 which nobody but the quant analyst and the data engineer could have answered.
@@ -248,6 +255,21 @@ not.
 - **Stop early when the bar is not met.** No qualifying issue, a failing check
   it cannot fix, a definition of ready not satisfied: say so in one paragraph
   and stop. Doing nothing correctly is a valid outcome.
+
+## Writing a pull request description
+
+The `writing` skill in `.claude/skills/` is the authority and carries the shape,
+the jargon test and the worked example. Load it before writing a description, an
+issue, or a comment on either.
+
+In short: the owner merges everything, so they read every description first,
+whatever else it is for. What they need to do comes first, in one or two
+sentences. What changed goes next, in words a reader outside the specialism can
+follow. Everything else, acceptance criteria included, goes below a horizontal
+rule under "Technical record", moved rather than deleted.
+
+The one run-specific addition: the desk signature line still comes before the
+first heading, per "Who did what" above.
 
 ## Pull requests from a lane
 
