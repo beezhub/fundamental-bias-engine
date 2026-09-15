@@ -135,6 +135,16 @@ class MonetaryPillar(BasePillar):
             ``{currency: {indicator: observations}}`` for the five indicators in
             `requires`, each sorted by period ascending.
 
+        Two filters run here and they answer different questions. The
+        visibility rule drops what had not been published by ``asof``. The
+        period bound the Args line above promises drops what describes a span
+        starting after ``asof``, which is a different thing: a survey can be
+        published early for a period still ahead, and `_transform` reads the
+        newest period, so without the bound a forward-dated print becomes the
+        current level. `BasePillar.staleness_days` floors such a period's age at
+        zero rather than dropping it, because it is defensive about pillars
+        whose docstrings make no such promise. This one makes it.
+
         The two change series arrive as their own keys, ``yield_2y_chg_1m`` and
         ``yield_2y_chg_3m``, rather than being differenced here, so the
         definition of "one month back" lives in one place: the registry's
@@ -149,16 +159,6 @@ class MonetaryPillar(BasePillar):
         different transform, so a currency's coverage on the two change
         components always matches its coverage on the level.
 
-        Shape, which the base docstring words more loosely than this does. Every
-        currency asked for is a key, and every key in `requires` is present
-        under it, with an empty sequence where the currency has nothing. A
-        currency with nothing at all therefore carries five empty sequences
-        rather than an empty mapping. `component_freshness` is the one consumer
-        on `main` and reads it that way already: it skips an indicator whose
-        sequence is falsy, so an empty sequence and an absent key mean the same
-        to it, and the present key is what lets `_transform` index without
-        guarding every lookup.
-
         """
         wanted = set(self.requires)
         per_currency: dict[str, dict[str, list[Observation]]] = {
@@ -169,7 +169,9 @@ class MonetaryPillar(BasePillar):
             if observation.indicator not in wanted:
                 continue
             series = per_currency.get(observation.currency)
-            if series is None or not self._visible(observation, asof):
+            if series is None or observation.period > asof:
+                continue
+            if not self._visible(observation, asof):
                 continue
             series[observation.indicator].append(observation)
         return {
@@ -201,6 +203,15 @@ class MonetaryPillar(BasePillar):
         for another ten days. Every series this pillar reads is lagged, so the
         error would be systematic rather than occasional, and it flatters.
 
+        The fallback has a hole this method cannot close, worth knowing rather
+        than discovering. Period plus lag is the same answer for every vintage
+        of one period, so an unstamped revision is admitted the moment the
+        original print would have been, and `_newest_vintages` then prefers it
+        on ``revision``. The engine is honest exactly when a source stamps its
+        data and flattering when it does not. Closing it means changing the rule
+        in `BasePillar._extract` rather than one pillar's reading of it, which
+        is issue #121.
+
         """
         if observation.released_at is not None:
             return observation.released_at.date() <= asof
@@ -221,7 +232,11 @@ class MonetaryPillar(BasePillar):
             Revision leads because a correction issued later under a lower
             revision number is not the current vintage; the stamp only breaks a
             tie. Two observations identical on both keep the one that arrived
-            first, which is arbitrary and is the only case here that is.
+            first, the only arbitrary case here, and arbitrary in a specific
+            way: arrival order is the order the sources were read in, so two
+            feeds carrying one period at one revision with different values
+            resolve differently if the collector's source order changes, and
+            nothing says so.
 
         The visibility filter has already run, so "newest vintage" means newest
         among what the run could see. A June 2020 run must read March 2020
@@ -327,21 +342,27 @@ class MonetaryPillar(BasePillar):
         }
 
 
-def _vintage_key(observation: Observation) -> tuple[int, bool, datetime]:
+def _vintage_key(observation: Observation) -> tuple[int, datetime]:
     """Order two observations of the same period by which vintage is current.
 
     Args:
         observation: The observation to key.
 
     Returns:
-        ``(revision, has a release stamp, the stamp)``. A naive stamp is read as
-        UTC for the comparison only, so a source that omits the zone cannot
-        raise here by being compared against one that supplies it. The middle
-        element keeps an unstamped observation below a stamped one of the same
-        revision without inventing a time for it.
+        ``(revision, the stamp)``. Revision leads. A naive stamp is read as UTC
+        for the comparison only, so a source that omits the zone cannot raise
+        here by being compared against one that supplies it. That is a real
+        shape rather than a defensive guess: `ManualSource` reads a zoneless
+        stamp as UTC by the same convention, so an `Observation` reaching a
+        pillar naive has come from somewhere that did not.
+
+        An unstamped observation takes `_EARLIEST` and so sorts below every
+        real stamp of the same revision. An earlier draft carried a third
+        element flagging whether a stamp existed; it was dead, because
+        `_EARLIEST` already does that work.
 
     """
     stamped = observation.released_at
     if stamped is not None and stamped.tzinfo is None:
         stamped = stamped.replace(tzinfo=UTC)
-    return (observation.revision, stamped is not None, stamped or _EARLIEST)
+    return (observation.revision, stamped if stamped is not None else _EARLIEST)

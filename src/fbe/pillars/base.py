@@ -336,11 +336,19 @@ class BasePillar(ABC):
             asked for is a key, and every key in `requires` is present under it,
             with an empty sequence where that currency has nothing. A currency
             with nothing at all therefore carries one empty sequence per
-            indicator rather than an empty mapping, so a consumer can index
-            without guarding every lookup, and so ``if not extracted[currency]``
-            is never the test for an unscorable currency: `component_freshness`
-            already distinguishes the two by treating a falsy sequence as an
-            absent component.
+            indicator rather than an empty mapping.
+
+            The reason is that a dropped key and an empty sequence read the same
+            at a glance and are different facts, and keeping the key means this
+            method's output shape does not depend on its input data. One
+            consequence is worth stating because it is easy to write by
+            accident: ``if not extracted[currency]`` is never the test for an
+            unscorable currency, since a mapping of empty sequences is truthy.
+            `component_freshness` does not settle this either way, and an
+            earlier version of this paragraph wrongly claimed it did: its
+            ``.get`` guard is a truthiness test, so an absent key and an empty
+            sequence both come back as an absent component and it cannot tell
+            the two apart.
 
         The visibility rule, which every implementation must apply. An
         observation counts only if it had been published by ``asof``:
