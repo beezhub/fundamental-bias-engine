@@ -9,12 +9,20 @@ through the policy path; this pillar measures the policy path directly.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
-from fbe.pillars.base import BasePillar
+from fbe.pillars.base import DEFAULT_PUBLICATION_LAG_DAYS, BasePillar
 from fbe.types import Observation, PillarName
 
 __all__ = ["MonetaryPillar"]
+
+_EARLIEST = datetime.min.replace(tzinfo=UTC)
+"""Sort floor for an observation with no ``released_at``.
+
+Only ever reached as the third element of a vintage key, after a check on
+whether the stamp exists at all, so it orders unstamped observations below
+stamped ones rather than standing in for a real release time.
+"""
 
 
 class MonetaryPillar(BasePillar):
@@ -141,11 +149,92 @@ class MonetaryPillar(BasePillar):
         different transform, so a currency's coverage on the two change
         components always matches its coverage on the level.
 
+        Shape, which the base docstring words more loosely than this does. Every
+        currency asked for is a key, and every key in `requires` is present
+        under it, with an empty sequence where the currency has nothing. A
+        currency with nothing at all therefore carries five empty sequences
+        rather than an empty mapping. `component_freshness` is the one consumer
+        on `main` and reads it that way already: it skips an indicator whose
+        sequence is falsy, so an empty sequence and an absent key mean the same
+        to it, and the present key is what lets `_transform` index without
+        guarding every lookup.
+
         """
-        raise NotImplementedError(
-            "fbe.pillars.monetary.MonetaryPillar._extract is scaffolded; "
-            "see docs/roadmap.md Phase 2"
-        )
+        wanted = set(self.requires)
+        per_currency: dict[str, dict[str, list[Observation]]] = {
+            currency: {indicator: [] for indicator in self.requires}
+            for currency in currencies
+        }
+        for observation in observations:
+            if observation.indicator not in wanted:
+                continue
+            series = per_currency.get(observation.currency)
+            if series is None or not self._visible(observation, asof):
+                continue
+            series[observation.indicator].append(observation)
+        return {
+            currency: {
+                indicator: self._newest_vintages(found)
+                for indicator, found in series.items()
+            }
+            for currency, series in per_currency.items()
+        }
+
+    @staticmethod
+    def _visible(observation: Observation, asof: date) -> bool:
+        """Say whether a run dated ``asof`` could have read this observation.
+
+        Args:
+            observation: The observation to judge.
+            asof: Run date.
+
+        Returns:
+            True when it had been published by ``asof``, inclusive on the day.
+            With a ``released_at`` that is the fact. Without one it is an
+            assumption: the period's start plus the frequency's entry in
+            `DEFAULT_PUBLICATION_LAG_DAYS`, which is why a run records how many
+            of its inputs were admitted this way.
+
+        Period is deliberately not the test. US Q1 GDP has a period of 1 January
+        and prints around 25 April, so a run dated 15 April that filtered on
+        period would score the middle of April with a number that did not exist
+        for another ten days. Every series this pillar reads is lagged, so the
+        error would be systematic rather than occasional, and it flatters.
+
+        """
+        if observation.released_at is not None:
+            return observation.released_at.date() <= asof
+        lag = DEFAULT_PUBLICATION_LAG_DAYS[observation.frequency]
+        return observation.period + timedelta(days=lag) <= asof
+
+    @staticmethod
+    def _newest_vintages(found: Sequence[Observation]) -> tuple[Observation, ...]:
+        """Reduce to one observation per period and sort by period ascending.
+
+        Args:
+            found: One currency's visible observations of one indicator, in
+                whatever order they arrived.
+
+        Returns:
+            One observation per period, newest vintage first by ``revision`` and
+            then by the later ``released_at``, ordered oldest period first.
+            Revision leads because a correction issued later under a lower
+            revision number is not the current vintage; the stamp only breaks a
+            tie. Two observations identical on both keep the one that arrived
+            first, which is arbitrary and is the only case here that is.
+
+        The visibility filter has already run, so "newest vintage" means newest
+        among what the run could see. A June 2020 run must read March 2020
+        payrolls as first estimated in April 2020, not as revised in 2024, and
+        taking the highest revision outright is how that goes wrong.
+
+        """
+        by_period: dict[date, Observation] = {}
+        for observation in found:
+            current = by_period.get(observation.period)
+            if current is None or _vintage_key(observation) > _vintage_key(current):
+                by_period[observation.period] = observation
+        return tuple(by_period[period] for period in sorted(by_period))
 
     def _transform(
         self,
@@ -179,8 +268,80 @@ class MonetaryPillar(BasePillar):
         `blend_components` renormalises over 0.85 of the sub-weight, which
         clears `MIN_COMPONENT_WEIGHT`.
 
+        Nothing here differences a yield. The two change components arrive from
+        the registry under their own keys, so a currency holding only
+        ``yield_2y`` gets ``None`` for both rather than a locally computed
+        change: see `_extract` for why a local difference is not comparable
+        across the cross-section.
+
+        Units are the ones the observations carry, which the registry fixes per
+        indicator and the sources validate on the way in. Nothing here rescales,
+        so a component is in percent or in basis points exactly as published.
+
         """
-        raise NotImplementedError(
-            "fbe.pillars.monetary.MonetaryPillar._transform is scaffolded; "
-            "see docs/roadmap.md Phase 2"
+        return {
+            currency: self._components(series) for currency, series in extracted.items()
+        }
+
+    @staticmethod
+    def _components(
+        series: Mapping[str, Sequence[Observation]],
+    ) -> dict[str, float | None]:
+        """Build one currency's five components from its extracted series.
+
+        Args:
+            series: ``{indicator: observations}`` for one currency, oldest
+                first, as `_extract` returns it.
+
+        Returns:
+            All five components named in `component_weights`, each the newest
+            published value or ``None``. Every key is always present: a missing
+            key and a ``None`` are different answers and only one of them
+            survives `blend_components`, which renormalises over the sub-weight
+            a currency actually holds.
+
+            ``None`` never stands in for a number. ``0.0`` for
+            ``real_policy_rate`` is a central bank sitting exactly at target,
+            which is a specific claim about a currency this run has no inflation
+            print for.
+
+        """
+
+        def newest(indicator: str) -> float | None:
+            found = series.get(indicator) or ()
+            return found[-1].value if found else None
+
+        policy_rate = newest("policy_rate")
+        cpi_yoy = newest("cpi_yoy")
+        real_policy_rate = (
+            policy_rate - cpi_yoy
+            if policy_rate is not None and cpi_yoy is not None
+            else None
         )
+        return {
+            "policy_rate": policy_rate,
+            "yield_2y": newest("yield_2y"),
+            "yield_2y_chg_1m": newest("yield_2y_chg_1m"),
+            "yield_2y_chg_3m": newest("yield_2y_chg_3m"),
+            "real_policy_rate": real_policy_rate,
+        }
+
+
+def _vintage_key(observation: Observation) -> tuple[int, bool, datetime]:
+    """Order two observations of the same period by which vintage is current.
+
+    Args:
+        observation: The observation to key.
+
+    Returns:
+        ``(revision, has a release stamp, the stamp)``. A naive stamp is read as
+        UTC for the comparison only, so a source that omits the zone cannot
+        raise here by being compared against one that supplies it. The middle
+        element keeps an unstamped observation below a stamped one of the same
+        revision without inventing a time for it.
+
+    """
+    stamped = observation.released_at
+    if stamped is not None and stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=UTC)
+    return (observation.revision, stamped is not None, stamped or _EARLIEST)
