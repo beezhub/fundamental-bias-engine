@@ -788,9 +788,10 @@ display convenience.
 
 Agreement measures whether the two legs differ for many reasons or for one.
 
+    has_data(p) = z(base, p) is not None and z(quote, p) is not None
     d(p)        = score(base, p) - score(quote, p)
     w_pair(p)   = ( w_eff(base, p) + w_eff(quote, p) ) / 2
-    considered  = { p : |d(p)| > 1e-9 }
+    considered  = { p : has_data(p) and |d(p)| > 1e-9 }
     agreeing    = { p in considered : sign(d(p)) == sign(spread) }
 
     agreement = sum of w_pair over agreeing / sum of w_pair over considered
@@ -799,6 +800,26 @@ Pillars where the two legs score identically are excluded from both numerator an
 denominator: they express no opinion on this pair and should neither support nor
 oppose it. If no pillar is considered, agreement is 0.0. Stored on
 `PairBias.agreement`.
+
+`has_data` is the other exclusion and it is not a refinement of the first one.
+A pillar with no usable data for a currency still arrives at this calculation:
+`BasePillar.compute` returns one `PillarScore` per currency including those,
+carrying `missing_score`'s neutral score of 0.0 with `raw` and `z` both `None`,
+and the staleness penalty then takes its effective weight to zero. Without
+`has_data` its `d(p)` is `0.0 - score(other leg)`, a difference whose sign is
+decided entirely by the leg that does have data, and it is counted as an opinion.
+It agrees with the headline about half the time, which raises agreement, and the
+agreement cap is the one demotion that can move a pair a whole tier. On a
+worked case a EUR leg missing POSITIONING reads 0.6154 against `min_agreement`
+of 0.60 and returns MEDIUM, where excluding it reads 0.5833 and returns LOW:
+1.5% of the account at risk rather than 1.0%, on the strength of a pillar that
+had nothing to say.
+
+`z is None` is the marker rather than a zero effective weight, because those are
+different facts. A pillar can be present, fresh and genuinely neutral, and a
+pillar whose weight has decayed to zero through staleness still had data once.
+`z` is what `missing_score` sets and what the aggregator already reads to tell
+absence of evidence from evidence of neutrality.
 
 Weighting by `w_pair` rather than counting pillars is deliberate. MONETARY at 0.30
 disagreeing is a materially worse sign than POSITIONING at 0.10 disagreeing, and
