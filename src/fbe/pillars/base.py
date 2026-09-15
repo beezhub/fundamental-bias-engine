@@ -63,10 +63,19 @@ table should never be reached.
 MIN_CROSS_SECTION: int = 3
 """Fewest usable currencies a cross-sectional z-score will accept.
 
-With two values the z-score is always ``+/-0.707`` whatever the gap between
-them, which encodes rank but discards magnitude and would hand the pillar a
+With two values the z-score is always ``+/-1.0`` whatever the gap between them,
+which encodes rank but discards magnitude and would hand the pillar a
 confident-looking score built on nothing. Below this count the pillar declines
 to score the whole cross-section rather than scoring part of it.
+
+``+/-1.0`` follows from ``ddof=0``, which `BasePillar.cross_sectional_z`
+mandates because the eight currencies are the entire scored universe rather than
+a sample drawn from a larger one. Two points sit one population standard
+deviation either side of their own mean by construction, whether they are 1 and
+3 or 1 and 30. The sample form would give ``+/-0.707``, and that figure has no
+place in this module: a reader checking this reason by hand computes 1.0 and
+would otherwise conclude that either this docstring or the ``ddof=0`` rule is
+wrong. ``tests/test_cross_sectional_z.py`` holds the two together.
 """
 
 MIN_COMPONENT_WEIGHT: float = 0.5
