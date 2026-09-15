@@ -118,6 +118,46 @@ as a `datetime` rather than an Excel serial, because `openpyxl` converts
 date-formatted cells; the serial path is still implemented and tested, because
 a workbook written another way would need it.
 
+## Reserve Bank of New Zealand
+
+Not a capture. **The owner downloaded this one through a browser**, because the
+RBNZ blocks this project's egress and no run can retrieve it. See issue #91 for
+the attempt history and the verdict.
+
+| File | Source | Retrieved |
+| --- | --- | --- |
+| `rbnz_hb2_daily_close.xlsx` | Table B2, "Daily wholesale interest rates (% pa)", link text "Daily close (2018-current), XLSX \| 440KB", from `rbnz.govt.nz/statistics/series/exchange-and-interest-rates/wholesale-interest-rates` | 2026-09-15, by the owner, on a mobile connection |
+
+**Truncated, and nothing in it was typed.** The published file is 450 KB, 48
+series and 2183 rows. This fixture is 7 KB and keeps:
+
+- All five real header rows, byte for byte: group, tenor, notes, unit, series ID.
+- Seven of the 48 columns, chosen so that locating a column by ID is doing real
+  work. `INM.DG102.NZZCF`, the 2-year, keeps its true neighbours
+  `INM.DG101.NZZCF` and `INM.DG105.NZZCF` on either side, both in the same unit
+  and a similar range, so an off-by-one parser returns a plausible wrong yield
+  rather than an error. The Official Cash Rate, the 90-day bank bill, the
+  10-year and the 2-year swap are kept as decoys from other groups.
+- The five most recent real sessions, 2026-09-08 to 2026-09-14.
+- One real session from the 2020 publication gap, 2020-05-15, where the RBNZ
+  published the row and left the 2-year blank.
+
+The `Series Definitions` and `Table Description` sheets are kept, the first
+narrowed to the seven retained series and the second verbatim. The published
+date inside the workbook is 2026-09-15.
+
+The gap row is the reason this fixture exists in this shape. 286 of 2178 rows
+are blank in the 2-year column, 224 of them in 2020, with the longest run 255
+consecutive sessions ending 2020-11-19 and none after 2021. A blank means the
+RBNZ published a session with no 2-year yield to report. Reading it as `0.0`
+would give the monetary pillar a policy-relevant rate of zero on a day New
+Zealand had none, and the value would look entirely plausible. That is the case
+`tests/test_rbnz_b2_fixture.py` pins.
+
+`docs/data-sources.md` does not yet carry an RBNZ entry, because nothing fetches
+this. The fixture is here so the evidence survives without asking the owner to
+download it a second time.
+
 ## FRED
 
 None of these three is a capture. Each is constructed in the shape FRED's
