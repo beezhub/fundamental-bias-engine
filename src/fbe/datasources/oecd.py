@@ -91,6 +91,12 @@ from fbe.types import Observation
 
 __all__ = [
     "BASE_URL",
+    "BTS_ACTIVITY_MANUFACTURING",
+    "BTS_ADJUSTMENT",
+    "BTS_FLOW",
+    "BTS_FREQUENCY",
+    "BTS_MEASURE",
+    "BTS_UNIT_BALANCE",
     "CPI_FLOW",
     "CSV_ACCEPT",
     "DIMENSIONS",
@@ -124,6 +130,7 @@ FLOW_VERSIONS: Mapping[str, str] = {
     "DSD_PRICES_COICOP2018@DF_PRICES_C2018_ALL": "1.0",
     "DSD_PRICES_COICOP2018@DF_PRICES_C2018_N_TXCP01_NRG": "1.0",
     "DSD_STES@DF_FINMARK": "4.0",
+    "DSD_STES@DF_BTS": "4.0",
     "DSD_KEI@DF_KEI": "4.0",
 }
 """Flow to version, all verified live. Versions are part of the URL and are not
@@ -134,6 +141,7 @@ FLOW_AGENCIES: Mapping[str, str] = {
     "DSD_PRICES_COICOP2018@DF_PRICES_C2018_ALL": "OECD.SDD.TPS",
     "DSD_PRICES_COICOP2018@DF_PRICES_C2018_N_TXCP01_NRG": "OECD.SDD.TPS",
     "DSD_STES@DF_FINMARK": "OECD.SDD.STES",
+    "DSD_STES@DF_BTS": "OECD.SDD.STES",
     "DSD_KEI@DF_KEI": "OECD.SDD.STES",
 }
 
@@ -266,6 +274,79 @@ routed to by any registry entry, and neither unit was confirmed. Guessing one
 produces a key that either returns nothing or returns a different series, and
 the second is the failure this module exists to prevent, so `finmark_key`
 refuses them instead."""
+
+BTS_FLOW = "DSD_STES@DF_BTS"
+"""Business Tendency Surveys: the national confidence surveys the OECD
+harmonises and republishes. Shares the `DIMENSIONS` shape of `FINMARK_FLOW`,
+being the same ``DSD_STES`` structure, and nothing else.
+
+This is the free route to a leading growth indicator. The licensed alternative,
+``pmi_composite``, is 0/8 on free coverage and exists in the registry only as a
+manual entry, so every currency loses its leading component in any month nobody
+keys eight numbers in by hand.
+"""
+
+BTS_MEASURE = "BCICP"
+"""Composite business confidence. Verified live for all eight reference areas."""
+
+BTS_UNIT_BALANCE = "PB"
+"""Percentage balance: respondents answering positively minus those answering
+negatively, as a net percentage.
+
+**Neutral is zero, not 50.** A purchasing managers' index is a diffusion index
+with an expansion line at 50 and this is not one, which is why the registry
+carries this series under its own key with unit ``percentage_balance`` rather
+than as a value written under the PMI key. Reading one as the other shifts every
+currency in the universe by the same amount, the cross-sectional z-score absorbs
+the offset, and the ranking still comes out looking orderly. Nothing downstream
+would raise. See ``docs/answers/data.md`` question 5.
+
+Pinned in the key for the same reason `FINMARK_UNITS` exists: a guessed
+``UNIT_MEASURE`` returns either nothing or a different series, and the second is
+indistinguishable from success.
+"""
+
+BTS_ACTIVITY_MANUFACTURING = "C"
+"""ISIC section C, manufacturing. Pinned rather than wildcarded: the survey
+covers several activities and a wildcard returns the composite as one row among
+many, which the CSV reader would emit as duplicate periods."""
+
+BTS_ADJUSTMENT = "Y"
+"""Calendar and seasonally adjusted, which is what this flow serves.
+
+Pinned for the same reason as the activity, and `cpi_key` pins `CPI_ADJUSTMENT`
+for the same reason again. Checked against the live flow one currency at a time:
+all eight return exactly one row per period and every row carries ``Y``. A
+wildcard is safe only for as long as that stays true, and `fetch` has no
+duplicate-period guard anywhere in its path, so a second adjustment appearing
+later would emit two `Observation`s for one period and nothing would raise.
+"""
+
+BTS_FREQUENCY: Mapping[str, str] = MappingProxyType(
+    {
+        "USD": "M",
+        "EUR": "M",
+        "GBP": "M",
+        "CHF": "M",
+        "JPY": "Q",
+        "CAD": "Q",
+        "AUD": "Q",
+        "NZD": "Q",
+    }
+)
+"""Each currency's survey cadence, verified one at a time against the live flow.
+
+Four monthly and four quarterly, because the OECD republishes each country's own
+survey at the cadence that country runs it: Japan's is the quarterly Tankan, and
+the Australian and New Zealand series are the equally quarterly national business
+outlooks. This is not a property of the dataflow that could be read once and
+applied to all.
+
+`bts_key` pins the frequency from this table rather than wildcarding it, which is
+the one way these keys differ from `finmark_key`. A wildcarded ``FREQ`` returns
+every period shape a country publishes, and `_key_frequency` would then have no
+single answer to read.
+"""
 
 TIME_PERIOD_COLUMN = "TIME_PERIOD"
 OBS_VALUE_COLUMN = "OBS_VALUE"
@@ -661,3 +742,47 @@ class OecdSource(BaseDataSource):
             )
         key = ".".join((area, "", measure, FINMARK_UNITS[measure], "", "", "", "", ""))
         return FINMARK_FLOW, key
+
+    def bts_key(self, currency: str) -> tuple[str, str]:
+        """Build the flow and key for one currency's business confidence series.
+
+        Args:
+            currency: ISO 4217 code. The euro resolves to Germany, per
+                `REF_AREA`.
+
+        Returns:
+            ``(flow, key)`` ready for `fetch_key`, with the frequency taken from
+            `BTS_FREQUENCY` rather than left as a wildcard.
+
+        Raises:
+            KeyError: If the currency has no entry in `BTS_FREQUENCY`, or none
+                in `REF_AREA`. A currency with no verified cadence cannot get a
+                key here, because the alternative is to wildcard the frequency
+                and let `parse_period` decide what a period was, which is how a
+                quarter gets filed under a month.
+
+                The cadence is checked first and deliberately. The two tables
+                hold the same eight currencies today, so reading `REF_AREA`
+                first made this message unreachable and left the bare lookup
+                error standing in for it.
+
+        """
+        if currency not in BTS_FREQUENCY:
+            raise KeyError(
+                f"{currency!r} has no verified survey cadence in BTS_FREQUENCY, "
+                "so a key for it would have to wildcard FREQ"
+            )
+        key = ".".join(
+            (
+                REF_AREA[currency],
+                BTS_FREQUENCY[currency],
+                BTS_MEASURE,
+                BTS_UNIT_BALANCE,
+                BTS_ACTIVITY_MANUFACTURING,
+                BTS_ADJUSTMENT,
+                "",
+                "",
+                "",
+            )
+        )
+        return BTS_FLOW, key

@@ -17,10 +17,40 @@ credential, `Accept: application/vnd.sdmx.data+csv`.
 | `oecd_gbr_cpi_monthly.csv` | `data/OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/GBR.M.N.CPI.PA._T.N.GY?startPeriod=2026-05&endPeriod=2026-07` | 200 |
 | `oecd_aus_cpi_quarterly.csv` | `data/OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/AUS.Q.N.CPI.PA._T.N.GY?startPeriod=2026-Q1&endPeriod=2026-Q2` | 200 |
 | `oecd_arity_error.txt` | the same monthly key with seven segments instead of eight | 403 |
+| `oecd_deu_bts_monthly.csv` | `data/OECD.SDD.STES,DSD_STES@DF_BTS,4.0/DEU.M.BCICP.PB.C.Y...?startPeriod=2026-05-01&endPeriod=2026-08-31` | 200 |
+| `oecd_aus_bts_quarterly.csv` | `data/OECD.SDD.STES,DSD_STES@DF_BTS,4.0/AUS.Q.BCICP.PB.C.Y...?startPeriod=2025-01-01&endPeriod=2026-06-30` | 200 |
 
-Both CSV bodies are byte-exact as returned. The monthly one arrives out of
-order (June, May, July), which is why the parser is not allowed to assume the
-API sorts.
+All four CSV bodies are byte-exact as returned. The monthly CPI one arrives out
+of order (June, May, July), which is why the parser is not allowed to assume the
+API sorts. Both BTS bodies arrive out of order too, from a second flow, so that
+is the API's habit rather than one flow's quirk.
+
+**The two BTS requests above are the exact keys `OecdSource.bts_key` builds and
+the registry stores**, nine segments matching `DIMENSIONS["DSD_STES"]`, not the
+ten-segment form the finmark refs use (see #57). That is deliberate and a test
+holds it: the whole risk in this registry entry is a key that answers HTTP 404
+`NoRecordsFound`, which is indistinguishable from a dead series, so the captured
+body has to be evidence for the key the code actually sends rather than for a
+neighbouring one that also happens to work.
+
+The two BTS bodies are the only fixtures here holding negative observations, and
+that is what they are for. Their unit is `PB`, a percentage balance, which is
+neutral at zero and sits either side of it. A purchasing managers' index is
+neutral at 50 and never negative. Any change that routed this material under
+`pmi_composite` would show up as sign, which is the only place it would show up:
+the cross-sectional z-score absorbs a constant offset, so the ranking would
+still look orderly downstream. See `docs/answers/data.md` question 5.
+
+The monthly window runs to 2026-08-31 so that the body carries `2026-08`, which
+is the `last_observed` the registry claims for all four monthly legs and the
+-11.0 that `docs/answers/data.md` question 5 publishes. The doc's worked number
+is therefore a fixture and not prose.
+
+The quarterly window runs over six quarters rather than the three needed to
+demonstrate stamping, because four of the six values are distinct and that is
+what lets the test catch a transposition. 2025-Q4 and 2026-Q1 both read
+9.333333, so a swap of exactly those two would still pass; no other pair
+would.
 
 `oecd_arity_error.txt` holds the body only. The OECD answered it with **HTTP
 403**, not the 422 that `src/fbe/datasources/oecd.py` documents. The body text

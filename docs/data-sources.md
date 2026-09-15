@@ -766,6 +766,7 @@ keys currently in that position.
 | `retail_sales_yoy` | 7/8 | 8/8 | AUD frozen at 2025Q2 |
 | `indpro_yoy` | 4/8 | 5/8 | worst of the growth inputs |
 | `pmi_composite` | 0/8 | 0/8 | licensed, entirely manual |
+| `business_confidence_mfg` | 8/8 | 8/8 | free, **consumed by no pillar**; see below |
 | `trade_balance` | 8/8 | 8/8 | good |
 | `current_account_gdp` | 0/8 | 8/8 | all eight frozen at 2024Q4 |
 | `cot_net_pct_oi` | 8/8 | 8/8 | good, 8-10 days stale by design |
@@ -927,6 +928,7 @@ a free machine-readable source, not the operator's typing.
 | `retail_sales_yoy` | growth | `percent` | monthly | 270d | 88% | 100% |
 | `indpro_yoy` | growth | `percent` | monthly | 180d | 50% | 62% |
 | `pmi_composite` | growth | `index` | monthly | 75d | 0% | 0% |
+| `business_confidence_mfg` | growth (unconsumed) | `percentage_balance` | monthly | 270d | 100% | 100% |
 | `trade_balance` | external | `usd` | monthly | 150d | 100% | 100% |
 | `current_account_gdp` | external | `percent_of_gdp` | quarterly | 210d | 0% | 100% |
 | `cot_net_pct_oi` | positioning | `contracts` | weekly | 21d | 100% | 100% |
@@ -1124,7 +1126,7 @@ Pillar: **growth**. Canonical unit: `percent`. Staleness allowance: 180 days. Fr
 
 #### `pmi_composite`
 
-Composite purchasing managers' index, manufacturing and services blended, 50 being the expansion line. The best leading indicator in the growth pillar and the one with zero free coverage, which is why the manual source exists at all. Until an operator has a services print to blend in, entering the manufacturing headline alone under this key is a stated approximation: note it as such in the manual entry's `meta` rather than presenting it as the real composite. See "Question 5" in `docs/answers/data.md` for a free OECD business-confidence proxy that is a different, real thing (a percentage balance, not a 50-centred diffusion index) and belongs under its own key rather than this one. The allowance is 75 rather than 45 because 45 is the age of a punctual monthly print under first-day period stamping, so the series was expiring on the day it published. 75 is this table's own rule: a month elapsing, the survey's own lag, and one more month before the next print is due.
+Composite purchasing managers' index, manufacturing and services blended, 50 being the expansion line. The best leading indicator in the growth pillar and the one with zero free coverage, which is why the manual source exists at all. Until an operator has a services print to blend in, entering the manufacturing headline alone under this key is a stated approximation: note it as such in the manual entry's `meta` rather than presenting it as the real composite. The free OECD business-confidence series found in "Question 5" of `docs/answers/data.md` is a different, real thing (a percentage balance, not a 50-centred diffusion index) and now lives under its own key, `business_confidence_mfg`, below. It is not a replacement for this entry and the two must not be blended: nothing consumes it yet, and whether growth takes it is an open scoring decision. The allowance is 75 rather than 45 because 45 is the age of a punctual monthly print under first-day period stamping, so the series was expiring on the day it published. 75 is this table's own rule: a month elapsing, the survey's own lag, and one more month before the next print is due.
 
 Pillar: **growth**. Canonical unit: `index`. Staleness allowance: 75 days. Fresh coverage: 0%.
 
@@ -1138,6 +1140,33 @@ Pillar: **growth**. Canonical unit: `index`. Staleness allowance: 75 days. Fresh
 | CAD | manual | `pmi_composite` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
 | AUD | manual | `pmi_composite` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
 | NZD | manual | `pmi_composite` | index | monthly | level | **no** | **unknown** | PMIs are licensed by S&P Global and ISM and are on no free API; operator enters the headline print by hand |
+
+#### `business_confidence_mfg`
+
+OECD composite business confidence for manufacturing, from the Business Tendency Surveys the OECD harmonises out of each country's own national survey. A net percentage: respondents answering positively minus those answering negatively.
+
+**Neutral is zero, not 50.** This is not a purchasing managers' index and must never be blended with `pmi_composite` under one key. A PMI is a diffusion index whose expansion line is 50; a percentage balance sits either side of zero and is routinely negative in a healthy economy. German manufacturing confidence was -11.0 in August 2026 while German manufacturing was not contracting by eleven of anything. Code written against distance from 50 and pointed here would shift every currency in the universe the same way, the cross-sectional z-score would absorb the offset, and the ranking would still come out looking orderly with nothing raising anywhere. That is the reason for a separate key rather than a second source behind the PMI one. See "Question 5" in `docs/answers/data.md` and issue #6.
+
+**Nothing consumes this yet.** It is held for the growth pillar's leading component, which `pmi_composite` cannot fill because it is licensed and 0/8 on free coverage, so it arrives only in months an operator keys eight numbers in by hand. Whether growth actually takes this series, and at what sub-weight, is a scoring decision that has not been taken. The proposal that added the series split the data question from the scoring one and approved only the first. Until the second is answered the key is listed in `UNCONSUMED_INDICATORS` and its coverage figure above should be read as a series held ready, not as a live input.
+
+**The mixed cadence is a real cost, not a rounding error.** Four currencies survey monthly and four quarterly, because the OECD republishes each country's own survey at the cadence that country runs it: Japan's is the quarterly Tankan, and the Australian and New Zealand series are the equally quarterly NAB and ANZ business outlooks. So half the universe would be compared against a number up to a quarter older than the other half. The component-level freshness discount in `fbe.pillars.base.BasePillar.component_freshness` is what makes that visible rather than silent, and it is one of the things the scoring decision has to weigh.
+
+**What it is not.** Each leg is the country's own national survey as the OECD compiles it, which is a family relationship to the ifo, KOF, Tankan, NAB and ANZ headline figures rather than an identity. None was verified to match its national headline number for number. Anything describing this series should say what it is rather than calling it a PMI proxy.
+
+The allowance is 270 and is derived from the quarterly half, which is the binding one. It is this table's own published figure for a quarterly series stamped on its period's first day, and what `gdp_yoy` uses, the other first-day-stamped quarterly input to this pillar. The derivation runs on the real calendar rather than on nominal 90-day quarters: a print is the newest one until its successor publishes, which is one further quarter end plus the survey's own lag. That lag is bounded by observation and not known exactly, because the 2026-Q2 print was still the newest on the verification date, which puts it at no more than 71 days past the quarter end. Taking that bound, the worst case across the four stamp positions is 253 days, reached by a Q3 print. So 270 covers a punctual print in every quarter with no day on which a current series reads stale, while a leg that misses a whole release reaches 253 + 90 and expires. An allowance sized from the monthly half would fail four currencies on day one: the quarterly legs were 161 days old on the verification date while entirely current.
+
+Pillar: **growth** (unconsumed). Canonical unit: `percentage_balance`. Staleness allowance: 270 days. Fresh coverage: 100%.
+
+| Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| USD | oecd | `DSD_STES@DF_BTS/USA.M.BCICP.PB.C.Y...` | percentage_balance | monthly | level | yes | 2026-08-01 | US manufacturing business tendency survey as the OECD compiles it; not the ISM headline, which is licensed |
+| EUR | oecd | `DSD_STES@DF_BTS/DEU.M.BCICP.PB.C.Y...` | percentage_balance | monthly | level | yes | 2026-08-01 | Germany standing in for the euro area, matching the `REF_AREA` convention; same survey family as the ifo, not verified to be the ifo headline number for number |
+| GBP | oecd | `DSD_STES@DF_BTS/GBR.M.BCICP.PB.C.Y...` | percentage_balance | monthly | level | yes | 2026-08-01 | UK manufacturing business tendency survey |
+| JPY | oecd | `DSD_STES@DF_BTS/JPN.Q.BCICP.PB.C.Y...` | percentage_balance | quarterly | level | yes | 2026-04-01 | quarterly because Japan's survey is the Tankan; 2026-Q2 stamped on its first day per #27 |
+| CHF | oecd | `DSD_STES@DF_BTS/CHE.M.BCICP.PB.C.Y...` | percentage_balance | monthly | level | yes | 2026-08-01 | Swiss manufacturing business tendency survey, the KOF family |
+| CAD | oecd | `DSD_STES@DF_BTS/CAN.Q.BCICP.PB.C.Y...` | percentage_balance | quarterly | level | yes | 2026-04-01 | quarterly: the Bank of Canada Business Outlook Survey family |
+| AUD | oecd | `DSD_STES@DF_BTS/AUS.Q.BCICP.PB.C.Y...` | percentage_balance | quarterly | level | yes | 2026-04-01 | quarterly: the NAB business survey family |
+| NZD | oecd | `DSD_STES@DF_BTS/NZL.Q.BCICP.PB.C.Y...` | percentage_balance | quarterly | level | yes | 2026-04-01 | quarterly: the ANZ business outlook family |
 
 #### `trade_balance`
 
