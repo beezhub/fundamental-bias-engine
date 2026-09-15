@@ -484,7 +484,25 @@ class BasePillar(ABC):
 
         Returns:
             ``{currency: z}``, with ``None`` where the currency could not be
-            scored.
+            scored. The multi-component path carries the absence cases
+            `blend_components` documents; the single-component path carries
+            `cross_sectional_z`'s.
+
+        Raises:
+            ValueError: the pillar declares no `component_weights`. It has not
+                said what it is built from, so there is nothing to blend and
+                nothing to fall through to. Reporting every currency as absent
+                would state a data outage, which is a different fact and one a
+                reader would act on differently.
+
+        The freshness factors of section 4.1 are **not** applied on this path.
+        `blend_components` takes them and this method has nowhere to receive
+        them from, so a blend reached through here weights every component at
+        ``u_j`` with ``phi_j`` fixed at ``1.0``. See the note on #115 for why
+        that is left rather than fixed here: `compute` is the method that holds
+        the factors, it is scaffolded pending #51, and widening this signature
+        would change a contract that `PositioningPillar` and `RiskPillar`
+        override.
 
         """
         weights = self.component_weights
@@ -798,7 +816,10 @@ class BasePillar(ABC):
                 report-only value through `_transform` for
                 `headline_component` without letting it into the arithmetic.
             weights: Sub-weights per component. Defaults to
-                `component_weights`.
+                `component_weights`. The floor below is a fraction of what this
+                map declares rather than of 1.0, so passing a subset does not
+                put every currency below it. A map summing to zero or less
+                raises, because it leaves no scale to judge coverage against.
             component_freshness: ``{component: {currency: factor}}`` from
                 `BasePillar.component_freshness`, per currency. A component
                 missing from a currency's mapping is treated as fully fresh at
@@ -808,7 +829,16 @@ class BasePillar(ABC):
 
         Returns:
             ``{currency: z}``, centred on this run's own cross-section and
-            divided by the scale from `blend_divisor`.
+            divided by the scale from `blend_divisor`. ``None`` marks a currency
+            this pillar cannot speak for, in three separate cases: it holds too
+            little of the sub-weight, every component it holds has run past its
+            allowance, or it has no usable component at all. Only currencies
+            named by a component carrying a sub-weight appear at all, so a
+            report-only component cannot put one into the run.
+
+        Raises:
+            ValueError: ``weights`` sums to zero or less, which is a pillar
+                misconfigured rather than a currency with no data.
 
         The arithmetic, matching section 2.3 of ``docs/scoring-spec.md`` with the
         divisor taken from history rather than from the run:
@@ -829,8 +859,21 @@ class BasePillar(ABC):
         the sub-weights sum to 1. It is only non-zero when the per-currency
         renormalisation below differs across currencies, so subtract it anyway
         rather than relying on the special case. A divisor below ``1e-9`` is
-        handled like any other degenerate cross-section: every score becomes
-        ``0.0``.
+        handled like any other degenerate cross-section: every covered score
+        becomes ``0.0``, and a currency that had no blend stays ``None``,
+        because a missing scale cannot manufacture coverage. That branch only
+        fires on the run-local path, since `blend_divisor` filters a history
+        down to entries above ``1e-9``, and a run-local divisor that small means
+        every usable blend was identical.
+
+        No minimum cross-section is applied to the blend, and the omission is
+        deliberate rather than an oversight: see **#130**, which carries the
+        question. `cross_sectional_z` refuses fewer than `MIN_CROSS_SECTION`
+        usable currencies one stage earlier, and the two stages thin the
+        cross-section by different mechanisms, so clearing that check does not
+        mean this one would pass. Two currencies here score ``+/-1.0`` whatever
+        the gap between them and one scores ``0.0``, and until #130 is ruled on,
+        a caller that can reach either shape is reading a rank as a magnitude.
 
         Renormalisation rule: for each currency the weighted mean runs over the
         components that currency actually has, and each enters at
@@ -841,7 +884,13 @@ class BasePillar(ABC):
         of the blend where the configured sub-weights alone would give it 0.600.
         A component at ``phi_j = 0.0`` is past its allowance and contributes
         nothing to the blend, without any special case: its discounted weight is
-        already zero.
+        already zero. A currency whose components are *all* at ``phi_j = 0.0``
+        leaves nothing to renormalise over, and comes back ``None`` rather than
+        ``0.0``: the series exist and have all run past their allowance, which
+        is an absence of usable data and not a reading of neutral. The
+        denominator is tested against ``1e-12`` rather than exactly zero, a
+        local guard against a sum of small factors rather than a threshold
+        anything is configured with.
 
         A currency holding at or below `MIN_COMPONENT_WEIGHT` of the pillar's
         sub-weight is returned as ``None`` instead, because at that point the

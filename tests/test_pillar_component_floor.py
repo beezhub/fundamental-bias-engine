@@ -11,12 +11,17 @@ wrong: EMPLOYMENT's two components are 0.50 each, so a currency missing one hold
 exactly 0.50, and under a strict ``<`` the floor could never fire for the one
 pillar whose own docstring says a single component is not safe on its own.
 
-The behavioural half is guarded. `BasePillar.compute`, `blend_components` and
-`missing_score` are still scaffolded, so a test that asks a pillar to score a
-currency raises ``NotImplementedError`` whatever the rule says. Those tests skip
-while the scaffold marker is present and start asserting the moment the pillar
-layer lands, in the pattern ``tests/test_smoke.py`` uses for modules that have
-not arrived.
+The behavioural half is still guarded, on one callable rather than three.
+`blend_components` and `missing_score` have landed and enforce the floor;
+`BasePillar.compute` is scaffolded pending #51, so a test that asks a pillar to
+score a currency still raises ``NotImplementedError`` whatever the rule says.
+Those tests skip while the scaffold marker is present and start asserting the
+moment `compute` lands, in the pattern ``tests/test_smoke.py`` uses for modules
+that have not arrived.
+
+The blend's own half of the rule is covered meanwhile by
+``tests/test_pillar_blend.py``, which drives `blend_components` directly and
+does not need `compute`.
 """
 
 from __future__ import annotations
@@ -232,9 +237,7 @@ def test_employment_is_absent_for_a_currency_holding_only_unemployment(
     keep both series, so AUD's absence is the floor firing and not a thin
     cross-section.
     """
-    _skip_if_scaffolded(
-        BasePillar.compute, BasePillar.blend_components, BasePillar.missing_score
-    )
+    _skip_if_scaffolded(BasePillar.compute)
 
     pillar = EmploymentPillar()
     scores = pillar.compute(
@@ -257,9 +260,7 @@ def test_growth_is_absent_for_a_currency_holding_gdp_and_retail_sales_only(
     This is the CHF, AUD and NZD case on the registry as it stands, reproduced
     for one currency.
     """
-    _skip_if_scaffolded(
-        BasePillar.compute, BasePillar.blend_components, BasePillar.missing_score
-    )
+    _skip_if_scaffolded(BasePillar.compute)
 
     pillar = GrowthPillar()
     scores = pillar.compute(
@@ -278,9 +279,7 @@ def test_growth_still_scores_a_currency_missing_only_the_pmi(asof: date) -> None
     The pair with the test above is the point. One missing component of four is a
     repair the renormalisation can make; two is not.
     """
-    _skip_if_scaffolded(
-        BasePillar.compute, BasePillar.blend_components, BasePillar.missing_score
-    )
+    _skip_if_scaffolded(BasePillar.compute)
 
     pillar = GrowthPillar()
     scores = pillar.compute(
@@ -299,9 +298,7 @@ def test_monetary_still_scores_a_currency_missing_only_cpi(asof: date) -> None:
     losing it costs 0.15 of the sub-weight. The widened comparison must not
     sweep this up.
     """
-    _skip_if_scaffolded(
-        BasePillar.compute, BasePillar.blend_components, BasePillar.missing_score
-    )
+    _skip_if_scaffolded(BasePillar.compute)
 
     pillar = MonetaryPillar()
     scores = pillar.compute(
