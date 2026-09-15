@@ -122,6 +122,13 @@ Settled cross-cutting decisions are recorded in `docs/decisions/`. A decision
 that lives only in a commit message is a decision that will be quietly
 reversed.
 
+Before writing anything a person is expected to read and act on, a pull request
+description above all, load the `writing` skill in `.claude/skills/`. The rules
+below are mechanical and say nothing about audience, and the failure they do not
+catch is writing that is entirely correct and unreadable by the one person who
+has to merge it. That skill covers who each thing is for and what that costs
+when it is guessed wrong.
+
 The rest of this section is the writing style, which is strict and applies to
 code, comments, docstrings, docs, and commit messages.
 
