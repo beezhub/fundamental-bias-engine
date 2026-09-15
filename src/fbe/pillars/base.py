@@ -332,9 +332,15 @@ class BasePillar(ABC):
         Returns:
             ``{currency: {indicator: observations}}``, each inner sequence
             sorted by ``period`` ascending and reduced to one observation per
-            period, the newest vintage that existed at ``asof``. Currencies with
-            nothing usable map to an empty inner mapping rather than being
-            omitted.
+            period, the newest vintage that existed at ``asof``. Every currency
+            asked for is a key, and every key in `requires` is present under it,
+            with an empty sequence where that currency has nothing. A currency
+            with nothing at all therefore carries one empty sequence per
+            indicator rather than an empty mapping, so a consumer can index
+            without guarding every lookup, and so ``if not extracted[currency]``
+            is never the test for an unscorable currency: `component_freshness`
+            already distinguishes the two by treating a falsy sequence as an
+            absent component.
 
         The visibility rule, which every implementation must apply. An
         observation counts only if it had been published by ``asof``:
