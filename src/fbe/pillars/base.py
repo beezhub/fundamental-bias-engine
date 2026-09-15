@@ -487,10 +487,33 @@ class BasePillar(ABC):
             scored.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.base.BasePillar._normalise is scaffolded; "
-            "see docs/roadmap.md Phase 2"
-        )
+        weights = self.component_weights
+        if not weights:
+            raise ValueError(
+                f"{self.name} declares no component_weights, so there is "
+                "nothing to blend and nothing to fall through to"
+            )
+
+        currencies = list(components)
+        if len(weights) == 1:
+            (only,) = weights
+            return self.cross_sectional_z(
+                {currency: components[currency].get(only) for currency in currencies}
+            )
+
+        # Only the components carrying a sub-weight are z-scored. A pillar may
+        # emit others from `_transform` to fill `headline_component`, and those
+        # must not reach the arithmetic at any stage.
+        component_z = {
+            component: self.cross_sectional_z(
+                {
+                    currency: components[currency].get(component)
+                    for currency in currencies
+                }
+            )
+            for component in weights
+        }
+        return self.blend_components(component_z)
 
     @property
     def component_weights(self) -> Mapping[str, float]:
@@ -850,10 +873,69 @@ class BasePillar(ABC):
         throws away the best series in a pillar whenever one country is missing.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.base.BasePillar.blend_components is scaffolded; "
-            "see docs/roadmap.md Phase 2"
-        )
+        sub_weights = self.component_weights if weights is None else weights
+        declared = fsum(sub_weights.values())
+        if declared <= 0.0:
+            raise ValueError(
+                f"{self.name} was asked to blend against sub-weights summing "
+                f"to {declared}, which leaves no scale to judge coverage on"
+            )
+        factors = component_freshness or {}
+
+        currencies: list[str] = []
+        for component in sub_weights:
+            for currency in component_z.get(component, {}):
+                if currency not in currencies:
+                    currencies.append(currency)
+
+        blends: dict[str, float | None] = {}
+        for currency in currencies:
+            present: list[float] = []
+            discounted: list[tuple[float, float]] = []
+            for component, weight in sub_weights.items():
+                z = component_z.get(component, {}).get(currency)
+                if z is None:
+                    continue
+                present.append(weight)
+                phi = factors.get(component, {}).get(currency, 1.0)
+                discounted.append((weight * phi, z))
+
+            # The floor is judged on the sub-weight present, before the
+            # freshness factors, because it asks about substitution rather than
+            # about age. See `MIN_COMPONENT_WEIGHT`.
+            if fsum(present) / declared <= MIN_COMPONENT_WEIGHT:
+                blends[currency] = None
+                continue
+
+            denominator = fsum(weight for weight, _ in discounted)
+            if denominator <= 1e-12:
+                # Every component the currency has is past its allowance, so
+                # there is no weight left to renormalise over. That is an
+                # absence, not a reading of zero.
+                blends[currency] = None
+                continue
+
+            blends[currency] = (
+                fsum(weight * z for weight, z in discounted) / denominator
+            )
+
+        usable = [blend for blend in blends.values() if blend is not None]
+        if not usable:
+            return dict.fromkeys(blends)
+
+        mean = fsum(usable) / len(usable)
+        variance = fsum((blend - mean) ** 2 for blend in usable) / len(usable)
+        divisor, _path = self.blend_divisor(sqrt(variance))
+        if divisor < 1e-9:
+            return {
+                currency: (0.0 if blend is not None else None)
+                for currency, blend in blends.items()
+            }
+
+        return {
+            currency: ((blend - mean) / divisor if blend is not None else None)
+            for currency, blend in blends.items()
+        }
 
     # ------------------------------------------------------------------
     # Freshness and absence
@@ -1017,7 +1099,19 @@ class BasePillar(ABC):
             A neutral `PillarScore` carrying this pillar's configured weight.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.base.BasePillar.missing_score is scaffolded; "
-            "see docs/roadmap.md Phase 2"
+        age = (
+            self.config.max_staleness_days + 1
+            if staleness_days is None
+            else staleness_days
+        )
+        return PillarScore(
+            pillar=self.name,
+            currency=currency,
+            raw=None,
+            z=None,
+            score=0.0,
+            weight=self.weight,
+            asof=asof,
+            staleness_days=age,
+            notes=notes,
         )
