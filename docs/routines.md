@@ -201,6 +201,21 @@ days.** The ruling goes on the issue, an ADR goes in `docs/decisions/` when the
 decision is cross-cutting, and the issue moves to `status:ready`. "I would
 rather a human decided" is not a ruling.
 
+**The same test applies to anything a lane writes on a pull request.** A run
+that finds itself listing options for the owner, or writing "both yours", or
+"I have no preference strong enough to argue for", has found a decision and
+handed it over instead of taking it. Those phrases are the tell. Unless the
+question is one of the four kinds, the lane rules on it, says why, and names
+the cost of being wrong.
+
+Merge mechanics are the clearest case and the one that went wrong. Which merge
+button to press, whether a commit's closing keyword should be struck from a
+squash message, which tracking state an issue is left in: none of these is a
+fact only the owner holds, their own appetite, whether to build a thing, or
+what merges. "What merges" is the decision to merge this diff at all, not the
+bookkeeping that follows from it. A lane that cannot rule on its own
+bookkeeping should not be opening pull requests.
+
 This rule exists because it went wrong. #56, #58 and #59 each merged their work
 and then sat for two days on one question about a differencing convention,
 which nobody but the quant analyst and the data engineer could have answered.
@@ -248,6 +263,58 @@ not.
 - **Stop early when the bar is not met.** No qualifying issue, a failing check
   it cannot fix, a definition of ready not satisfied: say so in one paragraph
   and stop. Doing nothing correctly is a valid outcome.
+
+## Writing a pull request description
+
+The description is read by the owner, who merges it. They did not write the
+code, they are not a specialist in whatever it touches, and they are reading it
+between other work. A description that opens on the thing the lane found most
+interesting is a description they have to decode before they can act.
+
+So the body has a fixed shape, after the desk signature line:
+
+```
+**Maintenance desk**, 2026-09-15 07:22 SAST.
+
+## What you need to do
+
+Merge it normally. Nothing here needs a decision from you. CI is green.
+
+## What this changes, in plain words
+
+...
+
+---
+
+## Technical record
+
+...
+```
+
+**"What you need to do" comes first and is one or two sentences.** Usually it is
+"merge it normally". When it is not, it says exactly what is different and why.
+
+**"In plain words" means a reader outside the specialism can follow it.** Name
+the thing that was wrong and what it would have cost. A term the owner would
+have to look up is either replaced or explained where it first appears. The
+test is whether someone who has never opened the file can say what changed and
+why it mattered.
+
+**Everything else goes below the rule, under "Technical record".** Acceptance
+criteria, the estimator, the mutation table, the four checks: all of it stays,
+because it is the record and a reviewer wants it. It just stops being the first
+thing anyone reads. Nothing is deleted to meet this; it is moved.
+
+**Never head a section "For the reviewer" without saying who the reviewer is.**
+On this repository the owner merges, so an unaddressed note reads as though it
+is for them and describes work they cannot evaluate. Either address them, or
+say which desk it is for and why it is in a document they read.
+
+This is not a style preference. #118 opened on `ddof`, sample versus population
+estimators and `1 / sqrt(2)`, and closed with an unaddressed "For the reviewer"
+section. The owner could not tell whether the pull request was written for them
+or for another desk, which is the whole question a description exists to
+settle. The change underneath it was one comment and thirteen lines.
 
 ## Pull requests from a lane
 
