@@ -718,9 +718,23 @@ covered while the scorer gave it no weight.
 **Two levels.** Inside a pillar each component is aged against its own
 indicator's allowance by `BasePillar.component_freshness`, and a component built
 from two series takes the lower of their factors. The components enter the blend
-of section 2.3 at `u_j * phi_j`, so a GROWTH blend holding a 162-day-old GDP
-print at `phi = 0.600` and a 5-day-old retail sales print at `phi = 1.000` gives
-GDP 0.474 of the blend where the sub-weights alone would give it 0.600. The
+of section 2.3 at `u_j * phi_j`. Take a two-component blend carrying GROWTH's GDP
+and retail sales sub-weights, 0.30 and 0.20: a 162-day-old GDP print at
+`phi = 0.600` against a 5-day-old retail sales print at `phi = 1.000` gives GDP
+`0.180 / 0.380`, which is 0.474 of the blend where those two sub-weights alone
+would give it 0.600.
+
+That is an illustration of the arithmetic and not a state GROWTH can reach, and
+the difference is worth stating because the figure has been read as the latter.
+GROWTH carries four components, so the same GDP print at `phi = 0.600` alongside
+three fresh ones takes `0.180 / 0.880`, which is 0.205 against the 0.300 its
+sub-weight alone would give it. A GROWTH currency holding only GDP and retail
+sales holds exactly 0.50 of the sub-weight, which is `MIN_COMPONENT_WEIGHT`, so
+`BasePillar.blend_components` returns `None` for it and there is no blend to take
+a share of. `tests/test_pillar_component_floor.py` asserts that boundary, and it
+is the live CHF, AUD and NZD case on the registry as it stands.
+
+The
 pillar's own factor is the sub-weighted mean of its components' factors, from
 `BasePillar.pillar_freshness`, and that is what multiplies the pillar weight in
 section 4.2. A single pillar-level age cannot do this: GROWTH would report the

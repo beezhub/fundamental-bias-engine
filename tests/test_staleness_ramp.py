@@ -57,9 +57,6 @@ are the ones a reader can check by hand."""
 
 CONFIG = ScoringConfig()
 
-SCAFFOLD = re.compile(r"is scaffolded;")
-"""Marker that a callable is still a stub, as ``tests/test_stubs.py`` requires."""
-
 
 def _obs(
     indicator: str,
@@ -410,15 +407,47 @@ def test_the_aggregator_does_not_read_component_diagnostics() -> None:
     assert reads == []
 
 
-def test_the_component_discount_is_documented_where_the_blend_happens() -> None:
-    """`blend_components` takes the factors, so the discount cannot be skipped.
+def test_the_component_discount_is_applied_where_the_blend_happens() -> None:
+    """`blend_components` takes the factors and acts on them.
 
-    The body is still scaffolded, so the contract is the deliverable here: the
-    parameter has to exist for a caller to pass the factors at all.
+    The parameter has to exist for a caller to pass the factors at all, and the
+    blend has to read it or the ramp changes nothing downstream. Asserted as the
+    gap between a currency whose GDP z-score is 1.0 and one whose GDP z-score is
+    0.0, with every other component flat across the run: that gap is GDP's share
+    of the blend, so it falls when GDP is discounted and does not when it is
+    fresh. The run-local mean cancels in a difference.
+
+    The history fixes the divisor at 1.0 on purpose. Without it the divisor is
+    the run's own standard deviation, which scales with the blend and cancels
+    the discount exactly, so an implementation ignoring the factors would give
+    the same two numbers and the test would pass on nothing.
     """
-    parameters = inspect.signature(BasePillar.blend_components).parameters
-    assert "component_freshness" in parameters
-    assert SCAFFOLD.search(inspect.getsource(BasePillar.blend_components))
+    pillar = GrowthPillar(blend_sd_history=(1.0,) * 20)
+    currencies = ("USD", "EUR", "GBP", "JPY")
+    component_z: dict[str, dict[str, float | None]] = {
+        component: (
+            {"USD": 1.0, "EUR": 0.0, "GBP": 0.0, "JPY": 0.0}
+            if component == "gdp_yoy"
+            else dict.fromkeys(currencies, 0.0)
+        )
+        for component in pillar.component_weights
+    }
+
+    assert (
+        "component_freshness"
+        in inspect.signature(BasePillar.blend_components).parameters
+    )
+
+    fresh = pillar.blend_components(component_z)
+    halved = pillar.blend_components(
+        component_z,
+        component_freshness={"gdp_yoy": dict.fromkeys(currencies, 0.5)},
+    )
+
+    # Sub-weight 0.30 of a full 1.00 while fresh, then 0.15 of the 0.85 that
+    # survives the discount.
+    assert fresh["USD"] - fresh["EUR"] == pytest.approx(0.30)
+    assert halved["USD"] - halved["EUR"] == pytest.approx(0.17647058823529413)
 
 
 # ----------------------------------------------------------------------
