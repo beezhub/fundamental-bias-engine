@@ -60,6 +60,46 @@ The same rules apply to code comments, docstrings, docs, and commit messages.
 - Line length 88.
 - `src/fbe/types.py` is the shared vocabulary. Changing it is a breaking change: update every consumer in the same commit.
 
+## Commit identity
+
+Commits carry your own name and email, set in the repository's git
+configuration:
+
+```bash
+git config user.name "Your Name"
+git config user.email "your@email"
+```
+
+No model, agent or tool name appears in an author or committer field, the same
+rule `CLAUDE.md` applies to branches, code, comments and docs. Check the branch
+before pushing:
+
+```bash
+git log --format='%an <%ae>%n%cn <%ce>' origin/main..HEAD | sort -u
+```
+
+`tests/test_commit_identity.py` runs this check as part of `pytest`, so a wrong
+identity fails the four checks rather than reaching a reviewer. Both author and
+committer are checked: a rebase or an amend by someone other than the author
+changes one and not the other.
+
+If you find a commit already made under the wrong identity, correct the
+configuration and amend rather than reaching for `--author` or `GIT_AUTHOR_*`:
+
+```bash
+git config user.name "Your Name"
+git config user.email "your@email"
+git commit --amend --reset-author --no-edit
+```
+
+Those two rules read as though they conflict and do not. Commits are authored
+under the configured identity, and the configured identity is supposed to be
+yours. When it is not, the fix is to correct the configuration, not to override
+it per commit.
+
+An author field cannot be edited after it is shared without rewriting history,
+so this is worth the thirty seconds before pushing rather than after.
+
 ## Before you push
 
 All four must pass:
