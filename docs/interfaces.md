@@ -210,6 +210,14 @@ disagree, so cut conviction on anything with a JPY leg. Coverage below 100%
 means part of the pillar weight had no usable data. Neither sentence is printed
 by the command; they are here to read the table by.
 
+The figures above are illustrative and the layout is not. `tests/test_cli_score.py`
+holds the renderer to this block character for character, so a column width or a
+heading that drifts from it fails. The numbers do not reconcile: a composite is
+the effective-weighted mean of the pillar cells beside it, and under the weights
+in `ScoringConfig` USD's row gives +1.085 rather than the +1.42 printed. Do not
+build a numeric fixture on them. The worked example that does reconcile is
+section 7 of `docs/scoring-spec.md`.
+
 The pillar columns are the reason `--pillars` exists. A composite of +1.42 that
 rests on one dominant pillar and a composite of +1.42 where seven pillars agree
 are different trades, and the ranking alone cannot tell them apart.

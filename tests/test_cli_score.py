@@ -28,16 +28,30 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
+import re
 from collections.abc import Mapping, Sequence
 from datetime import date
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner, Result
 
-from fbe.cli import ABSENT_CELL, EXIT_OK, EXIT_UNUSABLE, PILLAR_ABBREVIATIONS, app
+from fbe.cli import (
+    ABSENT_CELL,
+    EXIT_OK,
+    EXIT_UNUSABLE,
+    PILLAR_ABBREVIATIONS,
+    _pillar_order,
+    _score_columns,
+    _score_line,
+    app,
+)
 from fbe.config import load_config
-from fbe.datasources.collect import CollectionResult
+from fbe.datasources import ALL_SOURCES
+from fbe.datasources.collect import CollectionResult, lookback_start
 from fbe.types import CurrencyScore, Frequency, Observation, PillarName, PillarScore
+from fbe.universe import G10
 
 runner = CliRunner()
 
@@ -81,8 +95,13 @@ def pillar(
     return PillarScore(
         pillar=name,
         currency=currency,
-        raw=None if absent else score,
-        z=None if absent else score,
+        # Three different numbers on purpose. ``raw`` is the headline reading
+        # in its own units and ``z`` is the cross-sectional standardisation;
+        # only ``score`` is on the band the table prints. Setting all three
+        # equal, as this helper first did, lets a renderer read any of the
+        # three and pass, and in a live run they are nowhere near each other.
+        raw=None if absent else score * 10.0 + 3.7,
+        z=None if absent else score * 2.0 - 0.9,
         score=score,
         weight=0.1,
         asof=ASOF,
@@ -173,9 +192,35 @@ def run(
     return runner.invoke(app, ["score", *args]), captured
 
 
+ROW = re.compile(rf"^ *(?:\d+|{re.escape(ABSENT_CELL)}) +[A-Z]{{3}} +[-+]")
+"""What a data row looks like: a rank or its absence marker, an ISO code, then
+a signed composite.
+
+Anchored on the layout rather than on the first three characters being digits.
+That earlier filter had a fault in each direction. It dropped any row whose
+rank is `ABSENT_CELL`, which is how this table marks a currency the scorer gave
+no rank, so a test asserting on such a row would silently see one row fewer
+than was printed. And it kept any note beginning with a number: a pillar
+writing ``notes="3 of 8 currencies had no pmi_composite"`` would appear as a
+phantom data row and quietly change what the cold-cache and filter tests
+measure. Every note reaching the terminal today happens to start with a pillar
+name, so the old filter was safe by accident rather than by construction."""
+
+
 def body(result: Result) -> list[str]:
-    """The table's data rows, without the header lines or the trailing blanks."""
-    return [line for line in result.stdout.splitlines() if line[:3].strip().isdigit()]
+    """The table's data rows, without the header lines, notes or blanks."""
+    return [line for line in result.stdout.splitlines() if ROW.match(line)]
+
+
+def cells(line: str) -> list[str]:
+    """One row's fields, in the published column order.
+
+    Reading a cell by position rather than asking whether a substring is
+    somewhere on the line. ``"0%" in row`` is also true of ``100%``, ``40%`` and
+    ``90%``, which is how an assertion about zero coverage passes against a
+    fully covered run.
+    """
+    return line.split()
 
 
 # --- the ranking ------------------------------------------------------------
@@ -243,8 +288,13 @@ def test_a_currency_outside_the_universe_is_refused(
     """
     result, _ = run(monkeypatch, UNIVERSE, "--currency", "ZAR")
 
-    assert result.exit_code != EXIT_OK
+    # Exit 2 specifically. ``docs/interfaces.md`` reserves 2 for the argument
+    # parser and 1 for "it ran, but the result should not be traded on", and a
+    # script chaining commands reads those two differently. Asserting only that
+    # it is not zero cannot tell a refusal from a bad run.
+    assert result.exit_code == 2
     assert "ZAR" in result.output
+    assert body(result) == []
 
 
 def test_the_currency_filter_is_case_insensitive(
@@ -276,25 +326,36 @@ def test_every_printed_number_is_the_field_it_came_from(
     A renderer deriving any of the four prints a different number here, and a
     self-consistent fixture could never tell the two apart.
     """
+    order = _pillar_order(load_config(None).scoring)
     scores = (
         currency_score(
             "USD",
             2.50,
             6,
-            dispersion=0.0,
+            dispersion=1.77,
             coverage=0.40,
-            pillars=full_pillars("USD", -1.00),
+            # A different value per pillar, so the cells are pinned against the
+            # headings they sit under as well as against their own fields.
+            pillars={
+                name: pillar(name, "USD", -1.00 + index * 0.25)
+                for index, name in enumerate(order)
+            },
         ),
     )
 
     result, _ = run(monkeypatch, scores, "--pillars")
 
-    row = body(result)[0]
-    assert row.split()[0] == "6"
-    assert "+2.50" in row
-    assert "0.00" in row
-    assert "40%" in row
-    assert row.count("-1.00") == len(PillarName)
+    got = cells(body(result)[0])
+    assert got[0] == "6"
+    assert got[1] == "USD"
+    assert got[2] == "+2.50"
+    # 1.77 rather than the 0.00 this fixture first used. Seven identical
+    # pillars have a true dispersion of exactly 0.00, so a renderer that
+    # recomputed the column printed the right answer and the assertion could
+    # not fail. That was the one leg of this test with no teeth.
+    assert got[3] == "1.77"
+    assert got[4] == "40%"
+    assert got[5:] == [f"{-1.00 + index * 0.25:+.2f}" for index in range(len(order))]
 
 
 def test_coverage_is_never_rounded_up(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -509,9 +570,14 @@ def test_the_asof_reaches_the_scorer_unchanged(
 
 def test_the_asof_defaults_to_today(monkeypatch: pytest.MonkeyPatch) -> None:
     """The converse, so the test above is not passing on a hardcoded date."""
+    before = date.today()
     _, captured = run(monkeypatch, UNIVERSE)
+    after = date.today()
 
-    assert captured["score"]["asof"] == date.today()  # type: ignore[index]
+    # Bracketed rather than compared to one reading of the clock, which would
+    # fail at a midnight rollover. ``tests/conftest.py`` opens by warning that
+    # a test must never depend on today.
+    assert captured["score"]["asof"] in {before, after}  # type: ignore[index]
 
 
 def test_the_header_ties_the_table_to_the_run_that_made_it(
@@ -630,8 +696,11 @@ def test_a_currency_with_no_coverage_still_prints(
     result, _ = run(monkeypatch, scores)
 
     rows = body(result)
-    assert [line.split()[1] for line in rows] == ["USD", "JPY"]
-    assert "0%" in rows[1]
+    assert [cells(line)[1] for line in rows] == ["USD", "JPY"]
+    # Read positionally. "0%" in the row is also true of 100%, 40% and 90%, so
+    # the substring form of this assertion passed against a fully covered run.
+    assert cells(rows[1])[4] == "0%"
+    assert cells(rows[1])[2] == "+0.00"
     assert "no data for JPY" in result.output
 
 
@@ -921,3 +990,316 @@ def test_the_row_order_follows_the_rank_column_it_prints(
     rows = body(result)
     assert [line.split()[0] for line in rows] == ["1", "2"]
     assert [line.split()[1] for line in rows] == ["USD", "EUR"]
+
+
+# --- the config wire, which nothing was driving ------------------------------
+
+INVERTED_WEIGHTS = """
+scoring:
+  weights:
+    monetary: 0.05
+    inflation: 0.05
+    growth: 0.05
+    employment: 0.05
+    external: 0.10
+    positioning: 0.30
+    risk: 0.40
+"""
+"""Weights that invert the declaration order, so heaviest-first and
+declaration order stop being the same sequence.
+
+Under the shipped weights they are identical, which is why the column-order
+test could not tell "sorted by configured weight" from "printed in the order
+`PillarName` declares". Every pillar is listed because the loader refuses a
+partial block."""
+
+
+def test_the_run_uses_the_config_it_was_given(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The whole ``--config`` wire, which no other test here exercises.
+
+    Five separate substitutions passed the suite before this: resolving the
+    config afresh instead of taking the one on the context, handing
+    `score_currencies` a default `ScoringConfig`, building the pillars from a
+    default, ordering the columns from a default, and computing the lookback
+    window from a default. A user's file could be ignored from end to end and
+    nothing failed, because every assertion read the same default config the
+    command did.
+
+    This drives a file whose weights invert the declaration order, so the
+    column order, the digest and the config that reached the scorer each say
+    something the defaults do not.
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text(INVERTED_WEIGHTS, encoding="utf-8")
+    expected = load_config(path)
+    assert expected.digest() != load_config(None).digest()
+
+    captured: dict[str, object] = {}
+
+    def fake_collect(config_in: object, **kwargs: object) -> CollectionResult:
+        captured["collect"] = kwargs
+        return CollectionResult(observations=(OBSERVATION,), outcomes=(), gaps={})
+
+    def fake_score_currencies(
+        observations_in: Sequence[Observation],
+        pillars_in: Sequence[object],
+        config_in: object,
+        asof_in: date,
+    ) -> Sequence[CurrencyScore]:
+        captured["scoring_config"] = config_in
+        return UNIVERSE
+
+    monkeypatch.setattr("fbe.cli.collect", fake_collect)
+    monkeypatch.setattr("fbe.cli.score_currencies", fake_score_currencies)
+    result = runner.invoke(
+        app, ["--config", str(path), "score", "--pillars", "--asof", "2026-09-09"]
+    )
+
+    assert result.exit_code == EXIT_OK
+    assert expected.digest() in result.stdout.splitlines()[0]
+    assert captured["scoring_config"] == expected.scoring
+    header = next(line for line in result.stdout.splitlines() if "Composite" in line)
+    assert header.split()[5] == PILLAR_ABBREVIATIONS[PillarName.RISK]
+    assert header.split()[-1] in {
+        PILLAR_ABBREVIATIONS[name]
+        for name in (
+            PillarName.MONETARY,
+            PillarName.INFLATION,
+            PillarName.GROWTH,
+            PillarName.EMPLOYMENT,
+        )
+    }
+
+
+def test_the_window_starts_a_lookback_before_the_run_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The collection window, which nothing was asserting.
+
+    Requesting the run date as the start would ask every source for one day and
+    leave every series too short to z-score, and the table would still print.
+    """
+    _, captured = run(monkeypatch, UNIVERSE, "--asof", "2026-09-09")
+
+    call = captured["collect"]
+    years = load_config(None).scoring.lookback_years
+    assert call["start"] == lookback_start(ASOF, years)  # type: ignore[index]
+    assert call["start"] < call["end"]  # type: ignore[index]
+    assert call["sources"] == ALL_SOURCES  # type: ignore[index]
+
+
+# --- one run, three renderings, compared against each other ------------------
+
+
+MIXED: tuple[CurrencyScore, ...] = (
+    currency_score("USD", 1.42, 1, dispersion=0.61, coverage=1.0),
+    currency_score("CHF", 0.77, 2, dispersion=0.44, coverage=0.865),
+)
+"""Values a one-decimal round would move, so a formatter rounding one rendering
+and not another shows up. 0.865 also sits where a round would give 87% and the
+floor gives 86%."""
+
+
+def test_the_table_the_json_and_the_csv_agree_cell_by_cell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The criterion, asserted the way it is written.
+
+    The two format tests above each compare their rendering to the fixture, and
+    the table side of them is one substring on one row. Comparing A to the
+    fixture and B to the fixture implies A equals B only if both comparisons
+    are complete, and the table's is not, so a formatter that rounds only the
+    table survives both. Two such mutations did: a one-decimal round on the
+    dispersion column, and one on the pillar cells.
+
+    The three renderings differ in representation on purpose, so each machine
+    value is formatted the way the table claims to format it before comparing.
+    """
+    order = _pillar_order(load_config(None).scoring)
+    scores = tuple(
+        currency_score(
+            row.currency,
+            row.composite,
+            row.rank,
+            dispersion=row.dispersion,
+            coverage=row.coverage,
+            pillars={
+                name: pillar(name, row.currency, 0.94 - index * 0.43)
+                for index, name in enumerate(order)
+            },
+        )
+        for row in MIXED
+    )
+
+    table, _ = run(monkeypatch, scores, "--pillars")
+    as_json, _ = run(monkeypatch, scores, "--pillars", "--format", "json")
+    as_csv, _ = run(monkeypatch, scores, "--pillars", "--format", "csv")
+
+    rows = body(table)
+    js = json.loads(as_json.stdout)["currencies"]
+    cs = list(csv.DictReader(io.StringIO(as_csv.stdout)))
+    assert len(rows) == len(js) == len(cs) == len(scores)
+
+    for line, j, c in zip(rows, js, cs, strict=True):
+        got = cells(line)
+        assert got[0] == str(j["rank"]) == c["rank"]
+        assert got[1] == j["currency"] == c["currency"]
+        assert got[2] == f"{j['composite']:+.2f}" == f"{float(c['composite']):+.2f}"
+        assert got[3] == f"{j['dispersion']:.2f}" == f"{float(c['dispersion']):.2f}"
+        assert got[4] == f"{math.floor(j['coverage'] * 100 + 1e-9)}%"
+        assert float(c["coverage"]) == pytest.approx(j["coverage"])
+        for index, name in enumerate(order):
+            value = j["pillars"][name.value]
+            assert got[5 + index] == f"{value:+.2f}"
+            assert float(c[name.value]) == pytest.approx(value)
+
+
+def test_the_json_envelope_carries_the_run_it_came_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The table's header, in the machine format, plus the warnings.
+
+    Nothing asserted these: blanking the digest, substituting today for the run
+    date, and dropping the key outright all passed.
+    """
+    reason = (
+        "risk raised RuntimeError: vix feed empty; every currency scored without it"
+    )
+    scores = (
+        currency_score(
+            "USD",
+            1.0,
+            1,
+            pillars={
+                PillarName.RISK: pillar(
+                    PillarName.RISK, "USD", 0.0, absent=True, notes=reason
+                )
+            },
+        ),
+    )
+
+    payload, _ = run(monkeypatch, scores, "--format", "json", "--asof", "2026-09-09")
+
+    envelope = json.loads(payload.stdout)
+    assert envelope["asof"] == "2026-09-09"
+    assert envelope["config_digest"] == load_config(None).digest()
+    assert envelope["warnings"] == [reason]
+
+
+def test_a_repeated_reason_is_printed_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed pillar records its reason on every currency's copy of the score.
+
+    Eight currencies means the same sentence eight times, which buries the
+    table it is meant to explain.
+    """
+    reason = "growth raised RuntimeError: no gdp; every currency scored without it"
+    scores = tuple(
+        currency_score(
+            code,
+            0.0,
+            rank,
+            pillars={
+                PillarName.GROWTH: pillar(
+                    PillarName.GROWTH, code, 0.0, absent=True, notes=reason
+                )
+            },
+        )
+        for rank, code in enumerate(("USD", "EUR", "GBP"), start=1)
+    )
+
+    result, _ = run(monkeypatch, scores)
+
+    assert result.output.count(reason) == 1
+
+
+# --- through the real scorer -------------------------------------------------
+
+
+def test_a_pillar_that_raises_reaches_the_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The criterion asks for a pillar double that raises, so here is one.
+
+    Every other test replaces `score_currencies`, which means nothing exercises
+    the wire from a pillar blowing up to a sentence under the table. The real
+    scorer runs here and only the pillars are replaced: it catches the
+    exception, gives every currency that pillar's absence, and records why.
+
+    This is also the shape of the tree today, where every pillar is scaffolded,
+    so it doubles as the test that the all-absent run reports itself.
+    """
+
+    class Exploding:
+        name = PillarName.RISK
+        requires: tuple[str, ...] = ()
+
+        def compute(
+            self, observations: object, currencies: object, asof: object
+        ) -> Mapping[str, PillarScore]:
+            raise RuntimeError("vix feed empty")
+
+    def fake_collect(_config: object, **kwargs: object) -> CollectionResult:
+        return CollectionResult(observations=(OBSERVATION,), outcomes=(), gaps={})
+
+    monkeypatch.setattr("fbe.cli.collect", fake_collect)
+    monkeypatch.setattr("fbe.cli.default_pillars", lambda _config: (Exploding(),))
+
+    result = runner.invoke(app, ["score", "--asof", "2026-09-09"])
+
+    assert "risk raised RuntimeError: vix feed empty" in result.stdout
+    assert result.stdout.count("vix feed empty") == 1
+    # Every currency scored on nothing, so the run is not tradeable.
+    assert result.exit_code == EXIT_UNUSABLE
+    assert len(body(result)) == len(G10)
+
+
+# --- the published example ---------------------------------------------------
+
+
+def test_the_published_console_example_is_what_the_command_prints() -> None:
+    """``docs/interfaces.md`` publishes a table, and it has to be this table.
+
+    Nothing pinned the layout: widening the coverage or composite field,
+    dropping the sign from a pillar cell, and spelling RISK's heading ``Ris``
+    all passed the suite, so the document and the renderer could drift apart
+    again on the next tweak and only a person reading both would notice.
+
+    The rows are rebuilt from the example's own cells rather than held as a
+    second copy of the table, so this fails only when the two genuinely
+    disagree, and names the line that does.
+
+    Layout only. The example's composites are illustrative and do not reproduce
+    from its own pillar cells under the shipped weights, which the document now
+    says; a numeric fixture belongs in the scorer's tests, not here.
+
+    The column order follows `ScoringConfig.weights`, so changing a weight
+    fails this test. That is correct rather than flaky: the published example
+    would be stale.
+    """
+    text = Path("docs/interfaces.md").read_text(encoding="utf-8")
+    block = text.split("$ fbe score --pillars\n")[1].split("```")[0].splitlines()
+    order = _pillar_order(load_config(None).scoring)
+
+    published_header = next(line for line in block if "Composite" in line)
+    assert _score_columns(order) == published_header
+
+    published_rows = [line for line in block if ROW.match(line)]
+    assert len(published_rows) == len(G10)
+    for line in published_rows:
+        got = cells(line)
+        rebuilt = currency_score(
+            got[1],
+            float(got[2]),
+            int(got[0]),
+            dispersion=float(got[3]),
+            coverage=int(got[4].rstrip("%")) / 100,
+            pillars={
+                name: pillar(name, got[1], float(got[5 + index]))
+                for index, name in enumerate(order)
+            },
+        )
+        assert _score_line(rebuilt, order) == line

@@ -1341,17 +1341,18 @@ def _pillar_order(config: config_module.ScoringConfig) -> tuple[PillarName, ...]
         Every pillar, sorted by weight descending. Ties keep `PillarName`'s own
         declaration order, which runs from the fastest and heaviest driver to
         the slowest, so the four pillars sharing 0.10 stay in the order the
-        published example prints them rather than in whichever order the sort
-        happened to leave them.
+        published example prints them. That comes from `sorted` being stable
+        over a list already in declaration order, not from a second sort key: a
+        tiebreak on the index was written here first and could not change the
+        result for any weight map, which is a line that reads as load-bearing
+        and is not.
+
+        A weight missing from the map raises rather than parking that pillar
+        last. `fbe.scoring.score_currencies` would raise on the same lookup, so
+        a quiet default here would only move where the operator meets it.
 
     """
-    declared = list(PillarName)
-    return tuple(
-        sorted(
-            declared,
-            key=lambda name: (-config.weights[name], declared.index(name)),
-        )
-    )
+    return tuple(sorted(PillarName, key=lambda name: -config.weights[name]))
 
 
 def _pillar_cell(score: CurrencyScore, name: PillarName) -> float | None:
