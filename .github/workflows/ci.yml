@@ -21,6 +21,11 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
+        with:
+          # The commit-identity check reads `origin/main..HEAD`, and the default
+          # shallow clone has no `main` to compare against, so it would skip
+          # rather than run. See tests/test_commit_identity.py.
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
