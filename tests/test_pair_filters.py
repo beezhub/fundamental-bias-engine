@@ -71,6 +71,10 @@ def bias(
     conviction: Conviction = Conviction.HIGH,
     spread: float = 1.60,
     agreement: float = 0.82,
+    pair: str = "EURUSD",
+    base: str = "EUR",
+    quote: str = "USD",
+    asof: date = ASOF,
 ) -> PairBias:
     """An unfiltered EURUSD bias, as `build_pair_biases` leaves it.
 
@@ -78,13 +82,13 @@ def bias(
     shape that function produces: it sets neither, deliberately.
     """
     return PairBias(
-        pair="EURUSD",
-        base="EUR",
-        quote="USD",
+        pair=pair,
+        base=base,
+        quote=quote,
         spread=spread,
         direction=direction,
         conviction=conviction,
-        asof=ASOF,
+        asof=asof,
         base_score=0.80,
         quote_score=-0.80,
         agreement=agreement,
@@ -104,12 +108,17 @@ def guard(
     The protocol requires a guard reporting an unknown reason to return an
     empty ``blockers``, so the two mappings are kept apart rather than one
     overriding the other, and a currency in neither is a checked, quiet day.
+
+    The date is ignored here rather than asserted. An assertion inside a double
+    reads as though it pins the date wire and does not: every date in this file
+    was `ASOF`, so passing the bias's own ``asof`` instead of the run's
+    satisfied it. `test_the_guard_is_asked_about_the_runs_date_not_the_bias_s`
+    pins that properly, on a bias stamped with a different date.
     """
     found = found or {}
     unknown = unknown or {}
 
     def check(currency: str, when: date) -> tuple[Sequence[str], str | None]:
-        assert when == ASOF
         if currency in unknown:
             return (), unknown[currency]
         return tuple(found.get(currency, ())), None
@@ -117,21 +126,36 @@ def guard(
     return check
 
 
-def kinds(result: PairBias) -> list[str]:
-    """Map each emitted blocker back to the `BLOCKERS` kind it belongs to.
+PAYLOAD_KINDS = ("event" + UNKNOWN_SUFFIX, "event")
+"""The two kinds emitted as ``"<kind>: <reason>"`` rather than verbatim.
 
-    Two kinds carry a payload rather than being emitted verbatim: ``event``
-    arrives as ``"event: <reason>"`` and ``event:unknown`` as
-    ``"event:unknown: <reason>"``. Longest prefix wins, because ``"event"`` is
-    itself a prefix of ``"event:unknown"`` and matching the short one first
-    would file every unknown as a block.
+Longest first, because ``"event"`` prefixes ``"event:unknown"`` and taking the
+shorter one first would file every unknown as a block."""
+
+
+def kind_of(entry: str) -> str:
+    """Return the `BLOCKERS` kind an emitted string belongs to, or fail.
+
+    Exact membership for the six verbatim kinds, and for the other two an exact
+    ``"<kind>: "`` prefix with a non-empty reason after it.
+
+    Deliberately stricter than "shares a prefix with some key", which is what
+    this helper first did. Under that rule ``"event:unknownish"`` mapped to
+    ``event:unknown`` and passed, so a string no renderer knows and no document
+    describes could be emitted without a test noticing.
     """
-    mapped: list[str] = []
-    for entry in result.blockers:
-        candidates = [key for key in BLOCKERS if entry == key or entry.startswith(key)]
-        assert candidates, f"{entry!r} matches no kind in BLOCKERS"
-        mapped.append(max(candidates, key=len))
-    return mapped
+    if entry in BLOCKERS:
+        return entry
+    for kind in PAYLOAD_KINDS:
+        prefix = kind + ": "
+        if entry.startswith(prefix) and entry[len(prefix) :].strip():
+            return kind
+    raise AssertionError(f"{entry!r} is not a kind BLOCKERS declares")
+
+
+def kinds(result: PairBias) -> list[str]:
+    """Every emitted blocker mapped back to its kind, in emission order."""
+    return [kind_of(entry) for entry in result.blockers]
 
 
 # --- the vocabulary ---------------------------------------------------------
@@ -252,8 +276,12 @@ def test_the_coverage_threshold_is_read_from_config() -> None:
     The same pair passes under the default and blocks under a stricter config,
     so an implementation ignoring the setting fails on the second call.
     """
-    strict = Config(scoring=ScoringConfig(min_coverage=0.90))
-    thin = legs(base=1.0, quote=0.80)
+    # 0.75 rather than 0.90: `Config.validate` requires
+    # ``min_coverage <= coverage_demotion`` and the latter is 0.80, so a
+    # stricter figure would be a config that could not be loaded. Nothing here
+    # validates, so the test would have passed on an impossible setting.
+    strict = Config(scoring=ScoringConfig(min_coverage=0.75))
+    thin = legs(base=1.0, quote=0.70)
 
     assert (
         "coverage"
@@ -578,7 +606,10 @@ def test_three_conditions_produce_three_blockers() -> None:
         cost_ratio=0.30,
     )
 
-    assert {"no_edge", "coverage", "cost"} <= set(result.blockers)
+    # Equality rather than a subset, and sorted so the emission order is not
+    # pinned here: a subset assertion cannot see a reason emitted twice, which
+    # would print the same line twice on a dashboard.
+    assert sorted(result.blockers) == ["cost", "coverage", "no_edge"]
     assert result.tradeable is False
 
 
@@ -811,3 +842,402 @@ def test_a_cost_ratio_of_zero_is_a_reading_and_not_an_absence() -> None:
 
     assert result.blockers == ()
     assert result.tradeable is True
+
+
+# --- the branches one fixture could not reach -------------------------------
+
+
+SCENARIOS: tuple[tuple[str, dict[str, object]], ...] = (
+    ("clean", {}),
+    ("neutral direction", {"view": {"direction": Direction.NEUTRAL}}),
+    ("no conviction", {"view": {"conviction": Conviction.NONE}}),
+    ("thin coverage", {"coverage": (1.0, 0.20)}),
+    ("no coverage", {"coverage": (0.0, 1.0)}),
+    ("costly", {"cost": 0.40}),
+    ("no cost input", {"cost": None}),
+    ("no guard", {"no_guard": True}),
+    ("event on base", {"found": {"EUR": ("EUR CPI at 09:00 UTC",)}}),
+    ("event on quote", {"found": {"USD": ("USD FOMC at 18:00 UTC",)}}),
+    ("unknown base", {"unknown": {"EUR": "calendar fetch failed"}}),
+    ("unknown both", {"unknown": {"EUR": "fetch failed", "USD": "fetch failed"}}),
+    (
+        "everything at once",
+        {
+            "view": {"direction": Direction.NEUTRAL, "conviction": Conviction.NONE},
+            "coverage": (0.0, 0.10),
+            "cost": 0.99,
+            "found": {"EUR": ("EUR CPI at 09:00 UTC",)},
+        },
+    ),
+)
+"""One entry per branch of the function, which one fixture cannot reach.
+
+The tests that use this were each written against a single scenario first, and
+each of them missed mutations in the branches that scenario did not enter: a
+``no_edge`` path that zeroed the spread, a guard-is-None path that capped the
+conviction. A table is the only way to say "in every case" and mean it."""
+
+
+def apply_scenario(setup: dict[str, object]) -> tuple[PairBias, PairBias]:
+    """Run one scenario, returning the bias before and after."""
+    view = dict(setup.get("view") or {})
+    coverage = setup.get("coverage") or (1.0, 1.0)
+    before = bias(**view)  # type: ignore[arg-type]
+    guard_arg = (
+        None
+        if setup.get("no_guard")
+        else guard(
+            found=setup.get("found"),  # type: ignore[arg-type]
+            unknown=setup.get("unknown"),  # type: ignore[arg-type]
+        )
+    )
+    after = apply_filters(
+        before,
+        legs(*coverage),  # type: ignore[misc]
+        CONFIG,
+        ASOF,
+        calendar_guard=guard_arg,
+        cost_ratio=setup.get("cost", 0.01),  # type: ignore[arg-type]
+    )
+    return before, after
+
+
+@pytest.mark.parametrize("label,setup", SCENARIOS, ids=[s[0] for s in SCENARIOS])
+def test_the_view_survives_in_every_branch(
+    label: str, setup: dict[str, object]
+) -> None:
+    """Criterion 10 says "in every case", and one case does not establish that.
+
+    Four wrong implementations survived the single-scenario version of this
+    test, each editing the view inside a branch that scenario never entered:
+    the ``no_edge`` path zeroing the spread, the same path zeroing the
+    agreement, and the guard-is-None path zeroing the agreement or capping the
+    conviction. Every one of them is the "tidy up the blocked row" defect this
+    assertion exists to prevent, hiding in a branch.
+    """
+    before, after = apply_scenario(setup)
+
+    assert after.direction is before.direction
+    assert after.spread == before.spread
+    assert after.conviction is before.conviction
+    assert after.agreement == before.agreement
+    assert after.base_score == before.base_score
+    assert after.quote_score == before.quote_score
+    assert after.pair == before.pair
+    assert after.asof == before.asof
+
+
+@pytest.mark.parametrize("label,setup", SCENARIOS, ids=[s[0] for s in SCENARIOS])
+def test_every_emitted_string_is_a_declared_kind_in_every_branch(
+    label: str, setup: dict[str, object]
+) -> None:
+    """Criterion 1, over every branch rather than one scenario.
+
+    A string that is not a kind `BLOCKERS` declares is a blocker no document
+    describes and no renderer knows to show. `kind_of` refuses anything that is
+    not an exact member or an exact ``"<kind>: <reason>"``, which is what makes
+    this bite: the looser "shares a prefix" rule accepted
+    ``"event:unknownish"``.
+
+    ``tradeable`` is recomputed from the enumeration rather than asserted as a
+    literal, so the verdict and the reasons cannot drift apart.
+    """
+    _, after = apply_scenario(setup)
+
+    emitted = kinds(after)
+    assert len(emitted) == len(after.blockers)
+    assert after.tradeable is not any(BLOCKERS[kind] for kind in emitted)
+
+
+# --- order, which a reader depends on ---------------------------------------
+
+
+def test_the_base_leg_s_events_are_listed_before_the_quote_leg_s() -> None:
+    """Documented order, and a reader uses it.
+
+    The guard orders one leg's releases by time and a trader reads the list top
+    to bottom to decide how long to wait. Reversing the entries, or sorting
+    them by severity so unknown legs come first, both survive a test that only
+    asserts membership.
+
+    The base leg blocks and the quote leg is unknown, on purpose: with the
+    unknown on the base leg, leg order and severity order coincide and a
+    severity sort is indistinguishable from the documented one.
+    """
+    result = apply_filters(
+        bias(),
+        legs(),
+        CONFIG,
+        ASOF,
+        calendar_guard=guard(
+            found={"EUR": ("EUR CPI at 09:00 UTC", "EUR ECB at 12:45 UTC")},
+            unknown={"USD": "calendar fetch failed"},
+        ),
+        cost_ratio=0.01,
+    )
+
+    assert result.blockers == (
+        "event: EUR CPI at 09:00 UTC",
+        "event: EUR ECB at 12:45 UTC",
+        "event" + UNKNOWN_SUFFIX + ": calendar fetch failed",
+    )
+
+
+def test_both_legs_unknown_are_recorded_separately() -> None:
+    """Two legs the guard could not reach is two facts, not one.
+
+    Deduplicating the marker across legs survives every other test here,
+    because no other fixture has both legs unknown, and it would tell a reader
+    that one currency's calendar was checked when neither was.
+    """
+    result = apply_filters(
+        bias(),
+        legs(),
+        CONFIG,
+        ASOF,
+        calendar_guard=guard(
+            unknown={"EUR": "EUR fetch failed", "USD": "USD fetch failed"}
+        ),
+        cost_ratio=0.01,
+    )
+
+    marker = "event" + UNKNOWN_SUFFIX
+    assert result.blockers == (
+        f"{marker}: EUR fetch failed",
+        f"{marker}: USD fetch failed",
+    )
+    assert result.tradeable is True
+
+
+# --- the other twenty-seven pairs -------------------------------------------
+
+
+def test_the_filters_read_the_pair_s_own_legs() -> None:
+    """Every other fixture here is EURUSD, and there are 28 pairs.
+
+    Hardcoding either the score lookups or the calendar loop to EUR and USD
+    passes every one of them while being wrong on the other 27. That is the
+    pair-convention rule applied to the filters rather than to a pair string.
+    """
+    asked: list[str] = []
+
+    def recording(currency: str, when: date) -> tuple[Sequence[str], str | None]:
+        asked.append(currency)
+        return (("AUD RBA at 04:30 UTC",), None) if currency == "AUD" else ((), None)
+
+    result = apply_filters(
+        bias(pair="AUDJPY", base="AUD", quote="JPY"),
+        {"AUD": score("AUD", 1.0), "JPY": score("JPY", 0.10)},
+        CONFIG,
+        ASOF,
+        calendar_guard=recording,
+        cost_ratio=0.01,
+    )
+
+    assert asked == ["AUD", "JPY"]
+    assert "event: AUD RBA at 04:30 UTC" in result.blockers
+    assert "coverage" in result.blockers
+    assert result.tradeable is False
+
+
+def test_the_guard_is_asked_about_the_runs_date_not_the_bias_s() -> None:
+    """The run's ``asof`` reaches the guard, not the date stamped on the bias.
+
+    Every fixture in this file used one date for the run, the bias and the
+    scores, so passing ``bias.asof`` instead satisfied the assertion inside the
+    double and looked tested. The two are separated here, which is the only
+    thing that tells them apart.
+    """
+    stale = date(2020, 1, 2)
+    asked: list[tuple[str, date]] = []
+
+    def recording(currency: str, when: date) -> tuple[Sequence[str], str | None]:
+        asked.append((currency, when))
+        return (), None
+
+    apply_filters(
+        bias(asof=stale),
+        legs(),
+        CONFIG,
+        ASOF,
+        calendar_guard=recording,
+        cost_ratio=0.01,
+    )
+
+    assert asked == [("EUR", ASOF), ("USD", ASOF)]
+
+
+# --- boundaries and refusals nothing else reaches ---------------------------
+
+
+def test_a_conviction_of_low_is_still_something_to_act_on() -> None:
+    """``no_edge`` is NEUTRAL or NONE, and LOW is neither.
+
+    Widening it to include LOW is a plausible misreading of the spec and
+    survives every other test here, because nothing else passes LOW. It is also
+    the most destructive of the mutations found: LOW is exactly what
+    `conviction_for` produces after the 24-hour event cap, so this would
+    silently delete every capped pair and print a quiet board.
+    """
+    result = apply_filters(
+        bias(conviction=Conviction.LOW),
+        legs(),
+        CONFIG,
+        ASOF,
+        calendar_guard=guard(),
+        cost_ratio=0.01,
+    )
+
+    assert result.blockers == ()
+    assert result.tradeable is True
+
+
+def test_a_thin_but_real_coverage_is_not_reported_as_no_coverage() -> None:
+    """``no_coverage`` means there is no composite, not a bad one.
+
+    Every other fixture uses exactly 0.0 or a comfortably positive figure, so
+    widening the test to anything under 5% survives, and a leg holding 4% of
+    pillar weight would be reported as having no composite when it has a poor
+    one. The two markers call for different responses.
+    """
+    result = apply_filters(
+        bias(),
+        legs(base=1.0, quote=0.04),
+        CONFIG,
+        ASOF,
+        calendar_guard=guard(),
+        cost_ratio=0.01,
+    )
+
+    assert "coverage" in result.blockers
+    assert "no_coverage" not in result.blockers
+
+
+def test_a_negative_coverage_reads_as_no_data() -> None:
+    """The reason the comparison is ``<=`` and not ``==``.
+
+    Coverage is a sum of non-negative weights, so a negative is unreachable
+    today and would be a defect upstream. It reads as no data rather than as
+    data, which is the safe direction, and the behaviour was held in place by a
+    code comment alone.
+    """
+    result = apply_filters(
+        bias(),
+        legs(base=-0.30),
+        CONFIG,
+        ASOF,
+        calendar_guard=guard(),
+        cost_ratio=0.01,
+    )
+
+    assert "no_coverage" in result.blockers
+    assert result.tradeable is False
+
+
+def test_a_guard_that_raises_is_not_turned_into_a_verdict() -> None:
+    """A guard blowing up is a defect in the guard, not a quiet day.
+
+    The protocol already has ``unknown_reason`` for "could not check", so an
+    exception means something the guard did not anticipate. Catching it and
+    returning a clear day, or an unknown marker, manufactures a verdict nobody
+    computed; both survive every other test here.
+    """
+
+    def exploding(currency: str, when: date) -> tuple[Sequence[str], str | None]:
+        raise RuntimeError("calendar backend is down")
+
+    with pytest.raises(RuntimeError, match="calendar backend is down"):
+        apply_filters(
+            bias(), legs(), CONFIG, ASOF, calendar_guard=exploding, cost_ratio=0.01
+        )
+
+
+# --- what the emitted sequence itself says ----------------------------------
+
+
+def test_the_blockers_read_in_the_order_the_checks_ran() -> None:
+    """Emission order, pinned on a fixture that sorting would reorder.
+
+    `test_the_base_leg_s_events_are_listed_before_the_quote_leg_s` pins leg
+    order, but its reasons happen to be in alphabetical order already, so
+    sorting the entries before emitting them produces the same tuple and
+    passes. This fixture puts the base leg's later release first and names it
+    so that alphabetical order and emission order disagree in two places at
+    once: within the base leg, and across the two legs.
+    """
+    result = apply_filters(
+        bias(),
+        legs(),
+        CONFIG,
+        ASOF,
+        calendar_guard=guard(
+            found={
+                "EUR": ("EUR ZEW at 09:00 UTC", "EUR CPI at 12:45 UTC"),
+                "USD": ("USD ADP at 12:15 UTC",),
+            }
+        ),
+        cost_ratio=0.01,
+    )
+
+    assert result.blockers == (
+        "event: EUR ZEW at 09:00 UTC",
+        "event: EUR CPI at 12:45 UTC",
+        "event: USD ADP at 12:15 UTC",
+    )
+    assert result.blockers != tuple(sorted(result.blockers))
+
+
+def test_one_release_naming_both_legs_is_recorded_on_both() -> None:
+    """Two identical strings, because they are two separate facts.
+
+    A release the guard attaches to both currencies, a joint statement or a
+    figure that moves the pair from each side, produces the same reason text
+    twice. Collapsing the two into one entry, which any deduplication of
+    ``blockers`` does, would tell a reader only one leg was affected and leave
+    the other looking clear.
+    """
+    reason = "G20 communique at 14:00 UTC"
+    result = apply_filters(
+        bias(),
+        legs(),
+        CONFIG,
+        ASOF,
+        calendar_guard=guard(found={"EUR": (reason,), "USD": (reason,)}),
+        cost_ratio=0.01,
+    )
+
+    assert result.blockers == (f"event: {reason}", f"event: {reason}")
+    assert result.tradeable is False
+
+
+def test_the_coverage_refusal_names_the_leg_that_is_unusable() -> None:
+    """The message is the whole value of the refusal.
+
+    Every check in this function is symmetric across the legs, so reading the
+    two scores in the wrong order changes nothing a verdict test can see. It
+    changes this message, which is what someone gets handed when the run stops,
+    and a message naming the healthy leg sends them to the wrong data source.
+    """
+    with pytest.raises(ValueError) as base_leg:
+        apply_filters(
+            bias(),
+            legs(base=float("nan")),
+            CONFIG,
+            ASOF,
+            calendar_guard=guard(),
+            cost_ratio=0.01,
+        )
+    assert "EUR" in str(base_leg.value)
+    assert "USD" not in str(base_leg.value)
+
+    with pytest.raises(ValueError) as quote_leg:
+        apply_filters(
+            bias(),
+            legs(quote=float("nan")),
+            CONFIG,
+            ASOF,
+            calendar_guard=guard(),
+            cost_ratio=0.01,
+        )
+    assert "USD" in str(quote_leg.value)
+    assert "EUR" not in str(quote_leg.value)
