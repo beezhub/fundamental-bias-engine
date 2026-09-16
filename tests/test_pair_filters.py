@@ -216,8 +216,8 @@ def test_the_worse_covered_leg_decides_the_coverage_blocker() -> None:
     """A pair is only as well measured as its worse-measured side.
 
     The quote leg is below the threshold and the base leg is comfortably above
-    it, so an implementation reading the base leg, or averaging the two, sees
-    0.95 or 0.775 and lets this through.
+    it, so an implementation reading the base leg sees 0.95 and one averaging
+    the two sees 0.77, and both let this through.
     """
     result = apply_filters(
         bias(),
@@ -720,3 +720,94 @@ def test_filtering_twice_says_the_same_thing_as_filtering_once() -> None:
 
     assert twice.blockers == once.blockers
     assert twice.tradeable is once.tradeable
+
+
+# --- inputs no comparison here can judge ------------------------------------
+
+
+def test_a_guard_that_answers_both_ways_at_once_is_refused() -> None:
+    """A guard cannot say it could not check and also name what it found.
+
+    `CalendarGuard` promises the two fields are never in tension about whether
+    a currency is clear, and this is the check that hard-blocks a pair. The
+    first implementation trusted that promise and dropped the blockers, so an
+    evening where the guard positively identified an FOMC release inside the
+    window came back tradeable, carrying a note saying the calendar was
+    uncertain. A row that says "not sure" reads as one that was handled.
+
+    The guard is this codebase's own, so a breach is a defect to fix rather
+    than a condition to tolerate, and it raises here where the message can name
+    the leg and what was discarded.
+    """
+
+    def contradictory(currency: str, when: date) -> tuple[Sequence[str], str | None]:
+        if currency == "USD":
+            return ("USD FOMC at 18:00 UTC",), "cached week ends before asof"
+        return (), None
+
+    with pytest.raises(ValueError, match="USD FOMC at 18:00 UTC"):
+        apply_filters(
+            bias(),
+            legs(),
+            CONFIG,
+            ASOF,
+            calendar_guard=contradictory,
+            cost_ratio=0.01,
+        )
+
+
+@pytest.mark.parametrize("unusable", [float("nan"), float("inf"), -5.0])
+def test_a_cost_ratio_no_threshold_can_judge_is_refused(unusable: float) -> None:
+    """Every filter here is a ``<`` or a ``>``, and NaN loses all of them.
+
+    An unusable cost ratio passed every comparison and the pair came back with
+    ``tradeable`` True and an empty ``blockers``, which is the one state this
+    function reserves for "every check ran and every check passed". A NaN cost
+    ratio printed exactly like a pair verified as cheap.
+
+    ``None`` and only ``None`` says a value was not supplied. A negative is
+    included because a dealing cost cannot be one, and whoever writes the
+    producer has both spellings available.
+    """
+    with pytest.raises(ValueError, match="cost_ratio"):
+        apply_filters(
+            bias(),
+            legs(),
+            CONFIG,
+            ASOF,
+            calendar_guard=guard(),
+            cost_ratio=unusable,
+        )
+
+
+def test_a_coverage_no_threshold_can_judge_is_refused() -> None:
+    """The same hole on the other input, and it is reachable.
+
+    `Config.validate` rejects a negative weight with ``weight < 0.0``, which is
+    False for NaN, so a NaN weight passes validation and reaches `coverage` as
+    a sum. Fixing the cost ratio and leaving this would close half a hole.
+    """
+    with pytest.raises(ValueError, match="coverage"):
+        apply_filters(
+            bias(),
+            legs(base=float("nan")),
+            CONFIG,
+            ASOF,
+            calendar_guard=guard(),
+            cost_ratio=0.01,
+        )
+
+
+def test_a_cost_ratio_of_zero_is_a_reading_and_not_an_absence() -> None:
+    """Zero is free, not unsupplied, and the two must not collapse.
+
+    ``if not cost_ratio`` would read 0.0 as missing and print
+    ``cost:unchecked`` on a pair whose cost was measured and found to be
+    nothing.
+    """
+    result = apply_filters(
+        bias(), legs(), CONFIG, ASOF, calendar_guard=guard(), cost_ratio=0.0
+    )
+
+    assert result.blockers == ()
+    assert result.tradeable is True
