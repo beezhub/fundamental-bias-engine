@@ -117,6 +117,7 @@ from fbe.universe import G10
 
 __all__ = [
     "FILE_GLOB",
+    "FILE_SUFFIX",
     "GLOBAL_CURRENCY",
     "GUIDANCE_TONE_KEY",
     "NEAR_MISS_SUFFIXES",
@@ -127,13 +128,23 @@ __all__ = [
 ]
 
 
-FILE_GLOB = "*.yaml"
-"""Read in sorted filename order; later files override earlier ones."""
+FILE_SUFFIX = ".yaml"
+"""The one suffix that is read, compared exactly. See `FILE_GLOB`."""
+
+FILE_GLOB = f"*{FILE_SUFFIX}"
+"""Read in sorted filename order; later files override earlier ones.
+
+The glob narrows the directory listing; `FILE_SUFFIX` decides. ``Path.glob``
+matches case-insensitively on Windows and case-sensitively elsewhere, so on
+the glob alone ``PMI.YAML`` would be read on the operator's machine and
+silently skipped in CI, and the two would disagree about which observations
+exist. The exact suffix comparison in ``_files`` makes the rule the same
+everywhere: ``.yaml``, lower case, or refused."""
 
 NEAR_MISS_SUFFIXES: frozenset[str] = frozenset({".yml", ".yaml"})
 """Suffixes that mean "this was meant to be read" and that `FILE_GLOB` misses.
 
-The glob is ``*.yaml`` and is case-sensitive, so ``pmi.yml`` and ``pmi.YAML``
+Only ``*.yaml``, lower case, is read, so ``pmi.yml`` and ``pmi.YAML``
 are both read by nobody and noticed by nobody: the observations in them would
 simply not exist, and the gap would surface as low coverage weeks later with
 nothing pointing at the cause. Both are refused on sight, which costs an
@@ -532,7 +543,9 @@ class ManualSource(BaseDataSource):
                 "empty one: create the directory, or point DataConfig."
                 "manual_dir somewhere else."
             )
-        readable = sorted(directory.glob(FILE_GLOB))
+        readable = sorted(
+            path for path in directory.glob(FILE_GLOB) if path.suffix == FILE_SUFFIX
+        )
         near_misses = sorted(
             path.name
             for path in directory.iterdir()
@@ -543,7 +556,7 @@ class ManualSource(BaseDataSource):
         if near_misses:
             raise SourceError(
                 f"{', '.join(near_misses)} would be read by nobody: this "
-                f"source globs {FILE_GLOB!r}, case-sensitively. Rename rather "
+                f"source reads {FILE_GLOB!r}, lower case only. Rename rather "
                 "than leaving the observations in them silently out of every "
                 "run."
             )
