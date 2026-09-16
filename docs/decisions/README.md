@@ -17,3 +17,4 @@ often more useful later than reasoning that was right.
 | [0002](0002-representing-not-known.md) | Absence is represented explicitly, never as a passing value | Accepted |
 | [0003](0003-publish-effective-loadings-rather-than-remove-real-policy-rate.md) | Publish the effective loadings rather than remove `real_policy_rate` | Accepted |
 | [0004](0004-yield-change-window-and-observation-unit.md) | The yield change window ends at the latest session, and an observation carries its indicator's unit | Accepted |
+| [0008](0008-a-thin-blend-has-no-cross-section.md) | Fewer than three currencies above the component floor means the pillar has no cross-section | Accepted |
