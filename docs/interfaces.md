@@ -194,7 +194,7 @@ relative to the others.
 $ fbe score --pillars
 asof 2026-09-09   config 8f2c1a9d4b70
 
-  #  CCY  Composite  Disp  Cov    Mon    Inf    Gro    Emp    Ext    Pos    Rsk
+  #  CCY  Composite  Disp   Cov    Mon    Inf    Gro    Emp    Ext    Pos    Rsk
   1  USD      +1.42  0.61  100%  +1.90  +0.80  +1.10  +0.60  -0.40  +1.20  +0.90
   2  CHF      +0.77  0.44  100%  +0.30  +1.10  +0.20  +0.50  +1.40  +0.60  +1.10
   3  GBP      +0.31  1.02   86%  +1.20  +1.40  -0.60  -0.30  -1.10  +0.40  +0.20

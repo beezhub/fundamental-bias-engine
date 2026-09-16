@@ -71,6 +71,8 @@ script or a cron job without parsing output:
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import math
@@ -96,7 +98,10 @@ from fbe.datasources.collect import (
     collect,
     lookback_start,
 )
-from fbe.types import Conviction, Direction
+from fbe.pillars import default_pillars
+from fbe.scoring import score_currencies
+from fbe.types import Conviction, CurrencyScore, Direction, PillarName
+from fbe.universe import G10
 
 if TYPE_CHECKING:
     from fbe.config import Config
@@ -127,6 +132,50 @@ COUNT_WIDTH = 10
 """Column width for the series and observation counts on a ``refresh`` line, so
 the two numbers stay in their columns when one source returns far more than
 another."""
+
+RANK_WIDTH = 3
+CODE_WIDTH = 5
+COMPOSITE_WIDTH = 11
+DISPERSION_WIDTH = 6
+COVERAGE_WIDTH = 6
+PILLAR_WIDTH = 7
+"""Column widths for the ``score`` ranking, matching the layout published in
+``docs/interfaces.md``. The composite field is wide because it carries an
+explicit sign: a bias table where the reader has to work out which way a number
+points is the one place a sign must never be implied."""
+
+PILLAR_ABBREVIATIONS: Mapping[PillarName, str] = {
+    PillarName.MONETARY: "Mon",
+    PillarName.INFLATION: "Inf",
+    PillarName.GROWTH: "Gro",
+    PillarName.EMPLOYMENT: "Emp",
+    PillarName.EXTERNAL: "Ext",
+    PillarName.POSITIONING: "Pos",
+    PillarName.RISK: "Rsk",
+}
+"""Three-letter column headings for ``score --pillars``, as published.
+
+Spelled out rather than sliced off the enum because ``risk`` slices to ``Ris``
+and the published table says ``Rsk``. A slice would also silently collide the
+day two pillars share their first three letters."""
+
+ABSENT_CELL = "n/a"
+"""What a pillar with no data prints, in the table and in the machine formats.
+
+`BasePillar.missing_score` gives an absent pillar a score of ``0.0`` with
+``raw`` and ``z`` both ``None``, so the number is there to print and means the
+opposite of what it looks like. ``n/a`` is the marker
+``src/fbe/templates/report.md.j2`` already uses for the same distinction."""
+
+COVERAGE_EPSILON = 1e-9
+"""Absorbs binary representation when coverage is turned into a percentage.
+
+Coverage is floored rather than rounded, so a run at 99.6% never prints as
+complete: the column exists to say that part of the pillar weight had no data,
+and the one value a reader treats as needing no further thought is 100%.
+Flooring alone would understate instead, because ``0.29 * 100`` is
+``28.999999999999996``, so the product is nudged by less than any real coverage
+difference before the floor."""
 
 MINUTES_PER_HOUR = 60
 
@@ -1121,9 +1170,306 @@ def score(
         NotImplementedError: Always, until `fbe.scoring` lands.
 
     """
-    raise NotImplementedError(
-        "fbe.cli.score is scaffolded; see docs/roadmap.md Phase 2"
+    config = _effective_config(ctx)
+    run_date = asof.date() if asof is not None else date.today()
+    wanted = _requested_currencies(currency)
+
+    start = lookback_start(run_date, config.scoring.lookback_years)
+    result = collect(config.data, start=start, end=run_date, sources=ALL_SOURCES)
+    if not result.usable:
+        typer.echo(
+            "No observations for the window, so there is nothing to score. Run "
+            "fbe refresh to fill the cache, or fbe doctor to find out why it "
+            "is empty."
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
+
+    scores = score_currencies(
+        result.observations,
+        default_pillars(config.scoring),
+        config.scoring,
+        run_date,
     )
+    rows = _score_rows(scores, wanted)
+    order = _pillar_order(config.scoring) if pillars else None
+
+    if output_format is OutputFormat.JSON:
+        typer.echo(_score_json(rows, order, run_date, config.digest()))
+        return
+    if output_format is OutputFormat.CSV:
+        typer.echo(_score_csv(rows, order))
+        return
+    _render_score(rows, order, run_date, config.digest())
+
+
+def _requested_currencies(currency: Sequence[str] | None) -> tuple[str, ...] | None:
+    """Normalise ``--currency`` and refuse a code outside the universe.
+
+    Args:
+        currency: The repeated option, or ``None`` for every currency.
+
+    Returns:
+        Upper-cased codes in the order given, or ``None`` when no filter was
+        asked for.
+
+    Raises:
+        typer.BadParameter: When a code is not in `fbe.universe.G10`. A filter
+            that matches nothing would print an empty table and exit zero,
+            which is indistinguishable from a run that scored the universe and
+            found no opinions worth printing.
+
+    """
+    if not currency:
+        return None
+    wanted = tuple(code.strip().upper() for code in currency)
+    unknown = [code for code in wanted if code not in G10]
+    if unknown:
+        raise typer.BadParameter(
+            f"{', '.join(unknown)} is not in the scored universe. "
+            f"This engine scores {', '.join(G10)}.",
+            param_hint="--currency",
+        )
+    return wanted
+
+
+def _score_rows(
+    scores: Sequence[CurrencyScore], wanted: Sequence[str] | None
+) -> tuple[CurrencyScore, ...]:
+    """Order the rows strongest first and apply the row filter.
+
+    Args:
+        scores: What the scorer returned.
+        wanted: Codes to keep, or ``None`` for all of them.
+
+    Returns:
+        The rows to print, by composite descending with the ISO code breaking a
+        tie, which is `fbe.scoring.score_currencies`'s own order. Sorting again
+        here rather than trusting the input is not a second opinion about the
+        ranking: ``rank`` is carried on each row untouched, so the order is
+        presentation and the rank is the fact.
+
+    """
+    kept = [row for row in scores if wanted is None or row.currency in wanted]
+    kept.sort(key=lambda row: (-row.composite, row.currency))
+    return tuple(kept)
+
+
+def _pillar_order(config: config_module.ScoringConfig) -> tuple[PillarName, ...]:
+    """Return the pillars in configured-weight order, heaviest first.
+
+    Args:
+        config: The run's scoring configuration.
+
+    Returns:
+        Every pillar, sorted by weight descending. Ties keep `PillarName`'s own
+        declaration order, which runs from the fastest and heaviest driver to
+        the slowest, so the four pillars sharing 0.10 stay in the order the
+        published example prints them rather than in whichever order the sort
+        happened to leave them.
+
+    """
+    declared = list(PillarName)
+    return tuple(
+        sorted(
+            declared,
+            key=lambda name: (-config.weights.get(name, 0.0), declared.index(name)),
+        )
+    )
+
+
+def _pillar_cell(score: CurrencyScore, name: PillarName) -> float | None:
+    """Return one pillar's score for one currency, or ``None`` if it has none.
+
+    Args:
+        score: The currency's row.
+        name: Which pillar's column.
+
+    Returns:
+        `PillarScore.score` when the pillar scored this currency, and ``None``
+        when it did not. Absence is read from ``z``, not from the score: an
+        unscored pillar carries ``0.0`` and that number means no opinion was
+        formed rather than an opinion of neutral. A pillar missing from the
+        mapping entirely, which is how a pillar switched off for the run
+        arrives, is the same answer.
+
+    """
+    found = score.pillars.get(name)
+    if found is None or found.z is None:
+        return None
+    return found.score
+
+
+def _coverage_percent(coverage: float) -> int:
+    """Return coverage as a whole percentage, never rounded up.
+
+    Args:
+        coverage: Fraction of pillar weight that had usable data, ``0.0`` to
+            ``1.0``.
+
+    Returns:
+        The percentage, floored. See `COVERAGE_EPSILON` for why the floor is
+        nudged and why it is a floor at all.
+
+    """
+    return math.floor(coverage * 100.0 + COVERAGE_EPSILON)
+
+
+def _score_notes(rows: Sequence[CurrencyScore]) -> tuple[str, ...]:
+    """Collect the reasons pillars could not score, in first-seen order.
+
+    Args:
+        rows: The rows being printed.
+
+    Returns:
+        Each distinct non-empty note from a pillar this run could not score,
+        once. `fbe.scoring.score_currencies` catches a pillar that raises and
+        records why on every currency's copy of that pillar's score, so the
+        same sentence arrives eight times and is worth printing once. Dropping
+        them would leave a run on six pillars looking like a run on seven, with
+        only the coverage column hinting at it.
+
+    """
+    seen: list[str] = []
+    for row in rows:
+        for score in row.pillars.values():
+            if score.z is None and score.notes and score.notes not in seen:
+                seen.append(score.notes)
+    return tuple(seen)
+
+
+def _score_header(asof: date, digest: str) -> str:
+    """Return the line that ties a printed table to the run that made it."""
+    return f"asof {asof.isoformat()}   config {digest}"
+
+
+def _score_columns(order: Sequence[PillarName] | None) -> str:
+    """Return the column headings, with the pillar columns when asked for."""
+    line = (
+        f"{'#':>{RANK_WIDTH}}"
+        f"{'CCY':>{CODE_WIDTH}}"
+        f"{'Composite':>{COMPOSITE_WIDTH}}"
+        f"{'Disp':>{DISPERSION_WIDTH}}"
+        f"{'Cov':>{COVERAGE_WIDTH}}"
+    )
+    if order is None:
+        return line
+    return line + "".join(
+        f"{PILLAR_ABBREVIATIONS[name]:>{PILLAR_WIDTH}}" for name in order
+    )
+
+
+def _score_line(score: CurrencyScore, order: Sequence[PillarName] | None) -> str:
+    """Return one currency's row in the published layout.
+
+    Args:
+        score: The currency's row.
+        order: Pillar columns to append, or ``None`` for the ranking only.
+
+    Returns:
+        The rank, code, composite, dispersion and coverage, every one of them
+        read off the dataclass. The rank is `CurrencyScore.rank` and not the
+        row's position, because the scores are cross-sectional and a narrowed
+        list still ranks against the whole universe.
+
+    """
+    line = (
+        f"{score.rank if score.rank is not None else 0:>{RANK_WIDTH}}"
+        f"{score.currency:>{CODE_WIDTH}}"
+        f"{score.composite:>+{COMPOSITE_WIDTH}.2f}"
+        f"{score.dispersion:>{DISPERSION_WIDTH}.2f}"
+        f"{str(_coverage_percent(score.coverage)) + '%':>{COVERAGE_WIDTH}}"
+    )
+    if order is None:
+        return line
+    for name in order:
+        value = _pillar_cell(score, name)
+        cell = ABSENT_CELL if value is None else f"{value:+.2f}"
+        line += f"{cell:>{PILLAR_WIDTH}}"
+    return line
+
+
+def _render_score(
+    rows: Sequence[CurrencyScore],
+    order: Sequence[PillarName] | None,
+    asof: date,
+    digest: str,
+) -> None:
+    """Print the ranking in the layout ``docs/interfaces.md`` publishes."""
+    typer.echo(_score_header(asof, digest))
+    typer.echo("")
+    typer.echo(_score_columns(order))
+    for score in rows:
+        typer.echo(_score_line(score, order))
+    notes = _score_notes(rows)
+    if notes:
+        typer.echo("")
+        for note in notes:
+            typer.echo(note)
+
+
+def _score_payload(
+    rows: Sequence[CurrencyScore], order: Sequence[PillarName] | None
+) -> list[dict[str, object]]:
+    """Return the rows as plain data, shared by both machine formats.
+
+    One builder for both, so a formatter cannot round the table and not the
+    JSON, or carry a field in one and drop it in the other.
+    """
+    payload: list[dict[str, object]] = []
+    for score in rows:
+        row: dict[str, object] = {
+            "rank": score.rank,
+            "currency": score.currency,
+            "composite": score.composite,
+            "dispersion": score.dispersion,
+            "coverage": score.coverage,
+        }
+        if order is not None:
+            row["pillars"] = {name.value: _pillar_cell(score, name) for name in order}
+        payload.append(row)
+    return payload
+
+
+def _score_json(
+    rows: Sequence[CurrencyScore],
+    order: Sequence[PillarName] | None,
+    asof: date,
+    digest: str,
+) -> str:
+    """Return the ranking as JSON, carrying the run's own identifiers."""
+    return json.dumps(
+        {
+            "asof": asof.isoformat(),
+            "config_digest": digest,
+            "currencies": _score_payload(rows, order),
+            "warnings": list(_score_notes(rows)),
+        },
+        indent=2,
+    )
+
+
+def _score_csv(
+    rows: Sequence[CurrencyScore], order: Sequence[PillarName] | None
+) -> str:
+    """Return the ranking as CSV, with one column per pillar when asked for.
+
+    An absent pillar is an empty field rather than a zero, which is the same
+    distinction the table draws with ``n/a``. A spreadsheet reading ``0`` for a
+    pillar that never ran would average it in.
+    """
+    columns = ["rank", "currency", "composite", "dispersion", "coverage"]
+    if order is not None:
+        columns += [name.value for name in order]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns, lineterminator="\n")
+    writer.writeheader()
+    for row in _score_payload(rows, order):
+        flat = {key: row[key] for key in columns if key in row}
+        for name in order or ():
+            value = row["pillars"][name.value]  # type: ignore[index]
+            flat[name.value] = "" if value is None else value
+        writer.writerow(flat)
+    return buffer.getvalue().rstrip("\n")
 
 
 @app.command(
