@@ -37,6 +37,8 @@ __all__ = [
     "shortlist",
     "AGREEMENT_TIE_EPSILON",
     "BLOCKERS",
+    "at_least",
+    "blocking",
     "UNCHECKED_SUFFIX",
     "UNKNOWN_SUFFIX",
     "CalendarGuard",
@@ -134,7 +136,7 @@ the two legs the same has no opinion on the pair, and it is excluded from both
 sides of the agreement fraction rather than counted as agreeing.
 """
 
-CONVICTION_RANK: Mapping[Conviction, int] = {
+_CONVICTION_RANK: Mapping[Conviction, int] = {
     Conviction.NONE: 0,
     Conviction.LOW: 1,
     Conviction.MEDIUM: 2,
@@ -145,20 +147,16 @@ CONVICTION_RANK: Mapping[Conviction, int] = {
 `Conviction` is a string enum with no ordering of its own, so the ladder is
 spelled out here rather than relied on through declaration order.
 
-Public because it is the only statement of that order in the package, and a
-consumer comparing two tiers has to have it. `fbe.cli.bias` filters on
-``--min-conviction`` and would otherwise spell the ladder out a second time,
-which is the config-drift shape this codebase keeps producing: add a tier to
-one copy and the other silently orders it wrong, with a filter quietly keeping
-or dropping the pairs that carry it.
+Private. Consumers outside this module ask `at_least` rather than borrowing
+the table, so the comparison exists once instead of once per caller.
 """
 
 _LADDER: tuple[Conviction, ...] = tuple(
-    sorted(CONVICTION_RANK, key=lambda tier: CONVICTION_RANK[tier])
+    sorted(_CONVICTION_RANK, key=lambda tier: _CONVICTION_RANK[tier])
 )
 """The same ladder as a sequence, weakest first, for stepping down it.
 
-Derived from `CONVICTION_RANK` rather than written out again, so a tier added
+Derived from `_CONVICTION_RANK` rather than written out again, so a tier added
 to one cannot be missing from the other.
 """
 
@@ -498,7 +496,7 @@ def _demote(tier: Conviction) -> Conviction:
         more reasons to doubt it than there are steps to take.
 
     """
-    return _LADDER[max(0, CONVICTION_RANK[tier] - 1)]
+    return _LADDER[max(0, _CONVICTION_RANK[tier] - 1)]
 
 
 def _cap(tier: Conviction, ceiling: Conviction) -> Conviction:
@@ -515,9 +513,74 @@ def _cap(tier: Conviction, ceiling: Conviction) -> Conviction:
         subtracting a step.
 
     """
-    if CONVICTION_RANK[tier] <= CONVICTION_RANK[ceiling]:
+    if _CONVICTION_RANK[tier] <= _CONVICTION_RANK[ceiling]:
         return tier
     return ceiling
+
+
+def at_least(tier: Conviction, floor: Conviction) -> bool:
+    """Whether ``tier`` reaches ``floor`` on the conviction ladder.
+
+    Args:
+        tier: The conviction a pair carries.
+        floor: The lowest conviction the caller will accept.
+
+    Returns:
+        True when ``tier`` is at or above ``floor``. Inclusive at the level
+        named: asking for medium keeps medium.
+
+    `Conviction` is a string enum with no ordering of its own, so a caller
+    comparing two tiers has to get the ladder from somewhere. This is that
+    somewhere. Exported as a question rather than as `_CONVICTION_RANK`,
+    because a caller handed the table writes the comparison itself and two
+    callers write it twice: add a tier, or change the ends of the ladder, and
+    each copy has to be found again. `fbe.cli.bias` filters
+    ``--min-conviction`` through this and states the reason a pair was hidden
+    from the same call.
+
+    """
+    return _CONVICTION_RANK[tier] >= _CONVICTION_RANK[floor]
+
+
+def blocking(blockers: Sequence[str]) -> tuple[str, ...]:
+    """Keep only the entries whose kind actually stops a pair being traded.
+
+    Args:
+        blockers: A `PairBias.blockers` tuple, as `apply_filters` set it.
+
+    Returns:
+        The subset `BLOCKERS` marks as blocking, in the order given. An entry
+        whose kind is not declared raises rather than being dropped: an
+        unrecognised marker is a defect in whatever produced it, and silently
+        ignoring it would let a real block disappear from an explanation.
+
+    Raises:
+        ValueError: An entry matching no key in `BLOCKERS`.
+
+    Three of the eight kinds do not block, and an offline run carries two of
+    them on every pair, so "why was this pair removed" and "what does this
+    pair carry" are different questions with different answers. A renderer
+    listing the whole tuple as the reason names ``cost:unchecked`` and
+    ``event:unchecked``, two checks that never ran, as reasons a pair was
+    dropped.
+
+    The longest matching prefix wins, which is the rule `BLOCKERS` documents
+    and the reason this lives here rather than in a renderer. Taking the first
+    key that matches reads those same two markers as hard blocks.
+
+    """
+    kept: list[str] = []
+    for entry in blockers:
+        matches = [kind for kind in BLOCKERS if entry.startswith(kind)]
+        if not matches:
+            raise ValueError(
+                f"{entry!r} matches no kind in BLOCKERS, so whether it stops a "
+                "pair being traded cannot be answered. Every string reaching "
+                "blockers is one apply_filters emitted."
+            )
+        if BLOCKERS[max(matches, key=len)]:
+            kept.append(entry)
+    return tuple(kept)
 
 
 def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:
@@ -1033,7 +1096,7 @@ def shortlist(biases: Sequence[PairBias], limit: int) -> Sequence[PairBias]:
     ]
     candidates.sort(
         key=lambda bias: (
-            -CONVICTION_RANK[bias.conviction],
+            -_CONVICTION_RANK[bias.conviction],
             -abs(bias.spread),
             bias.pair,
         )
