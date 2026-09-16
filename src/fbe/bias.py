@@ -37,6 +37,8 @@ __all__ = [
     "shortlist",
     "AGREEMENT_TIE_EPSILON",
     "BLOCKERS",
+    "at_least",
+    "blocking",
     "UNCHECKED_SUFFIX",
     "UNKNOWN_SUFFIX",
     "CalendarGuard",
@@ -144,6 +146,9 @@ _CONVICTION_RANK: Mapping[Conviction, int] = {
 
 `Conviction` is a string enum with no ordering of its own, so the ladder is
 spelled out here rather than relied on through declaration order.
+
+Private. Consumers outside this module ask `at_least` rather than borrowing
+the table, so the comparison exists once instead of once per caller.
 """
 
 _LADDER: tuple[Conviction, ...] = tuple(
@@ -511,6 +516,71 @@ def _cap(tier: Conviction, ceiling: Conviction) -> Conviction:
     if _CONVICTION_RANK[tier] <= _CONVICTION_RANK[ceiling]:
         return tier
     return ceiling
+
+
+def at_least(tier: Conviction, floor: Conviction) -> bool:
+    """Whether ``tier`` reaches ``floor`` on the conviction ladder.
+
+    Args:
+        tier: The conviction a pair carries.
+        floor: The lowest conviction the caller will accept.
+
+    Returns:
+        True when ``tier`` is at or above ``floor``. Inclusive at the level
+        named: asking for medium keeps medium.
+
+    `Conviction` is a string enum with no ordering of its own, so a caller
+    comparing two tiers has to get the ladder from somewhere. This is that
+    somewhere. Exported as a question rather than as `_CONVICTION_RANK`,
+    because a caller handed the table writes the comparison itself and two
+    callers write it twice: add a tier, or change the ends of the ladder, and
+    each copy has to be found again. `fbe.cli.bias` filters
+    ``--min-conviction`` through this and states the reason a pair was hidden
+    from the same call.
+
+    """
+    return _CONVICTION_RANK[tier] >= _CONVICTION_RANK[floor]
+
+
+def blocking(blockers: Sequence[str]) -> tuple[str, ...]:
+    """Keep only the entries whose kind actually stops a pair being traded.
+
+    Args:
+        blockers: A `PairBias.blockers` tuple, as `apply_filters` set it.
+
+    Returns:
+        The subset `BLOCKERS` marks as blocking, in the order given. An entry
+        whose kind is not declared raises rather than being dropped: an
+        unrecognised marker is a defect in whatever produced it, and silently
+        ignoring it would let a real block disappear from an explanation.
+
+    Raises:
+        ValueError: An entry matching no key in `BLOCKERS`.
+
+    Three of the eight kinds do not block, and an offline run carries two of
+    them on every pair, so "why was this pair removed" and "what does this
+    pair carry" are different questions with different answers. A renderer
+    listing the whole tuple as the reason names ``cost:unchecked`` and
+    ``event:unchecked``, two checks that never ran, as reasons a pair was
+    dropped.
+
+    The longest matching prefix wins, which is the rule `BLOCKERS` documents
+    and the reason this lives here rather than in a renderer. Taking the first
+    key that matches reads those same two markers as hard blocks.
+
+    """
+    kept: list[str] = []
+    for entry in blockers:
+        matches = [kind for kind in BLOCKERS if entry.startswith(kind)]
+        if not matches:
+            raise ValueError(
+                f"{entry!r} matches no kind in BLOCKERS, so whether it stops a "
+                "pair being traded cannot be answered. Every string reaching "
+                "blockers is one apply_filters emitted."
+            )
+        if BLOCKERS[max(matches, key=len)]:
+            kept.append(entry)
+    return tuple(kept)
 
 
 def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:

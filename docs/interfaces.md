@@ -238,19 +238,78 @@ are different trades, and the ranking alone cannot tell them apart.
 $ fbe bias --majors --min-conviction medium --tradeable-only
 asof 2026-09-09   config 8f2c1a9d4b70
 
-Pair    Dir    Conv    Spread   Base   Quote  Agree  Notes
-USDJPY  long   high     +2.60  +1.42   -1.18   86%   -
-NZDUSD  short  high     -2.48  -1.06   +1.42   86%   -
-AUDUSD  short  high     -2.36  -0.94   +1.42   71%   -
-EURUSD  short  medium   -2.31  -0.89   +1.42   71%   -
+Pair    Dir     Conv      Spread    Base   Quote  Agree  Notes
+NZDUSD  short   medium     -2.48   -1.06   +1.42   100%  cost:unchecked, event:unchecked
+AUDUSD  short   medium     -2.36   -0.94   +1.42   100%  cost:unchecked, event:unchecked
+EURUSD  short   medium     -2.31   -0.89   +1.42    90%  cost:unchecked, event:unchecked
 
-3 majors hidden by the filters:
-  USDCAD  spread 1.47, just under the 1.50 medium threshold
-  GBPUSD  spread 1.11, and GBP coverage is 86%
-  USDCHF  spread 0.65, neutral
+4 majors hidden by the filters:
+  USDJPY  spread +2.60, conviction low, below medium
+  USDCAD  spread +1.47, conviction low, below medium
+  GBPUSD  spread -1.11, conviction low, below medium
+  USDCHF  spread +0.65, conviction none, below medium; blocked: no_edge
+
+No calendar was consulted: the blackout filter and the 24-hour conviction cap did not run, so no tier here is capped for an imminent release. Check the calendar by hand before acting on a row.
 ```
 
-The matrix view answers a different question:
+This block is a real run. It is reproduced from the renderer against the
+pillar cells the `fbe score --pillars` example above publishes, so the two
+console blocks are one run, and `tests/test_cli_bias.py` holds the renderer to
+it line by line. The composites are still illustrative, for the reason the
+score section gives: they do not reconcile with their own pillar cells under
+the shipped weights. Everything the bias layer derives from them does
+reconcile, which is why USDJPY is demoted to low conviction despite carrying
+the widest spread in the run. JPY's coverage is 71% and its pillars disagree at
+a dispersion of 1.31, and `conviction_for` demotes on each.
+
+Every row carries `cost:unchecked` and `event:unchecked`, and every run of this
+command does. The command passes no `CalendarGuard` and no dealing cost,
+because `fbe.calendar_guard` is scaffolded and no execution layer supplies a
+cost yet, so `apply_filters` records that both checks were skipped rather than
+leaving the row silent. A row with an empty Notes column would mean every check
+ran and every check passed, which cannot happen today.
+
+The closing note says the same thing about the check that leaves no marker.
+`build_pair_biases` caps conviction for a release inside 24 hours, and with no
+guard to consult that cap does not run, so no tier in the table has been
+adjusted for an imminent release. The blackout marker announces its own
+absence on each row; this one has to be said once for the run.
+
+Each hidden pair names the field that removed it. `--min-conviction` reports
+the conviction the pair carries and the floor it was asked for;
+`--tradeable-only` reports the blockers `fbe.bias.apply_filters` recorded, by
+name, because the reader's next action differs completely between `coverage`,
+which means go and look at why the data is thin, and `event`, which means wait
+for the release. Only the kinds that actually block are named: two of the eight
+say a check never ran, and neither is a reason a pair was dropped. A pair
+removed by both filters says both, as USDCHF does.
+
+The reason is decided once, by the same comparison that removed the row, and
+carried to the renderer rather than worked out again there. Two evaluations of
+one decision can disagree, and the disagreement reads as a pair listed with an
+empty reason or with a clause naming a filter that did not remove it.
+
+`--top` is not a filter. It shortens the printed list and moves no pair into
+the hidden block, because a pair below the cut was not rejected by anything and
+has no reason to give. It truncates the table, the JSON and the CSV together.
+`--majors` is not in the hidden block either: it chooses which market to look
+at, which is why the example counts four majors hidden out of seven rather than
+twenty-five pairs hidden out of twenty-eight.
+
+`--format csv` writes `blockers` as a JSON array in one field. Two of the eight
+kinds carry a payload whose reason names a release and its scheduled time, so
+it holds spaces and can hold a comma, and any single-character delimiter tears
+the one blocker a reader most needs intact.
+
+A run where every currency scored on nothing still prints its rows, because the
+absence is what there is to see, and exits 1: coverage collapsing is what that
+code means, and a zero would read as a working engine with no opinions.
+
+The matrix view answers a different question. It is not built yet:
+`fbe.report._grid` is still scaffolded, and `fbe bias --matrix` refuses
+with exit code 2 rather than printing a partial grid, for the reason given
+below the example.
+
 
 ```console
 $ fbe bias --matrix
