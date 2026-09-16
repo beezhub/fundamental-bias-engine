@@ -1680,8 +1680,10 @@ def test_a_period_on_the_run_date_is_not_outstanding(
 def test_the_uppercase_extension_is_refused_too(
     source: ManualSource, manual_dir: Path
 ) -> None:
-    """The glob is case-sensitive on Linux, so `pmi.YAML` is as unread as
-    `pmi.yml` and as silent about it."""
+    """`pmi.YAML` is as unread as `pmi.yml` and as silent about it, and it
+    has to be refused on every platform: ``Path.glob`` matches it on Windows
+    and not on Linux, so without the exact suffix check the file would be
+    loaded on the operator's machine and skipped in CI."""
     _write(
         manual_dir,
         "PMI.YAML",
