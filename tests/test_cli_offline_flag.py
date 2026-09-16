@@ -34,6 +34,8 @@ See issue #70.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import typer
 from typer.testing import CliRunner
@@ -41,6 +43,29 @@ from typer.testing import CliRunner
 from fbe.cli import app
 
 runner = CliRunner()
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+"""Select Graphic Rendition escapes, which is all Rich emits into help text."""
+
+
+def _help_text() -> str:
+    """Render ``fbe --help`` as plain text, whatever the terminal environment.
+
+    Asserting on the raw output is not safe, and the way it fails is the
+    dangerous direction. GitHub Actions exports ``FORCE_COLOR``, so Rich styles
+    the help and an option name arrives split by escape sequences: ``--offline``
+    stops being a substring of the output. A positive assertion then fails
+    loudly, which is how this was caught, but a negative one such as
+    "``--online`` is absent" passes for entirely the wrong reason.
+
+    So the escapes are stripped and the whitespace collapsed, the second because
+    Rich wraps to the terminal width and a token split across two lines would
+    hide from a negative assertion just as effectively as a colour code.
+    """
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    return " ".join(ANSI.sub("", result.output).split())
+
 
 EXIT_USAGE = 2
 """Usage error, per the exit-code table in `docs/interfaces.md`.
@@ -59,10 +84,7 @@ def test_help_offers_offline() -> None:
     Stated separately from the one below so that a change deleting the flag
     outright fails here rather than passing the "no --online" test vacuously.
     """
-    result = runner.invoke(app, ["--help"])
-
-    assert result.exit_code == 0
-    assert "--offline" in result.output
+    assert "--offline" in _help_text()
 
 
 def test_help_does_not_offer_online() -> None:
@@ -72,9 +94,7 @@ def test_help_does_not_offer_online() -> None:
     contains the word "online" inside ``[default: online]`` before the fix, and
     the point here is the flag rather than the prose.
     """
-    result = runner.invoke(app, ["--help"])
-
-    assert "--online" not in result.output
+    assert "--online" not in _help_text()
 
 
 def test_help_does_not_claim_the_flag_decides_the_default() -> None:
@@ -85,9 +105,7 @@ def test_help_does_not_claim_the_flag_decides_the_default() -> None:
     `docs/interfaces.md` says and exactly what an operator reading the help would
     have concluded was untrue.
     """
-    result = runner.invoke(app, ["--help"])
-
-    assert "[default: online]" not in result.output
+    assert "[default: online]" not in _help_text()
 
 
 def test_online_is_rejected_as_a_usage_error() -> None:
