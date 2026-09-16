@@ -19,7 +19,10 @@ way to lean, how hard, and when to stand aside.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import date
+from math import isfinite
+from typing import Literal
 
 from fbe.config import Config, ScoringConfig
 from fbe.types import Conviction, CurrencyScore, Direction, PairBias
@@ -95,12 +98,22 @@ that reason as ``"event: <reason>"``. ``event:unknown`` is not either: it carrie
 why the guard could not check, as ``"event:unknown: <reason>"``, from
 `calendar_guard.CoverageGap`'s categories. So a run's ``blockers`` can hold
 strings this mapping does not contain verbatim, and a consumer matching on
-exact equality will miss both the blocked case and the unknown case; matching
-on `str.startswith` against the mapping's keys, or on `UNCHECKED_SUFFIX` and
-`UNKNOWN_SUFFIX` for the two provisional kinds, is what a consumer should do
-instead. Both `apply_filters` and the guard are still scaffolded and the
-reasons' exact formats are not fixed yet, which is why nothing here or in
-either renderer matches on them.
+exact equality will miss both the blocked case and the unknown case.
+
+A consumer mapping a string back to its kind must take the **longest** key that
+prefixes it. Four of the emitted strings begin with a shorter key than their
+own: ``"cost:unchecked"`` starts with ``"cost"``, and ``"event:unchecked"``,
+``"event:unknown: ..."`` and ``"event: ..."`` all start with ``"event"``. Taking
+the first key that matches reads three non-blocking markers as hard blocks and
+refuses every pair in an offline run, which is the outcome the two suffixes
+exist to avoid. `apply_filters` sidesteps the question by carrying each kind
+alongside the string it emits rather than parsing it back.
+
+`apply_filters` now fixes its side of both formats, ``"event: <reason>"`` and
+``"event:unknown: <reason>"``, and `tests/test_pair_filters.py` holds it to
+them. What is still unsettled is the reason text itself, which the guard
+supplies and which is scaffolded, so neither renderer matches on the part after
+the colon.
 
 This exists because the list was written out twice, here in the `apply_filters`
 docstring and in section 6 of ``docs/scoring-spec.md``, and the two had already
@@ -660,7 +673,15 @@ def apply_filters(
         config: Full run configuration.
         asof: The date the run represents.
         calendar_guard: Optional `CalendarGuard` for the execution blackout
-            window. When ``None`` the check is skipped and ``"event:unchecked"``
+            window. Must give the same answer for the same currency throughout
+            one run, memoised by the caller if the underlying fetch is not
+            already stable. This function sees one pair, so it asks about two
+            legs and cannot dedupe across the 28; each currency is therefore
+            asked seven times. `build_pair_biases` asks its own guard once per
+            currency for exactly this reason, and the argument is stronger
+            here, because two answers that disagree would put two pairs sharing
+            a leg on different sides of a hard block with nothing recording
+            why. When ``None`` the check is skipped and ``"event:unchecked"``
             is appended to ``blockers`` without setting ``tradeable`` to
             ``False``. Silence and an all-clear must not look the same. When a
             guard is supplied but reports ``unknown_reason`` for either leg,
@@ -678,7 +699,21 @@ def apply_filters(
         A new `PairBias` with ``tradeable`` and ``blockers`` set. Frozen input,
         new object out. Blockers accumulate rather than short-circuiting, because
         a pair blocked for three reasons is a different thing from a pair blocked
-        for one, and the trader should see all three.
+        for one, and the trader should see all three. ``blockers`` is set rather
+        than appended to, so filtering an already-filtered bias says the same
+        thing rather than doubling every reason.
+
+    Raises:
+        KeyError: Either leg is absent from ``scores``, naming the currency.
+            Not skipped and not read as zero coverage: `build_pair_biases`
+            refuses the same shape for the same reason, because a missing row
+            reads as an absence of opportunity rather than an absence of data.
+        ValueError: A ``cost_ratio`` that is not finite or is negative, a leg
+            whose ``coverage`` is not finite, or a guard that reports an
+            unknown reason for a leg and returns blockers for it too. See
+            `_refuse_unusable` and `_calendar_entries`; each is an input no
+            comparison here can judge, and each would otherwise reach a report
+            as a pair that looked checked.
 
     The filters, matching section 6 of ``docs/scoring-spec.md``. `BLOCKERS` is
     the enumeration of every string this function may append and whether each
@@ -704,7 +739,13 @@ def apply_filters(
         of the spread says more about which pillars happened to have data than
         about the two currencies.
 
-        ``no_coverage``: either leg has ``coverage == 0.0``. No composite exists.
+        ``no_coverage``: either leg has ``coverage <= 0.0``. No composite
+        exists. The comparison admits a negative, which is unreachable while
+        coverage is a sum of non-negative weights, so that an upstream defect
+        reads as no data rather than as data. It fires alongside ``coverage``
+        at zero, because both statements are true and they say different
+        things: one that the composite rests on too little, the other that
+        there is no composite.
 
         ``event``: whatever `CalendarGuard` returns as ``blockers`` for either
         leg, for the execution blackout window only. A pair has two legs, so an
@@ -748,9 +789,167 @@ def apply_filters(
     every other pair.
 
     """
-    raise NotImplementedError(
-        "fbe.bias.apply_filters is scaffolded; see docs/roadmap.md Phase 2"
+    base = scores[bias.base]
+    quote = scores[bias.quote]
+    _refuse_unusable(bias, base, quote, cost_ratio)
+
+    # Each entry is the `BLOCKERS` kind paired with the string emitted for it.
+    # The two differ for `event` and `event:unknown`, which carry a reason.
+    # Keeping the kind rather than re-deriving it from the text is what makes
+    # `tradeable` safe: four of the eight emitted strings begin with a shorter
+    # key than their own. "cost:unchecked" starts with "cost", both
+    # "event:unchecked" and "event:unknown: ..." start with "event", and
+    # "event: ..." does too, so a consumer taking the first prefix that matches
+    # reads three non-blocking markers as hard blocks and refuses every pair in
+    # an offline run.
+    entries: list[tuple[str, str]] = []
+
+    if bias.direction is Direction.NEUTRAL or bias.conviction is Conviction.NONE:
+        entries.append(("no_edge", "no_edge"))
+
+    # Both coverage statements can be true at once and both are recorded, since
+    # they say different things: one that the composite rests on too little, the
+    # other that there is no composite. The comparison is ``<= 0.0`` rather than
+    # ``== 0.0`` so a negative coverage, which would be a defect upstream, reads
+    # as no data rather than as data.
+    if base.coverage <= 0.0 or quote.coverage <= 0.0:
+        entries.append(("no_coverage", "no_coverage"))
+    if min(base.coverage, quote.coverage) < config.scoring.min_coverage:
+        entries.append(("coverage", "coverage"))
+
+    if cost_ratio is None:
+        entries.append(_unchecked("cost"))
+    elif cost_ratio > config.scoring.max_cost_ratio:
+        entries.append(("cost", "cost"))
+
+    if calendar_guard is None:
+        entries.append(_unchecked("event"))
+    else:
+        entries.extend(_calendar_entries(bias, calendar_guard, asof))
+
+    return replace(
+        bias,
+        tradeable=not any(BLOCKERS[kind] for kind, _ in entries),
+        blockers=tuple(text for _, text in entries),
     )
+
+
+def _refuse_unusable(
+    bias: PairBias,
+    base: CurrencyScore,
+    quote: CurrencyScore,
+    cost_ratio: float | None,
+) -> None:
+    """Refuse an input no comparison in this function can judge.
+
+    Args:
+        bias: The pair, named in the message.
+        base: The base leg's score, read for ``coverage``.
+        quote: The quote leg's score, read for ``coverage``.
+        cost_ratio: The dealing cost as supplied, or ``None``.
+
+    Raises:
+        ValueError: A ``cost_ratio`` that is not finite or is negative, or a
+            leg whose ``coverage`` is not finite.
+
+    Every filter below is a ``<`` or a ``>``, and every comparison against NaN
+    is False, so an unusable number passes all of them and the pair comes back
+    with ``tradeable`` True and an empty ``blockers``. That is the one state
+    this function reserves for "every check ran and every check passed", so a
+    NaN cost ratio would print exactly like a pair verified as cheap.
+
+    ``None`` and only ``None`` means a value was not supplied. A cost ratio
+    that is negative, or either value not being a real number, is a defect in
+    whatever produced it, and this is the last place it can be caught before it
+    becomes a row on a report.
+
+    """
+    if cost_ratio is not None and (not isfinite(cost_ratio) or cost_ratio < 0.0):
+        raise ValueError(
+            f"{bias.pair} was given a cost_ratio of {cost_ratio!r}. A dealing "
+            "cost is a non-negative share of the expected move, and None is "
+            "how a caller says it was not supplied"
+        )
+    for leg, score in ((bias.base, base), (bias.quote, quote)):
+        if not isfinite(score.coverage):
+            raise ValueError(
+                f"{leg} has a coverage of {score.coverage!r}, which no "
+                "threshold can judge. Coverage is a fraction of pillar weight "
+                "between 0.0 and 1.0"
+            )
+
+
+def _unchecked(kind: Literal["cost", "event"]) -> tuple[str, str]:
+    """Return the entry recording that ``kind``'s check did not run.
+
+    Args:
+        kind: The base blocker name, ``"cost"`` or ``"event"``.
+
+    Returns:
+        The `BLOCKERS` kind and the string to emit, which are the same here:
+        a check that never ran has no reason to carry, only a name.
+
+    """
+    marker = kind + UNCHECKED_SUFFIX
+    return (marker, marker)
+
+
+def _calendar_entries(
+    bias: PairBias,
+    calendar_guard: CalendarGuard,
+    asof: date,
+) -> list[tuple[str, str]]:
+    """Ask the guard about both legs and record what it said.
+
+    Args:
+        bias: The pair, read for its two legs.
+        calendar_guard: The injected guard.
+        asof: The run's date, which is what the guard is asked about rather
+            than today. A guard asked about the wrong day answers about the
+            wrong day, and on a historical run every answer would be wrong the
+            same way.
+
+    Returns:
+        Zero or more entries, in base-then-quote order. A leg the guard could
+        not check contributes one ``event:unknown`` entry carrying the reason;
+        a leg it checked contributes one ``event`` entry per release it found,
+        each carrying the guard's own reason so a reader sees which release and
+        when. A leg that was checked and is quiet contributes nothing, which is
+        the only state that prints an unqualified clear.
+
+        Both legs are asked and both are recorded. A pair has two legs, so an
+        FOMC evening blocks every dollar pair and not only the one being
+        watched, and a leg the guard could not reach leaves a marker even when
+        the other leg already blocked the pair: otherwise a reader would take
+        the calendar to have been fully consulted.
+
+    """
+    entries: list[tuple[str, str]] = []
+    for leg in (bias.base, bias.quote):
+        found, unknown_reason = calendar_guard(leg, asof)
+        if unknown_reason is not None:
+            if found:
+                # `CalendarGuard` promises the two fields are never in tension
+                # about whether a currency is clear, and this is the one check
+                # that hard-blocks a pair. Discarding ``found`` here would have
+                # marked an evening on which the guard positively identified a
+                # release inside the blackout window as tradeable, carrying a
+                # note saying the calendar was uncertain, which reads as a row
+                # that was handled carefully. The guard is this codebase's own,
+                # so a breach is a defect to fix rather than a condition to
+                # tolerate.
+                raise ValueError(
+                    f"the calendar guard reported {leg} as unknown "
+                    f"({unknown_reason}) and also returned {len(found)} "
+                    f"blocker(s) for it: {list(found)}. A guard reporting an "
+                    "unknown reason must return no blockers, so these two "
+                    "answers cannot both be acted on"
+                )
+            marker = "event" + UNKNOWN_SUFFIX
+            entries.append((marker, f"{marker}: {unknown_reason}"))
+            continue
+        entries.extend(("event", f"event: {reason}") for reason in found)
+    return entries
 
 
 def shortlist(biases: Sequence[PairBias], limit: int) -> Sequence[PairBias]:

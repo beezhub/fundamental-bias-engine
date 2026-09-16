@@ -920,22 +920,32 @@ is the same list in code, and `tests/test_blockers.py` asserts the two match, so
 a blocker cannot be added to one and not the other.
 
 Kinds, not literal strings, because of two rows. Six of the eight are emitted
-as the name given here. `event` is emitted as the reason `CalendarGuard`
-returns, which names the event, its currency and its scheduled time, so that a
-reader sees "EUR CPI at 09:00 UTC" rather than a bare flag. `event:unknown` is
-emitted the same way, as `"event:unknown: <reason>"`, where the reason names
-why the guard could not check: a failed calendar fetch, a cached week that
-ends before the run's date, or a date beyond the horizon of the data supplied.
+as the name given here. `event` is emitted as `"event: <reason>"`, where the
+reason is the one `CalendarGuard` returns, naming the event, its currency and
+its scheduled time, so that a reader sees "event: EUR CPI at 09:00 UTC" rather
+than a bare flag. `event:unknown` is emitted the same way, as
+`"event:unknown: <reason>"`, where the reason names why the guard could not
+check: a failed calendar fetch, a cached week that ends before the run's date,
+or a date beyond the horizon of the data supplied.
+
 Anything reading `blockers` should therefore not match on exact equality for
-either of those two rows. Neither reason's format is settled: `apply_filters`
-and the guard are both still scaffolded.
+either of those two rows, and must take the **longest** key that prefixes a
+string rather than the first one that matches. Four of the emitted strings
+begin with a shorter key than their own: `cost:unchecked` starts with `cost`,
+and `event:unchecked`, `event:unknown: ...` and `event: ...` all start with
+`event`. Taking the first match reads three non-blocking markers as hard blocks
+and refuses every pair in an offline run.
+
+The two prefixes above are fixed and `tests/test_pair_filters.py` holds
+`apply_filters` to them. The reason text after the colon is not settled, since
+the guard that supplies it is still scaffolded.
 
 | Blocker | Blocks | Test | Rationale |
 | --- | --- | --- | --- |
 | `cost` | yes | `cost_ratio > max_cost_ratio` (0.05) | Dealing cost eats too much of the plausible move |
 | `event` | yes | The intended execution time falls inside a blackout window for either leg | The plan says do not trade around high-impact news |
 | `coverage` | yes | `min(coverage_base, coverage_quote) < min_coverage` (0.60) | Under `min_coverage` of pillar weight, the composite is a guess |
-| `no_coverage` | yes | Either leg has `coverage == 0.0` | No composite exists |
+| `no_coverage` | yes | Either leg has `coverage <= 0.0` | No composite exists. Fires alongside `coverage`, since zero is also below the threshold and the two say different things |
 | `no_edge` | yes | `direction` is `NEUTRAL` or `conviction` is `NONE` | Nothing to act on, whatever the spread |
 | `cost:unchecked` | no | No `cost_ratio` was supplied | The check did not run, so its silence is not an all-clear |
 | `event:unchecked` | no | No `CalendarGuard` was supplied | The same, for the calendar |
