@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import date
 from math import fsum, sqrt
 from statistics import median
@@ -293,6 +294,26 @@ class BasePillar(ABC):
         """
         self.config = config or ScoringConfig()
         self.blend_sd_history: Sequence[float] = blend_sd_history or ()
+        self.last_blend_sd: float | None = None
+        """This run's own blend standard deviation, set by `blend_components`.
+
+        ``None`` when the most recent `compute` blended nothing, which `compute`
+        resets before it starts so a previous run's figure cannot be read as
+        this one's. The runner reads it
+        after `compute` and appends it to the stored history, so it becomes the
+        next run's `blend_sd_history`. It rides on the instance rather than on
+        the return value because `compute`'s signature is fixed by the
+        `fbe.types.Pillar` protocol, which is the same reason the history
+        arrives at construction.
+        """
+        self.last_blend_divisor_path: str = ""
+        """Which path `blend_divisor` took on this run, or ``""`` for none.
+
+        Set by `blend_components` and copied onto every `PillarScore` that
+        `compute` builds. A single-component pillar never blends, so it keeps
+        the empty string, which `PillarScore.blend_divisor_path` documents as
+        meaning the pillar recorded no path.
+        """
 
     @property
     def weight(self) -> float:
@@ -341,14 +362,20 @@ class BasePillar(ABC):
         Returns:
             One `PillarScore` per currency, keyed by ISO code.
 
-        Two things must reach ``PillarScore.notes`` on every run, because neither
-        is recoverable from the numbers afterwards. First, which path
-        `blend_divisor` took, ``"rolling"`` or ``"run_local"``: scores computed
-        under the fallback are not on the same scale as scores computed under the
-        rolling estimate, and a reader comparing two runs needs to know which they
-        are holding. Second, how many inputs were admitted by the assumed
-        publication lag rather than a real ``released_at``, which is how much of
+        Two things are recorded on every score, because neither is recoverable
+        from the numbers afterwards, and both have a typed home rather than a
+        line of prose. Which path `blend_divisor` took goes to
+        ``PillarScore.blend_divisor_path``: scores computed under the fallback
+        are not on the same scale as scores computed under the rolling estimate,
+        and a reader comparing two runs needs to know which they are holding.
+        How many inputs were admitted by the assumed publication lag rather than
+        a real ``released_at`` goes to
+        ``PillarScore.diagnostics["assumed_lag_inputs"]``, which is how much of
         the run rests on `DEFAULT_PUBLICATION_LAG_DAYS` rather than on fact.
+
+        ``notes`` carries neither. It is human prose for the report's working
+        and nothing may parse it for a decision, which is what
+        `fbe.types.PillarScore.notes` now says. Issue #51 records the ruling.
 
         The per-component freshness factors from `component_freshness` belong in
         ``PillarScore.diagnostics`` under ``freshness.<component>``, one key per
@@ -363,10 +390,111 @@ class BasePillar(ABC):
         caller for storage, since it is the next run's history.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.base.BasePillar.compute is scaffolded; "
-            "see docs/roadmap.md Phase 2"
+        # Cleared before the run, not after it. Both are set by
+        # `blend_components`, and a `_normalise` override that does not blend
+        # would otherwise leave the previous call's path and standard deviation
+        # on this call's scores, which is a stale fact wearing a current one's
+        # clothes.
+        self.last_blend_sd = None
+        self.last_blend_divisor_path = ""
+
+        extracted = self._extract(observations, currencies, asof)
+        components = self._transform(extracted, asof)
+        normalised = self._normalise(components)
+
+        scores: dict[str, PillarScore] = {}
+        for currency in currencies:
+            per_currency = extracted.get(currency, {})
+            # Everything `_extract` returned for this currency. Indexing by
+            # `requires` instead would drop any series a pillar extracts under
+            # another key, and those observations still aged the score and still
+            # count toward the assumed-lag total.
+            inputs = tuple(
+                observation
+                for series in per_currency.values()
+                for observation in series
+            )
+            diagnostics = self._diagnostics(per_currency, inputs, asof)
+            z = normalised.get(currency)
+
+            if z is None:
+                absent = [
+                    indicator
+                    for indicator in self.requires
+                    if not per_currency.get(indicator)
+                ]
+                reason = (
+                    f"{self.name.value} could not score {currency}: no usable "
+                    f"{', '.join(absent)}"
+                    if absent
+                    else f"{self.name.value} could not score {currency}"
+                )
+                scores[currency] = replace(
+                    self.missing_score(currency, asof, notes=reason),
+                    diagnostics=diagnostics,
+                    blend_divisor_path=self.last_blend_divisor_path,
+                )
+                continue
+
+            scores[currency] = PillarScore(
+                pillar=self.name,
+                currency=currency,
+                raw=(
+                    components.get(currency, {}).get(self.headline_component)
+                    if self.headline_component
+                    else None
+                ),
+                z=z,
+                score=self.clip_and_scale(z, self.config.score_clip),
+                weight=self.weight,
+                asof=asof,
+                staleness_days=self.staleness_days(inputs, asof),
+                inputs=inputs,
+                diagnostics=diagnostics,
+                blend_divisor_path=self.last_blend_divisor_path,
+            )
+        return scores
+
+    def _diagnostics(
+        self,
+        extracted: Mapping[str, Sequence[Observation]],
+        inputs: Sequence[Observation],
+        asof: date,
+    ) -> dict[str, float]:
+        """Build the per-run measurements that ride alongside one score.
+
+        Args:
+            extracted: One currency's slice of `_extract`'s output.
+            inputs: The same observations flattened, as they reach the score.
+            asof: Run date.
+
+        Returns:
+            ``freshness.<component>`` for each component this currency had data
+            for, straight from `component_freshness`, plus
+            ``assumed_lag_inputs``. A component with no data has no key, because
+            `component_freshness` distinguishes an absent component from one
+            present and expired, and flattening the two here would undo that.
+
+            ``assumed_lag_inputs`` is always present, including when it is zero.
+            A key that disappears at zero cannot be read as zero by anything
+            downstream, which is the same absence-versus-value confusion this
+            module exists to avoid, one level up.
+
+        Nothing here reaches the composite. `fbe.scoring` reads freshness only
+        through the weight, once, via `pillar_freshness`.
+
+        """
+        diagnostics = {
+            f"freshness.{component}": factor
+            for component, factor in self.component_freshness(extracted, asof).items()
+        }
+        # An observation that survived the visibility rule without a
+        # ``released_at`` was admitted on the assumed lag, so counting the
+        # unstamped inputs counts exactly the ones resting on the assumption.
+        diagnostics["assumed_lag_inputs"] = float(
+            sum(1 for observation in inputs if observation.released_at is None)
         )
+        return diagnostics
 
     @abstractmethod
     def _extract(
@@ -413,9 +541,12 @@ class BasePillar(ABC):
 
             ``released_at`` absent: visible when
             ``period + DEFAULT_PUBLICATION_LAG_DAYS[frequency] <= asof``. An
-            assumption, not a fact, and the run should record in
-            ``PillarScore.notes`` how many of its inputs were admitted this way,
-            because that count is how much of the result rests on a guess.
+            assumption, not a fact, and the run records in
+            ``PillarScore.diagnostics["assumed_lag_inputs"]`` how many of its
+            inputs were admitted this way, because that count is how much of the
+            result rests on a guess. A count is a number, so it goes to
+            ``diagnostics`` rather than into prose a consumer would have to
+            parse; `compute` fills it.
 
         Filtering on ``period`` instead is the mistake this rule exists to
         prevent, and it stays invisible until a backtest is run. US Q1 GDP has a
@@ -756,10 +887,13 @@ class BasePillar(ABC):
             of the last ``ScoringConfig.restandardisation_window_runs`` runs was
             used and ``"run_local"`` when there were fewer than
             ``ScoringConfig.min_restandardisation_runs`` of them and ``run_sd``
-            was used instead. The path belongs in ``PillarScore.notes``: a score
-            computed under the fallback is not on the same scale as one computed
-            under the rolling estimate, so a report that does not say which was
-            used is hiding the one fact needed to compare two runs.
+            was used instead. The path belongs in
+            ``PillarScore.blend_divisor_path``, a typed field rather than a
+            marker inside ``notes``: a score computed under the fallback is not
+            on the same scale as one computed under the rolling estimate, so a
+            report that does not say which was used is hiding the one fact
+            needed to compare two runs, and ``--compare`` reads it for
+            correctness rather than for display.
 
         Why the divisor is estimated from history rather than from this run.
         Every component is already forced to unit standard deviation
@@ -985,7 +1119,14 @@ class BasePillar(ABC):
 
         mean = fsum(usable) / len(usable)
         variance = fsum((blend - mean) ** 2 for blend in usable) / len(usable)
-        divisor, _path = self.blend_divisor(sqrt(variance))
+        run_sd = sqrt(variance)
+        divisor, path = self.blend_divisor(run_sd)
+        # Recorded rather than discarded. Both facts are computed here and
+        # nowhere else, and `compute` has to put them on every score without
+        # re-deriving the blend, which would be the same arithmetic in two
+        # places and therefore two arithmetics.
+        self.last_blend_sd = run_sd
+        self.last_blend_divisor_path = path
         if divisor < 1e-9:
             return {
                 currency: (0.0 if blend is not None else None)

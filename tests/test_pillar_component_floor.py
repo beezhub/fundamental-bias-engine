@@ -245,7 +245,9 @@ def test_employment_is_absent_for_a_currency_holding_only_unemployment(
     keep both series, so AUD's absence is the floor firing and not a thin
     cross-section.
     """
-    _skip_if_scaffolded(BasePillar.compute)
+    _skip_if_scaffolded(
+        BasePillar.compute, EmploymentPillar._extract, EmploymentPillar._transform
+    )
 
     pillar = EmploymentPillar()
     scores = pillar.compute(
@@ -268,7 +270,9 @@ def test_growth_is_absent_for_a_currency_holding_gdp_and_retail_sales_only(
     This is the CHF, AUD and NZD case on the registry as it stands, reproduced
     for one currency.
     """
-    _skip_if_scaffolded(BasePillar.compute)
+    _skip_if_scaffolded(
+        BasePillar.compute, GrowthPillar._extract, GrowthPillar._transform
+    )
 
     pillar = GrowthPillar()
     scores = pillar.compute(
@@ -287,7 +291,9 @@ def test_growth_still_scores_a_currency_missing_only_the_pmi(asof: date) -> None
     The pair with the test above is the point. One missing component of four is a
     repair the renormalisation can make; two is not.
     """
-    _skip_if_scaffolded(BasePillar.compute)
+    _skip_if_scaffolded(
+        BasePillar.compute, GrowthPillar._extract, GrowthPillar._transform
+    )
 
     pillar = GrowthPillar()
     scores = pillar.compute(
@@ -306,7 +312,9 @@ def test_monetary_still_scores_a_currency_missing_only_cpi(asof: date) -> None:
     losing it costs 0.15 of the sub-weight. The widened comparison must not
     sweep this up.
     """
-    _skip_if_scaffolded(BasePillar.compute)
+    _skip_if_scaffolded(
+        BasePillar.compute, MonetaryPillar._extract, MonetaryPillar._transform
+    )
 
     pillar = MonetaryPillar()
     scores = pillar.compute(

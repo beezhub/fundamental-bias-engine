@@ -151,6 +151,15 @@ class PillarScore:
     staleness_days: int = 0
     inputs: Sequence[Observation] = field(default_factory=tuple)
     notes: str = ""
+    """Human prose for the report's "show your working" section.
+
+    Nothing may parse this for a decision. It is written for a person reading a
+    report and its wording is free to change, so any fact a consumer needs must
+    have a field or a `diagnostics` key of its own. The two facts that used to
+    be required here, the blend divisor path and the assumed-lag input count,
+    now have both: see `blend_divisor_path` and
+    ``diagnostics["assumed_lag_inputs"]``.
+    """
     diagnostics: Mapping[str, float] = field(default_factory=dict)
     """Per-run measurements about the cross-section this score came from, as
     opposed to the score itself. Read by the report and the reasoning layer,
@@ -165,6 +174,29 @@ class PillarScore:
     speaking at the volume its weight implies. A pillar emitting well below one
     contributes less than its declared weight, and that gap is invisible in the
     composite.
+
+    ``assumed_lag_inputs`` is the third, and it counts how many of this
+    currency's inputs were admitted on ``DEFAULT_PUBLICATION_LAG_DAYS`` rather
+    than on a real ``released_at``. It is how much of the score rests on an
+    assumption about when a figure was published rather than on the fact, and a
+    reader comparing a backtest with a live run needs it.
+    """
+    blend_divisor_path: str = ""
+    """Which scale this pillar's blend was divided by: how, not how much.
+
+    ``"rolling"`` means the divisor came from the median of recent runs and
+    ``"run_local"`` means there were too few of those and this run's own blend
+    standard deviation was used instead. An empty string means the pillar
+    recorded no path, which is the honest answer for a single-component pillar
+    and for one whose ``_normalise`` never blends.
+
+    A typed field rather than a marker inside `notes`, because ``--compare``
+    reads it to decide whether two runs are on the same scale, which makes it a
+    fact read for correctness and not for display. Scores computed under the
+    fallback are not comparable with scores computed under the rolling estimate,
+    and a report that cannot say which it is holding is hiding the one thing
+    needed to compare two days. Recorded by `fbe.pillars.base.BasePillar.compute`
+    on every score it builds, absent ones included.
     """
 
 
