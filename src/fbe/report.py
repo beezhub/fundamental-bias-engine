@@ -47,17 +47,19 @@ Report sections, in order:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from fbe.types import Direction
+from fbe.universe import G10
 
 if TYPE_CHECKING:
     from fbe.config import Config
     from fbe.types import (
         BiasReport,
         Conviction,
-        Direction,
         PairBias,
         PillarName,
     )
@@ -400,7 +402,9 @@ def _grid(pairs: Sequence[PairBias]) -> Mapping[str, Mapping[str, PairBias | Non
       unchanged. How strongly the model holds a view, and whether a release
       blocks it, do not depend on which way round the pair is written.
 
-    The diagonal is ``None``: a currency has no bias against itself.
+    The diagonal is ``None``: a currency has no bias against itself. A pair
+    the run does not hold leaves both its cells ``None``, since a mirror with
+    no original is a number the run never produced.
 
     Args:
         pairs: Pair biases from one run, in market convention.
@@ -411,11 +415,67 @@ def _grid(pairs: Sequence[PairBias]) -> Mapping[str, Mapping[str, PairBias | Non
         currency is the fundamentally stronger of the two.
 
     Raises:
-        NotImplementedError: Always, until rendering lands.
+        ValueError: When a leg is outside `fbe.universe.G10`, which has no
+            cell for it, or when two rows claim one cell, which happens when
+            a pair arrives both ways round. Either dropped silently would lose
+            or overwrite a pair with nothing on screen to say so.
 
     """
-    raise NotImplementedError(
-        "fbe.report._grid is scaffolded; see docs/roadmap.md Phase 5"
+    grid: dict[str, dict[str, PairBias | None]] = {
+        base: dict.fromkeys(G10) for base in G10
+    }
+    # Keyed by the unordered legs, so a pair arriving both ways round is
+    # caught and named by the row that got there first.
+    placed: dict[frozenset[str], str] = {}
+    for row in pairs:
+        for leg in (row.base, row.quote):
+            if leg not in grid:
+                raise ValueError(
+                    f"{row.pair} has a leg outside the universe: {leg} has no "
+                    "row or column in the grid"
+                )
+        legs = frozenset((row.base, row.quote))
+        if legs in placed:
+            raise ValueError(
+                f"{row.pair} would overwrite the cells {placed[legs]} already "
+                "fills: the run holds this pair twice, or both ways round"
+            )
+        placed[legs] = row.pair
+        grid[row.base][row.quote] = row
+        grid[row.quote][row.base] = _mirror(row)
+    return grid
+
+
+_INVERSE: Mapping[Direction, Direction] = {
+    Direction.LONG: Direction.SHORT,
+    Direction.SHORT: Direction.LONG,
+    Direction.NEUTRAL: Direction.NEUTRAL,
+}
+"""What a direction becomes when the pair is read from the other leg.
+
+Neutral maps to itself because it has no side to invert. The direction is
+looked up rather than re-derived from the sign of the spread: `fbe.bias` forces
+neutral on a wide spread whenever conviction is none, and a mirror that took
+the sign would print a call over the engine's own refusal to make one."""
+
+
+def _mirror(row: PairBias) -> PairBias:
+    """Return the convention row read from its quote currency's side.
+
+    Only the fields with a side change. The spread is negated rather than
+    recomputed from the swapped scores, so the mirror agrees with the original
+    to the bit rather than to rounding, and the pair string is the cell's own
+    ``base + quote`` rather than market convention, per `_grid`.
+    """
+    return replace(
+        row,
+        pair=row.quote + row.base,
+        base=row.quote,
+        quote=row.base,
+        base_score=row.quote_score,
+        quote_score=row.base_score,
+        spread=-row.spread,
+        direction=_INVERSE[row.direction],
     )
 
 
