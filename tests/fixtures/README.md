@@ -154,9 +154,10 @@ would give the monetary pillar a policy-relevant rate of zero on a day New
 Zealand had none, and the value would look entirely plausible. That is the case
 `tests/test_rbnz_b2_fixture.py` pins.
 
-`docs/data-sources.md` does not yet carry an RBNZ entry, because nothing fetches
-this. The fixture is here so the evidence survives without asking the owner to
-download it a second time.
+`CurvesSource.fetch_rbnz` reads this workbook and `tests/test_curves_rbnz.py`
+serves the fixture to it. The fixture is here so the evidence survives without
+asking the owner to download it a second time, and so the parser is checked
+against what the RBNZ published rather than against itself.
 
 ## FRED
 

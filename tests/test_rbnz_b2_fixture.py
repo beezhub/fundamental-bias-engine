@@ -1,21 +1,21 @@
 """What the RBNZ published for the New Zealand 2-year, pinned before it is used.
 
-`yield_2y` is 6/8 and `docs/data-sources.md` calls that gap the largest single
-risk in the data layer. NZD is one of the two missing legs, and issue #91
-established why: the RBNZ blocks this project's egress, so no unattended run can
-see inside the file, and for a long time nobody knew whether the series even
+`yield_2y` was 6/8 and `docs/data-sources.md` called that gap the largest
+single risk in the data layer. NZD was one of the two missing legs, and issue
+#91 established why: the RBNZ blocks this project's egress, so no unattended run
+can see inside the file, and for a long time nobody knew whether the series even
 existed. The owner retrieved the workbook from their own connection.
 
 This module exists so that fact does not have to be established twice. The
-fixture is the evidence, and the assertions below are what a future
-``fetch_rbnz`` must reproduce. Nothing here parses the workbook the way the
+fixture is the evidence, and the assertions below are what ``fetch_rbnz``
+must reproduce. Nothing here parses the workbook the way the
 source layer eventually will; these read it directly, so they pin the file
 rather than the implementation, and a parser written later can be checked
 against them rather than against itself.
 
-There is no `fbe` import in this module on purpose. The RBNZ is not yet a
-registered source, and a test that imported one would have to be rewritten the
-day it becomes one.
+There is no `fbe` import in this module on purpose. These tests pin the
+publication; `tests/test_curves_rbnz.py` checks the parser against it. Keeping
+them apart means the parser is checked against the RBNZ and not against itself.
 """
 
 from __future__ import annotations

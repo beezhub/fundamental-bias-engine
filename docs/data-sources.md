@@ -259,8 +259,8 @@ demotion on top. The model still runs and still prints numbers, which is worse
 than failing outright.
 
 Every issuer publishes the number free and without a key. The cost is that
-there is no single API: six providers, six formats, six failure modes. Each
-covers exactly one currency, so none can substitute for another and losing one
+there is no single API: seven providers, seven formats, seven failure modes.
+Each covers exactly one currency, so none can substitute for another and losing one
 provider means losing a currency's heaviest pillar rather than degrading a
 series. Fail loudly.
 
@@ -275,7 +275,7 @@ series. Fail loudly.
 | CAD | Bank of Canada Valet | `BD.CDN.2YR.DQ.YLD` | JSON / CSV | current |
 | AUD | Reserve Bank of Australia | `FCMYGBAG2D`, table F2 | CSV | current |
 | CHF | Swiss National Bank | cube `rendoblid`, tenor `2J` | CSV | **frozen** |
-| NZD | Reserve Bank of New Zealand | table B2 | XLSX | **blocked** |
+| NZD | Reserve Bank of New Zealand | `INM.DG102.NZZCF`, table B2 | XLSX | current, **owner's connection only** |
 
 **Bank of Canada Valet.** `https://www.bankofcanada.ca/valet/`, JSON or CSV, no
 key. `observations/{series}/json?recent=N` or `start_date`/`end_date`. Group
@@ -334,14 +334,67 @@ observation is 2025-07-31, while other cubes on the same portal are current to
 stopped publishing this particular series. The Swiss franc has no free current
 2-year yield.
 
-**Reserve Bank of New Zealand: not reachable.** `rbnz.govt.nz`,
-`nzdmo.govt.nz` and `debtmanagement.treasury.govt.nz` all answer automated
-requests with HTTP 403, with and without a browser user agent, and the RBNZ
-serves its own "Website unavailable" page rather than a proxy error. The RBNZ
-does publish 2-year government bond yields in statistical table B2, so the data
-exists; it could not be retrieved. This may be an environment block rather than
-a policy one, so it is **worth one attempt from another network** before
-accepting the manual route permanently.
+**Reserve Bank of New Zealand: current, reachable from the owner's
+connection only.**
+`https://www.rbnz.govt.nz/-/media/project/sites/rbnz/files/statistics/series/b/b2/hb2-daily-close.xlsx`,
+statistical table B2, daily wholesale interest rates, the daily close workbook
+from 2018. Sheet `Data` carries five header rows (group, tenor, notes, unit,
+series ID) and then one row per session, with dates as real datetimes and
+values as floats. Series `INM.DG102.NZZCF` is the secondary market government
+bond closing yield at 2 years, in `%pa`, which is the registry's `percent` with
+no conversion. The parser locates the column by that ID and checks the unit
+row, because the 1, 2, 5 and 10 year columns sit side by side in the same unit
+and a similar range, so one column out is a plausible wrong yield. 2178
+sessions from 2018-01-03, current to the previous business day.
+
+The 2-year column is blank for 286 of those sessions, 224 of them in 2020, the
+longest run 255 consecutive sessions ending 2020-11-19, and none after 2021.
+That reads as a period with no bond near the 2-year point rather than a feed
+fault. For live scoring it is a non-issue. For a Phase 6 backtest it is a real
+hole: roughly a year of 2020 has no NZ 2-year, and it is the year a backtest
+of a macro model would most want to see. A blank is absence, never zero.
+
+*Vantage.* The RBNZ answers every data-centre or cloud egress with HTTP 403
+and its own "Website unavailable" page: "Enable JavaScript and cookies to
+continue. Your access to the Reserve Bank website has been restricted." A
+whole-domain JavaScript challenge, static `-/media/` file paths included.
+That covers every network an unattended run on this project can use. From a
+residential or mobile connection the same URL serves the workbook. Nothing
+automated in this project fetches live data: the seven scheduled runs are
+repository maintenance, CI runs the four checks and never fetches, and tests
+never touch the network. The only place the engine runs against the live
+internet is the owner's machine, which is the one vantage the RBNZ answers.
+So the source works where the engine runs and nowhere else. If the engine is
+ever run from a server or a scheduled box, NZD's `yield_2y` drops, the
+monetary pillar falls below `MIN_COMPONENT_WEIGHT` for NZD again, and
+`fbe doctor` reports the RBNZ as unreachable. That report is the block, not a
+parsing fault, and it is the diagnosis rather than something to debug.
+
+The registry's `verified` flag and `last_observed` on this ref therefore rest
+on a check made from the owner's connection on 2026-09-15, not on a check a
+run can repeat. That is a departure from how every other ref in the table was
+verified, and it is recorded on the ref's note rather than left to look the
+same.
+
+*Attempt history.* Recorded so that nobody retries it a third time from a
+vantage that has already answered. A further attempt counts as new evidence
+only if it is made from an **unproxied residential or mobile connection**,
+not from a data-centre or cloud egress. An attempt that does not meet that
+condition is not a new row; it is a restatement of row 1.
+
+| Date | Vantage | Paths | Status |
+| --- | --- | --- | --- |
+| 2026-09-09 | Session container, egress proxy, with and without a browser user agent | `rbnz.govt.nz` statistics pages, `nzdmo.govt.nz`, `debtmanagement.treasury.govt.nz` | 403 |
+| 2026-09-10 | Session container, egress proxy | `rbnz.govt.nz`, every path tried including the direct statistics page | 403 |
+| 2026-09-13 | Routine container, local egress proxy, browser user agent | `/statistics/series/exchange-and-interest-rates`, `/` | 403 |
+| 2026-09-15 | Session container, egress proxy | the statistics page, the wholesale rates page, and two guessed `-/media/` file paths | 403 |
+| 2026-09-15 | **Phone, LTE mobile carrier** | `/statistics/series/exchange-and-interest-rates`, then the B2 daily close download | **200, workbook retrieved** |
+
+Verdict: a vantage block, not a publisher policy. The condition above was
+written before the mobile attempt and the mobile attempt met it, which is what
+settled the question. The block is documented here and in the registry note;
+no further attempt from a container is warranted, because it proves nothing
+the rows above have not already proved.
 
 ### Terms
 
@@ -626,7 +679,7 @@ Optional: `unit`, `frequency`, `released_at`, `revision`, `meta`.
 | File | Contents |
 | --- | --- |
 | `pmi.yaml` | Manufacturing and services PMIs for all eight. The largest manual burden, and a recurring monthly one. |
-| `yields.yaml` | 2y government yields for CHF and NZD only. The other six are fetched. |
+| `yields.yaml` | The CHF 2y government yield only. The other seven are fetched. |
 | `zz-overrides.yaml` | Ad-hoc corrections and the one-off gaps: AUD retail sales, EUR employment change, NZD dairy. Named to sort last, so it wins: precedence is filename order and nothing else, and `overrides.yaml` would sort ahead of `pmi.yaml` and `yields.yaml` and be overridden by the two files it exists to override. |
 
 An `inflation.yaml` used to be needed for six currencies. It no longer is: the
@@ -754,9 +807,9 @@ keys currently in that position.
 | Indicator | Fresh | Identifiers | Verdict |
 | --- | --- | --- | --- |
 | `policy_rate` | 8/8 | 8/8 | good |
-| `yield_2y` | 6/8 | 6/8 | CHF and NZD manual, see below |
-| `yield_2y_chg_1m` | 6/8 | 6/8 | derived from `yield_2y`, not separately published; same 6/8 |
-| `yield_2y_chg_3m` | 6/8 | 6/8 | derived from `yield_2y`, not separately published; same 6/8 |
+| `yield_2y` | 7/8 | 7/8 | CHF manual, see below; NZD from the owner's connection only |
+| `yield_2y_chg_1m` | 7/8 | 7/8 | derived from `yield_2y`, not separately published; same 7/8 |
+| `yield_2y_chg_3m` | 7/8 | 7/8 | derived from `yield_2y`, not separately published; same 7/8 |
 | `yield_10y` | 8/8 | 8/8 | good, but **consumed by no pillar**; see below |
 | `cpi_yoy` | 8/8 | 8/8 | good, was 2/8 before the OECD API |
 | `core_cpi_yoy` | 8/8 | 8/8 | good, was 2/8 |
@@ -776,29 +829,38 @@ keys currently in that position.
 
 ### The gaps that remain, and what each costs
 
-**1. CHF and NZD two-year yields.** The two that could not be closed.
+**1. The CHF two-year yield.** The one that could not be closed, and it is
+accepted rather than open.
 
 The Swiss franc's is a genuine discontinuation: the SNB publishes a
 Confederation spot curve, the endpoint is verified, and the cube stopped at
-2025-07-31 while the rest of the SNB portal stayed current. The New Zealand
-dollar's is an access problem, not an availability one: the RBNZ publishes the
-number in table B2 and refuses automated requests with HTTP 403 across every
-domain it owns.
+2025-07-31 while the rest of the SNB portal stayed current. There is nothing
+to retry. The gap is **accepted and not retryable**: the conviction demotion
+below is the intended outcome for CHF, not a placeholder for a fix, and the
+manual entry in `yields.yaml` is the only way to fill it. Do not re-raise it
+without a new publisher.
 
-The cost is specific and it is the largest single risk in the data layer. The
-monetary pillar draws most of its sub-weight from the 2-year, and monetary is
-the heaviest pillar in the composite.
+The New Zealand dollar's was an access problem, not an availability one, and
+it is closed: the RBNZ entry above fetches the 2-year from the owner's own
+connection. It reopens only if the engine is run from somewhere the RBNZ
+blocks, and the entry above says what that looks like.
 
-Worked through, for either currency. The 2-year carries three of MONETARY's five
+The cost of the CHF gap is specific and it was, before the RBNZ entry, the
+largest single risk in the data layer. The monetary pillar draws most of its
+sub-weight from the 2-year, and monetary is the heaviest pillar in the
+composite.
+
+Worked through. The 2-year carries three of MONETARY's five
 components, `yield_2y` at 0.25 and the two change series at 0.20 and 0.25, so
 losing it leaves `policy_rate` 0.15 and `real_policy_rate` 0.15, which is 0.30
 of the sub-weight. That is at or below `MIN_COMPONENT_WEIGHT` (0.50), so MONETARY
 returns `missing_score`: `z` is `None` and there is no monetary read at all.
 Coverage then falls to 0.70, the other six pillars' weight. That is below
-`ScoringConfig.coverage_demotion` (0.80), so every pair with a CHF or NZD leg is
+`ScoringConfig.coverage_demotion` (0.80), so every pair with a CHF leg is
 demoted one conviction step, and above `ScoringConfig.min_coverage` (0.60), so
 those pairs are not blocked outright. The currency is scored on six pillars out
-of seven, and the report says so through coverage.
+of seven, and the report says so through coverage. Seven of the 28 pairs carry
+a CHF leg.
 
 **There is no 10-year fallback.** MONETARY has no `yield_10y` term at any
 sub-weight, in section 3.1 of `docs/scoring-spec.md` or in
@@ -807,10 +869,17 @@ end. The pillar is absent, not degraded. That distinction matters when deciding
 what to do about it: a degraded read is something to live with, an absent
 heaviest pillar is not.
 
-Three options, in order of preference: retry the RBNZ from another network,
-since a 403 from one runner is not proof of a policy; enter both by hand in
-`data/manual/yields.yaml`, which is two numbers a day; or accept the reduced
-coverage and let the conviction demotion do its job, which is at least honest.
+Two options were weighed and one was rejected. **Daily manual entry is
+rejected**, and the reason is recorded so it is not reproposed without new
+information: `yield_2y` is daily with a 10-day allowance, so closing the gap by
+hand is a daily chore, and a chore done on most days and missed on some
+produces intermittent presence. The cross-section for the three `yield_2y`
+sub-indicators then changes composition day to day, and the run-to-run diff
+shows moves that are composition rather than data. A one-off historical
+download does not fix a daily series. What remains is to accept the reduced
+coverage and let the conviction demotion do its job, which is at least honest,
+and that is the accepted outcome. `yields.yaml` stays as the place a
+deliberate one-off entry goes, not as a routine.
 
 **2. PMIs, all eight.** S&P Global and ISM license these and no free API
 carries them. Permanently manual unless a licence is bought. This is the one
@@ -860,7 +929,7 @@ Affected: `unemployment_rate`, `retail_sales_yoy`,
 
 | Gap | File | Where the number comes from |
 | --- | --- | --- |
-| 2y yields, CHF and NZD | `yields.yaml` | SNB and RBNZ publications, or a broker terminal |
+| 2y yield, CHF | `yields.yaml` | a broker terminal, as a deliberate one-off; daily entry is rejected, see above |
 | PMIs, all eight | `pmi.yaml` | S&P Global releases, ISM for the US |
 | Retail sales AUD | `zz-overrides.yaml` | ABS monthly retail turnover |
 | Employment change EUR | `zz-overrides.yaml` | Eurostat quarterly employment release |
@@ -878,7 +947,7 @@ GBP 2-year yield lives in the Bank of England's yield curve archive, which is a
 ZIP of XLSX files and the only source in the registry that needs a spreadsheet
 reader. `pyproject.toml` declares `openpyxl`, `CurvesSource.fetch_boe_curve`
 reads the archive, and the pound therefore keeps its 2-year rather than falling
-back to the reduced monetary pillar CHF and NZD are on. This paragraph said the
+back to the reduced monetary pillar CHF is on. This paragraph said the
 opposite until #59: the dependency was already declared and the claim had gone
 stale.
 
@@ -889,7 +958,7 @@ header maturity within a tolerance and never by position or by equality.
 
 **Sub-weight floors should account for the 2-year gap.** `MIN_COMPONENT_WEIGHT`
 scores a pillar missing when a currency holds at or below half its sub-weight.
-CHF and NZD hold 0.30 of the monetary pillar without a 2-year. Whether that
+CHF holds 0.30 of the monetary pillar without a 2-year. Whether that
 should drop the pillar entirely or score it on what remains is a scoring
 decision, not a data one, but the data layer cannot close it and the scoring
 layer should know it is there.
@@ -916,9 +985,9 @@ a free machine-readable source, not the operator's typing.
 | Indicator | Pillar | Unit | Freq | Allowance | Fresh | Identifiers |
 | --- | --- | --- | --- | --- | --- | --- |
 | `policy_rate` | monetary | `percent` | daily | 75d | 100% | 100% |
-| `yield_2y` | monetary | `percent` | daily | 10d | 75% | 75% |
-| `yield_2y_chg_1m` | monetary | `basis_points` | daily | 10d | 75% | 75% |
-| `yield_2y_chg_3m` | monetary | `basis_points` | daily | 10d | 75% | 75% |
+| `yield_2y` | monetary | `percent` | daily | 10d | 88% | 88% |
+| `yield_2y_chg_1m` | monetary | `basis_points` | daily | 10d | 88% | 88% |
+| `yield_2y_chg_3m` | monetary | `basis_points` | daily | 10d | 88% | 88% |
 | `yield_10y` | monetary (unconsumed) | `percent` | monthly | 75d | 100% | 100% |
 | `cpi_yoy` | inflation | `percent` | monthly | 200d | 100% | 100% |
 | `core_cpi_yoy` | inflation | `percent` | monthly | 200d | 100% | 100% |
@@ -963,7 +1032,7 @@ Pillar: **monetary**. Canonical unit: `percent`. Staleness allowance: 75 days. F
 
 Two-year government bond yield, the market's own forecast of where policy goes next. The 2y differential is the strongest single fundamental driver of a G10 pair over a multi-week horizon, and the monetary pillar derives most of its sub-weight from it, so a missing leg here costs a currency the heaviest pillar in the model.
 
-Pillar: **monetary**. Canonical unit: `percent`. Staleness allowance: 10 days. Fresh coverage: 75%.
+Pillar: **monetary**. Canonical unit: `percent`. Staleness allowance: 10 days. Fresh coverage: 88%.
 
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -974,21 +1043,21 @@ Pillar: **monetary**. Canonical unit: `percent`. Staleness allowance: 10 days. F
 | CHF | manual | `yield_2y` | percent | daily | level | **no** | **unknown** | the SNB publishes a Confederation spot curve and the endpoint is verified (cube 'rendoblid', dimension '2J'), but it stopped at 2025-07-31 while the rest of the SNB portal stayed current. No free replacement found. Enter by hand or accept that the Swiss franc runs the monetary pillar without a front end. |
 | CAD | boc | `BD.CDN.2YR.DQ.YLD` | percent | daily | level | yes | 2026-09-08 | Government of Canada 2-year benchmark bond yield |
 | AUD | rba | `FCMYGBAG2D` | percent | daily | level | yes | 2026-09-02 | Australian Government 2-year bond, interpolated, from RBA statistical table F2 |
-| NZD | manual | `yield_2y` | percent | daily | level | **no** | **unknown** | the RBNZ publishes 2-year government bond yields in table B2, but rbnz.govt.nz, nzdmo.govt.nz and debtmanagement.treasury.govt.nz all refuse automated requests with HTTP 403. Not verified, not wired in. This may be an environment block rather than a policy one, so it is worth retrying from another network before accepting the manual route. |
+| NZD | rbnz | `INM.DG102.NZZCF` | percent | daily | level | yes, from the owner's connection | 2026-09-08 | secondary market government bond closing yield, 2 year, from RBNZ table B2 (hb2-daily-close.xlsx), column located by this series ID. Verified by the owner from a residential or mobile connection on 2026-09-15, not from a run: the RBNZ answers every data-centre or cloud egress with HTTP 403 and a JavaScript challenge, so no unattended run can repeat the check or the fetch. The 2-year column is blank for most of 2020, which a backtest over that year must know. |
 
 #### `yield_2y_chg_1m` and `yield_2y_chg_3m`
 
 One-month and three-month changes in the two-year government bond yield, in basis points, resampled to month-end or quarter-end before differencing. Together they carry 0.45 of the monetary pillar, more than the level itself, because the direction of repricing typically leads the level in FX.
 
-Neither is a separately published series. No source in this registry, or found by search, publishes a pre-differenced government bond yield change for any G10 issuer. Both reuse `yield_2y`'s own source, series ID, unit and verification status for every currency, under the registry's `chg_1m` and `chg_3m` transforms, which is why their source table is not repeated here: it is `yield_2y`'s table above, currency for currency, source for source. Coverage, freshness and the CHF/NZD manual gap are therefore identical to `yield_2y`'s.
+Neither is a separately published series. No source in this registry, or found by search, publishes a pre-differenced government bond yield change for any G10 issuer. Both reuse `yield_2y`'s own source, series ID, unit and verification status for every currency, under the registry's `chg_1m` and `chg_3m` transforms, which is why their source table is not repeated here: it is `yield_2y`'s table above, currency for currency, source for source. Coverage, freshness and the CHF manual gap are therefore identical to `yield_2y`'s.
 
-Pillar: **monetary**. Canonical unit: `basis_points`. Staleness allowance: 10 days. Fresh coverage: 75% (both).
+Pillar: **monetary**. Canonical unit: `basis_points`. Staleness allowance: 10 days. Fresh coverage: 88% (both).
 
 #### `yield_10y`
 
 Ten-year benchmark government bond yield. Registered and verified across all eight, with clean current coverage, and **consumed by no pillar today**.
 
-MONETARY is attributed to it in the registry but does not ask for it: section 3.1 of `docs/scoring-spec.md` and `MonetaryPillar.component_weights` both name five components and none is a 10-year series. Read its 100% coverage as a series held ready, not as a live input, and do not read it as covering the CHF and NZD front-end gap above.
+MONETARY is attributed to it in the registry but does not ask for it: section 3.1 of `docs/scoring-spec.md` and `MonetaryPillar.component_weights` both name five components and none is a 10-year series. Read its 100% coverage as a series held ready, not as a live input, and do not read it as covering the CHF front-end gap above.
 
 It is specifically **not** a fallback for `yield_2y`, and adding it as one would be a substitution error rather than a repair. Section 3.1 values the 2-year because it is the market's expectation of the policy path, already priced. A 10-year yield is dominated by term premium and by long-run growth and inflation expectations, so it answers a different question. Whether MONETARY should ever gain a 10-year term is a scoring decision for `quant-analyst` and is not settled here.
 
@@ -1355,10 +1424,11 @@ Expected and structural. Positions are snapped Tuesday and published Friday
 
 **A currency scores with low coverage**
 `CurrencyScore.coverage` below 1.0 means part of the pillar weight had no usable
-data. Run `registry.stale_refs()` for the actionable list. If it is CHF or NZD,
-it is almost certainly the missing 2-year yield taking the monetary pillar with
-it; see "The gaps that remain" above. Otherwise it is PMI, which is manual for
-everyone.
+data. Run `registry.stale_refs()` for the actionable list. If it is CHF, it
+is almost certainly the missing 2-year yield taking the monetary pillar with
+it; see "The gaps that remain" above. If it is NZD, the engine is probably
+running from a network the RBNZ blocks; see the RBNZ entry under "Central
+banks and debt offices". Otherwise it is PMI, which is manual for everyone.
 
 **`coverage_report()` and `identifier_coverage()` disagree**
 That is them working. `identifier_coverage()` at 1.0 with `coverage_report()` at
@@ -1370,8 +1440,9 @@ example of the first.
 **A currency's monetary pillar is missing entirely**
 Check `yield_2y` first. The monetary pillar draws most of its sub-weight from
 the 2-year, so a currency without one falls below the component floor and loses
-the whole pillar rather than degrading gracefully. CHF and NZD are in this state
-by default. Everything else has a fetched 2-year.
+the whole pillar rather than degrading gracefully. CHF is in this state by
+default. NZD is in it whenever the engine runs from a data-centre or cloud
+network, because the RBNZ blocks those. Everything else has a fetched 2-year.
 
 **A central bank source returns nothing**
 Run `CurvesSource.provider_health()` before touching parsing code. It reports

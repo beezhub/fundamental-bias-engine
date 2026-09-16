@@ -43,15 +43,19 @@ yields at all. Two additions fix most of that:
   series, it now points at the OECD directly.
 * **National central banks and debt offices** publish their own curves, free
   and without a key. That is where the 2-year yields come from: Bank of Canada,
-  the ECB Data Portal, Japan's Ministry of Finance, the Bank of England and the
-  Reserve Bank of Australia between them cover six of the eight.
+  the ECB Data Portal, Japan's Ministry of Finance, the Bank of England, the
+  Reserve Bank of Australia and the Reserve Bank of New Zealand between them
+  cover seven of the eight. The RBNZ one comes with a condition: the RBNZ
+  answers every data-centre or cloud egress with a JavaScript challenge, so
+  the fetch works from the owner's own residential or mobile connection, which
+  is the only place the engine runs live, and from nowhere else.
 
 What is still missing, stated plainly
 --------------------------------------
-* **CHF and NZD 2-year yields.** The SNB publishes a Confederation spot curve
+* **The CHF 2-year yield.** The SNB publishes a Confederation spot curve
   and the endpoint is verified, but the cube stopped at 2025-07-31 while the
-  rest of the SNB portal stayed current. The RBNZ and New Zealand Debt
-  Management both refuse automated requests outright. Both are manual.
+  rest of the SNB portal stayed current. A genuine discontinuation, with
+  nothing to retry, so the gap is accepted and CHF is manual.
 * **PMIs**, all eight. Licensed by S&P Global and ISM, on no free API.
 * **Current account**, all eight. The FRED family stopped at 2024Q4 and no free
   replacement was found. The staleness allowance below is set to what a
@@ -87,6 +91,7 @@ __all__ = [
     "SOURCE_MOF_JP",
     "SOURCE_OECD",
     "SOURCE_RBA",
+    "SOURCE_RBNZ",
     "SOURCE_SNB",
     "SOURCE_STOOQ",
     "TRANSFORMS",
@@ -121,9 +126,18 @@ SOURCE_MOF_JP = "mof_jp"
 SOURCE_BOE = "boe"
 SOURCE_RBA = "rba"
 SOURCE_SNB = "snb"
+SOURCE_RBNZ = "rbnz"
 
 CURVE_SOURCES: frozenset[str] = frozenset(
-    {SOURCE_BOC, SOURCE_ECB, SOURCE_MOF_JP, SOURCE_BOE, SOURCE_RBA, SOURCE_SNB}
+    {
+        SOURCE_BOC,
+        SOURCE_ECB,
+        SOURCE_MOF_JP,
+        SOURCE_BOE,
+        SOURCE_RBA,
+        SOURCE_SNB,
+        SOURCE_RBNZ,
+    }
 )
 """The central bank and debt office sources, all served by
 `fbe.datasources.curves`. Grouped because they share one thing that matters:
@@ -528,16 +542,22 @@ YIELD_2Y = IndicatorSpec(
                 "statistical table F2"
             ),
         ),
-        "NZD": _manual(
-            "yield_2y",
+        "NZD": _ref(
+            SOURCE_RBNZ,
+            "INM.DG102.NZZCF",
             "percent",
             Frequency.DAILY,
-            "the RBNZ publishes 2-year government bond yields in table B2, but "
-            "rbnz.govt.nz, nzdmo.govt.nz and debtmanagement.treasury.govt.nz "
-            "all refuse automated requests with HTTP 403. Not verified, not "
-            "wired in. This may be an environment block rather than a policy "
-            "one, so it is worth retrying from another network before "
-            "accepting the manual route.",
+            date(2026, 9, 8),
+            note=(
+                "secondary market government bond closing yield, 2 year, from "
+                "RBNZ table B2 (hb2-daily-close.xlsx), column located by this "
+                "series ID. Verified by the owner from a residential or mobile "
+                "connection on 2026-09-15, not from a run: the RBNZ answers "
+                "every data-centre or cloud egress with HTTP 403 and a "
+                "JavaScript challenge, so no unattended run can repeat the "
+                "check or the fetch. The 2-year column is blank for most of "
+                "2020, which a backtest over that year must know."
+            ),
         ),
     },
 )
@@ -595,7 +615,7 @@ YIELD_2Y_CHG_1M = IndicatorSpec(
         "series for this anywhere; see `_yield_change_series` for how it is "
         "derived from `yield_2y` rather than sourced independently. Coverage "
         "and freshness are therefore identical to `yield_2y`'s currency by "
-        "currency: CHF and NZD are manual for the same reason the level is."
+        "currency: CHF is manual for the same reason the level is."
     ),
     series=_yield_change_series(
         "chg_1m",
@@ -640,8 +660,8 @@ YIELD_10Y = IndicatorSpec(
         "pillar today: MONETARY is attributed here but asks for five "
         "components and none is a 10-year series. Held ready, so read its "
         "coverage as availability rather than as a live input. Specifically "
-        "not a fallback for yield_2y, and not what CHF and NZD fall back on "
-        "when their 2-year is missing, because there is no such fallback. "
+        "not a fallback for yield_2y, and not what CHF falls back on when "
+        "its 2-year is missing, because there is no such fallback. "
         "Section 3.1 of docs/scoring-spec.md values the 2-year as the priced "
         "policy path, while a 10-year is dominated by term premium and "
         "long-run growth and inflation expectations, so it answers a "
