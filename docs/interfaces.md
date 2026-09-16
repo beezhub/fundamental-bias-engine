@@ -230,7 +230,7 @@ are different trades, and the ranking alone cannot tell them apart.
 | `--majors` / `--all-pairs` | all pairs | Restrict to the seven dollar majors. |
 | `--min-conviction` | `none` | Drop pairs below `none`, `low`, `medium` or `high`. |
 | `--tradeable-only` | off | Hide pairs carrying a blocker. |
-| `--matrix` / `--ranked` | ranked | Grid layout instead of the ranked list. |
+| `--matrix` / `--ranked` | ranked | Grid layout instead of the ranked list. Table or `json`; refused with `--top` or `csv`. |
 | `--top`, `-n` | all | Truncate the ranked list. |
 | `--format` | `table` | `table`, `json` or `csv`. |
 
@@ -305,18 +305,26 @@ A run where every currency scored on nothing still prints its rows, because the
 absence is what there is to see, and exits 1: coverage collapsing is what that
 code means, and a zero would read as a working engine with no opinions.
 
-The matrix view answers a different question. It is not built yet:
-`fbe.report._grid` is still scaffolded, and `fbe bias --matrix` refuses
-with exit code 2 rather than printing a partial grid, for the reason given
-below the example.
-
+The matrix view answers a different question. It is the same run as the
+score table above, laid out base down the rows and quote across, and every
+cell reads along its own row: a positive number means the row currency is the
+fundamentally stronger of the two.
 
 ```console
 $ fbe bias --matrix
-base \ quote   USD    EUR    GBP    JPY    CHF    CAD    AUD    NZD
-USD              .  +2.31  +1.11  +2.60  +0.65  +1.47  +2.36  +2.48
-EUR          -2.31      .  -1.20  +0.29  -1.66  -0.84  +0.05  +0.17
-...
+asof 2026-09-09   config 8f2c1a9d4b70
+
+base \ quote    USD    EUR    GBP    JPY    CHF    CAD    AUD    NZD
+USD               .  +2.31  +1.11  +2.60  +0.65  +1.47  +2.36  +2.48
+EUR           -2.31      .  -1.20  +0.29  -1.66  -0.84  +0.05  +0.17
+GBP           -1.11  +1.20      .  +1.49  -0.46  +0.36  +1.25  +1.37
+JPY           -2.60  -0.29  -1.49      .  -1.95  -1.13  -0.24  -0.12
+CHF           -0.65  +1.66  +0.46  +1.95      .  +0.82  +1.71  +1.83
+CAD           -1.47  +0.84  -0.36  +1.13  -0.82      .  +0.89  +1.01
+AUD           -2.36  -0.05  -1.25  +0.24  -1.71  -0.89      .  +0.12
+NZD           -2.48  -0.17  -1.37  +0.12  -1.83  -1.01  -0.12      .
+
+No calendar was consulted: the blackout filter and the 24-hour conviction cap did not run, so no tier here is capped for an imminent release. Check the calendar by hand before acting on a row.
 ```
 
 Reading down the USD column shows every other currency losing to it. That is
@@ -330,6 +338,23 @@ what they are given. That arithmetic lives in one function on purpose, because
 a mirrored cell left in convention still shows a plausible number under the
 wrong row header, and the error would be invisible in exactly the half of the
 grid nobody double-checks.
+
+The diagonal prints `.`: a currency has no bias against itself, and a `0.00`
+there would read as the engine finding two economies level. A cell prints `-`
+when the run being shown holds no row for that pair, which is what the filters
+produce: `--majors`, `--min-conviction` and `--tradeable-only` narrow the pool
+the grid is built from, so a pair they removed is an empty cell and is named
+below the grid exactly as it is below the list. `--matrix --majors` therefore
+fills the USD row and the USD column and nothing else.
+
+`--format json` nests the grid base then quote, each cell carrying the same
+fields as a ranked row, under a `"view": "matrix"` key. A mirrored cell's
+`pair` is the cell's own name, `USDEUR` on USD's row, and not market
+convention; it is there to be read, and must not be fed to anything that
+takes a pair list. Two combinations are refused with exit code 2: `--top`,
+because a grid has no top and ignoring the option would print 56 cells under
+a flag that asked for fewer, and `--format csv`, because a flat file of the
+grid is a pair list with 28 pairs written backwards.
 
 ### `fbe calendar`
 

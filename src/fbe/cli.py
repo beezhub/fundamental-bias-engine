@@ -178,6 +178,31 @@ direction runs into the conviction as ``neutralnone``. `direction_for` returns
 ``fbe.bias`` puts at roughly half the 28 pairs on a typical run, so that is the
 common row rather than the rare one."""
 
+GRID_LABEL = "base \\ quote"
+GRID_LABEL_WIDTH = len(GRID_LABEL)
+GRID_CELL_WIDTH = 7
+"""Layout of the ``bias --matrix`` grid published in ``docs/interfaces.md``.
+
+The row label is the corner text itself, so the first column is exactly as
+wide as the words that name the two axes. A cell is one wider than a signed
+two-decimal spread, so ``-2.31`` and ``+0.05`` right-align under a three-letter
+code with one space between columns at the widest."""
+
+GRID_DIAGONAL = "."
+"""What a currency prints against itself: no bias, not a zero one.
+
+``0.00`` would read as the engine finding two economies level, which is a
+finding, and the diagonal is not one. `fbe.report._grid` leaves it ``None``."""
+
+GRID_EMPTY = "-"
+"""What a cell prints when the run being shown holds no row for that pair.
+
+Distinct from the diagonal on purpose. The diagonal can never hold a number;
+this cell could and does not, either because a filter removed the pair, in
+which case the hidden list below names it, or because the run never scored
+it. Blank space would say neither and would read as a column the renderer
+lost."""
+
 NO_BLOCKERS = "-"
 """What the Notes column prints when a pair carries nothing at all.
 
@@ -1635,8 +1660,8 @@ def _score_csv(
 @app.command(
     help=(
         "Rank the directional calls by the width of the fundamental gap. A "
-        "pair bias is the difference between two currency scores. --matrix is "
-        "not built yet and refuses; --ranked is the list."
+        "pair bias is the difference between two currency scores. --ranked is "
+        "the list; --matrix is the same pairs as a base against quote grid."
     ),
 )
 def bias(
@@ -1681,8 +1706,9 @@ def bias(
         typer.Option(
             "--matrix/--ranked",
             help=(
-                "Not built yet: refuses with exit code 2 rather than printing "
-                "a grid whose mirrored half would point the wrong way."
+                "Lay the pairs out base down the rows and quote across, every "
+                "cell read along its own row. Table or json; --top and csv "
+                "are list options and are refused with it."
             ),
         ),
     ] = False,
@@ -1705,8 +1731,17 @@ def bias(
     A pair bias is the difference between two currency scores, never a score of
     its own. The ranked view sorts by the size of that spread, so the top of the
     list is where the fundamental disagreement between two economies is widest.
-    The matrix view, which lays the same numbers out base against quote, needs
-    `fbe.report._grid` and is not built yet.
+    The matrix view lays the same pairs out base against quote, and reading
+    down one column shows every other currency against that one, which is
+    the moment to notice the trade is the currency and not the pair.
+
+    The grid is `fbe.report._grid`'s and is printed as handed. Half its cells
+    are mirrors of the run's rows, and the negation, the swap of the legs and
+    the inversion of the direction happen there and nowhere here: a second
+    copy of that arithmetic is a second place for the lower triangle to point
+    the wrong way. The grid is built from the rows the filters kept, so a
+    hidden pair is an empty cell and is named below the grid as it is below
+    the list.
 
     Filters compose: ``--majors --min-conviction medium --tradeable-only`` is
     the pre-market narrowing. It is not `fbe.bias.shortlist`, which the report
@@ -1721,7 +1756,9 @@ def bias(
         min_conviction: Minimum `fbe.types.Conviction` to include.
         tradeable_only: Drop pairs with blockers set.
         matrix: Render the grid instead of the ranked list.
-        top: Truncate the ranked list.
+        top: Truncate the ranked list. Refused with ``matrix``: a grid has no
+            top, and ignoring the option would print 56 cells under a flag
+            that asked for fewer.
         output_format: table, json or csv.
 
     Every printed number and every printed marker is read from a
@@ -1740,9 +1777,11 @@ def bias(
     Raises:
         typer.BadParameter: With exit code 2 when ``--asof`` is in the future,
             when ``scoring.lookback_years`` cannot produce a window, or when
-            ``--matrix`` is asked for, which needs `fbe.report._grid` and is
-            not built yet. Each would otherwise print a table that looked like
-            a run rather than a refusal.
+            ``--matrix`` is combined with ``--top`` or ``--format csv``. The
+            first two would otherwise print a table that looked like a run
+            rather than a refusal. A CSV of the grid is a flat list of 56
+            cells, 28 of them pairs written backwards, and a pair list is the
+            one thing a mirrored cell must never reach.
         typer.Exit: With `EXIT_UNUSABLE` when the cache held nothing for the
             window, so an empty table cannot read as a working engine with no
             opinions.
@@ -1756,16 +1795,18 @@ def bias(
             "past its allowance and every pair would come back flat",
             param_hint="--asof",
         )
-    if matrix:
-        # Refused rather than approximated. `report._grid` is the single place
-        # a mirrored cell is produced, and until it lands a grid built here
-        # would show market-convention numbers under the opposite row header,
-        # which is a plausible number pointing the wrong way in exactly the
-        # half of the grid nobody double-checks.
+    if matrix and top is not None:
         raise typer.BadParameter(
-            "--matrix needs the mirrored grid, which is not built yet. Use "
-            "--ranked for the list of pairs.",
-            param_hint="--matrix",
+            "--top shortens the ranked list and the grid has no top. Drop "
+            "--top, or use --ranked.",
+            param_hint="--top",
+        )
+    if matrix and output_format is OutputFormat.CSV:
+        raise typer.BadParameter(
+            "--format csv is the ranked list as a file. The grid has no flat "
+            "form that keeps its mirrored cells out of a pair list; use "
+            "--format json for the grid, or --ranked for the csv.",
+            param_hint="--format",
         )
 
     try:
@@ -1812,7 +1853,15 @@ def bias(
     shown, hidden = _bias_rows(filtered, majors, min_conviction, tradeable_only)
     notes = _bias_notes()
 
-    if output_format is OutputFormat.JSON:
+    if matrix:
+        grid = report_module._grid(shown)
+        if output_format is OutputFormat.JSON:
+            typer.echo(
+                _matrix_json(grid, hidden, majors, run_date, config.digest(), notes)
+            )
+        else:
+            _render_matrix(grid, hidden, majors, run_date, config.digest(), notes)
+    elif output_format is OutputFormat.JSON:
         typer.echo(
             _bias_json(shown, hidden, top, majors, run_date, config.digest(), notes)
         )
@@ -2061,6 +2110,100 @@ def _render_bias(
             typer.echo(note)
 
 
+def _render_matrix(
+    grid: Mapping[str, Mapping[str, PairBias | None]],
+    hidden: Sequence[tuple[PairBias, str]],
+    majors: bool,
+    asof: date,
+    digest: str,
+    notes: Sequence[str],
+) -> None:
+    """Print the grid in the layout ``docs/interfaces.md`` publishes.
+
+    Every number is ``cell.spread`` as found. The grid arrives already
+    oriented, so a cell on USD's row under EUR is USD against EUR and its sign
+    is printed, never flipped, here.
+    """
+    typer.echo(_run_header(asof, digest))
+    typer.echo("")
+    typer.echo(_matrix_columns(tuple(grid)))
+    for base, row in grid.items():
+        typer.echo(_matrix_line(base, row))
+    lines = _hidden_lines(hidden, majors)
+    if lines:
+        typer.echo("")
+        for line in lines:
+            typer.echo(line)
+    if notes:
+        typer.echo("")
+        for note in notes:
+            typer.echo(note)
+
+
+def _matrix_columns(quotes: Sequence[str]) -> str:
+    """Return the header row: the corner label, then the quotes across."""
+    return f"{GRID_LABEL:<{GRID_LABEL_WIDTH}}" + "".join(
+        f"{quote:>{GRID_CELL_WIDTH}}" for quote in quotes
+    )
+
+
+def _matrix_line(base: str, row: Mapping[str, PairBias | None]) -> str:
+    """Return one base currency's row of the grid.
+
+    A ``None`` cell is the diagonal when the quote is the base, and an empty
+    cell otherwise. The two print differently because they mean different
+    things: one can never hold a number and the other could have.
+    """
+    cells = []
+    for quote, cell in row.items():
+        if cell is not None:
+            cells.append(f"{cell.spread:>+{GRID_CELL_WIDTH}.2f}")
+        elif quote == base:
+            cells.append(f"{GRID_DIAGONAL:>{GRID_CELL_WIDTH}}")
+        else:
+            cells.append(f"{GRID_EMPTY:>{GRID_CELL_WIDTH}}")
+    return f"{base:<{GRID_LABEL_WIDTH}}" + "".join(cells)
+
+
+def _matrix_json(
+    grid: Mapping[str, Mapping[str, PairBias | None]],
+    hidden: Sequence[tuple[PairBias, str]],
+    majors: bool,
+    asof: date,
+    digest: str,
+    notes: Sequence[str],
+) -> str:
+    """Return the grid as JSON, nested base then quote.
+
+    A cell carries the same fields as a ranked row, through the same builder,
+    so the two renderings cannot disagree about what a pair is. The nesting
+    is the point: ``grid[base][quote]`` cannot be read as a list of pairs, and
+    a mirrored cell's ``pair`` is the cell's own name rather than market
+    convention, which the ``view`` key says up front. Empty cells and the
+    diagonal are both ``null``; the diagonal is the one where base and quote
+    are equal.
+    """
+    payload = {
+        base: {
+            quote: None if cell is None else _bias_payload([cell])[0]
+            for quote, cell in row.items()
+        }
+        for base, row in grid.items()
+    }
+    return json.dumps(
+        {
+            "asof": asof.isoformat(),
+            "config_digest": digest,
+            "view": "matrix",
+            "grid": payload,
+            "hidden": _hidden_payload(hidden),
+            "pool": "majors" if majors else "all",
+            "warnings": list(notes),
+        },
+        indent=2,
+    )
+
+
 def _truncate(rows: Sequence[PairBias], top: int | None) -> Sequence[PairBias]:
     """Return at most ``top`` rows, keeping the order.
 
@@ -2096,6 +2239,18 @@ def _bias_payload(rows: Sequence[PairBias]) -> list[dict[str, object]]:
     ]
 
 
+def _hidden_payload(hidden: Sequence[tuple[PairBias, str]]) -> list[dict[str, object]]:
+    """Return the hidden rows as plain data, each carrying the reason it went.
+
+    Shared by both JSON views, so the list and the grid cannot disagree about
+    what a hidden pair looks like or lose the reason in one of them.
+    """
+    rows = _bias_payload([row for row, _ in hidden])
+    for payload_row, (_, reason) in zip(rows, hidden, strict=True):
+        payload_row["reason"] = reason
+    return rows
+
+
 def _bias_json(
     shown: Sequence[PairBias],
     hidden: Sequence[tuple[PairBias, str]],
@@ -2112,15 +2267,12 @@ def _bias_json(
     and one that wants to know what went can find out without rerunning the
     command without its filters.
     """
-    hidden_rows = _bias_payload([row for row, _ in hidden])
-    for payload_row, (_, reason) in zip(hidden_rows, hidden, strict=True):
-        payload_row["reason"] = reason
     return json.dumps(
         {
             "asof": asof.isoformat(),
             "config_digest": digest,
             "pairs": _bias_payload(_truncate(shown, top)),
-            "hidden": hidden_rows,
+            "hidden": _hidden_payload(hidden),
             "pool": "majors" if majors else "all",
             "warnings": list(notes),
         },

@@ -608,14 +608,242 @@ def test_the_legs_printed_are_the_ones_the_engine_recorded(
     assert "-1.18" not in row
 
 
-def test_matrix_says_the_view_is_not_available_yet(
+# --- the matrix view --------------------------------------------------------
+#
+# The grid is `fbe.report._grid`'s and the command prints what it is handed.
+# The tests below therefore check two separate things: that the layout is the
+# published one, and that the command did no arithmetic of its own on the way.
+# The second is checked on the wire, by handing the command a grid whose
+# mirrored half is deliberately wrong and asserting that the wrong numbers are
+# what got printed.
+
+GRID_ROW_LABEL = "base \\ quote"
+
+
+def grid_lines(result: Result) -> dict[str, str]:
+    """The matrix rows keyed by their base currency, header excluded."""
+    return {
+        line[:3]: line
+        for line in result.stdout.splitlines()
+        if line[:3] in G10 and line[3:4] == " "
+    }
+
+
+def grid_cells(result: Result) -> dict[str, dict[str, str]]:
+    """The printed grid as ``cells[base][quote]``, split on the header."""
+    lines = result.stdout.splitlines()
+    header = next(line for line in lines if line.startswith(GRID_ROW_LABEL))
+    columns = header[len(GRID_ROW_LABEL) :].split()
+    assert columns == list(G10)
+    cells: dict[str, dict[str, str]] = {}
+    for base, line in grid_lines(result).items():
+        values = line[len(GRID_ROW_LABEL) :].split()
+        assert len(values) == len(G10), line
+        cells[base] = dict(zip(G10, values, strict=True))
+    return cells
+
+
+def test_matrix_prints_the_bases_down_and_the_quotes_across(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A partial grid would show plausible numbers under the wrong headers."""
+    """The published layout: the universe in its own order on both axes."""
     result, _ = run(monkeypatch, MIXED, "--matrix")
 
-    assert result.exit_code != EXIT_OK
-    assert "--matrix" in ANSI.sub("", result.output)
+    assert result.exit_code == EXIT_OK
+    header = next(
+        line for line in result.stdout.splitlines() if line.startswith(GRID_ROW_LABEL)
+    )
+    assert header.split()[3:] == list(G10)
+    assert list(grid_lines(result)) == list(G10)
+
+
+def test_matrix_shows_a_pair_along_its_own_row_and_mirrored_across(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EURUSD at +1.11 reads +1.11 on EUR's row and -1.11 on USD's."""
+    result, _ = run(monkeypatch, MIXED, "--matrix")
+
+    cells = grid_cells(result)
+    assert cells["EUR"]["USD"] == "+1.11"
+    assert cells["USD"]["EUR"] == "-1.11"
+    assert cells["USD"]["JPY"] == "+2.60"
+    assert cells["JPY"]["USD"] == "-2.60"
+
+
+def test_matrix_prints_the_diagonal_as_the_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A currency against itself is not a zero spread, and must not print as
+    one."""
+    result, _ = run(monkeypatch, MIXED, "--matrix")
+
+    cells = grid_cells(result)
+    for currency in G10:
+        assert cells[currency][currency] == "."
+    assert "0.00" not in result.stdout
+
+
+def test_matrix_leaves_a_pair_the_run_did_not_hold_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``MIXED`` holds five pairs, so 46 off-diagonal cells have no number and
+    print as the blank marker rather than a zero or the diagonal's dot."""
+    result, _ = run(monkeypatch, MIXED, "--matrix")
+
+    cells = grid_cells(result)
+    assert cells["EUR"]["GBP"] == "-"
+    assert cells["GBP"]["EUR"] == "-"
+    blanks = sum(1 for base in G10 for quote in G10 if cells[base][quote] == "-")
+    assert blanks == 64 - 8 - 2 * len(MIXED)
+
+
+def test_ranked_is_still_the_default_and_can_be_asked_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The list is unchanged by the grid landing, on both spellings."""
+    default, _ = run(monkeypatch, MIXED)
+    ranked, _ = run(monkeypatch, MIXED, "--ranked")
+
+    assert default.stdout == ranked.stdout
+    assert printed_pairs(ranked) == ["USDJPY", "AUDCAD", "NZDUSD", "EURUSD", "GBPUSD"]
+    assert GRID_ROW_LABEL not in ranked.stdout
+
+
+def test_matrix_composes_with_majors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--majors`` narrows the pool the grid is built from, so only the cells
+    with a dollar leg carry a number and the rest print blank."""
+    universe = tuple(
+        pair_bias(pair, 0.5 + index * 0.01) for index, pair in enumerate(ALL_PAIRS)
+    )
+
+    result, _ = run(monkeypatch, universe, "--matrix", "--majors")
+
+    cells = grid_cells(result)
+    for base in G10:
+        for quote in G10:
+            if base == quote:
+                continue
+            has_dollar = "USD" in (base, quote)
+            assert (cells[base][quote] != "-") is has_dollar, (base, quote)
+
+
+def test_matrix_composes_with_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The grid is nested base then quote, every cell carries the same fields
+    as a ranked row, and the mirrored cell is the row read the other way."""
+    result, _ = run(
+        monkeypatch, BLOCKED, "--asof", "2026-09-09", "--matrix", "--format", "json"
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["view"] == "matrix"
+    assert list(payload["grid"]) == list(G10)
+    cell = payload["grid"]["EUR"]["USD"]
+    mirror = payload["grid"]["USD"]["EUR"]
+    assert cell["spread"] == pytest.approx(2.31)
+    assert mirror["spread"] == pytest.approx(-2.31)
+    assert cell["direction"] == Direction.LONG.value
+    assert mirror["direction"] == Direction.SHORT.value
+    assert cell["conviction"] == mirror["conviction"] == Conviction.HIGH.value
+    assert mirror["base"] == "USD" and mirror["quote"] == "EUR"
+    assert mirror["blockers"] == ["coverage", "event:unchecked"]
+    assert payload["grid"]["EUR"]["EUR"] is None
+    assert payload["grid"]["EUR"]["GBP"] is None
+    assert payload["asof"] == ASOF.isoformat()
+    assert payload["config_digest"] == load_config().digest()
+    assert "hidden" in payload and "warnings" in payload
+
+
+def test_matrix_json_composes_with_majors(monkeypatch: pytest.MonkeyPatch) -> None:
+    universe = tuple(
+        pair_bias(pair, 0.5 + index * 0.01) for index, pair in enumerate(ALL_PAIRS)
+    )
+
+    result, _ = run(monkeypatch, universe, "--matrix", "--majors", "--format", "json")
+
+    payload = json.loads(result.stdout)
+    assert payload["pool"] == "majors"
+    populated = {
+        (base, quote)
+        for base in G10
+        for quote in G10
+        if payload["grid"][base][quote] is not None
+    }
+    assert len(populated) == 2 * len(MAJORS)
+    assert all("USD" in cell for cell in populated)
+
+
+def test_matrix_prints_the_hidden_pairs_and_the_notes_below_the_grid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A change of view does not lose the reasons a pair went."""
+    result, _ = run(monkeypatch, BLOCKED, "--matrix", "--tradeable-only")
+
+    assert hidden_heading(result).startswith("1 pairs hidden")
+    assert "No calendar was consulted" in result.stdout
+    cells = grid_cells(result)
+    assert cells["EUR"]["USD"] == "-"
+
+
+def test_matrix_prints_the_grid_it_was_handed_and_does_no_arithmetic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Handed a grid whose mirror is deliberately wrong, the command prints the
+    wrong numbers. That is the proof the negation lives in `_grid` and nowhere
+    in the command: a command that fixed the mirror itself would pass every
+    other test here and be a second copy of the arithmetic."""
+    convention = pair_bias("EURUSD", 2.31)
+    bad_mirror = pair_bias("USDEUR", 0.77, direction=Direction.LONG)
+    grid: dict[str, dict[str, PairBias | None]] = {
+        base: dict.fromkeys(G10) for base in G10
+    }
+    grid["EUR"]["USD"] = convention
+    grid["USD"]["EUR"] = bad_mirror
+    monkeypatch.setattr("fbe.report._grid", lambda pairs: grid)
+
+    table, _ = run(monkeypatch, MIXED, "--matrix")
+    as_json, _ = run(monkeypatch, MIXED, "--matrix", "--format", "json")
+
+    cells = grid_cells(table)
+    assert cells["EUR"]["USD"] == "+2.31"
+    assert cells["USD"]["EUR"] == "+0.77"
+    payload = json.loads(as_json.stdout)
+    assert payload["grid"]["USD"]["EUR"]["spread"] == pytest.approx(0.77)
+    assert payload["grid"]["USD"]["EUR"]["direction"] == Direction.LONG.value
+
+
+def test_matrix_is_built_from_the_pairs_the_filters_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The grid is handed the shown rows and not the whole run."""
+    handed: list[tuple[str, ...]] = []
+
+    def spy(pairs: Sequence[PairBias]) -> dict[str, dict[str, PairBias | None]]:
+        handed.append(tuple(row.pair for row in pairs))
+        return {base: dict.fromkeys(G10) for base in G10}
+
+    monkeypatch.setattr("fbe.report._grid", spy)
+
+    run(monkeypatch, BLOCKED, "--matrix", "--tradeable-only")
+
+    assert handed == [("USDJPY", "AUDUSD")]
+
+
+def test_matrix_refuses_top(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--top`` shortens a list. A grid has no top, and silently ignoring the
+    option would print all 56 cells under a flag that asked for fewer."""
+    result, _ = run(monkeypatch, MIXED, "--matrix", "--top", "3")
+
+    assert result.exit_code == 2
+    assert "--top" in ANSI.sub("", result.output)
+
+
+def test_matrix_refuses_csv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A flat file of 56 cells is a pair list carrying 28 pairs written
+    backwards, and a pair list is what must never hold a mirrored cell."""
+    result, _ = run(monkeypatch, MIXED, "--matrix", "--format", "csv")
+
+    assert result.exit_code == 2
+    assert "csv" in ANSI.sub("", result.output)
 
 
 def test_a_future_asof_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1443,17 +1671,22 @@ def test_a_long_pair_prints_its_spread_with_the_plus(
     assert "+2.60" in rows(result)[0]
 
 
-def test_matrix_refuses_with_the_parameter_exit_code(
+def test_matrix_refusals_use_the_parameter_exit_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Exit 2 and not 1. A chaining script reads the two differently.
 
     1 means the run happened and should not be traded on. 2 means the command
-    was asked for something it cannot do.
+    was asked for something it cannot do, and neither refusal here got as far
+    as building a grid.
     """
-    result, _ = run(monkeypatch, MIXED, "--matrix")
+    with_top, captured_top = run(monkeypatch, MIXED, "--matrix", "--top", "1")
+    as_csv, captured_csv = run(monkeypatch, MIXED, "--matrix", "--format", "csv")
 
-    assert result.exit_code == 2
+    assert with_top.exit_code == 2
+    assert as_csv.exit_code == 2
+    assert "collect" not in captured_top
+    assert "collect" not in captured_csv
 
 
 # --- the published example --------------------------------------------------
@@ -1554,6 +1787,37 @@ def test_the_published_bias_example_is_the_published_score_example_run(
     published = published_block(
         "$ fbe bias --majors --min-conviction medium --tradeable-only"
     )
+    printed = result.stdout.rstrip().splitlines()
+    assert len(printed) == len(published)
+    assert printed[0].startswith(f"asof {ASOF.isoformat()}   config ")
+    assert published[0].startswith(f"asof {ASOF.isoformat()}   config ")
+    for got, want in zip(printed[1:], published[1:], strict=True):
+        assert got.rstrip() == want.rstrip()
+
+
+def test_the_published_matrix_example_is_the_published_score_example_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The grid block is the same run as the score table, cell for cell.
+
+    The document's first version of this block was written by hand and could
+    not be checked against anything. Now every cell is a difference of two
+    published composites, read along its row, so the USD row and the USD
+    column have to be negatives of each other and the whole lower triangle is
+    pinned to the upper one through the score table rather than to itself.
+    """
+    scores = scores_from_the_published_score_table()
+
+    def fake_collect(_config: object, **_kwargs: object) -> CollectionResult:
+        return CollectionResult(observations=(OBSERVATION,), outcomes=(), gaps={})
+
+    monkeypatch.setattr("fbe.cli.collect", fake_collect)
+    monkeypatch.setattr("fbe.cli.score_currencies", lambda *a, **k: scores)
+
+    result = runner.invoke(app, ["bias", "--asof", ASOF.isoformat(), "--matrix"])
+    assert result.exit_code == EXIT_OK
+
+    published = published_block("$ fbe bias --matrix")
     printed = result.stdout.rstrip().splitlines()
     assert len(printed) == len(published)
     assert printed[0].startswith(f"asof {ASOF.isoformat()}   config ")
