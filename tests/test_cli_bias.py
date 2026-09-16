@@ -33,6 +33,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from collections.abc import Mapping, Sequence
 from datetime import date
 from pathlib import Path
@@ -63,6 +64,17 @@ from fbe.types import (
 from fbe.universe import ALL_PAIRS, G10, MAJORS
 
 runner = CliRunner()
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+"""Select Graphic Rendition escapes, which is all Rich emits into help text.
+
+Assertions on a refusal message have to strip these. CI exports
+``FORCE_COLOR``, so Rich styles the usage text and an option name arrives
+split by escape sequences: ``--matrix`` stops being a substring of the output
+and a positive assertion fails, on CI only, for a reason that has nothing to
+do with the behaviour. `tests/test_cli_offline_flag.py` carries the same
+regular expression and the incident that produced it.
+"""
 
 ASOF = date(2026, 9, 9)
 
@@ -603,7 +615,7 @@ def test_matrix_says_the_view_is_not_available_yet(
     result, _ = run(monkeypatch, MIXED, "--matrix")
 
     assert result.exit_code != EXIT_OK
-    assert "--matrix" in result.output
+    assert "--matrix" in ANSI.sub("", result.output)
 
 
 def test_a_future_asof_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
