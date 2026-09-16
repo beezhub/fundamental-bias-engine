@@ -122,6 +122,34 @@ and `divisor` comes from `BasePillar.blend_divisor` in
 `src/fbe/pillars/base.py`. The mean is run-local and the divisor is not. That
 asymmetry is deliberate and is the subject of the second half of this section.
 
+**The minimum cross-section.** If fewer than `MIN_CROSS_SECTION` currencies
+clear `MIN_COMPONENT_WEIGHT`, this stage returns absent for every currency and
+the pillar is absent for the whole run, including for currencies holding every
+component. Stage 3 refuses a thin cross-section for the same reason one stage
+earlier, and the same constant governs both rather than a second threshold.
+
+The reason is that a standardisation over two points cannot express a magnitude.
+Two currencies score `+/-1.0` whatever separates them, so a 0.1 gap and a 6.0
+gap produce identical output, and one currency scores `0.0`, which is the value
+this document reserves for every usable currency reporting the same reading.
+Both are inside the `-3..+3` band and both arrive at full weight, since coverage
+credits a pillar whenever the score is not absent.
+
+Clearing stage 3 does not imply clearing this. The two stages thin the
+cross-section by different mechanisms: stage 3 refuses a *component* that too
+few currencies hold, while `MIN_COMPONENT_WEIGHT` refuses a *currency* holding
+too little of the sub-weight. Every component can hold three usable currencies
+while only two currencies clear the floor.
+
+The cost is that a pillar can drop for all eight currencies because six were
+thin. That is the intended outcome. A cross-sectional score states where a
+currency sits relative to the others, so the currencies with complete data have
+not lost information about themselves, they have lost the comparison, and the
+comparison is what the pillar reports. The loss is visible: coverage falls and
+`coverage_demotion` cuts conviction, rather than a confident number arriving
+built on two points. Recorded as
+[ADR 0008](decisions/0008-a-thin-blend-has-no-cross-section.md).
+
 **Why the blend is re-standardised.** Averaging several imperfectly correlated
 z-scores shrinks the variance of the result. Two sub-indicators that agree
 perfectly blend to something with a standard deviation of 1.0; two that are

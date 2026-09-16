@@ -914,3 +914,112 @@ def test_the_floor_constant_is_the_one_the_comparison_uses() -> None:
     assert MIN_COMPONENT_WEIGHT == 0.5
     assert ScoringConfig().min_restandardisation_runs == len(STEADY_HISTORY)
     assert ScoringConfig().min_restandardisation_runs == len(UNIT_HISTORY)
+
+
+# --- the minimum cross-section, ADR 0008 ------------------------------------
+
+
+def _thin(gap: float, above_floor: int) -> dict[str, dict[str, float | None]]:
+    """Component z-scores leaving exactly ``above_floor`` currencies scoreable.
+
+    Both components carry every currency named, so nothing is refused for a
+    thin component; the currencies below the floor are thinned by holding one
+    component of two, which is 0.6 of the declared weight for ``alpha`` alone
+    and 0.4 for ``beta`` alone. Only ``beta`` alone lands at or below
+    `MIN_COMPONENT_WEIGHT`, so those currencies are refused per currency while
+    the component cross-sections stay wide.
+
+    ``gap`` separates the two survivors, and is the whole point: the defect is
+    that it does not reach the output.
+    """
+    scoreable = ["USD", "EUR", "GBP"][:above_floor]
+    thinned = [c for c in ("JPY", "CHF", "NZD") if c not in scoreable]
+    alpha: dict[str, float | None] = {c: 0.0 for c in thinned}
+    beta: dict[str, float | None] = {c: 0.0 for c in thinned}
+    for n, currency in enumerate(scoreable):
+        alpha[currency] = gap if n == 0 else 0.0
+        beta[currency] = gap if n == 0 else 0.0
+    for currency in thinned:
+        alpha[currency] = None
+    return {"alpha": alpha, "beta": beta}
+
+
+def test_two_currencies_above_the_floor_score_nothing() -> None:
+    """The case ADR 0008 rules on, at the boundary below `MIN_CROSS_SECTION`.
+
+    Two points cannot carry a magnitude: the z-score is ``+/-1.0`` whatever
+    separates them. Returning that at full weight is an absence wearing a
+    reading's clothes, which ADR 0002 rule 1 forbids.
+    """
+    blended = even_split().blend_components(_thin(gap=1.0, above_floor=2))
+    assert set(blended) == {"USD", "EUR", "JPY", "CHF", "NZD"}
+    assert all(z is None for z in blended.values()), blended
+
+
+def test_three_currencies_above_the_floor_still_score() -> None:
+    """The other side of the boundary, so the rule is a threshold not a ban."""
+    blended = even_split().blend_components(_thin(gap=1.0, above_floor=3))
+    scored = {c: z for c, z in blended.items() if z is not None}
+    assert set(scored) == {"USD", "EUR", "GBP"}
+
+
+def test_one_currency_above_the_floor_never_comes_back_as_zero() -> None:
+    """``0.0`` is reserved for every usable currency reporting the same value.
+
+    A single currency has no cross-section to sit in, and the old code reached
+    ``0.0`` by dividing zero by a degenerate divisor. The aggregator cannot tell
+    that from a real finding of neutrality, so it must be `None`.
+    """
+    blended = even_split().blend_components(_thin(gap=1.0, above_floor=1))
+    assert blended["USD"] is None
+    assert all(z is None for z in blended.values()), blended
+
+
+@pytest.mark.parametrize("gap", [0.1, 6.0, 60.0])
+def test_a_thin_blend_refuses_whatever_the_separation(gap: float) -> None:
+    """The equivalence that *is* the defect, pinned directly.
+
+    Before ADR 0008 these three returned an identical ``{'USD': 1.0,
+    'EUR': -1.0}``. A six-hundred-fold difference in separation produced the
+    same two numbers, because with two points it always does. Asserting all
+    three refuse is what stops the old behaviour being reintroduced as an
+    optimisation.
+    """
+    blended = even_split().blend_components(_thin(gap=gap, above_floor=2))
+    assert all(z is None for z in blended.values()), (gap, blended)
+
+
+def test_the_rule_reuses_min_cross_section_rather_than_a_second_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves the wire, not the number.
+
+    ADR 0008 reuses stage 3's constant rather than introducing a second
+    threshold, because the same artefact is being refused for the same reason
+    and a number in two places is the drift this project keeps finding. Moving
+    `MIN_CROSS_SECTION` must move this boundary with it; if it does not, the
+    value has been copied.
+    """
+    two_above = _thin(gap=1.0, above_floor=2)
+    assert all(z is None for z in even_split().blend_components(two_above).values())
+
+    monkeypatch.setattr("fbe.pillars.base.MIN_CROSS_SECTION", 2)
+    relaxed = even_split().blend_components(two_above)
+    assert {c for c, z in relaxed.items() if z is not None} == {"USD", "EUR"}
+
+    monkeypatch.setattr("fbe.pillars.base.MIN_CROSS_SECTION", 4)
+    tightened = even_split().blend_components(_thin(gap=1.0, above_floor=3))
+    assert all(z is None for z in tightened.values()), tightened
+
+
+def test_the_refusal_is_the_existing_absence_path_not_a_new_one() -> None:
+    """Every currency named still appears, carrying `None` rather than vanishing.
+
+    `compute` distinguishes a currency the pillar cannot speak for from one that
+    was never in the run by looking for ``z is None``, not by looking for absent
+    keys, so dropping the keys would make a refused pillar indistinguishable
+    from a universe that never contained those currencies.
+    """
+    thin = _thin(gap=1.0, above_floor=2)
+    named = set(thin["alpha"]) | set(thin["beta"])
+    assert set(even_split().blend_components(thin)) == named

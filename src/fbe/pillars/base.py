@@ -1053,14 +1053,32 @@ class BasePillar(ABC):
         down to entries above ``1e-9``, and a run-local divisor that small means
         every usable blend was identical.
 
-        No minimum cross-section is applied to the blend, and the omission is
-        deliberate rather than an oversight: see **#130**, which carries the
-        question. `cross_sectional_z` refuses fewer than `MIN_CROSS_SECTION`
-        usable currencies one stage earlier, and the two stages thin the
-        cross-section by different mechanisms, so clearing that check does not
-        mean this one would pass. Two currencies here score ``+/-1.0`` whatever
-        the gap between them and one scores ``0.0``, and until #130 is ruled on,
-        a caller that can reach either shape is reading a rank as a magnitude.
+        Fewer than `MIN_CROSS_SECTION` currencies above the floor means the
+        pillar has no cross-section this run, and every currency comes back
+        ``None`` including those with complete data. `cross_sectional_z` refuses
+        a thin cross-section one stage earlier for the same reason, and the same
+        constant is reused rather than a second threshold introduced: with two
+        points a z-score is ``+/-1.0`` whatever the gap, so a 0.1 separation and
+        a 6.0 separation produce identical output, and one point produces
+        ``0.0``, the value this module reserves for every usable currency
+        reporting the same reading. Both would arrive at full weight, because
+        ``z is not None`` is what `scoring.coverage` credits.
+
+        Clearing stage 3 does not mean this check passes. The two stages thin
+        the cross-section by different mechanisms: stage 3 runs per component
+        and refuses a component, `MIN_COMPONENT_WEIGHT` runs per currency and
+        refuses a currency, so every component can hold three usable currencies
+        while only two currencies clear the floor.
+
+        The cost is real and is the right outcome rather than a regrettable one:
+        a pillar can drop for all eight currencies because six were thin. A
+        cross-sectional score is a claim about where a currency sits relative to
+        the others, so the two with complete data have not lost information
+        about themselves, they have lost the comparison, and the comparison is
+        what the pillar is for. The loss is visible rather than silent, which is
+        what makes it acceptable: coverage falls and `coverage_demotion` cuts
+        conviction. ``docs/decisions/0008-a-thin-blend-has-no-cross-section.md``
+        carries the full argument, and #130 the reproduction.
 
         Renormalisation rule: for each currency the weighted mean runs over the
         components that currency actually has, and each enters at
@@ -1167,7 +1185,9 @@ class BasePillar(ABC):
             )
 
         usable = [blend for blend in blends.values() if blend is not None]
-        if not usable:
+        if len(usable) < MIN_CROSS_SECTION:
+            # Too thin to standardise against, so the pillar has no
+            # cross-section this run and says so for everyone. ADR 0008.
             return dict.fromkeys(blends)
 
         mean = fsum(usable) / len(usable)
