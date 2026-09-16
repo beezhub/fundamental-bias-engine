@@ -307,7 +307,7 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
         spread {{ '%+.2f' | format(idea.bias.spread) }}
         &middot; {{ idea.bias.base }} {{ '%+.2f' | format(idea.bias.base_score) }}
         vs {{ idea.bias.quote }} {{ '%+.2f' | format(idea.bias.quote_score) }}
-        &middot; {{ '%.0f%%' | format(idea.bias.agreement * 100) }} of pillars agree
+        &middot; {{ '%.0f%%' | format(idea.bias.agreement * 100) }} of pillar weight agrees
       </p>
       <p>{{ idea.rationale }}</p>
       {% if idea.size %}
