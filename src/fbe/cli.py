@@ -305,7 +305,7 @@ def main(
     offline: Annotated[
         bool,
         typer.Option(
-            "--offline/--online",
+            "--offline",
             help=(
                 "Read the cache only and never touch the network. Makes a run "
                 "reproducible and lets you work through a bad connection."
