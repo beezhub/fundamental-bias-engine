@@ -196,12 +196,16 @@ cannot be pushed across the band edge by something that happened to an unrelated
 pillar's internal coherence.
 
 **The path taken is recorded.** `blend_divisor` returns the divisor and a path
-label, `"rolling"` or `"run_local"`, and the label belongs in
-`PillarScore.notes` on every run. This is not bookkeeping. Scores computed under
-the fallback and scores computed under the rolling estimate are not on the same
-scale, so a run-to-run comparison that hides the switch shows the reader a change
-the market did not make. The run's own `sd(blend)` is returned to the caller for
-storage as well, because it is the next run's history.
+label, `"rolling"` or `"run_local"`, and `BasePillar.compute` puts that label on
+`PillarScore.blend_divisor_path` on every score it builds, absent ones included.
+A typed field rather than a line inside `PillarScore.notes`, because `--compare`
+reads it to decide whether two runs are on the same scale, which is a fact read
+for correctness rather than for display, and `notes` is prose nothing may parse.
+This is not bookkeeping. Scores computed under the fallback and scores computed
+under the rolling estimate are not on the same scale, so a run-to-run comparison
+that hides the switch shows the reader a change the market did not make. The
+run's own `sd(blend)` is returned to the caller for storage as well, because it
+is the next run's history.
 
 **Why the theoretical divisor was rejected.** The obvious alternative is to
 divide by the standard deviation the blend would have if the sub-indicators were
@@ -1049,7 +1053,8 @@ Same blend for the rest of the universe:
 Now the re-standardisation pass of section 2.3. This example is a single run with
 no stored history, so `blend_divisor` cannot reach
 `ScoringConfig.min_restandardisation_runs` and returns the `run_local` path: the
-divisor is this run's own `sd(blend)`, and `PillarScore.notes` would say so.
+divisor is this run's own `sd(blend)`, and `PillarScore.blend_divisor_path`
+would say so.
 Every currency has all five sub-indicators, so the blended column has a mean of
 exactly 0 and the pass reduces to a division by that standard deviation:
 
@@ -1510,7 +1515,8 @@ An implementer should assert, at minimum:
   avoid.
 - `blend_divisor` returns `"run_local"` below
   `ScoringConfig.min_restandardisation_runs` of history and `"rolling"` at or
-  above it, and the path it returned reaches `PillarScore.notes` in both cases.
+  above it, and the path it returned reaches `PillarScore.blend_divisor_path` in
+  both cases.
 - A pillar is absent for a currency holding at or below `MIN_COMPONENT_WEIGHT`
   (0.5) of that pillar's sub-weight, and that absence lowers coverage rather than
   producing a score. The boundary itself is the case to assert, since it is
