@@ -141,10 +141,24 @@ described below. On the rolling path a pillar lands near 1.0 and is left free to
 be louder or quieter on a day when its own components agree or disagree more
 than usual, which is the point of taking the divisor from history.
 
-**What the guarantee covers, and what it does not.** It is a guarantee about
-pillars. Every pillar reaches the aggregator on the same scale, so a pillar's
-declared weight is the share of the composite that pillar actually carries. It is
-not a guarantee about any underlying series. A series that appears in two pillars
+**What the guarantee covers, and what it does not.** It is a guarantee about the
+five pillars that pass through this pass, and about pillars rather than series.
+Those five reach the aggregator on the same scale, so for them a declared weight
+is the share of the composite the pillar actually carries.
+
+It does not cover POSITIONING or RISK, which sections 2.2 and 3.6 exclude
+deliberately, and the consequence is that neither contributes its declared 0.10.
+POSITIONING emits near 0.59 under a normal `p` and 0.6437 on the section 7
+fixture, so its 0.10 buys roughly 0.059 of effective influence. RISK emits
+`2 * |R| * sd(risk_beta)`, which is 0.000 in a calm market and 1.273 at maximum
+risk-off, so its influence swings from 0.000 to 0.127 across the regime. Sections
+3.6 and 3.7 carry the figures. Neither is an oversight and neither is corrected
+here, because the two available corrections, re-standardising the pillars and
+raising their weights, are both rejected in those sections for stated reasons.
+`PillarScore.diagnostics["emit_sd"]` reports what each pillar emitted on the run,
+so the gap is visible on the page rather than only in this document.
+
+It is also not a guarantee about any underlying series. A series that appears in two pillars
 carries a loading from each, and where those loadings have opposite signs they
 partly cancel, so the model's total response to that series is neither pillar's
 declared weight. That happens once in the current model: `real_policy_rate` is
@@ -605,6 +619,26 @@ force. A crowded long is a reason to be less long, not more.
 | --- | --- | --- | --- | --- |
 | CFTC net non-commercial share of open interest | `cot_net_pct_oi` | Time-series z over `lookback_years`, then `f(p)` above | Non-monotonic, see function | 1.00 |
 
+**What this pillar actually contributes, which is not 0.10.** POSITIONING is
+excluded from the section 2.3 re-standardisation, for the reason that section
+gives, so its declared weight is not its effective one. `f(p)` emits at a
+cross-sectional standard deviation of about **0.5885** under a normal `p`, a
+figure that simulation reproduces to three decimals over two million draws and
+whose fourth decimal is sampling noise rather than a constant, and **0.6437** on
+the section 7 fixture, which is exact because that fixture is eight fixed values.
+Both are against exactly 1.0 for the five pillars that do pass through section
+2.3. The declared 0.10 therefore buys roughly **0.059** of effective influence.
+
+That is a consequence of the exclusion in sections 2.2 and 2.3 rather than an
+oversight, and the shape constants are what make it so. It should not be repaired
+by re-standardising the pillar, which section 2.3 rules out for a stated reason,
+nor by raising the weight, which would hide a real property of the pillar inside
+a number. Section 8 sets 0.05 as the floor below which a pillar should be deleted
+rather than diminished, so POSITIONING operates about a fifth of the way above a
+floor it is nominally well clear of.
+`PillarScore.diagnostics["emit_sd"]` reports what the pillar emitted on the run,
+so the gap is visible on the page rather than only here.
+
 **Known failure mode.** Three problems, all real. The COT report covers futures
 positioning at the Chicago Mercantile Exchange, which is a small and unrepresentative
 slice of a market that trades mostly over the counter, and it says nothing at all
@@ -662,6 +696,39 @@ world did.
 | Equity drawdown from 52-week high | `equity_index` | Percent below the rolling high, negative | More drawdown is risk-off | 0.50 (into `R`) |
 | Volatility index | `vol_index` | Time-series z over `lookback_years` | Higher volatility is risk-off | 0.50 (into `R`) |
 | Currency risk beta | `CurrencyMeta.risk_beta` | Static multiplier | Re-signs with `R` | Multiplier |
+
+**What this pillar actually contributes, which is not 0.10.** RISK is excluded
+from the section 2.3 re-standardisation, for the reason the paragraph above
+gives: dividing out `R` would leave a constant ordering of betas that never
+changed from run to run, which is the one thing this pillar must not be. The
+consequence is that its declared weight is not its effective one, and the gap
+moves with the regime.
+
+`R` is a single scalar shared by all eight currencies, so it scales the betas and
+nothing else. The emitted cross-sectional standard deviation is therefore
+`2 * |R| * sd(risk_beta)`. For the metadata in `universe.CURRENCIES` the eight
+betas are `-0.5, 0.1, 0.3, -0.9, -0.7, 0.4, 0.9, 0.8`, with a mean of 0.0500 and
+a population standard deviation of **0.6364**:
+
+| `R` | Emitted sd | Effective weight against a declared 0.10 |
+| --- | --- | --- |
+| 0.000 (calm) | 0.0000 | 0.0000 |
+| -0.250 | 0.3182 | 0.0318 |
+| -0.625 | 0.7955 | 0.0795 |
+| -1.000 (maximum risk-off) | 1.2728 | 0.1273 |
+
+So the pillar's influence ranges from 0.000 in a calm market to 0.127 at maximum
+risk-off, against the single 0.10 that `ScoringConfig` shows. Section 8 sets 0.05
+as the floor below which a pillar should be deleted rather than diminished, and
+RISK sits below it on any run where `|R| < 0.393`, which is most runs. In a calm
+market it contributes exactly nothing while still occupying 0.10 of the
+composite's denominator, which pulls every composite about a tenth of the way
+toward zero.
+
+None of that is an argument for changing the weight. The quietness and the weight
+are separate decisions, and combining them would hide a real property of the
+pillar inside a number. What it is an argument for is reporting the figure on the
+run, which `PillarScore.diagnostics["emit_sd"]` now does for every pillar.
 
 **Known failure mode.** `risk_beta` is a static constant standing in for a
 relationship that is neither static nor stable. The yen's haven behaviour weakens
@@ -1774,15 +1841,15 @@ conviction tiers. Deleting the pillar outright changes 4.64%. The model cannot
 tell a slope of 1.0 from a slope of 2.5, so the constant is a convention and
 naming it as one is more useful than defending it.
 
-**A quantity this document never stated.** `f(p)` emits at a cross-sectional
-standard deviation of about 0.5885 under a normal `p`, and 0.6437 on the section
-7 fixture, against exactly 1.0 for the five pillars that pass through section
-2.3. POSITIONING's declared weight of 0.10 therefore buys roughly 0.059 of
-effective influence, and the shape constants are what make it so. That is a
-consequence of the exclusion in section 2.2 and 2.3, not an oversight, and it
-should not be repaired by re-standardising POSITIONING, which section 2.3 rules
-out for a stated reason. Whether 0.10 was ever the intended influence is a
-question this document has not answered either way.
+**Whether 0.10 was ever the intended influence.** `f(p)` emits at a
+cross-sectional standard deviation of about 0.5885 under a normal `p`, so
+POSITIONING's declared weight of 0.10 buys roughly 0.059 of effective influence.
+Section 3.6 now states that alongside the pillar, and section 2.3 records the
+same for both excluded pillars, so the figure is no longer only here. What
+remains open is the question the figure raises: whether 0.10 was chosen knowing
+it would be scaled down by the shape constants, or chosen as an effective weight
+and then quietly reduced. This document has not answered that either way, and
+neither re-standardising the pillar nor raising the weight is the answer.
 
 **What would settle the constants, and what blocks it.** Bin CFTC `p` against the
 subsequent pair return and find where the relationship changes sign. The

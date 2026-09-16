@@ -23,7 +23,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import date
 from math import fsum, sqrt
-from statistics import median
+from statistics import median, pstdev
 
 from fbe.config import ScoringConfig
 from fbe.datasources.registry import INDICATORS
@@ -402,6 +402,11 @@ class BasePillar(ABC):
         components = self._transform(extracted, asof)
         normalised = self._normalise(components)
 
+        # One number for the whole run, not one per currency. `_diagnostics` is
+        # called per currency and cannot see the cross-section, and a spread
+        # computed from a single currency has no meaning.
+        emit_sd = self._emit_sd(normalised, currencies)
+
         scores: dict[str, PillarScore] = {}
         for currency in currencies:
             per_currency = extracted.get(currency, {})
@@ -415,6 +420,7 @@ class BasePillar(ABC):
                 for observation in series
             )
             diagnostics = self._diagnostics(per_currency, inputs, asof)
+            diagnostics["emit_sd"] = emit_sd
             z = normalised.get(currency)
 
             if z is None:
@@ -454,6 +460,53 @@ class BasePillar(ABC):
                 blend_divisor_path=self.last_blend_divisor_path,
             )
         return scores
+
+    def _emit_sd(
+        self,
+        normalised: Mapping[str, float | None],
+        currencies: Sequence[str],
+    ) -> float:
+        """Measure the spread this pillar actually emitted across the universe.
+
+        Args:
+            normalised: `_normalise`'s output, ``None`` where the pillar could
+                not score the currency.
+            currencies: The universe, in run order.
+
+        Returns:
+            The population standard deviation of the scores the pillar emitted,
+            over the currencies it scored. ``0.0`` when it scored fewer than two.
+
+        Why this is measured on the score rather than on ``z``. The two differ
+        only where `clip_and_scale` bites, and the composite is built from the
+        score, so the score is what the pillar actually contributed. Reporting
+        the unclipped spread would overstate a pillar whose outliers were
+        trimmed, which is the direction that flatters.
+
+        Why the currencies with no score are left out. Their placeholder is
+        ``0.0``, and counting those zeros would pull the spread toward zero and
+        report a pillar with thin coverage as a quiet one. Those are different
+        facts: the first is answered by coverage, the second by this number.
+
+        Why ``0.0`` when nothing scored. There is no cross-section to measure,
+        and the convention is `missing_score`'s: a neutral placeholder with the
+        coverage figure alongside saying the pillar was absent. A key that
+        vanished instead would make a reader iterating diagnostics handle two
+        shapes for the same fact.
+
+        The population form, ``ddof=0``, because these eight are the whole
+        scored universe rather than a sample of one, which is the same reason
+        `cross_sectional_z` gives.
+
+        """
+        emitted = [
+            self.clip_and_scale(normalised.get(currency), self.config.score_clip)
+            for currency in currencies
+            if normalised.get(currency) is not None
+        ]
+        if len(emitted) < 2:
+            return 0.0
+        return float(pstdev(emitted))
 
     def _diagnostics(
         self,
