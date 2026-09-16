@@ -13,8 +13,8 @@ numbers, which is worse than failing outright.
 FRED carries no 2-year government yield for any non-US G10 issuer. Verified by
 search, not assumed. So the front end has to come from the issuers themselves,
 and every one of them publishes it free and without a key. The cost is that
-there is no single API: six providers, six formats, six failure modes. That is
-the trade this module encapsulates.
+there is no single API: seven providers, seven formats, seven failure modes.
+That is the trade this module encapsulates.
 
 Each provider covers exactly one currency. None can substitute for another, so
 losing one provider is losing a currency's heaviest pillar rather than
@@ -82,13 +82,26 @@ delimited, with two metadata lines before the header.
   not an outage on our side and not a URL error. The Swiss franc has no free
   current 2-year yield, and the registry routes it to the manual source.
 
-**Reserve Bank of New Zealand** (NZD). Not wired in. ``rbnz.govt.nz``,
-``nzdmo.govt.nz`` and ``debtmanagement.treasury.govt.nz`` all answer automated
-requests with HTTP 403, with and without a browser user agent. The RBNZ does
-publish 2-year government bond yields in statistical table B2, so the data
-exists; it could not be retrieved. That may be an environment block rather than
-a policy one, so it is worth one attempt from another network before accepting
-the manual route permanently.
+**Reserve Bank of New Zealand** (NZD). Statistical table B2, daily wholesale
+interest rates, as the workbook at `RBNZ_B2_URL`. Sheet ``Data`` carries five
+header rows, group, tenor, notes, unit and series ID, then one row per
+session with dates as real datetimes and values as floats. Series
+``INM.DG102.NZZCF`` is the secondary market government bond closing yield at
+2 years, in percent per annum. Locate the column by that ID: the 1, 2, 5 and
+10 year columns sit side by side in the same unit, so one column out is a
+plausible wrong yield. The 2-year column is blank for most of 2020, which is a
+period with no bond near that point rather than a feed fault, and a blank is
+absence rather than zero.
+
+  Reachable from a residential or mobile connection only. From every
+  data-centre or cloud egress, including every network an unattended run on
+  this project can use, the RBNZ answers HTTP 403 with its own JavaScript
+  challenge page, static file paths included. That is a vantage block and not
+  a publisher policy: the owner retrieved the workbook over a mobile carrier
+  on 2026-09-15, and it is the only vantage from which this provider was
+  verified. It works where the engine runs live, which is the owner's machine,
+  and a health check run from anywhere else reports it as unreachable. Do not
+  read that ``None`` as a parsing fault.
 
 Terms
 -----
@@ -133,6 +146,11 @@ __all__ = [
     "PROVIDER_FOR_CURRENCY",
     "RATE_LIMIT",
     "RBA_F2_URL",
+    "RBNZ_B2_URL",
+    "RBNZ_DATA_SHEET",
+    "RBNZ_SERIES_ID_ROW_LABEL",
+    "RBNZ_UNIT",
+    "RBNZ_UNIT_ROW_LABEL",
     "SNB_CUBE_URL",
     "TWO_YEAR_REFS",
     "CurvesSource",
@@ -185,6 +203,25 @@ RBA_SERIES_ID_ROW_LABEL = "Series ID"
 """The row that carries the machine-readable series IDs. Find it by label; the
 number of metadata rows above it is not stable."""
 
+RBNZ_B2_URL = (
+    "https://www.rbnz.govt.nz/-/media/project/sites/rbnz/files/statistics/"
+    "series/b/b2/hb2-daily-close.xlsx"
+)
+"""Table B2, daily wholesale interest rates, the daily close workbook from 2018.
+Taken from the owner's browser download history on 2026-09-16: the filename is
+``hb2-daily-close.xlsx``, and the two paths guessed before it were wrong on the
+filename alone. Reachable from a residential or mobile connection only; see the
+module docstring."""
+
+RBNZ_DATA_SHEET = "Data"
+RBNZ_SERIES_ID_ROW_LABEL = "Series Id"
+RBNZ_UNIT_ROW_LABEL = "Unit"
+RBNZ_UNIT = "%pa"
+"""Percent per annum, which is the registry's ``percent`` with no conversion.
+Checked on every read rather than assumed, because the neighbouring columns
+carry the same unit and a similar range, so a unit change is the one thing
+a plausibility check on the value would not catch."""
+
 SNB_CUBE_URL = "https://data.snb.ch/api/cube/{cube}/data/csv/en"
 """Verified live as an endpoint. See the module docstring on why the bond
 cubes cannot currently be used."""
@@ -209,11 +246,14 @@ TWO_YEAR_REFS: Mapping[str, tuple[str, str]] = {
     "JPY": ("mof_jp", "2Y"),
     "CAD": ("boc", "BD.CDN.2YR.DQ.YLD"),
     "AUD": ("rba", "FCMYGBAG2D"),
+    "NZD": ("rbnz", "INM.DG102.NZZCF"),
 }
-"""The five non-US 2-year yields this module can actually fetch, each verified
-live against its provider. USD comes from FRED's ``DGS2``. CHF and NZD are
-absent for the reasons in the module docstring, and the registry routes both to
-the manual source rather than substituting something that is nearly right."""
+"""The six non-US 2-year yields this module can fetch. Five were verified live
+against their provider; the RBNZ one was verified from the owner's own
+connection, which is the only kind that can reach it. USD comes from FRED's
+``DGS2``. CHF is absent for the reason in the module docstring, and the
+registry routes it to the manual source rather than substituting something
+that is nearly right."""
 
 PROVIDER_FOR_CURRENCY: Mapping[str, str] = {
     "EUR": "ecb",
@@ -222,6 +262,7 @@ PROVIDER_FOR_CURRENCY: Mapping[str, str] = {
     "CHF": "snb",
     "CAD": "boc",
     "AUD": "rba",
+    "NZD": "rbnz",
 }
 """Which provider owns which currency. CHF is listed because the provider is
 correct even though its data is frozen; that distinction is what lets a health
@@ -242,6 +283,7 @@ PROVIDER_FETCHERS: Mapping[str, str] = {
     "mof_jp": "fetch_jgb",
     "boe": "fetch_boe_curve",
     "snb": "fetch_snb",
+    "rbnz": "fetch_rbnz",
 }
 """Which method serves which provider key. A table rather than a chain of
 conditionals so that adding a provider is adding a row, and so that a ref
@@ -325,6 +367,7 @@ HEALTH_PROBES: Mapping[str, str] = {
     "mof_jp": TWO_YEAR_REFS["JPY"][1],
     "boe": TWO_YEAR_REFS["GBP"][1],
     "snb": SNB_TENOR_2Y,
+    "rbnz": TWO_YEAR_REFS["NZD"][1],
 }
 """One series per provider for `provider_health` to ask about. The 2-year point
 in each case, because that is the series the monetary pillar actually loses
@@ -342,7 +385,7 @@ registry reads."""
 
 RATE_LIMIT = RateLimit(requests=20, per_seconds=60.0, min_interval_seconds=1.0)
 """These are small public-sector servers, not commercial APIs. A daily run
-touches six URLs. There is nothing to gain by going faster and a real
+touches seven URLs. There is nothing to gain by going faster and a real
 possibility of being blocked, which for a single-currency provider means losing
 that currency's monetary pillar outright."""
 
@@ -357,7 +400,7 @@ class CurvesSource(BaseDataSource):
     Attributes:
         name: ``"curves"``. Note that individual `SeriesRef` entries carry the
             specific provider key (``"boc"``, ``"ecb"``, ``"mof_jp"``,
-            ``"boe"``, ``"rba"``, ``"snb"``) rather than this name, so an
+            ``"boe"``, ``"rba"``, ``"snb"``, ``"rbnz"``) rather than this name, so an
             `Observation` records which institution published it. A report that
             said only "curves" would lose the one fact a reader wants when a
             number looks wrong.
@@ -372,7 +415,8 @@ class CurvesSource(BaseDataSource):
     place for every source whose provider does not do this."""
 
     base_url = ""
-    """Empty on purpose. This source reads from six institutions, so there is no
+    """Empty on purpose. This source reads from seven institutions, so there is
+    no
     one root to hang a path off; each provider method passes its whole URL as
     the path instead. That also means `fbe doctor` has no single base URL to
     probe for this source, which is the honest answer for a fan-out."""
@@ -424,8 +468,8 @@ class CurvesSource(BaseDataSource):
             return body
         if body[:2] == b"PK":
             # A ZIP archive, which is how the Bank of England publishes its
-            # yield curve. Whether the member and sheet inside are the right
-            # ones is fetch_boe_curve's to say.
+            # yield curve and what an RBNZ workbook is underneath. Whether the
+            # member and sheet inside are the right ones is the caller's to say.
             return body
         if header.startswith(BOE_IADB_HEADER_START):
             return body
@@ -441,7 +485,8 @@ class CurvesSource(BaseDataSource):
             f"{self.name} received a body it cannot read. This source parses "
             f"Valet JSON, an ECB csvdata table, an RBA table carrying a "
             f"{RBA_SERIES_ID_ROW_LABEL!r} row, a Bank of England CSV whose "
-            f"header starts {BOE_IADB_HEADER_START!r}, a ZIP archive, an SNB "
+            f"header starts {BOE_IADB_HEADER_START!r}, a ZIP archive or "
+            f"workbook, an SNB "
             f"cube, or a Ministry of Finance Shift-JIS table. An HTML page is "
             f"how several of these report an unknown series code, at HTTP 200."
         )
@@ -561,8 +606,8 @@ class CurvesSource(BaseDataSource):
         Args:
             indicators: Canonical indicator keys. Serves ``yield_2y`` and, for
                 GBP only, ``policy_rate``.
-            currencies: ISO 4217 codes. CHF and NZD yield nothing here by
-                design; the registry routes them to the manual source.
+            currencies: ISO 4217 codes. CHF yields nothing here by design;
+                the registry routes it to the manual source.
             start: Earliest session wanted.
             end: Latest session wanted.
 
@@ -1167,6 +1212,122 @@ class CurvesSource(BaseDataSource):
                 parsed.append((session, value))
         parsed.sort()
         return parsed
+
+    def fetch_rbnz(
+        self, series_id: str, start: date, end: date
+    ) -> Sequence[tuple[date, float]]:
+        """Fetch one series from RBNZ statistical table B2.
+
+        Downloads `RBNZ_B2_URL`, opens sheet `RBNZ_DATA_SHEET`, finds the row
+        labelled `RBNZ_SERIES_ID_ROW_LABEL` and reads the column that carries
+        ``series_id`` in it. The workbook holds 48 series; the four government
+        bond tenors differ only in the word before "year" and sit side by side
+        in the same unit and a similar range, so the column is located by its
+        ID and never by position. One column out is a plausible wrong yield.
+
+        The unit row is checked against `RBNZ_UNIT` for that column. The
+        registry promises ``percent`` and a value in basis points is a hundred
+        times larger while still looking like a number a yield could take.
+
+        Args:
+            series_id: RBNZ series ID, e.g. ``"INM.DG102.NZZCF"``.
+            start: Earliest session wanted.
+            end: Latest session wanted. The file is served whole, so the
+                window is applied here; in a backtest ``end`` is the as-of
+                date of a bar and a later session is a price the model could
+                not have had.
+
+        Returns:
+            ``(session, yield)`` pairs in percent per annum, oldest first. A
+            session whose cell is blank is omitted rather than read as zero:
+            the RBNZ left about a year of 2020 blank in the 2-year column, and
+            a zero front end for that year would be a number, not a gap.
+
+        Raises:
+            SourceError: On request failure, which from any data-centre or
+                cloud egress is HTTP 403 with the RBNZ's own challenge page;
+                on a body that is not a workbook; on a missing data sheet or
+                series-ID row; on an ID the sheet does not carry; or on a
+                column published in a unit other than `RBNZ_UNIT`.
+
+        """
+        raw = self._request(RBNZ_B2_URL, {})
+        if not isinstance(raw, bytes):
+            raise SourceError(
+                f"{self.name} decoded the workbook into something unusable"
+            )
+        try:
+            workbook = openpyxl.load_workbook(
+                io.BytesIO(raw), read_only=True, data_only=True
+            )
+        except (zipfile.BadZipFile, KeyError, ValueError) as error:
+            raise SourceError(
+                f"rbnz served a body that is not a workbook: {error}"
+            ) from error
+        if RBNZ_DATA_SHEET not in workbook.sheetnames:
+            raise SourceError(
+                f"rbnz workbook holds no {RBNZ_DATA_SHEET!r} sheet; it holds "
+                f"{', '.join(workbook.sheetnames)}"
+            )
+        rows = list(workbook[RBNZ_DATA_SHEET].iter_rows(values_only=True))
+        id_row = self._rbnz_labelled_row(rows, RBNZ_SERIES_ID_ROW_LABEL)
+        ids = rows[id_row]
+        try:
+            column = ids.index(series_id)
+        except ValueError as error:
+            raise SourceError(
+                f"rbnz table B2 does not carry {series_id}; it holds "
+                f"{', '.join(str(cell) for cell in ids[1:] if cell)}"
+            ) from error
+        units = rows[self._rbnz_labelled_row(rows, RBNZ_UNIT_ROW_LABEL)]
+        unit = units[column] if len(units) > column else None
+        if unit != RBNZ_UNIT:
+            raise SourceError(
+                f"rbnz publishes {series_id} in {unit!r}, not {RBNZ_UNIT!r}; "
+                "the registry promises percent and no conversion is applied"
+            )
+        parsed: list[tuple[date, float]] = []
+        for row in rows[id_row + 1 :]:
+            if not row or len(row) <= column:
+                continue
+            session = self._curve_session(row[0])
+            if session is None or not start <= session <= end:
+                continue
+            cell = row[column]
+            value = self._reading(
+                "" if cell is None else str(cell), "rbnz", session.isoformat()
+            )
+            if value is not None:
+                parsed.append((session, value))
+        parsed.sort()
+        return parsed
+
+    def _rbnz_labelled_row(self, rows: Sequence[Sequence[object]], label: str) -> int:
+        """Find the header row of the B2 sheet that starts with ``label``.
+
+        Args:
+            rows: The data sheet, as ``openpyxl`` returned it.
+            label: The first cell's text, e.g. ``"Series Id"``.
+
+        Returns:
+            The index of that row. Found by label rather than by row number:
+            the RBNZ publishes five header rows today and has not promised to
+            keep it at five.
+
+        Raises:
+            SourceError: When no row starts with the label. Without the
+                series-ID row there is no way to tell one tenor from another,
+                and without the unit row there is no way to know what the
+                number is.
+
+        """
+        for index, row in enumerate(rows):
+            if row and str(row[0]).strip() == label:
+                return index
+        raise SourceError(
+            f"rbnz table B2 carries no {label!r} row, so its columns cannot be "
+            "told apart"
+        )
 
     def provider_health(self) -> Mapping[str, date | None]:
         """Report each provider's newest observation.

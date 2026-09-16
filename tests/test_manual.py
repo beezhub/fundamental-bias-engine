@@ -887,7 +887,8 @@ def test_refs_is_derived_from_the_registry(source: ManualSource) -> None:
 def test_refs_is_not_empty(source: ManualSource) -> None:
     """Guards the test above, which would pass vacuously against a `refs` that
     returns nothing whatever the registry says."""
-    assert len(source.refs()) >= 19
+    # 16 manual refs since the RBNZ took NZD's three yield legs off this list.
+    assert len(source.refs()) >= 16
 
 
 def test_refs_names_no_other_source(source: ManualSource) -> None:
@@ -923,7 +924,7 @@ def test_the_empty_directory_report_covers_pmi_for_all_eight(
     reported = source.missing(ASOF)
 
     assert set(reported[PMI]) == set(G10)
-    assert set(reported["yield_2y"]) == {"CHF", "NZD"}
+    assert set(reported["yield_2y"]) == {"CHF"}
 
 
 def test_a_current_entry_clears_its_pair(
@@ -1535,12 +1536,13 @@ def test_the_refused_differenced_refs_are_still_on_the_to_do_list(
     source: ManualSource, manual_dir: Path
 ) -> None:
     """The two behaviours are in tension on purpose and neither is an
-    accident: `missing` reports four entries that `load_file` will not accept.
-    Pinned together so a later change cannot quietly drop one side."""
+    accident: `missing` reports two entries that `load_file` will not accept.
+    Pinned together so a later change cannot quietly drop one side. There were
+    four until the RBNZ took NZD's two off the manual route."""
     reported = source.missing(ASOF)
 
-    assert set(reported["yield_2y_chg_1m"]) == {"CHF", "NZD"}
-    assert set(reported["yield_2y_chg_3m"]) == {"CHF", "NZD"}
+    assert set(reported["yield_2y_chg_1m"]) == {"CHF"}
+    assert set(reported["yield_2y_chg_3m"]) == {"CHF"}
 
 
 # --- template ---------------------------------------------------------------

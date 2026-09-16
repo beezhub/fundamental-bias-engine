@@ -1,8 +1,8 @@
 """Operator-entered data: the escape hatch for what free APIs will not supply.
 
-Nineteen of the registry's refs have no free machine-readable source. PMIs are
-licensed, for all eight currencies. Two-year yields for CHF and NZD are on no
-free API, the other six having landed on their issuing institutions' own feeds.
+Sixteen of the registry's refs have no free machine-readable source. PMIs are
+licensed, for all eight currencies. The CHF two-year yield is on no free API,
+the other seven having landed on their issuing institutions' own feeds.
 Euro-area employment change, industrial production for three currencies and the
 New Zealand dairy link are the rest. Central bank guidance tone has never been a
 number at all.
@@ -214,12 +214,14 @@ SUGGESTED_FILES: Mapping[str, str] = {
         "burden and the one worth automating first if a licence is ever bought."
     ),
     "yields.yaml": (
-        "Two-year government bond yields for CHF and NZD only. The other six "
+        "The two-year government bond yield for CHF only. The other seven "
         "are fetched: the ECB, the Bank of Canada, the RBA, the Bank of "
-        "England and the Japanese Ministry of Finance each publish their own. "
-        "These two carry the front end of the monetary pillar for their "
-        "currencies, which is the heaviest pillar in `ScoringConfig`, so they "
-        "matter more than their count suggests."
+        "England, the Japanese Ministry of Finance and the Reserve Bank of "
+        "New Zealand each publish their own. This one carries the front end "
+        "of the monetary pillar for the Swiss franc, which is the heaviest "
+        "pillar in `ScoringConfig`, so it matters more than its count "
+        "suggests. A deliberate one-off entry, not a daily routine: see "
+        "docs/data-sources.md on why daily manual entry was rejected."
     ),
     "zz-overrides.yaml": (
         "Ad-hoc corrections. Named to sort last, so it wins over everything "

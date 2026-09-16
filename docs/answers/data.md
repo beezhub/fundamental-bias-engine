@@ -120,6 +120,18 @@ publishes its own explicit OCR forecast track in every Monetary Policy
 Statement, which would be a better policy-path series than any curve-derived
 one. That data exists and is exactly the data this block prevents reaching.
 
+**Settled, 2026-09-15, on issue #91.** The distinction above has been drawn.
+The block is vantage-based, not publisher policy: the same pages returned 200
+from a phone on a mobile carrier while every container path, static
+`-/media/` files included, kept returning 403 with the RBNZ's JavaScript
+challenge page. The 2-year yield is now fetched from the B2 workbook by
+`CurvesSource.fetch_rbnz`, from the owner's connection only. The full attempt
+history, the verdict and the one condition under which another attempt counts
+as evidence are recorded under "Central banks and debt offices" in
+`docs/data-sources.md`; do not retry from a container, it adds nothing. The
+OCR forecast track above sits behind the same block and is reachable the same
+way, so it is a proposal rather than a dead end.
+
 **Recommendation.** This is a data question, cleanly separable from the
 modelling one, and the answer is: build it for four currencies, not eight. If
 the macro strategist wants a `policy_path` sub-indicator, the concrete
