@@ -89,6 +89,7 @@ import typer
 
 from fbe import config as config_module
 from fbe import report as report_module
+from fbe.bias import CONVICTION_RANK, apply_filters, build_pair_biases
 from fbe.datasources import ALL_SOURCES
 from fbe.datasources.cache import DiskCache
 from fbe.datasources.collect import (
@@ -100,8 +101,8 @@ from fbe.datasources.collect import (
 )
 from fbe.pillars import default_pillars
 from fbe.scoring import score_currencies
-from fbe.types import Conviction, CurrencyScore, Direction, PillarName
-from fbe.universe import G10
+from fbe.types import Conviction, CurrencyScore, Direction, PairBias, PillarName
+from fbe.universe import G10, MAJORS
 
 if TYPE_CHECKING:
     from fbe.config import Config
@@ -158,6 +159,25 @@ PILLAR_ABBREVIATIONS: Mapping[PillarName, str] = {
 Spelled out rather than sliced off the enum because ``risk`` slices to ``Ris``
 and the published table says ``Rsk``. A slice would also silently collide the
 day two pillars share their first three letters."""
+
+PAIR_WIDTH = 8
+DIRECTION_WIDTH = 7
+CONVICTION_WIDTH = 8
+SPREAD_WIDTH = 8
+LEG_WIDTH = 8
+AGREEMENT_WIDTH = 7
+"""Column widths for the ``bias`` ranked list, matching the layout published in
+``docs/interfaces.md``. The spread and both legs are wide because each carries
+an explicit sign, and a bias table where the reader has to work out which way a
+number points is the one place a sign must never be implied."""
+
+NO_BLOCKERS = "-"
+"""What the Notes column prints when a pair carries nothing at all.
+
+Distinct from `ABSENT_CELL` on purpose. ``n/a`` says a number could not be
+formed; this says the list of reasons to stand aside is genuinely empty, which
+is a finding rather than a gap. An empty cell would say neither and would read
+as a column the renderer forgot."""
 
 ABSENT_CELL = "n/a"
 """What a pillar with no data prints, in the table and in the machine formats.
@@ -1377,19 +1397,26 @@ def _pillar_cell(score: CurrencyScore, name: PillarName) -> float | None:
     return found.score
 
 
-def _coverage_percent(coverage: float) -> int:
-    """Return coverage as a whole percentage, never rounded up.
+def _share_percent(share: float) -> int:
+    """Return a ``0.0`` to ``1.0`` share as a whole percentage, never rounded up.
 
     Args:
-        coverage: Fraction of pillar weight that had usable data, ``0.0`` to
-            ``1.0``.
+        share: The fraction to print. Coverage, the share of pillar weight
+            that had usable data, and agreement, the share of pillar weight
+            pointing the way the headline does. Both run ``0.0`` to ``1.0``
+            and both flatter the run when rounded up, so both floor.
 
     Returns:
         The percentage, floored. See `COVERAGE_EPSILON` for why the floor is
         nudged and why it is a floor at all.
 
+    One function for both columns rather than the same expression twice. The
+    knowledge here is the flooring rule and the epsilon, and two copies of a
+    rounding rule disagree eventually with nothing on screen to say which
+    table is which.
+
     """
-    return math.floor(coverage * 100.0 + COVERAGE_EPSILON)
+    return math.floor(share * 100.0 + COVERAGE_EPSILON)
 
 
 def _score_notes(rows: Sequence[CurrencyScore]) -> tuple[str, ...]:
@@ -1424,8 +1451,14 @@ def _score_notes(rows: Sequence[CurrencyScore]) -> tuple[str, ...]:
     return tuple(seen)
 
 
-def _score_header(asof: date, digest: str) -> str:
-    """Return the line that ties a printed table to the run that made it."""
+def _run_header(asof: date, digest: str) -> str:
+    """Return the line that ties a printed table to the run that made it.
+
+    Shared by ``score`` and ``bias``, which publish the same line in
+    ``docs/interfaces.md``. Two copies of it could drift into two different
+    ideas of which run a table came from, which is the one question the line
+    exists to answer.
+    """
     return f"asof {asof.isoformat()}   config {digest}"
 
 
@@ -1468,7 +1501,7 @@ def _score_line(score: CurrencyScore, order: Sequence[PillarName] | None) -> str
         f"{score.currency:>{CODE_WIDTH}}"
         f"{score.composite:>+{COMPOSITE_WIDTH}.2f}"
         f"{score.dispersion:>{DISPERSION_WIDTH}.2f}"
-        f"{str(_coverage_percent(score.coverage)) + '%':>{COVERAGE_WIDTH}}"
+        f"{str(_share_percent(score.coverage)) + '%':>{COVERAGE_WIDTH}}"
     )
     if order is None:
         return line
@@ -1486,7 +1519,7 @@ def _render_score(
     digest: str,
 ) -> None:
     """Print the ranking in the layout ``docs/interfaces.md`` publishes."""
-    typer.echo(_score_header(asof, digest))
+    typer.echo(_run_header(asof, digest))
     typer.echo("")
     typer.echo(_score_columns(order))
     for score in rows:
@@ -1679,11 +1712,454 @@ def bias(
         top: Truncate the ranked list.
         output_format: table, json or csv.
 
+    Every printed number and every printed marker is read from a
+    `fbe.types.PairBias` field. Nothing here differences two scores, decides a
+    direction, grades a conviction or judges a blocker: `fbe.bias` does all
+    four and this command renders what it is handed. A spread carries an
+    explicit sign, positive meaning the base currency's fundamentals sit above
+    the quote's; agreement is a whole percentage of pillar weight, floored,
+    and not a count of pillars.
+
+    A pair a filter removed is listed under the table with the reason rather
+    than dropped. A pair missing from the list is indistinguishable from a
+    pair the engine never scored, and the second is the one worth knowing
+    about.
+
     Raises:
-        NotImplementedError: Always, until `fbe.bias` lands.
+        typer.BadParameter: With exit code 2 when ``--asof`` is in the future,
+            when ``scoring.lookback_years`` cannot produce a window, or when
+            ``--matrix`` is asked for, which needs `fbe.report._grid` and is
+            not built yet. Each would otherwise print a table that looked like
+            a run rather than a refusal.
+        typer.Exit: With `EXIT_UNUSABLE` when the cache held nothing for the
+            window, so an empty table cannot read as a working engine with no
+            opinions.
 
     """
-    raise NotImplementedError("fbe.cli.bias is scaffolded; see docs/roadmap.md Phase 2")
+    config = _effective_config(ctx)
+    run_date = asof.date() if asof is not None else date.today()
+    if run_date > date.today():
+        raise typer.BadParameter(
+            f"--asof {run_date} is in the future, so every series would be "
+            "past its allowance and every pair would come back flat",
+            param_hint="--asof",
+        )
+    if matrix:
+        # Refused rather than approximated. `report._grid` is the single place
+        # a mirrored cell is produced, and until it lands a grid built here
+        # would show market-convention numbers under the opposite row header,
+        # which is a plausible number pointing the wrong way in exactly the
+        # half of the grid nobody double-checks.
+        raise typer.BadParameter(
+            "--matrix needs the mirrored grid, which is not built yet. Use "
+            "--ranked for the list of pairs.",
+            param_hint="--matrix",
+        )
+
+    try:
+        start = lookback_start(run_date, config.scoring.lookback_years)
+    except ValueError as error:
+        raise typer.BadParameter(
+            f"scoring.lookback_years is unusable: {error}",
+            param_hint="--asof",
+        ) from error
+
+    # Reads the cache and never the network, for the reason `score` gives at
+    # the same call: a rolled-over TTL refetching mid-session would let two
+    # runs at the same --asof and the same digest print different tables with
+    # nothing on screen to explain it.
+    result = collect(
+        replace(config.data, offline=True),
+        start=start,
+        end=run_date,
+        sources=ALL_SOURCES,
+    )
+    if not result.usable:
+        typer.echo(
+            "No observations in the cache for this window, so there is nothing "
+            "to difference. Run fbe refresh to fill it, or fbe doctor to find "
+            "out why it is empty."
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
+
+    scores = score_currencies(
+        result.observations,
+        default_pillars(config.scoring),
+        config.scoring,
+        run_date,
+    )
+    by_currency = {score.currency: score for score in scores}
+    # Filtered before the view filters run, and over every pair rather than
+    # the printed ones. A pair hidden by --majors still has to carry its real
+    # blockers, because --majors is a change of view and the hidden list below
+    # states why each pair went.
+    filtered = tuple(
+        apply_filters(bias_row, by_currency, config, run_date)
+        for bias_row in build_pair_biases(scores, config, run_date)
+    )
+    shown, hidden = _bias_rows(filtered, majors, min_conviction, tradeable_only)
+
+    if output_format is OutputFormat.JSON:
+        typer.echo(
+            _bias_json(
+                shown,
+                hidden,
+                top,
+                majors,
+                run_date,
+                config.digest(),
+                min_conviction,
+                tradeable_only,
+            )
+        )
+    elif output_format is OutputFormat.CSV:
+        typer.echo(_bias_csv(shown, top, run_date, config.digest()))
+        for line in _hidden_lines(hidden, majors, min_conviction, tradeable_only):
+            # CSV has no row-level place for a run-level statement, and the
+            # hidden pairs are exactly that. They go to stderr so
+            # `fbe bias --format csv > monday.csv` still writes a file a
+            # parser can read, with the reasons still in front of whoever ran
+            # it. The same split `score` makes with its warnings.
+            typer.echo(line, err=True)
+    else:
+        _render_bias(
+            shown,
+            hidden,
+            top,
+            majors,
+            run_date,
+            config.digest(),
+            min_conviction,
+            tradeable_only,
+        )
+
+
+def _bias_rows(
+    biases: Sequence[PairBias],
+    majors: bool,
+    min_conviction: Conviction,
+    tradeable_only: bool,
+) -> tuple[tuple[PairBias, ...], tuple[PairBias, ...]]:
+    """Split the run into the rows to print and the rows a filter removed.
+
+    Args:
+        biases: Every pair the bias layer produced, already filtered by
+            `fbe.bias.apply_filters`.
+        majors: Restrict the pool to `fbe.universe.MAJORS`.
+        min_conviction: The floor a pair must reach to be printed.
+        tradeable_only: Drop pairs whose ``tradeable`` is ``False``.
+
+    Returns:
+        The kept rows and the removed rows, both ordered widest spread first.
+
+        ``--majors`` narrows the pool and does not populate the removed list.
+        It is a choice of which market to look at rather than a judgement
+        about a pair, and the published example counts three majors hidden out
+        of seven rather than twenty-four pairs hidden out of twenty-eight. The
+        other two filters each say something about the pair they removed, so
+        each removal is listed with its reason.
+
+        ``tradeable`` is read from the field rather than from whether
+        ``blockers`` is empty. Three of the eight strings `fbe.bias.BLOCKERS`
+        declares do not block, and an offline run carries two of them on every
+        pair, so a filter keying on the presence of a marker would hide the
+        entire run.
+
+    """
+    pool = [row for row in biases if not majors or row.pair in MAJORS]
+    pool.sort(key=_bias_order)
+    kept: list[PairBias] = []
+    removed: list[PairBias] = []
+    floor = CONVICTION_RANK[min_conviction]
+    for row in pool:
+        if CONVICTION_RANK[row.conviction] < floor or (
+            tradeable_only and not row.tradeable
+        ):
+            removed.append(row)
+        else:
+            kept.append(row)
+    return tuple(kept), tuple(removed)
+
+
+def _bias_order(bias_row: PairBias) -> tuple[float, str]:
+    """Sort key placing the widest disagreement first.
+
+    Args:
+        bias_row: The row being placed.
+
+    Returns:
+        The negated absolute spread, then the pair code.
+
+        On the width and not the signed value. The spread is
+        ``composite(base) - composite(quote)``, so its sign says which leg is
+        stronger and carries no information about how much the two economies
+        disagree. Sorting on it descending would put every short pair below
+        every long one and bury the widest disagreement in the run in the
+        middle of the table.
+
+        The pair code breaks a tie so two pairs at the same width print in the
+        same order on every run. Without it the order falls out of whatever
+        `fbe.universe.ALL_PAIRS` happened to hand over, and a table that
+        reorders itself between two runs at the same ``--asof`` cannot be
+        diffed.
+
+    """
+    return (-abs(bias_row.spread), bias_row.pair)
+
+
+def _hidden_reason(
+    bias_row: PairBias, min_conviction: Conviction, tradeable_only: bool
+) -> str:
+    """Say which filter removed this pair, in terms of the fields it read.
+
+    Args:
+        bias_row: The removed row.
+        min_conviction: The floor that was in force.
+        tradeable_only: Whether the tradeable filter was in force.
+
+    Returns:
+        One clause per filter that removed it, joined by a semicolon when both
+        did. Every part is read off the row: the conviction it carries, the
+        floor it was asked for, and the blockers `fbe.bias.apply_filters`
+        recorded. Nothing is recomputed and no threshold is compared again,
+        so the reason cannot disagree with the filter that produced it.
+
+        A blocked pair names its blockers rather than saying "blocked". The
+        reader's next action differs completely between ``coverage``, which
+        means go and look at why the data is thin, and ``event``, which means
+        wait for the release.
+
+    """
+    parts: list[str] = []
+    if CONVICTION_RANK[bias_row.conviction] < CONVICTION_RANK[min_conviction]:
+        parts.append(
+            f"conviction {bias_row.conviction.value}, below {min_conviction.value}"
+        )
+    if tradeable_only and not bias_row.tradeable:
+        parts.append("blocked: " + ", ".join(bias_row.blockers))
+    return "; ".join(parts)
+
+
+def _hidden_lines(
+    hidden: Sequence[PairBias],
+    majors: bool,
+    min_conviction: Conviction,
+    tradeable_only: bool,
+) -> tuple[str, ...]:
+    """Return the hidden-pairs block, heading included, or nothing at all.
+
+    Args:
+        hidden: The removed rows, already ordered.
+        majors: Whether the pool was narrowed, which names it in the heading.
+        min_conviction: The floor in force, for the reasons.
+        tradeable_only: Whether the tradeable filter was in force.
+
+    Returns:
+        The heading and one indented line per removed pair, or an empty tuple
+        when nothing was removed. Nothing rather than a heading reading zero:
+        a run where every pair survived should not have to be read past.
+
+    """
+    if not hidden:
+        return ()
+    pool = "majors" if majors else "pairs"
+    lines = [f"{len(hidden)} {pool} hidden by the filters:"]
+    for row in hidden:
+        reason = _hidden_reason(row, min_conviction, tradeable_only)
+        lines.append(
+            f"  {row.pair}  spread {row.spread:+.2f}, {reason}"
+            if reason
+            else f"  {row.pair}  spread {row.spread:+.2f}"
+        )
+    return tuple(lines)
+
+
+def _bias_columns() -> str:
+    """Return the column headings in the published layout."""
+    return (
+        f"{'Pair':<{PAIR_WIDTH}}"
+        f"{'Dir':<{DIRECTION_WIDTH}}"
+        f"{'Conv':<{CONVICTION_WIDTH}}"
+        f"{'Spread':>{SPREAD_WIDTH}}"
+        f"{'Base':>{LEG_WIDTH}}"
+        f"{'Quote':>{LEG_WIDTH}}"
+        f"{'Agree':>{AGREEMENT_WIDTH}}"
+        "  Notes"
+    )
+
+
+def _bias_line(bias_row: PairBias) -> str:
+    """Return one pair's row in the published layout.
+
+    Args:
+        bias_row: The row to print.
+
+    Returns:
+        The pair, direction, conviction, spread, both legs' composites,
+        agreement and the blockers, every one of them read off the dataclass.
+
+        The direction is `PairBias.direction` and not the sign of the spread.
+        `fbe.bias.build_pair_biases` forces `Direction.NEUTRAL` whenever
+        conviction is `Conviction.NONE`, however wide the spread, so a wide
+        spread with no direction is a state the engine really produces and a
+        renderer reading the sign would print a call over the engine's own
+        refusal to make one.
+
+        The blockers print verbatim, including the ones that do not block. An
+        offline run carries ``cost:unchecked`` and ``event:unchecked`` on
+        every pair, and those two say the checks never ran rather than that
+        they passed. A marker that is not rendered does not exist.
+
+    """
+    notes = ", ".join(bias_row.blockers) if bias_row.blockers else NO_BLOCKERS
+    return (
+        f"{bias_row.pair:<{PAIR_WIDTH}}"
+        f"{bias_row.direction.value:<{DIRECTION_WIDTH}}"
+        f"{bias_row.conviction.value:<{CONVICTION_WIDTH}}"
+        f"{bias_row.spread:>+{SPREAD_WIDTH}.2f}"
+        f"{bias_row.base_score:>+{LEG_WIDTH}.2f}"
+        f"{bias_row.quote_score:>+{LEG_WIDTH}.2f}"
+        f"{str(_share_percent(bias_row.agreement)) + '%':>{AGREEMENT_WIDTH}}"
+        f"  {notes}"
+    )
+
+
+def _render_bias(
+    shown: Sequence[PairBias],
+    hidden: Sequence[PairBias],
+    top: int | None,
+    majors: bool,
+    asof: date,
+    digest: str,
+    min_conviction: Conviction,
+    tradeable_only: bool,
+) -> None:
+    """Print the ranked list in the layout ``docs/interfaces.md`` publishes."""
+    typer.echo(_run_header(asof, digest))
+    typer.echo("")
+    typer.echo(_bias_columns())
+    for row in _truncate(shown, top):
+        typer.echo(_bias_line(row))
+    lines = _hidden_lines(hidden, majors, min_conviction, tradeable_only)
+    if lines:
+        typer.echo("")
+        for line in lines:
+            typer.echo(line)
+
+
+def _truncate(rows: Sequence[PairBias], top: int | None) -> Sequence[PairBias]:
+    """Return at most ``top`` rows, keeping the order.
+
+    ``--top`` is a change of view and not a filter. It shortens what is
+    printed and does not move a pair into the hidden list, which is why it is
+    applied here rather than in `_bias_rows`: a pair below the cut was not
+    rejected by anything and has no reason to give.
+    """
+    return rows if top is None else rows[:top]
+
+
+def _bias_payload(rows: Sequence[PairBias]) -> list[dict[str, object]]:
+    """Return the rows as plain data, shared by both machine formats.
+
+    One builder for both, so a formatter cannot carry a field in one and drop
+    it in the other, or round the table and not the JSON.
+    """
+    return [
+        {
+            "pair": row.pair,
+            "base": row.base,
+            "quote": row.quote,
+            "direction": row.direction.value,
+            "conviction": row.conviction.value,
+            "spread": row.spread,
+            "base_score": row.base_score,
+            "quote_score": row.quote_score,
+            "agreement": row.agreement,
+            "tradeable": row.tradeable,
+            "blockers": list(row.blockers),
+        }
+        for row in rows
+    ]
+
+
+def _bias_json(
+    shown: Sequence[PairBias],
+    hidden: Sequence[PairBias],
+    top: int | None,
+    majors: bool,
+    asof: date,
+    digest: str,
+    min_conviction: Conviction,
+    tradeable_only: bool,
+) -> str:
+    """Return the ranked list as JSON, carrying the run's own identifiers.
+
+    The hidden pairs are a key of their own rather than being omitted. A
+    consumer that only reads ``pairs`` sees the same list the table prints,
+    and one that wants to know what went can find out without rerunning the
+    command without its filters.
+    """
+    hidden_rows = _bias_payload(hidden)
+    for row, source in zip(hidden_rows, hidden, strict=True):
+        row["reason"] = _hidden_reason(source, min_conviction, tradeable_only)
+    return json.dumps(
+        {
+            "asof": asof.isoformat(),
+            "config_digest": digest,
+            "pairs": _bias_payload(_truncate(shown, top)),
+            "hidden": hidden_rows,
+            "pool": "majors" if majors else "all",
+        },
+        indent=2,
+    )
+
+
+def _bias_csv(
+    shown: Sequence[PairBias],
+    top: int | None,
+    asof: date,
+    digest: str,
+) -> str:
+    """Return the ranked list as CSV, with the run's identifiers on every line.
+
+    ``asof`` and ``config_digest`` are run-level facts and repeat on every
+    row, which is how a flat format states one. They are carried because a
+    saved CSV is the one rendering that outlives the terminal it was printed
+    in, and a file of directional calls that cannot be tied to the weights
+    that produced them is a file nobody can check later.
+
+    ``blockers`` is a space-separated field. The strings `fbe.bias.BLOCKERS`
+    declares contain no spaces, so the field splits back to the same list,
+    where a comma would need quoting and a reader splitting on commas would
+    tear ``event: <reason>`` in half.
+    """
+    columns = [
+        "pair",
+        "base",
+        "quote",
+        "direction",
+        "conviction",
+        "spread",
+        "base_score",
+        "quote_score",
+        "agreement",
+        "tradeable",
+        "blockers",
+        "asof",
+        "config_digest",
+    ]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns, lineterminator="\n")
+    writer.writeheader()
+    for row in _bias_payload(_truncate(shown, top)):
+        flat = dict(row)
+        blockers = flat["blockers"]
+        assert isinstance(blockers, list)
+        flat["blockers"] = " ".join(str(entry) for entry in blockers)
+        flat["asof"] = asof.isoformat()
+        flat["config_digest"] = digest
+        writer.writerow(flat)
+    return buffer.getvalue().rstrip("\n")
 
 
 @app.command(

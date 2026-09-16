@@ -238,19 +238,43 @@ are different trades, and the ranking alone cannot tell them apart.
 $ fbe bias --majors --min-conviction medium --tradeable-only
 asof 2026-09-09   config 8f2c1a9d4b70
 
-Pair    Dir    Conv    Spread   Base   Quote  Agree  Notes
-USDJPY  long   high     +2.60  +1.42   -1.18   86%   -
-NZDUSD  short  high     -2.48  -1.06   +1.42   86%   -
-AUDUSD  short  high     -2.36  -0.94   +1.42   71%   -
-EURUSD  short  medium   -2.31  -0.89   +1.42   71%   -
+Pair    Dir    Conv      Spread    Base   Quote  Agree  Notes
+USDJPY  long   high       +2.60   +1.42   -1.18    86%  -
+NZDUSD  short  high       -2.48   -1.06   +1.42    86%  -
+AUDUSD  short  high       -2.36   -0.94   +1.42    71%  -
+EURUSD  short  medium     -2.31   -0.89   +1.42    71%  -
 
 3 majors hidden by the filters:
-  USDCAD  spread 1.47, just under the 1.50 medium threshold
-  GBPUSD  spread 1.11, and GBP coverage is 86%
-  USDCHF  spread 0.65, neutral
+  USDCAD  spread +1.47, conviction low, below medium
+  GBPUSD  spread +1.11, conviction low, below medium; blocked: coverage
+  USDCHF  spread +0.65, conviction none, below medium
 ```
 
-The matrix view answers a different question:
+The figures are illustrative. The layout is what `fbe.cli` emits, reproduced
+from the renderer rather than typed out, so a reader can line the columns up
+against a real run.
+
+Each hidden pair names the field that removed it, never a threshold compared a
+second time. `--min-conviction` reports the conviction the pair carries and the
+floor it was asked for; `--tradeable-only` reports the blockers
+`fbe.bias.apply_filters` recorded, by name, because the reader's next action
+differs completely between `coverage`, which means go and look at why the data
+is thin, and `event`, which means wait for the release. A pair removed by both
+filters says both. The command compares nothing itself: a reason re-derived
+from a threshold can disagree with the filter that produced it, and then the
+table explains a removal that did not happen for that reason.
+
+`--top` is not a filter. It shortens the printed list and moves no pair into
+the hidden block, because a pair below the cut was not rejected by anything and
+has no reason to give. `--majors` is not in the hidden block either: it chooses
+which market to look at, which is why the example counts three majors hidden
+out of seven rather than twenty-four pairs hidden out of twenty-eight.
+
+The matrix view answers a different question. It is not built yet:
+`fbe.report._grid` is still scaffolded, and `fbe bias --matrix` refuses
+with exit code 2 rather than printing a partial grid, for the reason given
+below the example.
+
 
 ```console
 $ fbe bias --matrix

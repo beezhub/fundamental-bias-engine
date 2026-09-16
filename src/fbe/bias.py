@@ -134,7 +134,7 @@ the two legs the same has no opinion on the pair, and it is excluded from both
 sides of the agreement fraction rather than counted as agreeing.
 """
 
-_CONVICTION_RANK: Mapping[Conviction, int] = {
+CONVICTION_RANK: Mapping[Conviction, int] = {
     Conviction.NONE: 0,
     Conviction.LOW: 1,
     Conviction.MEDIUM: 2,
@@ -144,14 +144,21 @@ _CONVICTION_RANK: Mapping[Conviction, int] = {
 
 `Conviction` is a string enum with no ordering of its own, so the ladder is
 spelled out here rather than relied on through declaration order.
+
+Public because it is the only statement of that order in the package, and a
+consumer comparing two tiers has to have it. `fbe.cli.bias` filters on
+``--min-conviction`` and would otherwise spell the ladder out a second time,
+which is the config-drift shape this codebase keeps producing: add a tier to
+one copy and the other silently orders it wrong, with a filter quietly keeping
+or dropping the pairs that carry it.
 """
 
 _LADDER: tuple[Conviction, ...] = tuple(
-    sorted(_CONVICTION_RANK, key=lambda tier: _CONVICTION_RANK[tier])
+    sorted(CONVICTION_RANK, key=lambda tier: CONVICTION_RANK[tier])
 )
 """The same ladder as a sequence, weakest first, for stepping down it.
 
-Derived from `_CONVICTION_RANK` rather than written out again, so a tier added
+Derived from `CONVICTION_RANK` rather than written out again, so a tier added
 to one cannot be missing from the other.
 """
 
@@ -491,7 +498,7 @@ def _demote(tier: Conviction) -> Conviction:
         more reasons to doubt it than there are steps to take.
 
     """
-    return _LADDER[max(0, _CONVICTION_RANK[tier] - 1)]
+    return _LADDER[max(0, CONVICTION_RANK[tier] - 1)]
 
 
 def _cap(tier: Conviction, ceiling: Conviction) -> Conviction:
@@ -508,7 +515,7 @@ def _cap(tier: Conviction, ceiling: Conviction) -> Conviction:
         subtracting a step.
 
     """
-    if _CONVICTION_RANK[tier] <= _CONVICTION_RANK[ceiling]:
+    if CONVICTION_RANK[tier] <= CONVICTION_RANK[ceiling]:
         return tier
     return ceiling
 
@@ -1026,7 +1033,7 @@ def shortlist(biases: Sequence[PairBias], limit: int) -> Sequence[PairBias]:
     ]
     candidates.sort(
         key=lambda bias: (
-            -_CONVICTION_RANK[bias.conviction],
+            -CONVICTION_RANK[bias.conviction],
             -abs(bias.spread),
             bias.pair,
         )
