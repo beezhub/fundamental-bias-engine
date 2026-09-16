@@ -2050,13 +2050,31 @@ def stale_refs(asof: date | None = None) -> Mapping[str, tuple[str, ...]]:
         full coverage are omitted, so an empty mapping means the registry is
         entirely healthy.
 
+        An indicator holding a ``GLOBAL`` ref reports the whole of ``G10`` when
+        that ref is unusable, and is omitted otherwise. There is no partial
+        answer to give: one print serves all eight currencies, per
+        `coverage_report`, so the ref is either carrying the universe or none of
+        it. The currencies are listed rather than ``GLOBAL`` itself because the
+        caller is an operator or a report asking which currencies lost a leg,
+        and the answer is all of them.
+
+    A ``GLOBAL`` ref was previously skipped here, which made both sentences
+    above false: the function was not the complement of `coverage_report`, and
+    an empty mapping did not mean a healthy registry. The two indicators
+    concerned are each the sole input to a pillar component, so the gap this hid
+    was never one leg of one score. It was a component going dark for every
+    currency at once, with nothing on the page to say so. See issue #49.
+
     """
     when = asof or VERIFIED_ON
     out: dict[str, tuple[str, ...]] = {}
     for key, spec in INDICATORS.items():
-        if GLOBAL in spec.series:
-            continue
         limit = spec.max_staleness_days
+        global_ref = spec.series.get(GLOBAL)
+        if global_ref is not None:
+            if not global_ref.fetchable or global_ref.stale_on(when, limit):
+                out[key] = tuple(G10)
+            continue
         bad = tuple(
             code
             for code in G10
