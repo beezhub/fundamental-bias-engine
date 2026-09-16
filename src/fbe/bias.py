@@ -19,6 +19,7 @@ way to lean, how hard, and when to stand aside.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import date
 
 from fbe.config import Config, ScoringConfig
@@ -748,9 +749,103 @@ def apply_filters(
     every other pair.
 
     """
-    raise NotImplementedError(
-        "fbe.bias.apply_filters is scaffolded; see docs/roadmap.md Phase 2"
+    base = scores[bias.base]
+    quote = scores[bias.quote]
+
+    # Each entry is the `BLOCKERS` kind paired with the string emitted for it.
+    # The two differ for `event` and `event:unknown`, which carry a reason, and
+    # keeping the kind rather than re-deriving it from the text is what makes
+    # `tradeable` safe: "event:unknown: ..." also starts with "event", so a
+    # consumer matching the shorter prefix first would read every failed check
+    # as a blocked pair.
+    entries: list[tuple[str, str]] = []
+
+    if bias.direction is Direction.NEUTRAL or bias.conviction is Conviction.NONE:
+        entries.append(("no_edge", "no_edge"))
+
+    # Both coverage statements can be true at once and both are recorded, since
+    # they say different things: one that the composite rests on too little, the
+    # other that there is no composite. The comparison is ``<= 0.0`` rather than
+    # ``== 0.0`` so a negative coverage, which would be a defect upstream, reads
+    # as no data rather than as data.
+    if base.coverage <= 0.0 or quote.coverage <= 0.0:
+        entries.append(("no_coverage", "no_coverage"))
+    if min(base.coverage, quote.coverage) < config.scoring.min_coverage:
+        entries.append(("coverage", "coverage"))
+
+    if cost_ratio is None:
+        entries.append(_unchecked("cost"))
+    elif cost_ratio > config.scoring.max_cost_ratio:
+        entries.append(("cost", "cost"))
+
+    if calendar_guard is None:
+        entries.append(_unchecked("event"))
+    else:
+        entries.extend(_calendar_entries(bias, calendar_guard, asof))
+
+    return replace(
+        bias,
+        tradeable=not any(BLOCKERS[kind] for kind, _ in entries),
+        blockers=tuple(text for _, text in entries),
     )
+
+
+def _unchecked(kind: str) -> tuple[str, str]:
+    """Return the entry recording that ``kind``'s check did not run.
+
+    Args:
+        kind: The base blocker name, ``"cost"`` or ``"event"``.
+
+    Returns:
+        The `BLOCKERS` kind and the string to emit, which are the same here:
+        a check that never ran has no reason to carry, only a name.
+
+    """
+    marker = kind + UNCHECKED_SUFFIX
+    return (marker, marker)
+
+
+def _calendar_entries(
+    bias: PairBias,
+    calendar_guard: CalendarGuard,
+    asof: date,
+) -> list[tuple[str, str]]:
+    """Ask the guard about both legs and record what it said.
+
+    Args:
+        bias: The pair, read for its two legs.
+        calendar_guard: The injected guard.
+        asof: The run's date, which is what the guard is asked about rather
+            than today. A guard asked about the wrong day answers about the
+            wrong day, and on a historical run every answer would be wrong the
+            same way.
+
+    Returns:
+        Zero or more entries, in base-then-quote order. A leg the guard could
+        not check contributes one ``event:unknown`` entry carrying the reason;
+        a leg it checked contributes one ``event`` entry per release it found,
+        each carrying the guard's own reason so a reader sees which release and
+        when. A leg that was checked and is quiet contributes nothing, which is
+        the only state that prints an unqualified clear.
+
+        Both legs are asked and both are recorded. A pair has two legs, so an
+        FOMC evening blocks every dollar pair and not only the one being
+        watched, and a leg the guard could not reach leaves a marker even when
+        the other leg already blocked the pair: otherwise a reader would take
+        the calendar to have been fully consulted.
+
+    """
+    entries: list[tuple[str, str]] = []
+    for leg in (bias.base, bias.quote):
+        found, unknown_reason = calendar_guard(leg, asof)
+        if unknown_reason is not None:
+            # The protocol requires an empty ``found`` alongside a reason, so
+            # there is nothing else to record for this leg.
+            marker = "event" + UNKNOWN_SUFFIX
+            entries.append((marker, f"{marker}: {unknown_reason}"))
+            continue
+        entries.extend(("event", f"event: {reason}") for reason in found)
+    return entries
 
 
 def shortlist(biases: Sequence[PairBias], limit: int) -> Sequence[PairBias]:
