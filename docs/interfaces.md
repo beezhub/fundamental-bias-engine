@@ -203,11 +203,12 @@ asof 2026-09-09   config 8f2c1a9d4b70
   6  AUD      -0.94  0.71  100%  -0.80  -0.20  -1.40  +0.10  -0.90  -1.30  -1.10
   7  NZD      -1.06  0.66  100%  -1.10  -0.40  -1.20  -0.30  -0.70  -1.40  -1.00
   8  JPY      -1.18  1.31   71%  -2.10  -1.60  +0.40  +0.20  +1.10  -1.90  +0.80
+```
 
 Dispersion is the spread across pillars: JPY at 1.31 means the pillars
-disagree, so cut conviction on anything with a JPY leg.
-Coverage below 100% means part of the pillar weight had no usable data.
-```
+disagree, so cut conviction on anything with a JPY leg. Coverage below 100%
+means part of the pillar weight had no usable data. Neither sentence is printed
+by the command; they are here to read the table by.
 
 The pillar columns are the reason `--pillars` exists. A composite of +1.42 that
 rests on one dominant pillar and a composite of +1.42 where seven pillars agree

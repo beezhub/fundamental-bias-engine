@@ -34,7 +34,7 @@ from datetime import date
 import pytest
 from typer.testing import CliRunner, Result
 
-from fbe.cli import EXIT_OK, EXIT_UNUSABLE, PILLAR_ABBREVIATIONS, app
+from fbe.cli import ABSENT_CELL, EXIT_OK, EXIT_UNUSABLE, PILLAR_ABBREVIATIONS, app
 from fbe.config import load_config
 from fbe.datasources.collect import CollectionResult
 from fbe.types import CurrencyScore, Frequency, Observation, PillarName, PillarScore
@@ -164,7 +164,11 @@ def run(
         }
         return tuple(scores)
 
-    monkeypatch.setattr("fbe.cli.collect", fake_collect)
+    def fake_collect_capturing(config_in: object, **kwargs: object) -> CollectionResult:
+        captured["data_config"] = config_in
+        return fake_collect(config_in, **kwargs)
+
+    monkeypatch.setattr("fbe.cli.collect", fake_collect_capturing)
     monkeypatch.setattr("fbe.cli.score_currencies", fake_score_currencies)
     return runner.invoke(app, ["score", *args]), captured
 
@@ -656,3 +660,264 @@ def test_the_command_derives_no_number_of_its_own() -> None:
         for alias in node.names
     }
     assert {"composite", "coverage", "dispersion"} & imported == set()
+
+
+# --- what the review found the suite could not see --------------------------
+
+
+def test_scoring_never_reaches_the_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fetching is `refresh`'s job, and scoring reads the cache.
+
+    ``docs/interfaces.md`` opens with the separation: refresh is the only
+    command allowed to be slow or to fail on a connection, and everything
+    downstream reads the cache so that scoring is instant and repeatable. A
+    command passing the config through unchanged lets a rolled-over TTL refetch
+    mid-session, so two runs at the same ``--asof`` and the same digest can
+    print different tables with nothing on screen to explain it.
+    """
+    _, captured = run(monkeypatch, UNIVERSE)
+
+    assert captured["data_config"].offline is True  # type: ignore[union-attr]
+
+
+def test_a_universe_with_no_coverage_is_not_a_successful_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every currency at zero coverage is the collapse that exit 1 is for.
+
+    This is the live state of the tree: every pillar is scaffolded, so a real
+    run prints eight composites of +0.00 and the rows say 0%. The rows are the
+    right output and the issue asks for them. The exit code is what a script
+    reads, and ``docs/interfaces.md`` reserves 1 for coverage collapsing, so a
+    zero exit here reports eight equally strong currencies as a finding.
+    """
+    scores = tuple(
+        currency_score(code, 0.0, rank, coverage=0.0)
+        for rank, code in enumerate(("AUD", "CAD", "CHF", "EUR"), start=1)
+    )
+
+    result, _ = run(monkeypatch, scores)
+
+    assert result.exit_code == EXIT_UNUSABLE
+    # The rows still print. Hiding them would be the other half of the same
+    # defect: an empty table that says nothing about why.
+    assert len(body(result)) == len(scores)
+    assert all("0%" in line for line in body(result))
+
+
+def test_one_thin_currency_is_not_a_collapsed_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The converse, so the test above is not passing on any zero it sees.
+
+    A single currency with no data inside a working run is a thin currency, not
+    a broken engine, and narrowing the rows to it does not change that. The
+    exit code describes the run and the coverage column describes the currency.
+    """
+    scores = (
+        currency_score("USD", 1.0, 1, coverage=1.0),
+        currency_score("JPY", 0.0, 2, coverage=0.0),
+    )
+
+    both, _ = run(monkeypatch, scores)
+    only_thin, _ = run(monkeypatch, scores, "--currency", "JPY")
+
+    assert both.exit_code == EXIT_OK
+    assert only_thin.exit_code == EXIT_OK
+
+
+def test_a_note_from_a_pillar_that_scored_still_reaches_the_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Notes are not only for failures, and filtering on absence drops the rest.
+
+    `BasePillar.compute` puts two facts on the notes of pillars that did score,
+    and its docstring says both must reach a reader on every run: which path
+    `blend_divisor` took, and how many inputs were admitted on an assumed
+    publication lag rather than a real release date. The first is the only
+    thing that says whether two runs are on the same scale, so a renderer
+    collecting notes only from absent pillars silently drops it.
+    """
+    scored = pillar(PillarName.MONETARY, "USD", 0.5)
+    scores = (
+        currency_score(
+            "USD",
+            1.0,
+            1,
+            pillars={
+                **full_pillars("USD", 0.5),
+                PillarName.MONETARY: pillar(
+                    PillarName.MONETARY,
+                    "USD",
+                    0.5,
+                    notes="monetary divisor path run_local",
+                ),
+            },
+        ),
+    )
+    assert scored.z is not None
+
+    result, _ = run(monkeypatch, scores)
+
+    assert "run_local" in result.output
+
+
+def test_csv_marks_an_absent_pillar_rather_than_writing_a_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The half of the absence rule the JSON test names and does not exercise.
+
+    A spreadsheet reading ``0`` for a pillar that never ran averages it in with
+    the ones that did, which is the same error as printing ``+0.00`` in the
+    table and is harder to notice.
+    """
+    scores = (
+        currency_score(
+            "USD",
+            1.0,
+            1,
+            pillars={
+                **full_pillars("USD", 0.5),
+                PillarName.RISK: pillar(PillarName.RISK, "USD", 0.0, absent=True),
+            },
+        ),
+    )
+
+    payload, _ = run(monkeypatch, scores, "--pillars", "--format", "csv")
+
+    row = next(iter(csv.DictReader(io.StringIO(payload.stdout))))
+    assert row[PillarName.MONETARY.value] == "0.5"
+    assert row[PillarName.RISK.value] == ""
+
+
+def test_csv_carries_the_run_it_came_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A saved CSV outlives the terminal it was printed in.
+
+    The table puts the date and the digest in its header. A file of composites
+    that cannot be tied to the weights that produced it is a file nobody can
+    check later, and reproducibility is a stated requirement here rather than
+    speculative generality.
+    """
+    payload, _ = run(monkeypatch, UNIVERSE, "--format", "csv", "--asof", "2026-09-09")
+
+    rows = list(csv.DictReader(io.StringIO(payload.stdout)))
+    assert all(row["asof"] == "2026-09-09" for row in rows)
+    assert all(row["config_digest"] == load_config(None).digest() for row in rows)
+
+
+def test_a_future_asof_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing has been published for a date that has not happened.
+
+    Every series would be past its allowance, so the table would be eight
+    composites of zero under a header confidently naming a date in 2099.
+    ``refresh`` refuses a future ``--since`` for the same reason.
+    """
+    result, _ = run(monkeypatch, UNIVERSE, "--asof", "2099-01-01")
+
+    assert result.exit_code != EXIT_OK
+    assert "2099-01-01" in result.output
+
+
+def test_an_unusable_lookback_is_a_message_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing validates ``scoring.lookback_years`` and this command reads it.
+
+    ``refresh`` already turns the same failure into a message naming the
+    setting. This command runs several times a day, so a traceback out of it is
+    the worse of the two places to meet one.
+    """
+    monkeypatch.setenv("FBE_SCORING_LOOKBACK_YEARS", "-1")
+
+    result, _ = run(monkeypatch, UNIVERSE)
+
+    assert result.exit_code != EXIT_OK
+    assert "lookback_years" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_an_absent_rank_is_marked_rather_than_numbered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``rank`` is optional on the dataclass, and ``0`` is a plausible rank.
+
+    `score_currencies` fills it on every row today, so this is a trap rather
+    than a live defect. It is worth closing because ``0`` sorts above first
+    place and reads as data, where the row already knows how to say ``n/a``.
+    """
+    scores = (currency_score("USD", 1.0, 1), currency_score("EUR", 0.5, None))  # type: ignore[arg-type]
+
+    result, _ = run(monkeypatch, scores)
+
+    printed = [line for line in result.stdout.splitlines() if "EUR" in line]
+    assert printed
+    assert "n/a" in printed[0]
+    assert not printed[0].startswith("  0")
+
+
+def test_a_pillar_that_genuinely_scored_zero_is_not_marked_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The distinction this whole repository is built on, at the last mile.
+
+    A score of ``0.0`` with ``z`` set is a real reading: `RiskPillar` emits
+    exactly that in a calm market, where the regime is neither risk-on nor
+    risk-off. A score of ``0.0`` with ``z`` of ``None`` is an outage. They are
+    the same number and opposite facts, so a renderer keying on the number
+    instead of the marker prints ``n/a`` over a genuine finding and tells the
+    reader there is no data where there is.
+
+    Found by a mutation that survived every other test here, because no fixture
+    had a pillar honestly reading zero.
+    """
+    scores = (
+        currency_score(
+            "USD",
+            1.0,
+            1,
+            pillars={
+                **full_pillars("USD", 0.5),
+                PillarName.RISK: pillar(PillarName.RISK, "USD", 0.0),
+                PillarName.EXTERNAL: pillar(
+                    PillarName.EXTERNAL, "USD", 0.0, absent=True
+                ),
+            },
+        ),
+    )
+
+    result, _ = run(monkeypatch, scores, "--pillars")
+
+    row = body(result)[0]
+    assert "+0.00" in row
+    assert row.count(ABSENT_CELL) == 1
+
+
+def test_the_row_order_follows_the_rank_column_it_prints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The order and the rank beside it cannot be allowed to disagree.
+
+    "Strongest first, ties broken by ISO code" is stated in
+    `fbe.scoring.score_currencies`. A renderer that re-derives it holds a second
+    copy of that rule, and two copies of one rule drift: change the tie-break
+    upstream and this table prints rank 3 above rank 2, with the column
+    contradicting the order and nothing on screen saying which is right.
+
+    The fixture puts the two in conflict on purpose, with rank 1 on the smaller
+    composite. That is not a state the scorer produces today, which is why no
+    other test here can tell a sort on the rank from a sort on the composite.
+    """
+    scores = (
+        currency_score("USD", 0.50, 1),
+        currency_score("EUR", 0.90, 2),
+    )
+
+    result, _ = run(monkeypatch, scores)
+
+    rows = body(result)
+    assert [line.split()[0] for line in rows] == ["1", "2"]
+    assert [line.split()[1] for line in rows] == ["USD", "EUR"]

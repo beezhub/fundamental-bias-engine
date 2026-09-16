@@ -1166,21 +1166,65 @@ def score(
         pillars: Include per-pillar columns.
         currency: Restrict printed rows to these currencies.
 
+    Every printed number is read from a `fbe.types.CurrencyScore` field and
+    none is computed here. Composites are on the ``-3`` to ``+3`` band and
+    carry an explicit sign, positive meaning fundamentally strong relative to
+    the rest of the universe; coverage is a whole percentage, floored. A pillar
+    with no usable data prints ``n/a`` rather than its score of ``0.0``, since
+    that number means no opinion was formed rather than an opinion of neutral,
+    and a currency with no usable data anywhere prints its row with 0% and the
+    reasons, then exits `EXIT_UNUSABLE`.
+
     Raises:
-        NotImplementedError: Always, until `fbe.scoring` lands.
+        typer.BadParameter: With exit code 2 when ``--currency`` names a code
+            outside `fbe.universe.G10`, when ``--asof`` is in the future, or
+            when ``scoring.lookback_years`` cannot produce a window. Each would
+            otherwise print a table that looked like a run with no opinions.
+        typer.Exit: With `EXIT_UNUSABLE` when the cache held nothing for the
+            window, and when every currency came back at zero coverage, which
+            is the coverage-collapsed case ``docs/interfaces.md`` gives for
+            exit 1.
 
     """
     config = _effective_config(ctx)
     run_date = asof.date() if asof is not None else date.today()
+    if run_date > date.today():
+        raise typer.BadParameter(
+            f"--asof {run_date} is in the future, so every series would be "
+            "past its allowance and every currency would score zero on no "
+            "data",
+            param_hint="--asof",
+        )
     wanted = _requested_currencies(currency)
 
-    start = lookback_start(run_date, config.scoring.lookback_years)
-    result = collect(config.data, start=start, end=run_date, sources=ALL_SOURCES)
+    try:
+        start = lookback_start(run_date, config.scoring.lookback_years)
+    except ValueError as error:
+        # A negative lookback is a config mistake and nothing validates it.
+        # `refresh` guards the same call for the same reason; this command is
+        # run several times a day, so a traceback here costs more.
+        raise typer.BadParameter(
+            f"scoring.lookback_years is unusable: {error}",
+            param_hint="--asof",
+        ) from error
+
+    # Scoring reads the cache and never the network, which is the separation
+    # `docs/interfaces.md` opens with: `refresh` is the only command allowed to
+    # be slow or to fail on a connection. Passing the config through unchanged
+    # would let a rolled-over TTL refetch mid-session, so two runs at the same
+    # --asof and the same digest could print different tables with nothing on
+    # screen to explain it.
+    result = collect(
+        replace(config.data, offline=True),
+        start=start,
+        end=run_date,
+        sources=ALL_SOURCES,
+    )
     if not result.usable:
         typer.echo(
-            "No observations for the window, so there is nothing to score. Run "
-            "fbe refresh to fill the cache, or fbe doctor to find out why it "
-            "is empty."
+            "No observations in the cache for this window, so there is nothing "
+            "to score. Run fbe refresh to fill it, or fbe doctor to find out "
+            "why it is empty."
         )
         raise typer.Exit(EXIT_UNUSABLE)
 
@@ -1195,11 +1239,39 @@ def score(
 
     if output_format is OutputFormat.JSON:
         typer.echo(_score_json(rows, order, run_date, config.digest()))
-        return
-    if output_format is OutputFormat.CSV:
-        typer.echo(_score_csv(rows, order))
-        return
-    _render_score(rows, order, run_date, config.digest())
+    elif output_format is OutputFormat.CSV:
+        typer.echo(_score_csv(rows, order, run_date, config.digest()))
+        for note in _score_notes(rows):
+            # CSV has nowhere to put a run-level warning, and dropping it would
+            # leave a run on six pillars looking like a run on seven. It goes
+            # to stderr so `fbe score --format csv > monday.csv` still writes a
+            # file a parser can read.
+            typer.echo(note, err=True)
+    else:
+        _render_score(rows, order, run_date, config.digest())
+
+    if _coverage_collapsed(scores):
+        # Every currency scored on nothing. The rows still print, with 0% and
+        # the reasons, because the issue asks for the absence to be visible
+        # rather than hidden. The exit code is what a script reads, and
+        # `docs/interfaces.md` reserves 1 for coverage collapsing.
+        raise typer.Exit(EXIT_UNUSABLE)
+
+
+def _coverage_collapsed(scores: Sequence[CurrencyScore]) -> bool:
+    """Whether the run scored nothing at all.
+
+    Args:
+        scores: Every currency the scorer returned, before any row filter.
+
+    Returns:
+        True when no currency held any usable pillar weight. Judged on the
+        whole run rather than on the printed rows: ``--currency JPY`` on a
+        currency with no data is a thin currency in a working run, and the run
+        is what the exit code describes.
+
+    """
+    return bool(scores) and all(row.coverage <= 0.0 for row in scores)
 
 
 def _requested_currencies(currency: Sequence[str] | None) -> tuple[str, ...] | None:
@@ -1242,15 +1314,20 @@ def _score_rows(
         wanted: Codes to keep, or ``None`` for all of them.
 
     Returns:
-        The rows to print, by composite descending with the ISO code breaking a
-        tie, which is `fbe.scoring.score_currencies`'s own order. Sorting again
-        here rather than trusting the input is not a second opinion about the
-        ranking: ``rank`` is carried on each row untouched, so the order is
-        presentation and the rank is the fact.
+        The rows to print, ordered by `CurrencyScore.rank`, which is strongest
+        first because that is how the scorer assigns it.
+
+        Ordered on the rank rather than by re-deriving "composite descending,
+        ISO code breaking a tie". That rule already lives in
+        `fbe.scoring.score_currencies`, and a second copy of it here can
+        disagree with the first: change the tie-break upstream and this table
+        would print rank 3 above rank 2, with the rank column contradicting the
+        row order and nothing saying which is right. A row with no rank sorts
+        last, since there is nothing to place it by.
 
     """
     kept = [row for row in scores if wanted is None or row.currency in wanted]
-    kept.sort(key=lambda row: (-row.composite, row.currency))
+    kept.sort(key=lambda row: (row.rank is None, row.rank or 0, row.currency))
     return tuple(kept)
 
 
@@ -1272,7 +1349,7 @@ def _pillar_order(config: config_module.ScoringConfig) -> tuple[PillarName, ...]
     return tuple(
         sorted(
             declared,
-            key=lambda name: (-config.weights.get(name, 0.0), declared.index(name)),
+            key=lambda name: (-config.weights[name], declared.index(name)),
         )
     )
 
@@ -1321,18 +1398,27 @@ def _score_notes(rows: Sequence[CurrencyScore]) -> tuple[str, ...]:
         rows: The rows being printed.
 
     Returns:
-        Each distinct non-empty note from a pillar this run could not score,
-        once. `fbe.scoring.score_currencies` catches a pillar that raises and
-        records why on every currency's copy of that pillar's score, so the
-        same sentence arrives eight times and is worth printing once. Dropping
-        them would leave a run on six pillars looking like a run on seven, with
-        only the coverage column hinting at it.
+        Each distinct non-empty note, once, from every pillar on every printed
+        row.
+
+        Every pillar and not only the ones that could not score.
+        `fbe.scoring.score_currencies` catches a pillar that raises and records
+        why on each currency's copy of that score, so the same sentence arrives
+        eight times and is worth printing once; dropping it would leave a run
+        on six pillars looking like a run on seven, with only the coverage
+        column hinting at it. But `BasePillar.compute` also puts two things on
+        the notes of pillars that *did* score, which its docstring says must
+        reach a reader on every run: which path `blend_divisor` took, and how
+        many inputs were admitted on an assumed publication lag rather than a
+        real release date. Filtering on absence would drop both, and the
+        divisor path is the one fact that says whether two runs are on the same
+        scale.
 
     """
     seen: list[str] = []
     for row in rows:
         for score in row.pillars.values():
-            if score.z is None and score.notes and score.notes not in seen:
+            if score.notes and score.notes not in seen:
                 seen.append(score.notes)
     return tuple(seen)
 
@@ -1369,11 +1455,15 @@ def _score_line(score: CurrencyScore, order: Sequence[PillarName] | None) -> str
         The rank, code, composite, dispersion and coverage, every one of them
         read off the dataclass. The rank is `CurrencyScore.rank` and not the
         row's position, because the scores are cross-sectional and a narrowed
-        list still ranks against the whole universe.
+        list still ranks against the whole universe. A row carrying no rank
+        prints `ABSENT_CELL`: ``0`` would be a plausible rank and would sort
+        above first place, which is the quiet default this repository refuses
+        everywhere else.
 
     """
+    rank = ABSENT_CELL if score.rank is None else str(score.rank)
     line = (
-        f"{score.rank if score.rank is not None else 0:>{RANK_WIDTH}}"
+        f"{rank:>{RANK_WIDTH}}"
         f"{score.currency:>{CODE_WIDTH}}"
         f"{score.composite:>+{COMPOSITE_WIDTH}.2f}"
         f"{score.dispersion:>{DISPERSION_WIDTH}.2f}"
@@ -1449,25 +1539,50 @@ def _score_json(
 
 
 def _score_csv(
-    rows: Sequence[CurrencyScore], order: Sequence[PillarName] | None
+    rows: Sequence[CurrencyScore],
+    order: Sequence[PillarName] | None,
+    asof: date,
+    digest: str,
 ) -> str:
     """Return the ranking as CSV, with one column per pillar when asked for.
 
-    An absent pillar is an empty field rather than a zero, which is the same
-    distinction the table draws with ``n/a``. A spreadsheet reading ``0`` for a
-    pillar that never ran would average it in.
+    Args:
+        rows: The rows to write.
+        order: Pillar columns to append, or ``None`` for the ranking only.
+        asof: The run's date.
+        digest: The run's config digest.
+
+    Returns:
+        The rows, each carrying ``asof`` and ``config_digest`` as columns.
+        Those two are run-level facts and repeat on every line, which is how a
+        flat format states one. They are carried because a saved CSV is the one
+        rendering that outlives the terminal it was printed in, and a file of
+        composites that cannot be tied to the weights that produced it is a
+        file nobody can check later.
+
+        An absent pillar is an empty field rather than a zero, the same
+        distinction the table draws with ``n/a``. A spreadsheet reading ``0``
+        for a pillar that never ran would average it in.
+
+    Warnings are not here. CSV has no row-level place for a run-level sentence,
+    so the caller sends them to stderr, which keeps a redirected file parseable
+    while still putting the reason in front of the person who ran it.
+
     """
     columns = ["rank", "currency", "composite", "dispersion", "coverage"]
     if order is not None:
         columns += [name.value for name in order]
+    columns += ["asof", "config_digest"]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=columns, lineterminator="\n")
     writer.writeheader()
     for row in _score_payload(rows, order):
-        flat = {key: row[key] for key in columns if key in row}
+        flat: dict[str, object] = {key: row[key] for key in columns if key in row}
         for name in order or ():
             value = row["pillars"][name.value]  # type: ignore[index]
             flat[name.value] = "" if value is None else value
+        flat["asof"] = asof.isoformat()
+        flat["config_digest"] = digest
         writer.writerow(flat)
     return buffer.getvalue().rstrip("\n")
 
