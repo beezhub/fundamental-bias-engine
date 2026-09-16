@@ -887,6 +887,22 @@ def test_offline_flag_forces_offline_over_a_file_that_says_false(
     assert _effective_config(context).data.offline is True
 
 
+def test_the_offline_flag_agrees_with_a_file_that_already_says_true(
+    clean_env: Path,
+) -> None:
+    """The remaining corner of the one-way rule, per issue #70's criterion 6.
+
+    Its siblings cover the flag overriding a false file, and the flag's absence
+    leaving either value alone. This is the fourth combination: flag and file
+    both saying offline. Trivial to satisfy and worth pinning anyway, because a
+    resolver rewritten to be two-way would still pass it while breaking the
+    sibling above, and a reader checking the rule wants all four in one place.
+    """
+    path = _write(clean_env, "data:\n  offline: true\n")
+    context = _context(GlobalOptions(config_path=path, offline=True))
+    assert _effective_config(context).data.offline is True
+
+
 def test_omitting_the_offline_flag_leaves_the_file_value(clean_env: Path) -> None:
     """``--offline`` is documented as one-way. Its absence is not ``--online``."""
     path = _write(clean_env, "data:\n  offline: true\n")
