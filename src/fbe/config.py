@@ -195,8 +195,19 @@ class ScoringConfig:
     min_spread_medium: float = 1.50
     min_spread_high: float = 2.50
     min_agreement: float = 0.60
-    """Fraction of pillars that must point the same way for anything above
-    low conviction."""
+    """Agreement below which conviction is capped at `Conviction.LOW`, in
+    ``bias.conviction_for``. Compared against ``PairBias.agreement``, which is
+    ``sum of w_pair over agreeing / sum of w_pair over considered``, where
+    ``w_pair`` is the mean of the two legs' post-staleness effective weights.
+    ``docs/scoring-spec.md`` section 5.3 defines it and ``bias.agreement``
+    computes it. Pillars scoring the two legs identically are in neither sum.
+
+    This is not a count of pillars, and the gap is wide enough to matter when
+    moving it. On the worked USDJPY example in section 7.7, four of the seven
+    pillars agree, a headcount of 57%, while the weight share is 0.70. An owner
+    reasoning "at least five of seven" and writing ``0.71`` would cap every pair
+    whose dissent includes MONETARY at 0.30, whatever the other six pillars do,
+    because one heavy dissenter alone puts the ratio at 0.70."""
     staleness_full_days: int = 15
     """Inputs newer than this carry full weight. Past it the freshness factor
     decays linearly to zero at ``max_staleness_days``, rather than falling off

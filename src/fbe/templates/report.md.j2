@@ -70,6 +70,10 @@ A marker in brackets beside `yes` is a check that did not run, not a reason the
 pair was rejected. `event:unchecked` on every row means the run had no calendar:
 the pairs are tradeable on fundamentals and nobody has looked at the news.
 
+`Agreement` is the share of pillar *weight* pointing the same way as the spread,
+not the share of pillars. One heavy pillar dissenting moves it further than one
+light pillar dissenting, which is the distinction a headcount would lose.
+
 ## 3. Tradeable shortlist
 
 {% if not report.shortlist %}
@@ -85,7 +89,7 @@ measured.
 Spread {{ '%+.2f' | format(idea.bias.spread) }}
 ({{ idea.bias.base }} {{ '%+.2f' | format(idea.bias.base_score) }} against
 {{ idea.bias.quote }} {{ '%+.2f' | format(idea.bias.quote_score) }}),
-{{ '%.0f%%' | format(idea.bias.agreement * 100) }} of pillars agree.
+{{ '%.0f%%' | format(idea.bias.agreement * 100) }} of pillar weight agrees.
 
 {{ idea.rationale }}
 
