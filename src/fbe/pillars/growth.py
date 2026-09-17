@@ -33,8 +33,16 @@ class GrowthPillar(BasePillar):
     The mix is one lagging and comprehensive measure, one leading survey, and two
     coincident hard-data series.
 
-    Sign rule: positive means faster activity than the rest of the universe, and
-    therefore a strong currency. No component is inverted.
+    Sign rule, one line per component, and none of them is inverted. Positive
+    means faster activity than the rest of the universe, which is a strong
+    currency:
+        ``gdp_yoy``: faster output growth pulls the expected policy path up.
+        ``business_confidence_mfg``: a higher balance is more firms reporting
+            improvement than deterioration, which leads output.
+        ``indpro_yoy``: faster industrial output is the hard-data confirmation
+            of what the survey anticipated.
+        ``retail_sales_yoy``: faster consumption is the demand side of the same
+            expansion, and it pulls the policy path up with it.
 
     Why the leading slot holds business confidence rather than a PMI. The slot is
     defined by role, and both candidates fill that role, so the question is which
@@ -145,30 +153,13 @@ class GrowthPillar(BasePillar):
             "retail_sales_yoy": 0.20,
         }
 
-    def _extract(
-        self,
-        observations: Sequence[Observation],
-        currencies: Sequence[str],
-        asof: date,
-    ) -> Mapping[str, Mapping[str, Sequence[Observation]]]:
-        """Pull the four activity series per currency.
-
-        Args:
-            observations: Full observation set for the run.
-            currencies: Universe to score.
-            asof: Run date; later periods are dropped.
-
-        Returns:
-            ``{currency: {indicator: observations}}``, sorted by period
-            ascending. Any of the four may be absent for a currency and an
-            absence is not an error; the blend renormalises over what is present
-            and the pillar goes absent below `MIN_COMPONENT_WEIGHT`.
-
-        """
-        raise NotImplementedError(
-            "fbe.pillars.growth.GrowthPillar._extract is scaffolded; "
-            "see docs/roadmap.md Phase 3"
-        )
+    # `_extract` is `BasePillar`'s, deliberately not overridden. This pillar
+    # reads four per-currency series under the keys in `requires`, which is
+    # exactly the shape the base implementation serves, and the visibility and
+    # vintage rules it applies are the ones #122 lifted onto the base class so
+    # that a second pillar could not carry a drifting copy. A copy here would
+    # mean #121's fix to the unstamped-revision hole landing on `BasePillar`
+    # and being missed for GROWTH alone.
 
     def _transform(
         self,
@@ -185,9 +176,26 @@ class GrowthPillar(BasePillar):
             ``{currency: {component: value}}``. ``business_confidence_mfg`` is a
             percentage balance, neutral at zero and routinely negative in a
             healthy economy; the other three are year-on-year percentages. A
-            currency whose newest print for a component is older than that
-            indicator's own allowance returns ``None`` for that component only
-            and is renormalised over the rest.
+            currency with no visible print for a component gets ``None`` for
+            that component only, never ``0.0``, and `blend_components`
+            renormalises over the rest.
+
+        Age is not handled here, and an earlier draft of this docstring said it
+        was. A print past its indicator's own allowance comes back as the
+        reading it is, and `BasePillar.component_freshness` takes it to a weight
+        of zero, which removes it from the blend without removing it from the
+        sub-weight the currency is judged to hold. The distinction is the whole
+        point: `blend_components` measures `MIN_COMPONENT_WEIGHT` on the
+        sub-weight **present**, before the freshness factors, because the floor
+        asks about substitution rather than about age. Returning ``None`` for a
+        late print would take it out of that total too, so a currency holding a
+        late GDP print and a late survey beside two current series would lose
+        GROWTH altogether instead of being scored on the two that are current.
+        That is the cliff section 4.1 of ``docs/scoring-spec.md`` says the ramp
+        exists to avoid, and it would apply to this pillar alone.
+        `blend_components`' own answer to the case where every component a
+        currency holds has expired is only reachable if late readings arrive
+        there as values.
 
         The allowance comes from the registry, per
         `fbe.pillars.base.staleness_allowance`, not from
@@ -204,7 +212,41 @@ class GrowthPillar(BasePillar):
         mixes the two; see `fbe.datasources.registry.BUSINESS_CONFIDENCE_MFG`.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.growth.GrowthPillar._transform is scaffolded; "
-            "see docs/roadmap.md Phase 3"
-        )
+        return {
+            currency: {
+                # Indexed rather than fetched with a default, so a broken
+                # `_extract` contract raises here instead of becoming a
+                # quietly unscored currency.
+                component: _newest_level(series[indicator])
+                for component, (indicator,) in self.component_indicators.items()
+            }
+            for currency, series in extracted.items()
+        }
+
+
+def _newest_level(found: Sequence[Observation]) -> float | None:
+    """Return the newest published reading, in the unit the source published it.
+
+    Args:
+        found: One currency's visible observations of one activity series,
+            oldest period first, as `_extract` leaves them.
+
+    Returns:
+        The newest reading with nothing applied to it: a year-on-year rate in
+        percent for ``gdp_yoy``, ``indpro_yoy`` and ``retail_sales_yoy``, and a
+        net percentage balance for ``business_confidence_mfg``. ``None`` when
+        the currency has no visible print.
+
+        Never ``0.0`` for an absence. Zero is a reading in all four units: an
+        economy growing at exactly 0.0% year on year, or a survey with as many
+        firms reporting improvement as deterioration. Filing an outage under
+        the same value would put that currency in the middle of the
+        cross-section on the strength of having no data.
+
+    The last element is the newest because `_extract` sorts by period ascending
+    and keeps one observation per period.
+
+    """
+    if not found:
+        return None
+    return found[-1].value

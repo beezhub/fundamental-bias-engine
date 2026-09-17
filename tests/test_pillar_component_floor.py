@@ -211,6 +211,19 @@ def _full_coverage(
         drop: ``{currency: indicators}`` to withhold, which is how a currency is
             put on the floor.
     """
+    required = set(pillar.requires)
+    for currency, indicators in drop.items():
+        unknown = [name for name in indicators if name not in required]
+        # A drop naming a key the pillar does not require withholds nothing, so
+        # the currency keeps full coverage and the assertion about its floor
+        # passes against a fixture that never put it on one. That is how the
+        # two GROWTH cases below went on asserting `pmi_composite` for a
+        # fortnight after #23 substituted it out of `requires`.
+        assert not unknown, (
+            f"{pillar.name} does not require {unknown} for {currency}, so "
+            "dropping it withholds nothing"
+        )
+
     observations: list[Observation] = []
     for offset, currency in enumerate(UNIVERSE):
         for indicator in pillar.requires:
@@ -267,8 +280,16 @@ def test_growth_is_absent_for_a_currency_holding_gdp_and_retail_sales_only(
 ) -> None:
     """0.30 plus 0.20 is exactly the floor, so GROWTH is absent, not scored.
 
-    This is the CHF, AUD and NZD case on the registry as it stands, reproduced
-    for one currency.
+    The leading slot dropped here is ``business_confidence_mfg``. It was
+    ``pmi_composite`` until #23 ruled the substitution, and this test went on
+    naming the old key, which GROWTH no longer requires: nothing was withheld,
+    CHF kept all four components and the assertion passed only while GROWTH
+    could not run at all. `_full_coverage` now refuses an unknown drop.
+
+    The combination is still reachable, although the three currencies it used
+    to describe are not on it any more: ``indpro_yoy`` is manual-only for CHF,
+    AUD and NZD, and the survey is verified 8 of 8, so it is the survey going
+    dark rather than the PMI being absent that puts one of them here.
     """
     _skip_if_scaffolded(
         BasePillar.compute, GrowthPillar._extract, GrowthPillar._transform
@@ -276,7 +297,9 @@ def test_growth_is_absent_for_a_currency_holding_gdp_and_retail_sales_only(
 
     pillar = GrowthPillar()
     scores = pillar.compute(
-        _full_coverage(pillar, asof, drop={"CHF": ("pmi_composite", "indpro_yoy")}),
+        _full_coverage(
+            pillar, asof, drop={"CHF": ("business_confidence_mfg", "indpro_yoy")}
+        ),
         UNIVERSE,
         asof,
     )
@@ -285,11 +308,13 @@ def test_growth_is_absent_for_a_currency_holding_gdp_and_retail_sales_only(
     assert scores["USD"].z is not None
 
 
-def test_growth_still_scores_a_currency_missing_only_the_pmi(asof: date) -> None:
-    """0.70 clears the floor, so the documented PMI gap still scores.
+def test_growth_still_scores_a_currency_missing_only_the_survey(asof: date) -> None:
+    """0.70 clears the floor, so one missing component of four still scores.
 
     The pair with the test above is the point. One missing component of four is a
-    repair the renormalisation can make; two is not.
+    repair the renormalisation can make; two is not. This one also named
+    ``pmi_composite``, so it dropped nothing and asserted that a currency with
+    complete coverage scores, which is true of every currency in the fixture.
     """
     _skip_if_scaffolded(
         BasePillar.compute, GrowthPillar._extract, GrowthPillar._transform
@@ -297,7 +322,7 @@ def test_growth_still_scores_a_currency_missing_only_the_pmi(asof: date) -> None
 
     pillar = GrowthPillar()
     scores = pillar.compute(
-        _full_coverage(pillar, asof, drop={"CHF": ("pmi_composite",)}),
+        _full_coverage(pillar, asof, drop={"CHF": ("business_confidence_mfg",)}),
         UNIVERSE,
         asof,
     )
