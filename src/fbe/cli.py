@@ -1297,7 +1297,7 @@ def score(
         typer.echo(_score_json(rows, order, run_date, config.digest()))
     elif output_format is OutputFormat.CSV:
         typer.echo(_score_csv(rows, order, run_date, config.digest()))
-        for note in _score_notes(rows):
+        for note in (*_score_notes(rows), *_score_working(rows)):
             # CSV has nowhere to put a run-level warning, and dropping it would
             # leave a run on six pillars looking like a run on seven. It goes
             # to stderr so `fbe score --format csv > monday.csv` still writes a
@@ -1462,27 +1462,71 @@ def _score_notes(rows: Sequence[CurrencyScore]) -> tuple[str, ...]:
         rows: The rows being printed.
 
     Returns:
-        Each distinct non-empty note, once, from every pillar on every printed
-        row.
+        Each distinct non-empty note, once, from the pillars that could not
+        score, in first-seen order.
 
-        Every pillar and not only the ones that could not score.
-        `fbe.scoring.score_currencies` catches a pillar that raises and records
-        why on each currency's copy of that score, so the same sentence arrives
-        eight times and is worth printing once; dropping it would leave a run
-        on six pillars looking like a run on seven, with only the coverage
-        column hinting at it. But `BasePillar.compute` also puts two things on
-        the notes of pillars that *did* score, which its docstring says must
-        reach a reader on every run: which path `blend_divisor` took, and how
-        many inputs were admitted on an assumed publication lag rather than a
-        real release date. Filtering on absence would drop both, and the
-        divisor path is the one fact that says whether two runs are on the same
-        scale.
+        Only the unscored ones, and the distinction is what this function is
+        for. `fbe.scoring.score_currencies` catches a pillar that raises and
+        records why on each currency's copy of that score, so the same sentence
+        arrives eight times and is worth printing once; dropping it would leave
+        a run on six pillars looking like a run on seven, with only the
+        coverage column hinting at it. That is a run-level fact and it belongs
+        here, under the table and in the JSON ``warnings`` key.
+
+        A pillar that *did* score writes something different into the same
+        field: `BasePillar._notes` puts the working behind that currency's
+        headline number there, which is per currency by nature and never
+        repeats. Collected here it would publish eight lines of ordinary
+        working as warnings on a healthy run, growing to fifty-six once every
+        pillar has the hook, and a script reading the JSON key would find a
+        run where nothing went wrong indistinguishable from one where six
+        pillars failed.
+
+        An earlier version of this docstring argued the opposite, on the
+        grounds that `compute` puts the blend divisor path and the assumed-lag
+        count on the notes of scored pillars. It does not, and had not since
+        issue #51: both live in `PillarScore.blend_divisor_path` and
+        `PillarScore.diagnostics` precisely so that nothing has to read them
+        out of prose.
+
+        ``z is None`` is the test rather than the absence of a score, because
+        that is the marker every other consumer in the package uses for the
+        same question.
 
     """
     seen: list[str] = []
     for row in rows:
         for score in row.pillars.values():
-            if score.notes and score.notes not in seen:
+            if score.z is None and score.notes and score.notes not in seen:
+                seen.append(score.notes)
+    return tuple(seen)
+
+
+def _score_working(rows: Sequence[CurrencyScore]) -> tuple[str, ...]:
+    """Collect the working behind the pillars that did score, row by row.
+
+    Args:
+        rows: The rows being printed.
+
+    Returns:
+        Each distinct non-empty note from a scored pillar, in first-seen order.
+
+        Separate from `_score_notes` because the two answer different
+        questions. A note from an unscored pillar says something went wrong
+        with the run and repeats identically across the universe. A note from a
+        scored pillar is `BasePillar._notes`, the working behind that one
+        currency's headline number, which is per currency by nature and never
+        repeats. Publishing the second as a warning tells a reader that eight
+        things went wrong on a run where nothing did.
+
+        Still deduplicated, because a pillar is free to write the same sentence
+        for two currencies and printing it twice helps nobody.
+
+    """
+    seen: list[str] = []
+    for row in rows:
+        for score in row.pillars.values():
+            if score.z is not None and score.notes and score.notes not in seen:
                 seen.append(score.notes)
     return tuple(seen)
 
@@ -1561,9 +1605,10 @@ def _render_score(
     for score in rows:
         typer.echo(_score_line(score, order))
     notes = _score_notes(rows)
-    if notes:
+    working = _score_working(rows)
+    if notes or working:
         typer.echo("")
-        for note in notes:
+        for note in (*notes, *working):
             typer.echo(note)
 
 
@@ -1603,6 +1648,7 @@ def _score_json(
             "config_digest": digest,
             "currencies": _score_payload(rows, order),
             "warnings": list(_score_notes(rows)),
+            "working": list(_score_working(rows)),
         },
         indent=2,
     )

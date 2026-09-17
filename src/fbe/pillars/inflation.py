@@ -17,6 +17,7 @@ from datetime import date
 
 from fbe.pillars.base import BasePillar
 from fbe.types import Observation, PillarName
+from fbe.universe import meta
 
 __all__ = ["InflationPillar"]
 
@@ -73,6 +74,16 @@ class InflationPillar(BasePillar):
     month. And the targets in `CurrencyMeta` are single numbers where several of
     these banks publish bands, so the AUD gap is measured against a 2.5% midpoint
     the RBA does not literally target.
+
+    One more that only bites later, recorded before the backtest rather than
+    after it. `CurrencyMeta.inflation_target` is a current-vintage constant and
+    the targets are not constants over history: Japan adopted 2% in 2013, and
+    several of these banks have re-specified their bands since. A Phase 6 run
+    dated before a change would difference that currency's CPI against a target
+    that did not exist yet. That is the look-ahead class in the place nobody
+    checks for it, because it is a configuration constant rather than a data
+    series, and closing it means giving the target a history rather than
+    changing anything here.
     """
 
     name = PillarName.INFLATION
@@ -102,29 +113,6 @@ class InflationPillar(BasePillar):
         """
         return {"cpi_gap": 0.40, "core_gap": 0.60}
 
-    def _extract(
-        self,
-        observations: Sequence[Observation],
-        currencies: Sequence[str],
-        asof: date,
-    ) -> Mapping[str, Mapping[str, Sequence[Observation]]]:
-        """Pull headline and core CPI per currency.
-
-        Args:
-            observations: Full observation set for the run.
-            currencies: Universe to score.
-            asof: Run date; later periods are dropped.
-
-        Returns:
-            ``{currency: {indicator: observations}}`` for the two indicators in
-            `requires`, sorted by period ascending.
-
-        """
-        raise NotImplementedError(
-            "fbe.pillars.inflation.InflationPillar._extract is scaffolded; "
-            "see docs/roadmap.md Phase 3"
-        )
-
     def _transform(
         self,
         extracted: Mapping[str, Mapping[str, Sequence[Observation]]],
@@ -153,7 +141,92 @@ class InflationPillar(BasePillar):
         missing: headline alone is too noisy to carry this pillar.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.inflation.InflationPillar._transform is scaffolded; "
-            "see docs/roadmap.md Phase 3"
-        )
+        built: dict[str, dict[str, float | None]] = {}
+        for currency, series in extracted.items():
+            # Indexed rather than fetched with a default. Six of the eight
+            # targets are 2.0, so a default would be right often enough never
+            # to be noticed and wrong for exactly the two currencies that make
+            # this pillar worth building.
+            target = meta(currency).inflation_target
+            built[currency] = {
+                component: _gap(series[indicator], target)
+                for component, (indicator,) in self.component_indicators.items()
+            }
+        return built
+
+    def _notes(
+        self,
+        currency: str,
+        components: Mapping[str, float | None],
+        extracted: Mapping[str, Sequence[Observation]],
+    ) -> str:
+        """Say which print, from which period, against which target.
+
+        Args:
+            currency: The currency being scored.
+            components: Its component values from `_transform`.
+            extracted: Its slice of `_extract`'s output, read for the period of
+                the print being described.
+
+        Returns:
+            The gap's two operands and the period they came from, or a line
+            naming core where there is no headline print. Never raises: a note
+            is cosmetic and `scoring.score_currencies` would mark the whole
+            universe unscored if this threw.
+
+        `raw` carries ``cpi_gap``, which is a difference, and a difference
+        cannot be checked from itself. ``+0.5`` is consistent with a 3.0% print
+        against Australia's 2.5% target and with 2.5% against 2.0%, and those
+        are different economies.
+
+        The period is named because both series are quarterly for AUD and NZD.
+        "headline 3.0% against a 2.5% target" reads identically whether the
+        print landed last month or five months ago, and the second is the case
+        a reader needs to notice.
+
+        A currency scored on core alone still gets a line. ``core_gap`` carries
+        0.60 of the sub-weight and clears `MIN_COMPONENT_WEIGHT` by itself, so
+        such a currency reaches a report with a real score and an empty ``raw``,
+        which is exactly where an empty working is least affordable.
+
+        """
+        target = meta(currency).inflation_target
+        for component, label in (("cpi_gap", "headline"), ("core_gap", "core")):
+            gap = components.get(component)
+            if gap is None:
+                continue
+            (indicator,) = self.component_indicators[component]
+            printed = extracted.get(indicator, ())
+            period = f" for {printed[-1].period.isoformat()}" if printed else ""
+            carried = (
+                "" if component == self.headline_component else ", no headline print"
+            )
+            return (
+                f"{self.name.value} {currency}: {label} {gap + target:.1f}%"
+                f"{period} against a {target:.1f}% target{carried}"
+            )
+        return ""
+
+
+def _gap(found: Sequence[Observation], target: float) -> float | None:
+    """Difference the newest print against the target, in percentage points.
+
+    Args:
+        found: One currency's visible observations of one CPI series, oldest
+            period first, as `_extract` leaves them.
+        target: That currency's own `CurrencyMeta.inflation_target`, in percent.
+
+    Returns:
+        ``newest - target`` in percentage points, positive above target, or
+        ``None`` when the currency has no visible print. Never ``0.0`` for an
+        absence: a zero gap is a currency sitting exactly on its target, which
+        is a finding rather than a gap in the data, and the two would be
+        indistinguishable.
+
+    The last element is the newest because `_extract` sorts by period
+    ascending and keeps one observation per period.
+
+    """
+    if not found:
+        return None
+    return found[-1].value - target
