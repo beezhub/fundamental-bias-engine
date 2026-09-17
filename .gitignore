@@ -20,3 +20,4 @@ data/cache/*
 .DS_Store
 data/journal/*
 !data/journal/.gitkeep
+.idea
