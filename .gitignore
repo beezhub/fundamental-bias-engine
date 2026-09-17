@@ -23,3 +23,4 @@ data/cache/*
 # why, and says that a fresh clone therefore has no journal.
 data/journal/*
 !data/journal/.gitkeep
+.idea
