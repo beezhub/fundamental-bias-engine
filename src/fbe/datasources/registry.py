@@ -575,9 +575,9 @@ def _yield_change_series(transform: str, note_suffix: str) -> Mapping[str, Serie
 
     Returns:
         One `SeriesRef` per currency in `YIELD_2Y.series`, identical to the
-        level ref in ``source``, ``series_id``, ``unit``, ``frequency``,
-        ``verified`` and ``last_observed``, differing only in ``transform``
-        and ``note``.
+        level ref in ``source``, ``series_id``, ``unit``, ``frequency`` and
+        ``last_observed``, differing in ``transform`` and ``note``, and with
+        ``verified`` False.
 
     Why this exists rather than a second literal table. No source publishes a
     pre-differenced two-year yield change for any G10 issuer, so
@@ -590,11 +590,21 @@ def _yield_change_series(transform: str, note_suffix: str) -> Mapping[str, Serie
     indicators the moment this function runs again, rather than needing three
     tables edited in step.
 
+    Why ``verified`` is False rather than copied. The level ref's identifier
+    was confirmed live, but confirming it says nothing about the change:
+    `fbe.datasources.fred` and `fbe.datasources.curves` both pass these refs
+    over because no source computes the ADR 0004 derivation yet. Copying
+    ``verified`` made `stale_refs` name CHF and AUD as the only gaps while
+    nothing served the other six either, which is the quiet misreport issue
+    #169 is about. The flag flips back in the commit that implements the
+    derivation, since that commit is what makes the ref retrievable.
+
     """
     return {
         code: replace(
             ref,
             transform=transform,
+            verified=False,
             note=f"{ref.note}; {note_suffix}" if ref.note else note_suffix,
         )
         for code, ref in YIELD_2Y.series.items()

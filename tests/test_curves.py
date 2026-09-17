@@ -558,33 +558,37 @@ def test_fetch_ignores_an_indicator_this_source_does_not_back(
 
 @pytest.mark.parametrize("transform", ["chg_1m", "chg_3m"])
 @respx.mock
-def test_a_transform_with_no_settled_derivation_raises(
+def test_a_transform_this_source_cannot_emit_is_skipped_not_guessed(
     source: CurvesSource, transform: str
 ) -> None:
-    """Same refusal `FredSource` already makes on `main`, for the same reason.
+    """Same treatment `FredSource` gives these two, for the same reason.
 
-    The registry defines these as a resample, a difference and a rescale into
-    basis points, and the differencing convention is ambiguous as written. The
-    emitted unit would also be wrong: the ref says percent and the value would
-    be basis points. Raised on #56 and still unanswered, so this refuses rather
-    than guessing on the heaviest sub-indicator in the model.
+    ADR 0004 settles the derivation but no source computes it yet, and the
+    emitted unit would be wrong until one does: the ref says percent and the
+    value would be basis points. Nothing is emitted and nothing is requested,
+    so the pillar sees an absence rather than a guess on the heaviest
+    sub-indicator in the model.
     """
-    indicator = f"yield_2y_{transform}"
-    with pytest.raises(SourceError) as excinfo:
-        source.fetch([indicator], ["CAD"], START, END)
-    assert transform in str(excinfo.value)
-
-
-@respx.mock
-def test_the_unsettled_transform_does_not_reach_the_network(
-    source: CurvesSource,
-) -> None:
     route = respx.get(url__startswith=BOC_BASE_URL).mock(
         return_value=httpx.Response(200, text=BOC_BODY)
     )
-    with pytest.raises(SourceError):
-        source.fetch(["yield_2y_chg_1m"], ["CAD"], START, END)
+    emitted = source.fetch([f"yield_2y_{transform}"], ["CAD"], START, END)
+    assert emitted == []
     assert route.call_count == 0
+
+
+@respx.mock
+def test_an_unemittable_transform_does_not_cost_the_level_series(
+    source: CurvesSource,
+) -> None:
+    """Issue #169. Raising here took every other curve down with it."""
+    route = respx.get(url__startswith=BOC_BASE_URL).mock(
+        return_value=httpx.Response(200, text=BOC_BODY)
+    )
+    emitted = source.fetch(["yield_2y_chg_1m", "yield_2y"], ["CAD"], START, END)
+    assert {o.indicator for o in emitted} == {"yield_2y"}
+    assert emitted
+    assert route.call_count == 1
 
 
 # ---------------------------------------------------------------------------

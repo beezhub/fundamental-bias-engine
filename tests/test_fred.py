@@ -210,35 +210,42 @@ def test_the_period_window_is_passed_to_the_server(source: FredSource) -> None:
     assert params["file_type"] == "json"
 
 
+@pytest.mark.parametrize("transform", ["chg_1m", "chg_3m"])
 @respx.mock
-def test_a_transform_fred_cannot_express_raises_rather_than_guessing(
-    source: FredSource,
+def test_a_transform_fred_cannot_express_is_skipped_not_guessed(
+    source: FredSource, transform: str
 ) -> None:
-    """chg_1m has no FRED units equivalent. Guessing one scores a wrong number.
+    """chg_1m and chg_3m have no FRED units equivalent, and are not requested.
 
-    The registry defines it as a month-end resample then a difference then a
-    rescale into basis points. FRED's ``chg`` is the change from the previous
-    observation, which on a daily series is a one-day change, so mapping the
-    two would emit a number roughly thirty times too small under a label
-    saying otherwise.
+    ADR 0004 records why: FRED's ``chg`` is the change from the previous
+    observation, which on a daily series is a one-day change, so sending it
+    would emit a number roughly thirty times too small under a label saying
+    otherwise. Nothing is emitted for the ref and nothing is asked of the
+    server, so the pillar sees an absence rather than a wrong number.
     """
-    with pytest.raises(SourceError) as excinfo:
-        source.fetch(["yield_2y_chg_1m"], ["USD"], START, END)
-    message = str(excinfo.value)
-    assert "chg_1m" in message
-    assert "yield_2y_chg_1m" in message
-
-
-@respx.mock
-def test_the_unexpressable_transform_does_not_reach_the_network(
-    source: FredSource,
-) -> None:
     route = respx.get(OBSERVATIONS_URL).mock(
         return_value=httpx.Response(200, json=_observations(("2026-06-30", "3.55")))
     )
-    with pytest.raises(SourceError):
-        source.fetch(["yield_2y_chg_3m"], ["USD"], START, END)
+    emitted = source.fetch([f"yield_2y_{transform}"], ["USD"], START, END)
+    assert emitted == []
     assert route.call_count == 0
+
+
+@respx.mock
+def test_an_unexpressable_transform_does_not_cost_the_rest_of_the_run(
+    source: FredSource,
+) -> None:
+    """Issue #169. One refused ref used to raise out of `fetch` and take every
+    other FRED series with it, so a cold refresh landed three series and the
+    monetary pillar got no ``yield_2y`` for any currency.
+    """
+    route = respx.get(OBSERVATIONS_URL).mock(
+        return_value=httpx.Response(200, json=_observations(("2026-06-30", "3.55")))
+    )
+    emitted = source.fetch(["yield_2y_chg_1m", "yield_2y"], ["USD"], START, END)
+    assert [o.indicator for o in emitted] == ["yield_2y"]
+    assert route.call_count == 1
+    assert route.calls.last.request.url.params["series_id"] == "DGS2"
 
 
 @respx.mock

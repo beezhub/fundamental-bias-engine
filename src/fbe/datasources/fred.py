@@ -231,6 +231,9 @@ class FredSource(BaseDataSource):
 
         Returns:
             Observations keyed by canonical indicator, never by FRED series ID.
+            A ref whose ``transform`` has no `UNITS` entry contributes nothing
+            and is not requested, so its absence reaches the pillar as reduced
+            coverage rather than as an approximated number.
 
         Raises:
             SourceError: On repeated request failure or an unparseable body.
@@ -244,47 +247,23 @@ class FredSource(BaseDataSource):
                 continue
             if currency not in wanted_currencies:
                 continue
-            units = self._units_for(indicator, currency, ref)
+            if ref.transform not in UNITS:
+                # chg_1m and chg_3m reach here today. FRED's chg is the change
+                # from the previous observation, a one-day change on a daily
+                # series, so mapping it would emit a number roughly thirty
+                # times too small under a label saying otherwise. ADR 0004
+                # settles the derivation and no source computes it yet. The
+                # ref is passed over rather than raised on: raising here took
+                # every other FRED series down with it (issue #169), and an
+                # absence is what the pillar knows how to represent.
+                continue
             for period, value in self.fetch_series(
-                ref.series_id, start, end, units=units
+                ref.series_id, start, end, units=UNITS[ref.transform]
             ):
                 emitted.append(
                     self._observation(indicator, currency, ref, period, value)
                 )
         return emitted
-
-    def _units_for(self, indicator: str, currency: str, ref: SeriesRef) -> str:
-        """Map a registry transform onto FRED's ``units`` parameter.
-
-        Args:
-            indicator: Canonical indicator key, named in the error.
-            currency: ISO 4217 code, named in the error.
-            ref: The registry entry whose ``transform`` is being mapped.
-
-        Returns:
-            The `UNITS` value FRED should compute, so the arithmetic happens
-            server-side rather than here.
-
-        Raises:
-            SourceError: When `UNITS` has no entry for the transform. The two
-                that reach this today are ``chg_1m`` and ``chg_3m``, which the
-                registry defines as a month-end or quarter-end resample, then a
-                difference, then a rescale into basis points. FRED's ``chg`` is
-                the change from the previous observation, which on a daily
-                series is a one-day change, so mapping the two would emit a
-                number roughly thirty times too small under a label saying
-                otherwise. Refusing is the only safe answer until the
-                derivation is settled; see the note on issue #56.
-
-        """
-        try:
-            return UNITS[ref.transform]
-        except KeyError as error:
-            raise SourceError(
-                f"{self.name} cannot express the {ref.transform!r} transform "
-                f"that {indicator} / {currency} asks for as a FRED units "
-                "parameter, and will not approximate it with a different one"
-            ) from error
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is ``"fred"``.
