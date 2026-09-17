@@ -74,6 +74,16 @@ class InflationPillar(BasePillar):
     month. And the targets in `CurrencyMeta` are single numbers where several of
     these banks publish bands, so the AUD gap is measured against a 2.5% midpoint
     the RBA does not literally target.
+
+    One more that only bites later, recorded before the backtest rather than
+    after it. `CurrencyMeta.inflation_target` is a current-vintage constant and
+    the targets are not constants over history: Japan adopted 2% in 2013, and
+    several of these banks have re-specified their bands since. A Phase 6 run
+    dated before a change would difference that currency's CPI against a target
+    that did not exist yet. That is the look-ahead class in the place nobody
+    checks for it, because it is a configuration constant rather than a data
+    series, and closing it means giving the target a history rather than
+    changing anything here.
     """
 
     name = PillarName.INFLATION
@@ -102,50 +112,6 @@ class InflationPillar(BasePillar):
 
         """
         return {"cpi_gap": 0.40, "core_gap": 0.60}
-
-    def _extract(
-        self,
-        observations: Sequence[Observation],
-        currencies: Sequence[str],
-        asof: date,
-    ) -> Mapping[str, Mapping[str, Sequence[Observation]]]:
-        """Pull headline and core CPI per currency.
-
-        Args:
-            observations: Full observation set for the run.
-            currencies: Universe to score.
-            asof: Run date; later periods are dropped.
-
-        Returns:
-            ``{currency: {indicator: observations}}`` for the two indicators in
-            `requires`, sorted by period ascending.
-
-        """
-        wanted = set(self.requires)
-        per_currency: dict[str, dict[str, list[Observation]]] = {
-            currency: {indicator: [] for indicator in self.requires}
-            for currency in currencies
-        }
-        for observation in observations:
-            if observation.indicator not in wanted:
-                continue
-            series = per_currency.get(observation.currency)
-            if series is None or observation.period > asof:
-                continue
-            # The shared rule, not a copy of it. `_visible` and
-            # `_newest_vintages` are `BasePillar`'s, so #121's fix to the
-            # unstamped-revision hole reaches this pillar without anyone
-            # remembering it exists.
-            if not self._visible(observation, asof):
-                continue
-            series[observation.indicator].append(observation)
-        return {
-            currency: {
-                indicator: self._newest_vintages(found)
-                for indicator, found in series.items()
-            }
-            for currency, series in per_currency.items()
-        }
 
     def _transform(
         self,
@@ -183,7 +149,7 @@ class InflationPillar(BasePillar):
             # this pillar worth building.
             target = meta(currency).inflation_target
             built[currency] = {
-                component: _gap(series.get(indicator, ()), target)
+                component: _gap(series[indicator], target)
                 for component, (indicator,) in self.component_indicators.items()
             }
         return built
@@ -192,36 +158,54 @@ class InflationPillar(BasePillar):
         self,
         currency: str,
         components: Mapping[str, float | None],
-        asof: date,
+        extracted: Mapping[str, Sequence[Observation]],
     ) -> str:
-        """Say which print and which target produced this currency's gap.
+        """Say which print, from which period, against which target.
 
         Args:
             currency: The currency being scored.
             components: Its component values from `_transform`.
-            asof: Run date, unused here: the note describes the newest print
-                rather than the run.
+            extracted: Its slice of `_extract`'s output, read for the period of
+                the print being described.
 
         Returns:
-            The headline gap's two operands, or the empty string when there is
-            no headline gap to explain.
+            The gap's two operands and the period they came from, or a line
+            naming core where there is no headline print. Never raises: a note
+            is cosmetic and `scoring.score_currencies` would mark the whole
+            universe unscored if this threw.
 
         `raw` carries ``cpi_gap``, which is a difference, and a difference
         cannot be checked from itself. ``+0.5`` is consistent with a 3.0% print
         against Australia's 2.5% target and with 2.5% against 2.0%, and those
-        are different economies. Reconstructing the level from the gap needs
-        the target, which means opening `CurrencyMeta`, so the note carries
-        both and the reader does not have to.
+        are different economies.
+
+        The period is named because both series are quarterly for AUD and NZD.
+        "headline 3.0% against a 2.5% target" reads identically whether the
+        print landed last month or five months ago, and the second is the case
+        a reader needs to notice.
+
+        A currency scored on core alone still gets a line. ``core_gap`` carries
+        0.60 of the sub-weight and clears `MIN_COMPONENT_WEIGHT` by itself, so
+        such a currency reaches a report with a real score and an empty ``raw``,
+        which is exactly where an empty working is least affordable.
 
         """
-        gap = components.get(self.headline_component)
-        if gap is None:
-            return ""
         target = meta(currency).inflation_target
-        return (
-            f"{self.name.value} {currency}: headline {gap + target:.1f}% "
-            f"against a {target:.1f}% target"
-        )
+        for component, label in (("cpi_gap", "headline"), ("core_gap", "core")):
+            gap = components.get(component)
+            if gap is None:
+                continue
+            (indicator,) = self.component_indicators[component]
+            printed = extracted.get(indicator, ())
+            period = f" for {printed[-1].period.isoformat()}" if printed else ""
+            carried = (
+                "" if component == self.headline_component else ", no headline print"
+            )
+            return (
+                f"{self.name.value} {currency}: {label} {gap + target:.1f}%"
+                f"{period} against a {target:.1f}% target{carried}"
+            )
+        return ""
 
 
 def _gap(found: Sequence[Observation], target: float) -> float | None:

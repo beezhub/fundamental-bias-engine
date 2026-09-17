@@ -46,7 +46,7 @@ from __future__ import annotations
 import inspect
 import math
 from collections.abc import Callable, Mapping, Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -59,7 +59,15 @@ from fbe.pillars.growth import GrowthPillar
 from fbe.pillars.inflation import InflationPillar
 from fbe.pillars.monetary import MonetaryPillar
 from fbe.pillars.positioning import PositioningPillar
-from fbe.types import Conviction, CurrencyScore, Direction, PillarName, PillarScore
+from fbe.types import (
+    Conviction,
+    CurrencyScore,
+    Direction,
+    Frequency,
+    Observation,
+    PillarName,
+    PillarScore,
+)
 from fbe.universe import ALL_PAIRS, G10, meta, split_pair
 
 ASOF = date(2026, 6, 30)
@@ -713,6 +721,71 @@ def test_the_inflation_scores_follow_from_the_deviations() -> None:
     index = PILLAR_ORDER.index(PillarName.INFLATION)
     for currency, value in zip(UNIVERSE, blend, strict=True):
         assert (value - mean) / sd == pytest.approx(MATRIX[currency][index], abs=5e-3)
+
+
+def test_the_inflation_column_reproduces_through_the_real_pillar() -> None:
+    """Criterion 2, for the INFLATION column, end to end through the pillar.
+
+    The test above carries the deviation table to the published column by
+    restating the arithmetic here, which is what it had to do while
+    `InflationPillar._extract` and `_transform` were scaffolded. They are not,
+    so the column can now be carried from the published *levels* all the way to
+    the published score by the code that will compute it on a real run, which
+    is what the standing rule about worked examples asks for.
+
+    The levels are rebuilt as ``deviation + target`` from the two tables above
+    rather than transcribed a third time, so this cannot drift from them.
+
+    The fixture contains a gift for this: USD and AUD both publish a headline
+    deviation of ``+0.9``, from levels of 2.9 and 3.4 against targets of 2.0
+    and 2.5. A pillar reading the level instead of the gap cannot produce that
+    row, and it is the one row that says so.
+    """
+    _skip_if_scaffolded(InflationPillar._extract, InflationPillar._transform)
+
+    released = datetime(2026, 8, 20, 12, tzinfo=UTC)
+    period = date(2026, 8, 1)
+    observations: list[Observation] = []
+    for currency in UNIVERSE:
+        headline, core = INFLATION_DEVIATIONS[currency]
+        target = INFLATION_TARGETS[currency]
+        for indicator, deviation in (
+            ("cpi_yoy", headline),
+            ("core_cpi_yoy", core),
+        ):
+            observations.append(
+                Observation(
+                    indicator=indicator,
+                    currency=currency,
+                    value=deviation + target,
+                    period=period,
+                    source="spec",
+                    series_id=indicator,
+                    unit="percent",
+                    frequency=Frequency.MONTHLY,
+                    released_at=released,
+                )
+            )
+
+    pillar = InflationPillar()
+    asof = date(2026, 9, 15)
+    extracted = pillar._extract(observations, UNIVERSE, asof)
+    components = pillar._transform(extracted, asof)
+
+    # The gaps, against section 7.2's own deviation table.
+    for currency in UNIVERSE:
+        headline, core = INFLATION_DEVIATIONS[currency]
+        assert components[currency]["cpi_gap"] == pytest.approx(headline), currency
+        assert components[currency]["core_gap"] == pytest.approx(core), currency
+
+    # And the column, against section 7.6.
+    normalised = pillar._normalise(components)
+    index = PILLAR_ORDER.index(PillarName.INFLATION)
+    for currency in UNIVERSE:
+        assert normalised[currency] == pytest.approx(
+            MATRIX[currency][index], abs=5e-3
+        ), currency
+    assert pillar.last_blend_sd == pytest.approx(INFLATION_BLEND_SD, abs=5e-5)
 
 
 def test_every_published_composite_follows_from_the_pillar_matrix() -> None:

@@ -18,14 +18,17 @@ it lives.
 `None`, never `0.0`: a zero gap reads as inflation exactly at target, which is
 a specific and confident claim about a currency the model has no print for.
 
-Nothing here reaches the network or the registry for its values. Every
-observation is built in the test that uses it, so every gap is checkable by
-hand against numbers written in this file.
+Nothing here reaches the network. Every value that reaches an assertion is
+built in the test that uses it, so every gap is checkable by hand against
+numbers written in this file. The registry is read for two things only, an
+indicator's unit and its frequency, so a fixture carries the real ones rather
+than a plausible-looking stand-in.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from math import fsum
 
 import pytest
 
@@ -328,7 +331,6 @@ def test_a_print_exactly_at_target_is_zero_and_not_absent(
 
     assert built["cpi_gap"] == 0.0
     assert built["core_gap"] == 0.0
-    assert built["cpi_gap"] is not None
 
 
 def test_nothing_but_the_target_is_subtracted(pillar: InflationPillar) -> None:
@@ -440,13 +442,25 @@ def test_the_notes_carry_the_level_and_the_target(pillar: InflationPillar) -> No
 
     `raw` is a difference, and a difference alone cannot be checked: +0.5 is
     consistent with 3.0 against 2.5 and with 2.5 against 2.0.
+
+    Asserted as one whole string rather than as two substring checks. The
+    substring version passed with the level and the target swapped, which
+    produces "headline 2.5% against a 3.0% target": confidently, readably
+    backwards, which is the failure this repository is built around.
+
+    CHF rather than AUD, for two reasons that both hid a defect. AUD is index
+    0 in ``sorted(G10)``, so the fixture ramp adds nothing and any
+    off-by-a-currency error is invisible; and AUD is first in the components
+    iteration order, so a note built from the wrong currency's components
+    still reads correctly there.
     """
     scores = pillar.compute(universe_observations(3.0, 2.8), sorted(G10), ASOF)
 
-    notes = scores["AUD"].notes
-    index = sorted(G10).index("AUD")
-    assert f"{3.0 + index * 0.1:.1f}" in notes
-    assert "2.5" in notes
+    index = sorted(G10).index("CHF")
+    assert scores["CHF"].notes == (
+        f"inflation CHF: headline {3.0 + index * 0.1:.1f}% "
+        f"for {PERIOD.isoformat()} against a 1.0% target"
+    )
 
 
 def test_a_currency_with_only_headline_is_scored_as_missing(
@@ -458,7 +472,8 @@ def test_a_currency_with_only_headline_is_scored_as_missing(
     docstring cannot fail. Headline alone is too noisy to carry this pillar,
     and a score built on it would look exactly like a score built on both.
     """
-    assert pillar.component_weights["cpi_gap"] <= MIN_COMPONENT_WEIGHT
+    declared = fsum(pillar.component_weights.values())
+    assert pillar.component_weights["cpi_gap"] / declared <= MIN_COMPONENT_WEIGHT
 
     supplied = universe_observations(3.0, 2.8)
     thinned = [
@@ -480,7 +495,8 @@ def test_a_currency_with_only_core_is_still_scored(pillar: InflationPillar) -> N
     where headline cannot. Without this the previous test would pass against an
     implementation that simply refused every incomplete currency.
     """
-    assert pillar.component_weights["core_gap"] > MIN_COMPONENT_WEIGHT
+    declared = fsum(pillar.component_weights.values())
+    assert pillar.component_weights["core_gap"] / declared > MIN_COMPONENT_WEIGHT
 
     supplied = universe_observations(3.0, 2.8)
     thinned = [
@@ -515,3 +531,156 @@ def test_every_currency_asked_for_comes_back(pillar: InflationPillar) -> None:
     scores = pillar.compute(universe_observations(3.0, 2.8), sorted(G10), ASOF)
 
     assert set(scores) == set(G10)
+
+
+# --- what the review passes found these could not see ------------------------
+
+
+def test_a_print_for_a_period_after_asof_takes_no_part(
+    pillar: InflationPillar,
+) -> None:
+    """A forecast published early describes a month that has not happened.
+
+    The visibility test above covers the other filter: a print describing the
+    past that had not been published yet. This is the opposite shape and needs
+    its own bound, because `_gap` reads the last element as the newest, so a
+    forward-dated print silently becomes the current level. A run on 15
+    September would score itself on a December number that was published,
+    visible, and about a month that does not exist.
+
+    `staleness_days` cannot be relied on to catch it: it floors a forward-dated
+    period's age at zero rather than dropping it.
+    """
+    forecast = obs(
+        "cpi_yoy",
+        "USD",
+        9.9,
+        date(2026, 12, 1),
+        released_at=datetime(2026, 9, 1, 12, tzinfo=UTC),
+    )
+    current = obs("cpi_yoy", "USD", 3.0, PERIOD, released_at=published(PERIOD))
+
+    extracted = pillar._extract([forecast, current], ("USD",), ASOF)
+
+    assert [entry.value for entry in extracted["USD"]["cpi_yoy"]] == [3.0]
+
+
+def test_an_unscorable_currency_gets_the_absence_reason_and_no_working(
+    pillar: InflationPillar,
+) -> None:
+    """The exclusivity `_notes`'s docstring states, which nothing checked.
+
+    AUD holds a real headline gap here and is still refused by
+    `MIN_COMPONENT_WEIGHT`, so it is the case that makes the rule bite: there
+    is a value to describe and no score to attach the description to. A hook
+    called on the unscored branch would explain a number the pillar declined
+    to publish, sitting beside the sentence saying it could not score.
+    """
+    supplied = universe_observations(3.0, 2.8)
+    thinned = [
+        entry
+        for entry in supplied
+        if not (entry.currency == "AUD" and entry.indicator == "core_cpi_yoy")
+    ]
+
+    scores = pillar.compute(thinned, sorted(G10), ASOF)
+
+    assert scores["AUD"].z is None
+    assert "core_cpi_yoy" in scores["AUD"].notes
+    assert "headline" not in scores["AUD"].notes
+
+
+def test_a_currency_scored_on_core_alone_still_shows_its_working(
+    pillar: InflationPillar,
+) -> None:
+    """The case where an empty working is least affordable.
+
+    Core carries 0.60 and clears the floor by itself, so such a currency
+    reaches a report with a real score and an empty ``raw``. A note that
+    describes only the headline would be blank for exactly the row whose
+    headline number does not exist.
+    """
+    supplied = universe_observations(3.0, 2.8)
+    thinned = [
+        entry
+        for entry in supplied
+        if not (entry.currency == "AUD" and entry.indicator == "cpi_yoy")
+    ]
+
+    scores = pillar.compute(thinned, sorted(G10), ASOF)
+
+    assert scores["AUD"].z is not None
+    assert scores["AUD"].raw is None
+    assert "core" in scores["AUD"].notes
+    assert "no headline print" in scores["AUD"].notes
+
+
+def test_the_note_names_the_period_the_print_describes(
+    pillar: InflationPillar,
+) -> None:
+    """Both series are quarterly for AUD and NZD, so the age is not obvious.
+
+    "headline 3.0% against a 2.5% target" reads identically whether the print
+    landed last month or five months ago, and the second is the case a reader
+    needs to notice. The note exists to be checkable, and a number with no
+    period attached cannot be checked against a source.
+    """
+    scores = pillar.compute(universe_observations(3.0, 2.8), sorted(G10), ASOF)
+
+    assert PERIOD.isoformat() in scores["USD"].notes
+
+
+def test_only_the_targets_create_the_ranking_when_every_print_agrees(
+    pillar: InflationPillar,
+) -> None:
+    """Eight identical prints, and the cross-section is entirely the targets.
+
+    A pillar that scored the level would hand `cross_sectional_z` eight equal
+    numbers and every score would come back 0.0. This one assertion kills the
+    whole "forgot the target" family at the level a reader reads, rather than
+    at `_transform`.
+    """
+    supplied: list[Observation] = []
+    for currency in sorted(G10):
+        supplied += prints(currency, 2.0, 2.0)
+
+    scores = pillar.compute(supplied, sorted(G10), ASOF)
+
+    assert scores["CHF"].score > 0.0
+    assert scores["AUD"].score < 0.0
+    assert scores["USD"].score == pytest.approx(scores["EUR"].score)
+    assert scores["CHF"].score != pytest.approx(scores["AUD"].score)
+
+
+def test_moving_one_currency_moves_the_ones_that_did_not(
+    pillar: InflationPillar,
+) -> None:
+    """The scores are cross-sectional, so nothing here stands on its own.
+
+    GBP's headline rises and everything else is held. CHF, AUD and the
+    unchanged majority each move by a different amount, because each sits at a
+    different distance from the new mean. A pillar scoring each currency in
+    isolation passes every other test in this file and fails this one.
+    """
+    before = pillar.compute(universe_observations(3.0, 2.8), sorted(G10), ASOF)
+
+    supplied = [
+        obs(
+            "cpi_yoy",
+            entry.currency,
+            entry.value + 2.0,
+            entry.period,
+            released_at=entry.released_at,
+        )
+        if entry.currency == "GBP" and entry.indicator == "cpi_yoy"
+        else entry
+        for entry in universe_observations(3.0, 2.8)
+    ]
+    after = pillar.compute(supplied, sorted(G10), ASOF)
+
+    assert after["GBP"].score > before["GBP"].score
+    for currency in ("CHF", "AUD", "USD"):
+        assert after[currency].score != pytest.approx(before[currency].score)
+    gbp_move = after["GBP"].score - before["GBP"].score
+    chf_move = after["CHF"].score - before["CHF"].score
+    assert abs(gbp_move) > abs(chf_move)

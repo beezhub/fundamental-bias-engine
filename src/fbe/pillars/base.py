@@ -161,7 +161,7 @@ def staleness_allowance(indicator: str, config: ScoringConfig) -> int:
 _EARLIEST = datetime.min.replace(tzinfo=UTC)
 """Sort floor for an observation with no ``released_at``.
 
-Only ever reached as the third element of a vintage key, after a check on
+Only ever reached as the second element of a vintage key, after a check on
 whether the stamp exists at all, so it orders unstamped observations below
 stamped ones rather than standing in for a real release time.
 """
@@ -459,7 +459,7 @@ class BasePillar(ABC):
                     if self.headline_component
                     else None
                 ),
-                notes=self._notes(currency, components.get(currency, {}), asof),
+                notes=self._notes(currency, components.get(currency, {}), per_currency),
                 z=z,
                 score=self.clip_and_scale(z, self.config.score_clip),
                 weight=self.weight,
@@ -563,7 +563,7 @@ class BasePillar(ABC):
         self,
         currency: str,
         components: Mapping[str, float | None],
-        asof: date,
+        extracted: Mapping[str, Sequence[Observation]],
     ) -> str:
         """Return the working behind one scored currency's headline number.
 
@@ -572,16 +572,35 @@ class BasePillar(ABC):
             components: That currency's component values from `_transform`,
                 including the ``None`` entries for components it could not
                 build.
-            asof: Run date.
+            extracted: That currency's slice of `_extract`'s output, so a note
+                can name the period of the print it describes. A quarterly
+                series reads the same in the note whether it printed last month
+                or five months ago, and the note exists to be checkable.
 
         Returns:
             Human prose, empty by default. Nothing may parse it for a decision:
-            `PillarScore.notes` is the report's working and ADR 0002 rule 3
-            keeps every fact a consumer acts on in a typed field.
+            `PillarScore.notes` is the report's working, and issue #51 is the
+            ruling that put every fact a consumer acts on in a typed field
+            instead, `blend_divisor_path` and `diagnostics` being the two it
+            moved.
 
         Only the scored branch calls this. A currency `compute` could not score
         already gets a note naming the indicators it lacked, and a pillar that
-        appended to that would be explaining a number nobody has.
+        appended to that would be explaining a number nobody has. The case that
+        makes the distinction bite is a currency holding one component and
+        refused by `MIN_COMPONENT_WEIGHT`: it has a value to describe and no
+        score to attach the description to.
+
+        **An override must not raise.** `scoring.score_currencies` catches
+        anything a pillar raises by marking every currency in the universe
+        unscored, so an exception while formatting prose costs the pillar its
+        entire run. A note is cosmetic and nothing here is worth that.
+
+        ``asof`` is deliberately not passed. The first draft of this hook took
+        it, the only override ignored it, and what that override actually
+        needed was the observations. A signature that offers the unused
+        argument and withholds the used one invites the next pillar to write a
+        note it cannot make true.
 
         Overridden where the headline number cannot be checked from itself.
         `raw` is a difference for several pillars, and a difference alone is
@@ -611,8 +630,10 @@ class BasePillar(ABC):
         Period is deliberately not the test. US Q1 GDP has a period of 1 January
         and prints around 25 April, so a run dated 15 April that filtered on
         period would score the middle of April with a number that did not exist
-        for another ten days. Every series this pillar reads is lagged, so the
-        error would be systematic rather than occasional, and it flatters.
+        for another ten days. Most series here are lagged, so the error is
+        systematic rather than occasional, and it flatters. It is smallest for
+        the daily series, a two-year yield or a volatility index, where the lag
+        is a day, and largest for the quarterly ones.
 
         The fallback has a hole this method cannot close, worth knowing rather
         than discovering. Period plus lag is the same answer for every vintage
@@ -662,7 +683,6 @@ class BasePillar(ABC):
                 by_period[observation.period] = observation
         return tuple(by_period[period] for period in sorted(by_period))
 
-    @abstractmethod
     def _extract(
         self,
         observations: Sequence[Observation],
@@ -739,7 +759,48 @@ class BasePillar(ABC):
         honest and a flattering number later, which is why it belongs in the
         specification rather than in a Phase 6 to-do.
 
+        Concrete, and the default answer for a pillar reading per-currency
+        series under the keys in `requires`. It was abstract while MONETARY was
+        the only pillar; INFLATION then wrote the same twenty-one lines, which
+        is the copy #122 exists to prevent one level up from the two helpers it
+        names. Sharing the leaves and duplicating the composition would leave
+        #121's fix landing in one file and being missed in the others.
+
+        Override it where a pillar reads something else. POSITIONING needs full
+        history rather than the newest vintage per period, and RISK reads a
+        ``GLOBAL``-keyed series that belongs to no currency, so neither is
+        served by the loop below. An override should call this through
+        ``super()`` for the part it does share rather than restating the rule.
+
         """
+        wanted = set(self.requires)
+        per_currency: dict[str, dict[str, list[Observation]]] = {
+            currency: {indicator: [] for indicator in self.requires}
+            for currency in currencies
+        }
+        for observation in observations:
+            if observation.indicator not in wanted:
+                continue
+            series = per_currency.get(observation.currency)
+            # Two filters, answering different questions. The period bound
+            # drops a figure describing a month that has not happened, which is
+            # what a forecast or a forward-dated survey is; `_visible` drops a
+            # figure that describes the past and had not been published yet.
+            # A pillar reading the newest element as current needs both, and
+            # `staleness_days` floors a forward-dated period at zero rather
+            # than dropping it, so it cannot be relied on to do this one.
+            if series is None or observation.period > asof:
+                continue
+            if not self._visible(observation, asof):
+                continue
+            series[observation.indicator].append(observation)
+        return {
+            currency: {
+                indicator: self._newest_vintages(found)
+                for indicator, found in series.items()
+            }
+            for currency, series in per_currency.items()
+        }
 
     @abstractmethod
     def _transform(

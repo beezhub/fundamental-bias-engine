@@ -152,27 +152,7 @@ class MonetaryPillar(BasePillar):
         components always matches its coverage on the level.
 
         """
-        wanted = set(self.requires)
-        per_currency: dict[str, dict[str, list[Observation]]] = {
-            currency: {indicator: [] for indicator in self.requires}
-            for currency in currencies
-        }
-        for observation in observations:
-            if observation.indicator not in wanted:
-                continue
-            series = per_currency.get(observation.currency)
-            if series is None or observation.period > asof:
-                continue
-            if not self._visible(observation, asof):
-                continue
-            series[observation.indicator].append(observation)
-        return {
-            currency: {
-                indicator: self._newest_vintages(found)
-                for indicator, found in series.items()
-            }
-            for currency, series in per_currency.items()
-        }
+        return super()._extract(observations, currencies, asof)
 
     def _transform(
         self,
