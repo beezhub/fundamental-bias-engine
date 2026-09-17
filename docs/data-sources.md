@@ -808,8 +808,8 @@ keys currently in that position.
 | --- | --- | --- | --- |
 | `policy_rate` | 8/8 | 8/8 | good |
 | `yield_2y` | 7/8 | 7/8 | CHF manual, see below; NZD from the owner's connection only |
-| `yield_2y_chg_1m` | 7/8 | 7/8 | derived from `yield_2y`, not separately published; same 7/8 |
-| `yield_2y_chg_3m` | 7/8 | 7/8 | derived from `yield_2y`, not separately published; same 7/8 |
+| `yield_2y_chg_1m` | 0/8 | 0/8 | derived from `yield_2y`, served by no source until ADR 0004 is implemented; see below |
+| `yield_2y_chg_3m` | 0/8 | 0/8 | derived from `yield_2y`, served by no source until ADR 0004 is implemented; see below |
 | `yield_10y` | 8/8 | 8/8 | good, but **consumed by no pillar**; see below |
 | `cpi_yoy` | 8/8 | 8/8 | good, was 2/8 before the OECD API |
 | `core_cpi_yoy` | 8/8 | 8/8 | good, was 2/8 |
@@ -987,8 +987,8 @@ a free machine-readable source, not the operator's typing.
 | --- | --- | --- | --- | --- | --- | --- |
 | `policy_rate` | monetary | `percent` | daily | 75d | 100% | 100% |
 | `yield_2y` | monetary | `percent` | daily | 10d | 88% | 88% |
-| `yield_2y_chg_1m` | monetary | `basis_points` | daily | 10d | 88% | 88% |
-| `yield_2y_chg_3m` | monetary | `basis_points` | daily | 10d | 88% | 88% |
+| `yield_2y_chg_1m` | monetary | `basis_points` | daily | 10d | 0% | 0% |
+| `yield_2y_chg_3m` | monetary | `basis_points` | daily | 10d | 0% | 0% |
 | `yield_10y` | monetary (unconsumed) | `percent` | monthly | 75d | 100% | 100% |
 | `cpi_yoy` | inflation | `percent` | monthly | 200d | 100% | 100% |
 | `core_cpi_yoy` | inflation | `percent` | monthly | 200d | 100% | 100% |
@@ -1049,11 +1049,13 @@ Pillar: **monetary**. Canonical unit: `percent`. Staleness allowance: 10 days. F
 
 #### `yield_2y_chg_1m` and `yield_2y_chg_3m`
 
-One-month and three-month changes in the two-year government bond yield, in basis points, resampled to month-end or quarter-end before differencing. Together they carry 0.45 of the monetary pillar, more than the level itself, because the direction of repricing typically leads the level in FX.
+One-month and three-month trailing changes in the two-year government bond yield, in basis points, with the window ending at the latest session per ADR 0004. Together they carry 0.45 of the monetary pillar, more than the level itself, because the direction of repricing typically leads the level in FX.
 
-Neither is a separately published series. No source in this registry, or found by search, publishes a pre-differenced government bond yield change for any G10 issuer. Both reuse `yield_2y`'s own source, series ID, unit and verification status for every currency, under the registry's `chg_1m` and `chg_3m` transforms, which is why their source table is not repeated here: it is `yield_2y`'s table above, currency for currency, source for source. Coverage, freshness and the CHF manual gap are therefore identical to `yield_2y`'s.
+Neither is a separately published series. No source in this registry, or found by search, publishes a pre-differenced government bond yield change for any G10 issuer. Both reuse `yield_2y`'s own source, series ID, unit and `last_observed` for every currency, under the registry's `chg_1m` and `chg_3m` transforms, which is why their source table is not repeated here: it is `yield_2y`'s table above, currency for currency, source for source.
 
-Pillar: **monetary**. Canonical unit: `basis_points`. Staleness allowance: 10 days. Fresh coverage: 88% (both).
+**Served by no source today.** ADR 0004 settles the derivation but no source computes it yet, so `fbe.datasources.fred` and `fbe.datasources.curves` pass these refs over without a request rather than approximate them, and the registry marks every ref unverified so `stale_refs` lists all eight currencies. The monetary pillar sees the absence as reduced coverage and renormalises over the three components it has. Once a source implements the derivation, coverage and freshness become identical to `yield_2y`'s, currency for currency, and the flag flips back in that commit. Issue #169 records the interim.
+
+Pillar: **monetary**. Canonical unit: `basis_points`. Staleness allowance: 10 days. Fresh coverage: 0% (both), until ADR 0004 is implemented.
 
 #### `yield_10y`
 

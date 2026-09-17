@@ -293,14 +293,13 @@ falling through to no observations."""
 SERVED_TRANSFORMS: frozenset[str] = frozenset({"level"})
 """Transforms this source can emit today.
 
-``chg_1m`` and ``chg_3m`` reuse the same refs and are deliberately absent. The
-registry defines them as a resample, a difference and a rescale into basis
-points, and two things about that are unsettled: the differencing convention is
-ambiguous as written, and the emitted value would be in basis points while the
-ref it is built from says ``percent``. `fbe.datasources.fred` already refuses
-them for the same reason. Raised on issue #56 and not yet answered, and
-``yield_2y_chg_3m`` is documented as the heaviest sub-indicator in the model,
-so guessing is the one thing not to do."""
+``chg_1m`` and ``chg_3m`` reuse the same refs and are deliberately absent. ADR
+0004 settles their derivation, a trailing window ending at the latest session,
+and no source computes it yet; until one does the emitted value would be in
+basis points while the ref it is built from says ``percent``.
+`fbe.datasources.fred` passes them over for the same reason. ``yield_2y_chg_3m``
+is documented as the heaviest sub-indicator in the model, so guessing is the one
+thing not to do."""
 
 JGB_MISSING_TENOR = "-"
 """How the Ministry of Finance publishes a tenor it did not price that day.
@@ -612,7 +611,9 @@ class CurvesSource(BaseDataSource):
             end: Latest session wanted.
 
         Returns:
-            Observations whose ``source`` is the specific provider key.
+            Observations whose ``source`` is the specific provider key. A ref
+            whose ``transform`` is not in `SERVED_TRANSFORMS` contributes
+            nothing and no provider is asked for it.
 
         Raises:
             SourceError: When a provider that should have data returns none.
@@ -629,13 +630,10 @@ class CurvesSource(BaseDataSource):
             if currency not in wanted_currencies:
                 continue
             if ref.transform not in SERVED_TRANSFORMS:
-                raise SourceError(
-                    f"{self.name} cannot emit the {ref.transform!r} transform "
-                    f"that {indicator} / {currency} asks for: its derivation "
-                    "and the unit it would carry are both unsettled, so an "
-                    "approximation here would be a wrong number wearing the "
-                    "right label"
-                )
+                # Passed over rather than raised on. Raising here cost every
+                # other curve in the run for a ref this source was never going
+                # to serve (issue #169). The pillar represents the absence.
+                continue
             for period, value in self._from_provider(ref, currency, start, end):
                 emitted.append(
                     self._observation(indicator, currency, ref, period, value)
