@@ -18,5 +18,8 @@ data/cache/*
 # you cannot re-read a week later is worthless, and the diff between two
 # runs is often more informative than either run alone.
 .DS_Store
+# The journal is the owner's private trade record on a real account, not the
+# model's opinion, so it is ignored where reports are tracked. CLAUDE.md says
+# why, and says that a fresh clone therefore has no journal.
 data/journal/*
 !data/journal/.gitkeep
