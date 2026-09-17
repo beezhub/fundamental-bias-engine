@@ -301,6 +301,36 @@ A human merges. A lane opens the pull request, drives it to green, and stops.
 Nothing here merges on its own, because the one control that matters on a
 repository that sizes real positions is that a person reads the diff.
 
+## The model a run uses
+
+**Every routine host has its model set explicitly at creation, and never
+inherits it.** A host created without one takes whatever the creating session
+happened to be running, which is silent, survives every later run, and surfaces
+only when a bill or a change in behaviour makes it obvious. Setting it at
+creation is what makes inheritance a mistake rather than the default.
+
+**The per-run models live in `.claude/agents/*.md`**, in the `model:` field of
+each definition's frontmatter. That is the operative setting and the only place
+it is written down. The judgement-heavy roles and the rest are deliberately not
+the same, and which is which is visible by reading those twelve files.
+
+**The bound, stated by reference:** no host runs a model below the one the
+judgement-heavy agent definitions name in `.claude/agents/*.md`.
+
+By reference rather than by name, and that is not a shorthand. Writing the name
+here would put a second copy of a value in a second place, maintained by hand,
+with nothing holding the two together, which is the disagreement this project
+keeps finding in its own config. It would also be the first model name in
+`docs/` outside `docs/reasoning-layer.md`, where naming one describes what the
+engine depends on to run rather than how it gets built.
+`tests/test_model_policy.py` fails if either half stops being true.
+
+**Recreating a host means passing the model, never relying on the caller.** A
+routine's prompt can only be changed by recreating it, so recreation is ordinary
+rather than exceptional, and it is exactly the moment the setting is lost. Read
+the `model:` field first and pass it; do not assume the session doing the
+recreating is running the right thing.
+
 ## Stopping a run
 
 Disable the routine to stop it altogether.
