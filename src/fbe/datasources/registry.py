@@ -1185,6 +1185,104 @@ EMPLOYMENT_CHG = IndicatorSpec(
 )
 
 
+def _employment_level_series() -> Mapping[str, SeriesRef]:
+    """Reuse `EMPLOYMENT_CHG`'s identifiers for the stock they are differenced from.
+
+    Returns:
+        One `SeriesRef` per currency whose `employment_chg` entry reaches the
+        flow through ``diff``, identical to it in ``source``, ``series_id``,
+        ``unit``, ``frequency``, ``verified`` and ``last_observed``, and
+        differing only in ``transform`` and ``note``. Currencies whose flow is
+        not derived from a published level are absent, which today means EUR
+        alone.
+
+    ``last_observed`` is inherited rather than re-measured, and that is correct
+    rather than convenient: a ``diff`` transform drops the *first* observation
+    of a series and never the last, so the differenced series and the level it
+    is differenced from necessarily share a newest period. The property depends
+    entirely on the transform being ``diff``, which is what the filter below
+    selects on, so widening that filter would break it.
+
+    Why the refs are reused rather than retyped. ``employment_trend`` divides a
+    change in employment by the level of employment, and the two only cancel if
+    they describe the same population measured the same way. Seven of the eight
+    flows are already a published level under ``diff``, so the stock is those
+    same series under ``level``, and building the table from
+    `EMPLOYMENT_CHG.series` makes it impossible for one currency's identifier to
+    drift between the two keys. A retyped second table would let that happen
+    silently, and the result would be a percentage of the wrong workforce, which
+    is in range and plausible. `_yield_change_series` exists for the same reason
+    in the other direction.
+
+    Why EUR is filtered rather than listed. Its flow is a manual entry carrying
+    ``transform="level"``: the euro-area employment level stopped publishing at
+    2022-10 and the number is keyed in from the Eurostat release by hand, so
+    there is no series to take a stock from. The filter is on the transform
+    rather than on the currency code so that a EUR flow sourced from a published
+    level in future gains its stock here without anyone remembering to add it.
+
+    No substitute is invented for EUR. `blend_components` renormalises over the
+    sub-weight present and `MIN_COMPONENT_WEIGHT` decides what is left, which
+    for EMPLOYMENT's two equal components means the pillar is absent for that
+    currency. A German level is current and is deliberately not used: EUR's flow
+    is a euro-area figure and dividing it by one member state's workforce would
+    overstate hiring by roughly a factor of four.
+
+    """
+    return {
+        code: replace(
+            ref,
+            transform="level",
+            note=(
+                f"{ref.note}; the level `employment_chg` is differenced from"
+                if ref.note
+                else "the level `employment_chg` is differenced from"
+            ),
+        )
+        for code, ref in EMPLOYMENT_CHG.series.items()
+        if ref.transform == "diff"
+    }
+
+
+EMPLOYMENT_LEVEL = IndicatorSpec(
+    key="employment_level",
+    pillar=PillarName.EMPLOYMENT,
+    unit="persons",
+    frequency=Frequency.MONTHLY,
+    max_staleness_days=EMPLOYMENT_CHG.max_staleness_days,
+    description=(
+        "Number of people employed. The stock that `employment_chg` is the flow "
+        "of, and it exists for one purpose: `employment_trend` is specified as "
+        "an annualised percent of the employment level, and without a "
+        "denominator the component would score a raw count. A US payrolls print "
+        "is in the hundreds of thousands and a New Zealand quarterly change is "
+        "in the thousands, so a cross-sectional z-score of the count ranks the "
+        "size of the economies with a little hiring information on top. Section "
+        "3.4 of docs/scoring-spec.md rejects that explicitly.\n"
+        "\n"
+        "Derived from `employment_chg`'s own refs rather than sourced "
+        "separately; see `_employment_level_series`. Coverage, freshness and "
+        "verification are therefore identical to `employment_chg`'s currency by "
+        "currency, with one exception: EUR has no entry here at all, because "
+        "its flow is keyed in by hand and has no published level behind it.\n"
+        "\n"
+        "The allowance is `employment_chg`'s 270 days, and necessarily so: the "
+        "same publication carries both, so a stock judged on a tighter "
+        "allowance than the flow it scales would expire first and take the "
+        "component out while the numerator was still current.\n"
+        "\n"
+        "USD arrives in thousands of persons while this key's canonical unit is "
+        "persons, inherited from `PAYEMS` through `employment_chg`. The "
+        "component that reads it is a ratio of two numbers from that same "
+        "series, so the scale cancels and the mismatch cannot reach a score. It "
+        "is recorded here because a reader comparing this level with another "
+        "currency's would otherwise find the United States a thousand times "
+        "smaller than Japan."
+    ),
+    series=_employment_level_series(),
+)
+
+
 RETAIL_SALES_YOY = IndicatorSpec(
     key="retail_sales_yoy",
     pillar=PillarName.GROWTH,
@@ -1964,6 +2062,7 @@ INDICATORS: Mapping[str, IndicatorSpec] = {
         GDP_YOY,
         UNEMPLOYMENT_RATE,
         EMPLOYMENT_CHG,
+        EMPLOYMENT_LEVEL,
         RETAIL_SALES_YOY,
         INDPRO_YOY,
         PMI_COMPOSITE,

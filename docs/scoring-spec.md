@@ -517,10 +517,27 @@ points means something similar everywhere.
 | Sub-indicator | Key | Transformation | Sign rule | Sub-weight |
 | --- | --- | --- | --- | --- |
 | Unemployment rate, 6-month change | `unemployment_rate` | Momentum, percentage points, **sign-flipped** | Rising unemployment is negative | 0.50 |
-| Employment change momentum | `employment_chg` | 3-month average, annualised percent | Faster hiring is positive | 0.50 |
+| Employment change momentum | `employment_chg`, `employment_level` | 3-month total, annualised as a percent of the level | Faster hiring is positive | 0.50 |
 
 The sign flip on unemployment is the single flip in this pillar and is applied
 inside the transformation.
+
+The momentum component reads two keys because it is a ratio. The count on its
+own is not comparable across the eight: a US payrolls print is in the hundreds
+of thousands and a New Zealand quarterly change is in the thousands, so a
+cross-sectional z-score of the raw count ranks the size of the economies.
+`employment_level` supplies the denominator and is derived from
+`employment_chg`'s own refs, so the two describe the same population and their
+units cancel. EUR has no level, so it has no momentum component, and with two
+components at 0.50 that leaves the pillar absent for the euro. Issue #157 and
+its ruling record why no substitute is invented.
+
+Both windows are measured in calendar months rather than in observations, and
+the two components do not share a cadence. The unemployment rate is quarterly
+for CHF and NZD; employment is quarterly for EUR, GBP, CHF and NZD. GBP is
+mixed, reading a monthly rate against a quarterly hiring series. Six
+observations would therefore mean six months for some currencies and eighteen
+for others, and a different span for the two halves of GBP.
 
 **EMPLOYMENT is absent for a currency holding either component alone.** The two
 sub-weights are 0.50 each, so losing one leaves exactly the floor of section
