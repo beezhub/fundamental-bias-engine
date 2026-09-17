@@ -876,8 +876,8 @@ It would need three things.
    currency index per currency, for example the geometric mean of that
    currency's seven crosses from `universe.ALL_PAIRS`. That is constructible
    from `datasources/prices.py` and needs no new source.
-2. **A daily risk factor.** The RISK pillar already requires `equity_index`, so
-   this exists.
+2. **A daily risk factor.** The RISK pillar already requires
+   `world_equity_index`, so this exists.
 3. **At least 125 trading days of overlapping daily history per run**, and the
    table above says shorter windows are worse than doing nothing.
 

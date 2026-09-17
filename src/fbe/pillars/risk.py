@@ -19,12 +19,15 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import date
 
-from fbe.pillars.base import BasePillar
+from fbe.datasources.registry import GLOBAL
+from fbe.pillars.base import MIN_TIME_SERIES_WINDOW, BasePillar
 from fbe.types import Observation, PillarName
+from fbe.universe import meta
 
 __all__ = [
     "RiskPillar",
     "DRAWDOWN_WINDOW_SESSIONS",
+    "MIN_DRAWDOWN_WINDOW_SESSIONS",
     "DRAWDOWN_SCALE_PCT",
     "VOL_SCALE_Z",
     "RISK_SCALE",
@@ -33,6 +36,22 @@ __all__ = [
 
 DRAWDOWN_WINDOW_SESSIONS: int = 252
 """Trailing sessions defining the 52-week high the drawdown is measured from."""
+
+MIN_DRAWDOWN_WINDOW_SESSIONS: int = MIN_TIME_SERIES_WINDOW
+"""Fewest observations `_drawdown_pct` will measure a drawdown from.
+
+Borrowed from the floor `BasePillar.time_series_z` puts under the other half of
+the regime, so neither half answers from less data than the other.
+
+It is not a claim that a window this short is a 52-week high. It is not. A short
+window finds a lower high than the real one and so reports a smaller fall, and
+that error is one-sided: it always reads calmer than the market is. What the
+floor refuses is the degenerate end of it, where a one-observation series is its
+own high and the function returns ``0.0``, meaning "at the 52-week high", from a
+single number. Between this floor and `DRAWDOWN_WINDOW_SESSIONS` the reading is
+real but understated, and a series that short is a cold cache rather than a live
+feed: the registered ref serves years of daily closes in one request.
+"""
 
 DRAWDOWN_SCALE_PCT: float = 10.0
 """Equity drawdown, in percent, that saturates the drawdown component.
@@ -49,10 +68,11 @@ RISK_SCALE: float = 2.0
 """Multiplier turning ``R * risk_beta`` into a score on the band.
 
 At 2.0 a full risk-off shock against the highest-beta currency, AUD at +0.9,
-scores ``2.0 * -1.0 * 0.9 = -1.8``, which is comparable to the magnitude the
-z-scored pillars reach in practice. Without it this pillar would be systematically
-quieter than the other six and would carry less than the 0.10 it is configured
-for.
+scores ``2.0 * -1.0 * 0.9 = -1.8``, which is the same order of magnitude as the
+clip band the z-scored pillars are bounded to. That is a comparison of two ranges
+and nothing more: what either pillar produces on real data has not been measured.
+Without it this pillar would be systematically quieter than the other six and
+would carry less than the 0.10 it is configured for.
 """
 
 
@@ -62,11 +82,12 @@ class RiskPillar(BasePillar):
     Constructing the regime. Two global inputs, neither of them currency
     specific, are combined into a single number ``R`` shared by all eight:
 
-        ``dd_component = clip(equity_drawdown_pct / 10.0, 1.0)``, upper bounded
-        at ``0.0``, where ``equity_drawdown_pct`` is the current drawdown of a
-        broad equity index from its 52-week high, as a negative percent.
+        ``dd_component = clip(equity_drawdown_pct / DRAWDOWN_SCALE_PCT, 1.0)``,
+        upper bounded at ``0.0``, where ``equity_drawdown_pct`` is the current
+        drawdown of a broad equity index from its 52-week high, as a negative
+        percent.
 
-        ``vol_component = clip(-vol_z / 2.0, 1.0)``, where ``vol_z`` is the
+        ``vol_component = clip(-vol_z / VOL_SCALE_Z, 1.0)``, where ``vol_z`` is the
         z-score of a volatility index over ``ScoringConfig.lookback_years``. The
         negation is what makes high volatility contribute negative, so both
         components run the same way.
@@ -91,7 +112,7 @@ class RiskPillar(BasePillar):
 
     Scoring a currency:
 
-        ``score(c) = clip(2.0 * R * risk_beta(c), score_clip)``
+        ``score(c) = clip(RISK_SCALE * R * risk_beta(c), score_clip)``
 
     Check the signs in a risk-off, where ``R`` is negative. The yen at
     ``risk_beta = -0.9`` scores strongly positive; the Australian dollar at
@@ -125,10 +146,17 @@ class RiskPillar(BasePillar):
     different from the pillar being absent and the report should not read it as a
     data outage.
 
-    Known failure modes: the proxies are American. ``equity_index`` and
+    Known failure modes: the proxies are American. ``world_equity_index`` and
     ``vol_index`` are a broad US index and its implied volatility, so what this
     pillar measures is US risk appetite, and a European or Japanese shock only
-    registers once it crosses the Atlantic. It also fires late, because an equity
+    registers once it crosses the Atlantic. The substitution is deliberate and
+    recorded on the key rather than hidden in a ticker: no free daily world
+    index could be verified, ``SP500`` is the stand-in, and
+    `fbe.datasources.registry.WORLD_EQUITY_INDEX` says so in its own
+    description so that replacing it later changes nothing here. The
+    per-currency ``equity_index`` is not the missing world index and is
+    deliberately not read: eight local indices give eight regimes, which leaves
+    the betas with nothing to act on. It also fires late, because an equity
     drawdown is a consequence of risk-off rather than a leading indicator of it,
     and a 6% drawdown that is a healthy correction reads identically to a 6%
     drawdown that is the start of a crisis.
@@ -146,11 +174,11 @@ class RiskPillar(BasePillar):
     """
 
     name = PillarName.RISK
-    requires: Sequence[str] = ("equity_index", "vol_index")
+    requires: Sequence[str] = ("world_equity_index", "vol_index")
     headline_component = "regime"
 
     component_indicators: Mapping[str, tuple[str, ...]] = {
-        "risk_response": ("equity_index", "vol_index"),
+        "risk_response": ("world_equity_index", "vol_index"),
     }
     """The regime reading is built from both market series, so it is as stale as
     the later of the two. Both are daily, so in practice this checks that
@@ -190,6 +218,13 @@ class RiskPillar(BasePillar):
         drawdown, and it is the combined ``R`` that is bounded above at zero
         afterwards.
 
+        The volatility component's own ``min(1.0, ...)`` is defensive and has no
+        observable effect. Whenever the unclamped value would exceed ``1.0``, the
+        drawdown component's floor of ``-1.0`` already forces the average above
+        zero, and the combined bound truncates it to ``0.0`` either way. It is
+        recorded here because a reader who finds it will otherwise try to write a
+        test that distinguishes the two, and no such test exists.
+
         """
         dd = max(-1.0, min(0.0, float(drawdown_pct) / DRAWDOWN_SCALE_PCT))
         vol = max(-1.0, min(1.0, -float(vol_z) / VOL_SCALE_Z))
@@ -216,15 +251,25 @@ class RiskPillar(BasePillar):
             case for it. Both series carry ``currency="GLOBAL"`` as published and
             the extractor routes them to every key.
 
+        All eight keys are the same mapping object rather than eight copies.
+        Nothing downstream writes to what `_extract` returns, which is the base
+        class's contract and not a local convenience, so copying would buy
+        nothing and would hide a mutation that is a defect wherever it happens.
+
         The equity series needs `DRAWDOWN_WINDOW_SESSIONS` of history to find the
         52-week high, and the volatility series needs
         ``ScoringConfig.lookback_years`` for its z-score.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.risk.RiskPillar._extract is scaffolded; "
-            "see docs/roadmap.md Phase 3"
-        )
+        # The shared loop keys on the observation's own currency, which for
+        # these two series is `GLOBAL`, so it would file them under a currency
+        # nobody asked to score and leave all eight empty. Asking it about
+        # `GLOBAL` and then repeating the answer is the whole of the override:
+        # the visibility and vintage rules still come from the base class, and
+        # this pillar does not restate them.
+        routed = super()._extract(observations, (GLOBAL,), asof)
+        globals_only = routed[GLOBAL]
+        return {currency: globals_only for currency in currencies}
 
     def _transform(
         self,
@@ -253,10 +298,53 @@ class RiskPillar(BasePillar):
         be read with more caution.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.risk.RiskPillar._transform is scaffolded; "
-            "see docs/roadmap.md Phase 3"
+        absent: dict[str, float | None] = {
+            "risk_response": None,
+            "regime": None,
+            "drawdown_pct": None,
+            "vol_z": None,
+        }
+        if not extracted:
+            return {}
+
+        # Every currency holds the same two series, so the regime is read once
+        # from whichever slice comes to hand rather than eight times.
+        any_slice = next(iter(extracted.values()))
+        # Indexed, not fetched with a default, for the reason `_normalise`
+        # gives eight lines further down. `_extract` seeds a key for every
+        # entry in `requires`, so a missing one means the mapping was built
+        # some other way, and an empty tuple in its place would come back as a
+        # market sitting at its 52-week high with volatility unreadable: a dead
+        # feed reported as half a calm market.
+        drawdown = _drawdown_pct(any_slice["world_equity_index"])
+        vol_z = self.time_series_z(
+            any_slice["vol_index"], self.config.lookback_years, asof
         )
+        if drawdown is None or vol_z is None:
+            # Not half a reading. The regime is defined as both series, so one
+            # of them missing leaves it unmeasurable, and an unmeasurable
+            # regime is unmeasurable for everybody: all eight lose the pillar
+            # together rather than eight different partial answers.
+            return {currency: dict(absent) for currency in extracted}
+
+        regime = self.regime(drawdown, vol_z)
+        return {
+            currency: {
+                # The trailing ``+ 0.0`` exists only to turn a negative zero
+                # back into a zero. At ``R = 0`` a negative beta produces
+                # ``-0.0``, which compares equal to ``0.0`` and renders as
+                # ``-0.00``, and a reader seeing the yen at ``-0.00`` in a calm
+                # market would read a small short this pillar is not taking.
+                "risk_response": RISK_SCALE * regime * meta(currency).risk_beta + 0.0,
+                "regime": regime,
+                # Both halves of the regime, carried so `_notes` can show its
+                # working. Neither is a scoring component: `component_indicators`
+                # names only ``risk_response`` and `_normalise` reads only that.
+                "drawdown_pct": drawdown,
+                "vol_z": vol_z,
+            }
+            for currency in extracted
+        }
 
     def _normalise(
         self,
@@ -272,8 +360,117 @@ class RiskPillar(BasePillar):
             the class docstring for why standardising here would cancel the
             regime out and leave a constant ranking of betas.
 
+        Raises:
+            KeyError: If any currency's mapping has no ``"risk_response"``.
+                `_transform` always emits the key, so this is deliberate and is
+                explained in the comment below: swallowing it would report a
+                mapping built the wrong way as a universe-wide data outage.
+
         """
-        raise NotImplementedError(
-            "fbe.pillars.risk.RiskPillar._normalise is scaffolded; "
-            "see docs/roadmap.md Phase 3"
+        # Indexed, not fetched with a default. `_transform` always emits the
+        # key, carrying ``None`` when the regime could not be read, so a
+        # missing key means a caller built the mapping some other way. A
+        # ``.get`` here turns that into an absent regime for all eight, which
+        # reads exactly like a dead feed and is the quiet answer this codebase
+        # refuses everywhere else.
+        return {
+            currency: values["risk_response"] for currency, values in components.items()
+        }
+
+    def _notes(
+        self,
+        currency: str,
+        components: Mapping[str, float | None],
+        extracted: Mapping[str, Sequence[Observation]],
+    ) -> str:
+        """Name both halves of the regime and the beta that re-signed them.
+
+        Args:
+            currency: The currency this note belongs to.
+            components: That currency's row from `_transform`.
+            extracted: That currency's observations. Unused: every number the
+                note needs is already on ``components``, and recomputing from
+                the series here could disagree with the score beside it.
+
+        Returns:
+            One line giving the drawdown in percent, the volatility z-score,
+            the regime the two combine into and this currency's ``risk_beta``.
+            Empty when any of the three it reads from ``components`` is absent.
+            The beta is not one of them: `CurrencyMeta` holds it for every
+            currency in the universe, so it cannot go missing here.
+
+        Why this pillar overrides the hook when most do not. Its sign comes
+        from the run rather than from the indicator, so a reader who sees the
+        yen positive and the Australian dollar negative cannot tell from the
+        scores alone whether the regime was read correctly or the betas were
+        applied backwards. The note is what makes that checkable by hand. The
+        class docstring's tell for the rates-led selloff, disagreement with the
+        other pillars, also needs the regime visible before anyone can act on
+        it.
+
+        Prose only. `fbe.types.PillarScore.notes` forbids anything parsing this
+        for a decision, so these numbers are for a person reading the report and
+        nothing else may act on them. ``R`` itself has a typed home on
+        `PillarScore.raw`; its two halves have none, which is why they are here
+        rather than only here.
+
+        """
+        # `.get` rather than indexing, unlike `_normalise`. `compute` passes
+        # ``components.get(currency, {})``, so an empty mapping arrives here by
+        # design rather than by defect, and the answer to a missing number is
+        # an empty note: an absence stated, not a number invented.
+        drawdown = components.get("drawdown_pct")
+        vol_z = components.get("vol_z")
+        regime = components.get("regime")
+        if drawdown is None or vol_z is None or regime is None:
+            return ""
+        return (
+            f"drawdown {drawdown:+.1f}%, vol z {vol_z:+.2f}, "
+            f"regime {regime:+.2f}, beta {meta(currency).risk_beta:+.2f}"
         )
+
+
+def _drawdown_pct(series: Sequence[Observation]) -> float | None:
+    """Return the current fall from the trailing window's high, as a percent.
+
+    Args:
+        series: The global equity series, oldest period first, as `_extract`
+            leaves it.
+
+    Returns:
+        ``(latest - high) / high * 100`` over the last
+        `DRAWDOWN_WINDOW_SESSIONS` observations, so a 6.5% fall is ``-6.5`` and
+        a market at its own high is ``0.0``. ``None`` when the series holds
+        fewer than `MIN_DRAWDOWN_WINDOW_SESSIONS` observations, or when its
+        window high is not positive.
+
+        Never ``0.0`` for an absent series. A zero here means a market sitting
+        at its 52-week high, which is the calmest reading this pillar has and a
+        finding in its own right, so conflating it with no data would turn a
+        dead feed into a confident all-clear.
+
+        The window is trailing observations rather than trailing calendar days,
+        which is what `DRAWDOWN_WINDOW_SESSIONS` names: a year of sessions is
+        about 252 of them, and counting days instead would shorten the window
+        by every weekend and holiday in it.
+
+        A non-positive high is refused rather than divided by. An index cannot
+        be zero or negative, so reaching that means the series is not what the
+        caller thinks it is, and returning a number built from it would be a
+        drawdown computed against nonsense.
+
+        A series shorter than the floor is refused for the same reason stated
+        one step further along: with one observation the high is the latest
+        close, the fall is ``0.0``, and the calmest reading this pillar can
+        produce would come out of a feed that had sent almost nothing. See
+        `MIN_DRAWDOWN_WINDOW_SESSIONS` for why the floor is where it is and
+        what it does not claim.
+
+    """
+    if len(series) < MIN_DRAWDOWN_WINDOW_SESSIONS:
+        return None
+    window = series[-DRAWDOWN_WINDOW_SESSIONS:]
+    high = max(entry.value for entry in window)
+    if high <= 0.0:
+        return None
+    return (window[-1].value - high) / high * 100.0
