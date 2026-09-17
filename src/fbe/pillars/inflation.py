@@ -17,6 +17,7 @@ from datetime import date
 
 from fbe.pillars.base import BasePillar
 from fbe.types import Observation, PillarName
+from fbe.universe import meta
 
 __all__ = ["InflationPillar"]
 
@@ -120,10 +121,31 @@ class InflationPillar(BasePillar):
             `requires`, sorted by period ascending.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.inflation.InflationPillar._extract is scaffolded; "
-            "see docs/roadmap.md Phase 3"
-        )
+        wanted = set(self.requires)
+        per_currency: dict[str, dict[str, list[Observation]]] = {
+            currency: {indicator: [] for indicator in self.requires}
+            for currency in currencies
+        }
+        for observation in observations:
+            if observation.indicator not in wanted:
+                continue
+            series = per_currency.get(observation.currency)
+            if series is None or observation.period > asof:
+                continue
+            # The shared rule, not a copy of it. `_visible` and
+            # `_newest_vintages` are `BasePillar`'s, so #121's fix to the
+            # unstamped-revision hole reaches this pillar without anyone
+            # remembering it exists.
+            if not self._visible(observation, asof):
+                continue
+            series[observation.indicator].append(observation)
+        return {
+            currency: {
+                indicator: self._newest_vintages(found)
+                for indicator, found in series.items()
+            }
+            for currency, series in per_currency.items()
+        }
 
     def _transform(
         self,
@@ -153,7 +175,74 @@ class InflationPillar(BasePillar):
         missing: headline alone is too noisy to carry this pillar.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.inflation.InflationPillar._transform is scaffolded; "
-            "see docs/roadmap.md Phase 3"
+        built: dict[str, dict[str, float | None]] = {}
+        for currency, series in extracted.items():
+            # Indexed rather than fetched with a default. Six of the eight
+            # targets are 2.0, so a default would be right often enough never
+            # to be noticed and wrong for exactly the two currencies that make
+            # this pillar worth building.
+            target = meta(currency).inflation_target
+            built[currency] = {
+                component: _gap(series.get(indicator, ()), target)
+                for component, (indicator,) in self.component_indicators.items()
+            }
+        return built
+
+    def _notes(
+        self,
+        currency: str,
+        components: Mapping[str, float | None],
+        asof: date,
+    ) -> str:
+        """Say which print and which target produced this currency's gap.
+
+        Args:
+            currency: The currency being scored.
+            components: Its component values from `_transform`.
+            asof: Run date, unused here: the note describes the newest print
+                rather than the run.
+
+        Returns:
+            The headline gap's two operands, or the empty string when there is
+            no headline gap to explain.
+
+        `raw` carries ``cpi_gap``, which is a difference, and a difference
+        cannot be checked from itself. ``+0.5`` is consistent with a 3.0% print
+        against Australia's 2.5% target and with 2.5% against 2.0%, and those
+        are different economies. Reconstructing the level from the gap needs
+        the target, which means opening `CurrencyMeta`, so the note carries
+        both and the reader does not have to.
+
+        """
+        gap = components.get(self.headline_component)
+        if gap is None:
+            return ""
+        target = meta(currency).inflation_target
+        return (
+            f"{self.name.value} {currency}: headline {gap + target:.1f}% "
+            f"against a {target:.1f}% target"
         )
+
+
+def _gap(found: Sequence[Observation], target: float) -> float | None:
+    """Difference the newest print against the target, in percentage points.
+
+    Args:
+        found: One currency's visible observations of one CPI series, oldest
+            period first, as `_extract` leaves them.
+        target: That currency's own `CurrencyMeta.inflation_target`, in percent.
+
+    Returns:
+        ``newest - target`` in percentage points, positive above target, or
+        ``None`` when the currency has no visible print. Never ``0.0`` for an
+        absence: a zero gap is a currency sitting exactly on its target, which
+        is a finding rather than a gap in the data, and the two would be
+        indistinguishable.
+
+    The last element is the newest because `_extract` sorts by period
+    ascending and keeps one observation per period.
+
+    """
+    if not found:
+        return None
+    return found[-1].value - target

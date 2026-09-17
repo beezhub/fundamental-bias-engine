@@ -21,7 +21,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from math import fsum, sqrt
 from statistics import median, pstdev
 
@@ -156,6 +156,15 @@ def staleness_allowance(indicator: str, config: ScoringConfig) -> int:
     if spec is None:
         return config.max_staleness_days
     return spec.max_staleness_days
+
+
+_EARLIEST = datetime.min.replace(tzinfo=UTC)
+"""Sort floor for an observation with no ``released_at``.
+
+Only ever reached as the third element of a vintage key, after a check on
+whether the stamp exists at all, so it orders unstamped observations below
+stamped ones rather than standing in for a real release time.
+"""
 
 
 def _years_earlier(when: date, years: int) -> date:
@@ -450,6 +459,7 @@ class BasePillar(ABC):
                     if self.headline_component
                     else None
                 ),
+                notes=self._notes(currency, components.get(currency, {}), asof),
                 z=z,
                 score=self.clip_and_scale(z, self.config.score_clip),
                 weight=self.weight,
@@ -548,6 +558,109 @@ class BasePillar(ABC):
             sum(1 for observation in inputs if observation.released_at is None)
         )
         return diagnostics
+
+    def _notes(
+        self,
+        currency: str,
+        components: Mapping[str, float | None],
+        asof: date,
+    ) -> str:
+        """Return the working behind one scored currency's headline number.
+
+        Args:
+            currency: The currency being scored.
+            components: That currency's component values from `_transform`,
+                including the ``None`` entries for components it could not
+                build.
+            asof: Run date.
+
+        Returns:
+            Human prose, empty by default. Nothing may parse it for a decision:
+            `PillarScore.notes` is the report's working and ADR 0002 rule 3
+            keeps every fact a consumer acts on in a typed field.
+
+        Only the scored branch calls this. A currency `compute` could not score
+        already gets a note naming the indicators it lacked, and a pillar that
+        appended to that would be explaining a number nobody has.
+
+        Overridden where the headline number cannot be checked from itself.
+        `raw` is a difference for several pillars, and a difference alone is
+        not checkable: an inflation gap of ``+0.5`` is consistent with a 3.0%
+        print against a 2.5% target and with 2.5% against 2.0%. The default is
+        empty rather than a generic sentence, because a note that says nothing
+        still occupies the line a reader looks at for the working.
+
+        """
+        return ""
+
+    @staticmethod
+    def _visible(observation: Observation, asof: date) -> bool:
+        """Say whether a run dated ``asof`` could have read this observation.
+
+        Args:
+            observation: The observation to judge.
+            asof: Run date.
+
+        Returns:
+            True when it had been published by ``asof``, inclusive on the day.
+            With a ``released_at`` that is the fact. Without one it is an
+            assumption: the period's start plus the frequency's entry in
+            `DEFAULT_PUBLICATION_LAG_DAYS`, which is why a run records how many
+            of its inputs were admitted this way.
+
+        Period is deliberately not the test. US Q1 GDP has a period of 1 January
+        and prints around 25 April, so a run dated 15 April that filtered on
+        period would score the middle of April with a number that did not exist
+        for another ten days. Every series this pillar reads is lagged, so the
+        error would be systematic rather than occasional, and it flatters.
+
+        The fallback has a hole this method cannot close, worth knowing rather
+        than discovering. Period plus lag is the same answer for every vintage
+        of one period, so an unstamped revision is admitted the moment the
+        original print would have been, and `_newest_vintages` then prefers it
+        on ``revision``. The engine is honest exactly when a source stamps its
+        data and flattering when it does not. Closing it means changing the rule
+        in `BasePillar._extract` rather than one pillar's reading of it, which
+        is issue #121.
+
+        """
+        if observation.released_at is not None:
+            return observation.released_at.date() <= asof
+        lag = DEFAULT_PUBLICATION_LAG_DAYS[observation.frequency]
+        return observation.period + timedelta(days=lag) <= asof
+
+    @staticmethod
+    def _newest_vintages(found: Sequence[Observation]) -> tuple[Observation, ...]:
+        """Reduce to one observation per period and sort by period ascending.
+
+        Args:
+            found: One currency's visible observations of one indicator, in
+                whatever order they arrived.
+
+        Returns:
+            One observation per period, newest vintage first by ``revision`` and
+            then by the later ``released_at``, ordered oldest period first.
+            Revision leads because a correction issued later under a lower
+            revision number is not the current vintage; the stamp only breaks a
+            tie. Two observations identical on both keep the one that arrived
+            first, the only arbitrary case here, and arbitrary in a specific
+            way: arrival order is the order the sources were read in, so two
+            feeds carrying one period at one revision with different values
+            resolve differently if the collector's source order changes, and
+            nothing says so.
+
+        The visibility filter has already run, so "newest vintage" means newest
+        among what the run could see. A June 2020 run must read March 2020
+        payrolls as first estimated in April 2020, not as revised in 2024, and
+        taking the highest revision outright is how that goes wrong.
+
+        """
+        by_period: dict[date, Observation] = {}
+        for observation in found:
+            current = by_period.get(observation.period)
+            if current is None or _vintage_key(observation) > _vintage_key(current):
+                by_period[observation.period] = observation
+        return tuple(by_period[period] for period in sorted(by_period))
 
     @abstractmethod
     def _extract(
@@ -1389,3 +1502,29 @@ class BasePillar(ABC):
             staleness_days=age,
             notes=notes,
         )
+
+
+def _vintage_key(observation: Observation) -> tuple[int, datetime]:
+    """Order two observations of the same period by which vintage is current.
+
+    Args:
+        observation: The observation to key.
+
+    Returns:
+        ``(revision, the stamp)``. Revision leads. A naive stamp is read as UTC
+        for the comparison only, so a source that omits the zone cannot raise
+        here by being compared against one that supplies it. That is a real
+        shape rather than a defensive guess: `ManualSource` reads a zoneless
+        stamp as UTC by the same convention, so an `Observation` reaching a
+        pillar naive has come from somewhere that did not.
+
+        An unstamped observation takes `_EARLIEST` and so sorts below every
+        real stamp of the same revision. An earlier draft carried a third
+        element flagging whether a stamp existed; it was dead, because
+        `_EARLIEST` already does that work.
+
+    """
+    stamped = observation.released_at
+    if stamped is not None and stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=UTC)
+    return (observation.revision, stamped if stamped is not None else _EARLIEST)
