@@ -322,3 +322,19 @@ def test_the_docstring_says_what_a_global_indicator_returns() -> None:
 
     assert "GLOBAL" in doc
     assert "eight" in doc or "whole universe" in doc
+
+
+@pytest.mark.parametrize("key", ["yield_2y_chg_1m", "yield_2y_chg_3m"])
+def test_a_derived_indicator_nothing_serves_is_on_the_worklist_for_everyone(
+    key: str,
+) -> None:
+    """Issue #169. The derived yield changes are fetched by no source today.
+
+    `_yield_change_series` copied ``verified`` from the level ref, so the
+    worklist named CHF and AUD as the only gaps while FRED and the curve
+    sources refused the other six. A ref nothing can retrieve is not verified
+    in the sense `SeriesRef.verified` documents, and the worklist must say so
+    until ADR 0004 is implemented and a source emits them.
+    """
+    assert set(stale_refs(VERIFIED_ON)[key]) == set(G10)
+    assert not any(ref.fetchable for ref in INDICATORS[key].series.values())
