@@ -165,9 +165,18 @@ It matters here only as a consistency check. A transformed ref carries the
 unit the source publishes, and `IndicatorSpec.unit` carries the canonical unit
 after the transform, so the two legitimately differ. A ``level`` ref whose unit
 differs from its indicator's is the registry contradicting itself, and a row
-under it is refused rather than labelled with a guess. One pair does that
-today, ``commodity_price`` for CAD, which is a FRED ref in dollars per barrel
-under an indicator declared as an index.
+under it is refused rather than labelled with a guess.
+
+Two pairs do that today. ``commodity_price`` for CAD is a FRED ref in dollars
+per barrel under an indicator declared as an index. ``employment_level`` for USD
+is ``PAYEMS`` in thousands of persons under an indicator declared in persons,
+inherited from ``employment_chg`` because the two keys share their refs by
+construction; see `fbe.datasources.registry._employment_level_series`. That
+mismatch is harmless to the only component that reads the key, which is a ratio
+of two numbers from the same series, but it is not harmless here: a manual
+``employment_level`` row for USD is refused, and because `_row` refuses the
+whole file rather than the row, it would take every other indicator in that file
+down with it.
 
 This module does not read `SeriesRef.transform` for anything else, because a
 manual row never passes through a transform stage: only `fred.py` and

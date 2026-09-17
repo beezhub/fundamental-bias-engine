@@ -816,6 +816,7 @@ keys currently in that position.
 | `gdp_yoy` | 8/8 | 8/8 | good |
 | `unemployment_rate` | 8/8 | 8/8 | good |
 | `employment_chg` | 7/8 | 7/8 | EUR manual |
+| `employment_level` | 7/8 | 7/8 | EUR absent; derived from `employment_chg`'s refs |
 | `retail_sales_yoy` | 7/8 | 8/8 | AUD frozen at 2025Q2 |
 | `indpro_yoy` | 4/8 | 5/8 | worst of the growth inputs |
 | `pmi_composite` | 0/8 | 0/8 | licensed, entirely manual |
@@ -995,6 +996,7 @@ a free machine-readable source, not the operator's typing.
 | `gdp_yoy` | growth | `percent` | quarterly | 270d | 100% | 100% |
 | `unemployment_rate` | employment | `percent` | monthly | 270d | 100% | 100% |
 | `employment_chg` | employment | `persons` | monthly | 270d | 88% | 88% |
+| `employment_level` | employment | `persons` | monthly | 270d | 88% | 88% |
 | `retail_sales_yoy` | growth | `percent` | monthly | 270d | 88% | 100% |
 | `indpro_yoy` | growth | `percent` | monthly | 180d | 50% | 62% |
 | `pmi_composite` | growth | `index` | monthly | 75d | 0% | 0% |
@@ -1160,6 +1162,28 @@ Pillar: **employment**. Canonical unit: `persons`. Staleness allowance: 270 days
 | CAD | fred | `LFEMTTTTCAM647S` | persons | monthly | diff | yes | 2026-07-01 | - |
 | AUD | fred | `LFEMTTTTAUM647S` | persons | monthly | diff | yes | 2026-06-01 | - |
 | NZD | fred | `LFEMTTTTNZQ647S` | persons | quarterly | diff | yes | 2026-04-01 | 2026Q2 |
+
+#### `employment_level`
+
+Number of people employed. The stock that `employment_chg` is the flow of, and it exists for one purpose: `employment_trend` is specified as an annualised percent of the employment level, and without a denominator the component would score a raw count. A US payrolls print is in the hundreds of thousands and a New Zealand quarterly change is in the thousands, so a cross-sectional z-score of the count ranks the size of the economies. Section 3.4 of `docs/scoring-spec.md` rejects that explicitly.
+
+Not sourced separately. The seven refs are `employment_chg`'s own, under `level` instead of `diff`; see `_employment_level_series` in the registry. Coverage, freshness and verification are therefore identical to `employment_chg`'s currency by currency, and the two cannot drift apart, which matters because a count divided by a different population's level is a plausible number that is wrong by whatever the two populations differ by.
+
+**EUR has no entry.** Its flow is a manual figure keyed in from the Eurostat release with no published level behind it, so there is no stock to take. No substitute is invented: EUR loses the momentum component, and with EMPLOYMENT's two components at 0.50 each that leaves the pillar absent for the euro. A German level is current on FRED and is deliberately not used, because EUR's flow is a euro-area figure and dividing it by one member state's workforce would overstate hiring by roughly a factor of four.
+
+USD arrives in `thousands_of_persons` while the canonical unit is `persons`, inherited from `PAYEMS` through `employment_chg`. The only component that reads this key is a ratio of two numbers from that same series, so the scale cancels and the mismatch cannot reach a score. It is recorded because a reader comparing this level with another currency's would otherwise find the United States a thousand times smaller than Japan.
+
+Pillar: **employment**. Canonical unit: `persons`. Staleness allowance: 270 days. Fresh coverage: 88%.
+
+| Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| USD | fred | `PAYEMS` | thousands_of_persons | monthly | level | yes | 2026-08-01 | total nonfarm payrolls; the differenced level is the NFP headline; the level `employment_chg` is differenced from |
+| GBP | fred | `LFEMTTTTGBQ647S` | persons | quarterly | level | yes | 2026-01-01 | 2026Q1; the level `employment_chg` is differenced from |
+| JPY | fred | `LFEMTTTTJPM647S` | persons | monthly | level | yes | 2026-06-01 | the level `employment_chg` is differenced from |
+| CHF | fred | `LFEMTTTTCHQ647S` | persons | quarterly | level | yes | 2026-01-01 | 2026Q1; the level `employment_chg` is differenced from |
+| CAD | fred | `LFEMTTTTCAM647S` | persons | monthly | level | yes | 2026-07-01 | the level `employment_chg` is differenced from |
+| AUD | fred | `LFEMTTTTAUM647S` | persons | monthly | level | yes | 2026-06-01 | the level `employment_chg` is differenced from |
+| NZD | fred | `LFEMTTTTNZQ647S` | persons | quarterly | level | yes | 2026-04-01 | 2026Q2; the level `employment_chg` is differenced from |
 
 #### `retail_sales_yoy`
 

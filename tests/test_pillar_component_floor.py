@@ -191,7 +191,10 @@ UNIVERSE: tuple[str, ...] = ("USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "N
 
 
 def _full_coverage(
-    pillar: BasePillar, asof: date, drop: Mapping[str, tuple[str, ...]]
+    pillar: BasePillar,
+    asof: date,
+    drop: Mapping[str, tuple[str, ...]],
+    history: int = 1,
 ) -> tuple[Observation, ...]:
     """Every indicator the pillar requires, for all eight currencies, minus `drop`.
 
@@ -210,6 +213,22 @@ def _full_coverage(
         asof: Period stamped on every observation, so nothing is stale.
         drop: ``{currency: indicators}`` to withhold, which is how a currency is
             put on the floor.
+        history: How many periods of each series to emit, stepping back one
+            month at a time from ``asof``. One is enough for a pillar whose
+            components are levels, and is the default so that the GROWTH and
+            INFLATION cases below are unchanged. EMPLOYMENT needs more: both of
+            its components are windows, and a single print cannot answer a
+            six-month change, so with one period every currency would be absent
+            and its per-currency assertion would pass for the wrong reason.
+
+    The value is the same in every period of a series. For a change over time
+    that means zero, which is a real reading of a flat labour market rather than
+    an absence, and that is what the floor test needs it to be. It does **not**
+    mean every component reads zero: EMPLOYMENT's hiring component divides the
+    flow by the level, and the fixture gives both the same value, so it reads
+    1200.0 for every currency. Identical across the cross-section either way,
+    which is what the test rests on, but a maintainer extending this fixture
+    should not expect zeros.
     """
     required = set(pillar.requires)
     for currency, indicators in drop.items():
@@ -224,24 +243,36 @@ def _full_coverage(
             "dropping it withholds nothing"
         )
 
+    # The newest period is ``asof`` exactly, so a single-period call is byte for
+    # byte what it was before ``history`` existed. The older ones are stamped on
+    # the first of their month, because ``asof`` may be a day that an earlier
+    # month does not have and the day is not what any window here measures.
+    oldest = (asof.year * 12 + asof.month - 1) - (history - 1)
+    periods = [
+        date((oldest + step) // 12, (oldest + step) % 12 + 1, 1)
+        for step in range(history - 1)
+    ]
+    periods.append(asof)
+
     observations: list[Observation] = []
     for offset, currency in enumerate(UNIVERSE):
         for indicator in pillar.requires:
             if indicator in drop.get(currency, ()):
                 continue
-            observations.append(
-                Observation(
-                    indicator=indicator,
-                    currency=currency,
-                    value=1.0 + offset * 0.25,
-                    period=asof,
-                    source="fixture",
-                    series_id=f"{indicator.upper()}_{currency}",
-                    unit="percent",
-                    frequency=Frequency.MONTHLY,
-                    released_at=datetime.combine(asof, time(12, 0), tzinfo=UTC),
+            for period in periods:
+                observations.append(
+                    Observation(
+                        indicator=indicator,
+                        currency=currency,
+                        value=1.0 + offset * 0.25,
+                        period=period,
+                        source="fixture",
+                        series_id=f"{indicator.upper()}_{currency}",
+                        unit="percent",
+                        frequency=Frequency.MONTHLY,
+                        released_at=datetime.combine(period, time(12, 0), tzinfo=UTC),
+                    )
                 )
-            )
     return tuple(observations)
 
 
@@ -264,7 +295,7 @@ def test_employment_is_absent_for_a_currency_holding_only_unemployment(
 
     pillar = EmploymentPillar()
     scores = pillar.compute(
-        _full_coverage(pillar, asof, drop={"AUD": ("employment_chg",)}),
+        _full_coverage(pillar, asof, {"AUD": ("employment_chg",)}, history=7),
         UNIVERSE,
         asof,
     )
