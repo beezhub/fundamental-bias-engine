@@ -25,26 +25,56 @@ marker reaches the output.
 
 ## Decision
 
-### `realised_pnl_today` comes from the journal
+### The journal describes completed days, so every limit that needs today is not performed
 
-Sum `TradeRecord.outcome_zar` over records whose `closed_at` falls on the run
-date. The field is documented as realised profit and loss in the account
-currency net of costs, and `RiskConfig.max_daily_loss` is a fraction of balance
-in the same currency, so no conversion is involved.
+**Amended 2026-09-17, after the owner answered #46's first question.** The
+original decision here was that `realised_pnl_today` should be the sum of
+`TradeRecord.outcome_zar` over records whose `closed_at` falls on the run date,
+treated as a reading rather than an absence. That was wrong, and the correction
+is recorded rather than quietly rewritten, because the reasoning that produced it
+is the more useful half.
 
-Two states must stay distinct, and this is the load-bearing half of the
-decision:
+The owner does not write journal entries at entry. Trades arrive as a broker
+email statement, once a day, with a weekly one as well. So the journal is
+complete up to the last statement and blind to today.
 
-- The journal was read and no trade closed on the run date: `0.0`. That is a
-  reading. The limit runs and reports clear.
-- The journal is absent, unreadable, or was not supplied: `None`. That is
-  absence. The limit reports `NOT_PERFORMED`.
+Against that, the original sum returns `0.0` on every live run, because nothing
+that closed today is in the file yet. Under the rule below `0.0` is a reading, so
+the daily-loss limit would have reported **clear** every day while being
+structurally unable to see today's losses. That is `realised_pnl_today = 0.0`
+meaning "not tracked", which ADR 0002 rule 1 names by name, produced by the
+decision meant to prevent it.
 
-Collapsing those two produces `realised_pnl_today = 0.0` meaning "not tracked",
-which is the example ADR 0002 rule 1 cites by name.
+The rule that replaces it covers all four limits at once:
 
-The sizing output states what it summed, in the form "summed 3 closed trades,
-total -R58.40", per #44's requirement that a check reports its basis.
+**The journal is a record of completed days. Any limit whose input must describe
+today reports `NOT_PERFORMED` on a live run, and the ticket says why.**
+
+For a run dated after the journal's last complete date, that is
+`max_concurrent_positions`, `max_correlated_exposure` and `max_daily_loss`,
+joining `max_drawdown_pause`, which has no source at all.
+
+The reading-against-absence distinction survives and is keyed on coverage rather
+than on emptiness:
+
+- Run date inside the journal's coverage, nothing closed that day: `0.0`. A
+  reading.
+- Run date after the journal's coverage: `None`. An absence.
+
+The same applies to the open book. A count of zero open records is a reading for
+a date the statement covers and is not knowledge of today: against a next-day
+statement a trade opened this morning is not in the file, and one opened and
+closed today never appears as open at all.
+
+Where the coverage date comes from is `journal.py`'s to decide, and the file's
+last-written time is not it: a file written this morning may hold a statement
+covering the day before yesterday. **If the journal cannot state its coverage
+date, all four limits are `NOT_PERFORMED` unconditionally**, which is the safe
+reading and needs no new field.
+
+The sizing output states the journal path, the date the journal is complete to,
+and the open count as of that date, per #44's requirement that a check reports
+its basis.
 
 ### `equity_peak` has no source, and the documents say so
 
@@ -69,15 +99,25 @@ change that implements this.
 
 ## Why
 
-**On the daily profit and loss.** The sum has two gaps, a trade never journalled
-and a balance movement that was not a trade, and both understate the loss, which
-is the dangerous direction. It is still the right answer, because the
-alternative is not caution: `NOT_PERFORMED` forever means the daily loss limit
-does not exist. A limit that fires correctly whenever the journal is complete,
-and states what it counted, beats a limit that never fires. The failure is
-bounded and visible, which is the difference between this and substituting a
-default: the ticket names the trades it summed, so a person who knows about a
-fourth can see the sum is short. "Warn, do not adjust."
+**On the daily profit and loss.** The original reasoning was that a limit firing
+correctly whenever the journal is complete beats one that never fires, and that
+the failure would be bounded and visible because the ticket names what it
+summed. The premise was that the journal is usually complete and occasionally
+behind. It is never complete for today, so the limit would never have fired
+correctly and the visible basis would have read "summed 0 closed trades" on a
+day with three losses. A bounded failure and a structural one look the same in a
+docstring and are not the same thing, and the way to tell them apart is to ask
+where the data actually comes from, which is a question only the owner could
+answer.
+
+**On what is left.** `NOT_PERFORMED` on every live run is not caution dressed as
+rigour: it is the true statement, and it is what proposal #3's own falsification
+called for, that if entries are not written at entry the position limits stay
+manual. The limits block still earns its place by printing the journal path, the
+coverage date and the open count as of that date, so the trader does the last
+step by hand knowing exactly what was and was not checked. It also defines the
+feature that turns the limits on, which is something that reads the daily
+statement, with no threshold or guesswork in between.
 
 **On the equity peak.** Each alternative produces a plausible wrong number or a
 chore. Deriving a peak from `account_balance_at_entry` is wrong across a
@@ -102,11 +142,10 @@ is theirs to judge on a given afternoon.
 
 ## Consequences
 
-The daily loss limit becomes real on days the journal is complete and silent on
-days it is not, and which of those a given run is depends on the owner's own
-habit of writing an entry at entry. That habit is a question for the owner and is
-outside this record; whichever way it goes, the limit reports what it did rather
-than a pass.
+All four limits report not performed on a live sizing run, until something reads
+the broker's daily statement. `fbe size` therefore checks nothing today and says
+so on every ticket, which is the point rather than a shortcoming: the block it
+replaces reported four limits passed on no evidence.
 
 The drawdown limit stays unperformed until a balance history exists. Phase 6's
 journal evaluation is the natural home, and this record does not pre-empt how it
