@@ -168,6 +168,8 @@ data/
              because losing them means re-keying them by hand.
   reports/   Dated BiasReport JSON and rendered Markdown. Committed on purpose:
              they are the audit trail, and --compare reads the previous run.
+  journal/   Append-only JSONL trade records written by src/fbe/journal.py.
+             Git-ignored except .gitkeep, and deliberately so: see below.
 ```
 
 Anything written to `cache/` must be reproducible from source data plus
@@ -177,8 +179,34 @@ series get revised, cross-sectional scores depend on the rest of the universe
 on the day, and the weights may have changed since. Re-running last week's date
 does not recover last week's call.
 
+**The journal is the exception to the exception, and it is not an oversight.**
+The argument for committing `reports/` applies to `data/journal/` more strongly,
+not less: `src/fbe/journal.py` snapshots the bias at entry precisely because
+reconstructing it later is impossible. It is still not committed. `reports/`
+holds the model's opinion, which is publishable. The journal holds the owner's
+entry prices, position sizes and realised profit and loss on a real account,
+which is a private financial record, and this repository is public. That
+asymmetry is the whole reason, and it is written here so the next reader treats
+the `.gitignore` rule as a decision rather than a gap to be fixed.
+
+The consequence follows from it and is easy to miss: **a fresh clone has no
+journal.** The routine hosts clone `main` on every run, so every one of them
+sees an empty one, and `journal.evaluate` reads a file that only ever exists on
+the owner's own machine. The journal is therefore the owner's to back up.
+Nothing else in this repository will do it, and Phase 6 of `docs/roadmap.md` is
+the point at which its absence would be discovered too late to fix.
+
+A known gap, recorded rather than resolved: `DataConfig` carries `cache_dir`,
+`manual_dir` and `reports_dir`, so those three can be relocated, while
+`JOURNAL_PATH` is a module constant with no `journal_dir` beside them. An
+operator who moves the data tree moves three directories and leaves the fourth
+behind, and it is the one holding data no rerun can recreate. Whether to add the
+field is a separate decision and is not taken here.
+
 If deleting `data/cache/` loses information, that information was in the wrong
-place, and it belongs in `data/manual/`, in `reports/`, or in the journal.
+place, and it belongs in `data/manual/`, in `reports/`, or in the journal. Of
+those three, the journal is untracked, so choosing it means choosing to back the
+file up yourself.
 
 ## Standing instruction on claims
 
