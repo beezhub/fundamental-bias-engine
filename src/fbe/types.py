@@ -181,6 +181,23 @@ class PillarScore:
     assumption about when a figure was published rather than on the fact, and a
     reader comparing a backtest with a live run needs it.
     """
+    blend_divisor_path: str = ""
+    """Which scale this pillar's blend was divided by: how, not how much.
+
+    ``"rolling"`` means the divisor came from the median of recent runs and
+    ``"run_local"`` means there were too few of those and this run's own blend
+    standard deviation was used instead. An empty string means the pillar
+    recorded no path, which is the honest answer for a single-component pillar
+    and for one whose ``_normalise`` never blends.
+
+    A typed field rather than a marker inside `notes`, because ``--compare``
+    reads it to decide whether two runs are on the same scale, which makes it a
+    fact read for correctness and not for display. Scores computed under the
+    fallback are not comparable with scores computed under the rolling estimate,
+    and a report that cannot say which it is holding is hiding the one thing
+    needed to compare two days. Recorded by `fbe.pillars.base.BasePillar.compute`
+    on every score it builds, absent ones included.
+    """
     freshness_factor: float | None = None
     """Fraction of its configured weight this pillar's inputs still justify.
 
@@ -206,27 +223,10 @@ class PillarScore:
     and found fresh.
 
     A typed field rather than a `diagnostics` key, for the reason
-    `blend_divisor_path` gives below and the stronger form of it. ``diagnostics``
+    `blend_divisor_path` gives above and the stronger form of it. ``diagnostics``
     is documented as never read by the aggregator, and this number exists to
     change the weight the aggregator applies, so it is read for correctness and
     not for display.
-    """
-    blend_divisor_path: str = ""
-    """Which scale this pillar's blend was divided by: how, not how much.
-
-    ``"rolling"`` means the divisor came from the median of recent runs and
-    ``"run_local"`` means there were too few of those and this run's own blend
-    standard deviation was used instead. An empty string means the pillar
-    recorded no path, which is the honest answer for a single-component pillar
-    and for one whose ``_normalise`` never blends.
-
-    A typed field rather than a marker inside `notes`, because ``--compare``
-    reads it to decide whether two runs are on the same scale, which makes it a
-    fact read for correctness and not for display. Scores computed under the
-    fallback are not comparable with scores computed under the rolling estimate,
-    and a report that cannot say which it is holding is hiding the one thing
-    needed to compare two days. Recorded by `fbe.pillars.base.BasePillar.compute`
-    on every score it builds, absent ones included.
     """
 
 

@@ -371,8 +371,8 @@ class BasePillar(ABC):
         Returns:
             One `PillarScore` per currency, keyed by ISO code.
 
-        Two things are recorded on every score, because neither is recoverable
-        from the numbers afterwards, and both have a typed home rather than a
+        Three things are recorded on every score, because none is recoverable
+        from the numbers afterwards, and each has a typed home rather than a
         line of prose. Which path `blend_divisor` took goes to
         ``PillarScore.blend_divisor_path``: scores computed under the fallback
         are not on the same scale as scores computed under the rolling estimate,
@@ -380,9 +380,13 @@ class BasePillar(ABC):
         How many inputs were admitted by the assumed publication lag rather than
         a real ``released_at`` goes to
         ``PillarScore.diagnostics["assumed_lag_inputs"]``, which is how much of
-        the run rests on `DEFAULT_PUBLICATION_LAG_DAYS` rather than on fact.
+        the run rests on `DEFAULT_PUBLICATION_LAG_DAYS` rather than on fact. The
+        third is `pillar_freshness`, which goes to
+        ``PillarScore.freshness_factor`` and is the only one of the three the
+        aggregator acts on: it is the fraction of the configured weight this
+        pillar's inputs justify, and `scoring.score_currencies` multiplies by it.
 
-        ``notes`` carries neither. It is human prose for the report's working
+        ``notes`` carries none of them. It is human prose for the report's working
         and nothing may parse it for a decision, which is what
         `fbe.types.PillarScore.notes` now says. Issue #51 records the ruling.
 
@@ -1550,12 +1554,24 @@ class BasePillar(ABC):
             asof: Run date.
             notes: Short human-readable reason, shown in the report's working.
                 Say which indicator was missing, not just that data was thin.
-            staleness_days: Override for the freshness field. Defaults to
+            staleness_days: Override for the reported age. Defaults to
                 ``ScoringConfig.max_staleness_days + 1``, marking the pillar as
-                past its useful life.
+                past its useful life. It is reported, not acted on: the discount
+                is decided by ``freshness_factor`` below, so overriding this does
+                not buy an absent pillar any weight back.
 
         Returns:
-            A neutral `PillarScore` carrying this pillar's configured weight.
+            A neutral `PillarScore` carrying this pillar's configured weight and
+            a ``freshness_factor`` of ``0.0``, so the weight survives
+            `scoring.apply_staleness_penalty` as zero and the pillar drops out of
+            `coverage`. ``z`` is ``None``, which is the marker the aggregator
+            reads; the weight is what a report shows to say what the run lost.
+
+            The ``0.0`` is stated rather than left to the age-based fallback,
+            which reaches the same answer today only because the default age is
+            one day past the ramp. A run configuring a higher
+            ``max_staleness_days`` would separate them and hand an absent pillar
+            partial weight, which is issue #28 one level down.
 
         """
         age = (

@@ -653,9 +653,15 @@ def test_a_currency_with_no_data_leaves_the_scorer_carrying_no_weight() -> None:
     is that exact bug one level down.
 
     Weight rather than composite, because ``z`` is ``None`` here and every
-    arithmetic consumer already skips the pillar on that. What a full weight
-    would corrupt is the report, which shows an absent pillar at the weight it
-    would have had.
+    arithmetic consumer already skips the pillar on that. This pins the weight
+    an absent pillar reports, which is what a reader sees.
+
+    Note that `scoring._unscored`, the other absence path, taken when a pillar
+    raises or returns nothing, deliberately keeps the full configured weight so
+    a report can say what the run lost. The two absence paths therefore report
+    different weights. That predates this change rather than arriving with it,
+    because `missing_score` already reached zero through the ramp, and which one
+    a report should show is a separate question.
     """
     observations = [
         _obs(
@@ -674,7 +680,7 @@ def test_a_currency_with_no_data_leaves_the_scorer_carrying_no_weight() -> None:
 
 
 def test_a_punctual_monthly_pillar_keeps_its_weight_through_the_scorer() -> None:
-    """Criterion 1. A punctual print carries close to its full weight.
+    """Issue #162, criterion 1. A punctual print carries close to its full weight.
 
     CPI stamped 45 days before the run is the ordinary case, not a late one.
     Its allowance is 200 days, full weight runs to ``200 * 15 / 45 = 66.67``
@@ -697,7 +703,7 @@ def test_a_punctual_monthly_pillar_keeps_its_weight_through_the_scorer() -> None
 
 
 def test_the_registry_allowance_decides_the_weight_the_scorer_applies() -> None:
-    """Criterion 2. Override one indicator's allowance and the weight moves.
+    """Issue #162, criterion 2. Override an allowance and the weight moves.
 
     With CPI's allowance cut from 200 days to 60, full weight runs to
     ``60 * 15 / 45 = 20`` days and the ramp reaches zero at 60, so a 45-day-old
@@ -730,7 +736,7 @@ def test_the_registry_allowance_decides_the_weight_the_scorer_applies() -> None:
 
 
 def test_a_pillar_genuinely_past_its_allowance_still_loses_its_weight() -> None:
-    """Criterion 3. The ramp still bites, tested either side of the boundary.
+    """Issue #162, criterion 3. The ramp still bites, either side of the boundary.
 
     CPI's allowance is 200 days. At 199 the factor is
     ``(200 - 199) / (200 - 66.67) = 0.0075``, so the pillar survives on a
@@ -799,23 +805,26 @@ def _punctual_universe() -> list[Observation]:
 
 
 def test_real_pillars_reach_a_usable_composite_on_ordinary_inputs() -> None:
-    """Criterion 4. The end-to-end assertion whose absence hid all of this.
+    """Issue #162, criterion 4. The assertion whose absence hid all of this.
 
     Every pillar's own tests call `compute` or its internals, and the
     aggregator's tests build `PillarScore` values by hand, so nothing before this
     drove real pillars through `score_currencies`. Both halves were tested and
     the join between them was not.
 
-    Before the fix this run came back at coverage 0.30 for every currency, with
-    only MONETARY surviving on its daily yields, which is under
-    ``ScoringConfig.min_coverage`` of 0.60 and so refused by the CLI. After it,
-    0.7925: the 0.80 the five implemented pillars hold between them, less the
-    0.05 GROWTH gives up because its quarterly GDP component is genuinely past
-    its own full-weight plateau. EXTERNAL and POSITIONING are still scaffolded
-    and hold the remaining 0.20.
+    Before the fix this fixture came back at coverage 0.40 for every currency,
+    with MONETARY and RISK surviving because both read daily series that clear a
+    45-day ramp, and every pillar fed by a monthly or quarterly release scoring
+    nothing. That is under ``ScoringConfig.min_coverage`` of 0.60 and so refused
+    by the CLI. After it, 0.7925: the 0.80 the five implemented pillars hold
+    between them, less the 0.0075 GROWTH gives up, which is five percent of its
+    0.15, because its quarterly GDP component is genuinely past its own
+    full-weight plateau at 120 days against a 90-day one. EXTERNAL and
+    POSITIONING are still scaffolded and hold the remaining 0.20.
 
-    The floor is asserted rather than the exact figure, because 0.7925 moves the
-    day either scaffolded pillar lands and that is not a regression.
+    Coverage is asserted as a floor rather than as 0.7925, because the figure
+    moves the day either scaffolded pillar lands and that is not a regression.
+    The two per-pillar assertions below are what make the floor mean something.
     """
     scored = score_currencies(
         _punctual_universe(), default_pillars(CONFIG), CONFIG, ASOF
@@ -828,12 +837,21 @@ def test_real_pillars_reach_a_usable_composite_on_ordinary_inputs() -> None:
             f"under the {CONFIG.min_coverage} the CLI refuses below"
         )
         assert row.composite != 0.0
-        # The pillar this defect was reported against, pinned by name. Coverage
-        # alone could be carried by MONETARY's daily yields, which is exactly
-        # the state the fix had to move off.
+        # INFLATION is the pillar this defect was reported against, pinned by
+        # name because coverage alone could be carried by the two pillars that
+        # were never broken.
         inflation = row.pillars[PillarName.INFLATION]
         assert inflation.z is not None
         assert inflation.weight == pytest.approx(CONFIG.weights[PillarName.INFLATION])
+        # GROWTH is the only pillar here whose factor is not 1.0, so it is the
+        # one that catches a scorer applying a single factor to every pillar of
+        # a currency. Without this, a scorer that read the first pillar's factor
+        # and reused it passes the whole suite: the other ramp tests run one
+        # pillar at a time and the coverage floor sits 0.20 below the truth.
+        # GROWTH's own discount does not move when a scaffolded pillar lands.
+        growth = row.pillars[PillarName.GROWTH]
+        assert growth.z is not None
+        assert growth.weight == pytest.approx(CONFIG.weights[PillarName.GROWTH] * 0.95)
 
 
 class _FactorDouble:
@@ -844,10 +862,11 @@ class _FactorDouble:
     disagree so that a test can tell which one the scorer read.
     """
 
-    def __init__(self, factor: float | None) -> None:
+    def __init__(self, factor: float | None, staleness_days: int = 0) -> None:
         self.name = PillarName.INFLATION
         self.requires: Sequence[str] = ()
         self._factor = factor
+        self._staleness_days = staleness_days
 
     def compute(
         self,
@@ -864,7 +883,7 @@ class _FactorDouble:
                 score=0.5,
                 weight=0.0,
                 asof=asof,
-                staleness_days=0,
+                staleness_days=self._staleness_days,
                 freshness_factor=self._factor,
             )
             for currency in currencies
@@ -872,21 +891,25 @@ class _FactorDouble:
 
 
 def test_the_scorer_takes_the_pillars_factor_rather_than_the_default_ramp() -> None:
-    """Criterion 5. The wire, tested where the two answers disagree.
+    """The wire, tested at two ages where the factor and the ramp disagree.
 
-    The double reports ``staleness_days`` of 0, at which the default ramp is
-    1.0, alongside a freshness factor of 0.25. A scorer reading the age would
-    leave the full weight; a scorer reading the factor takes a quarter of it.
-    The two cannot both pass.
+    The supplied case reports ``staleness_days`` of 0, at which the default ramp
+    is 1.0, alongside a freshness factor of 0.25. A scorer reading the age leaves
+    the full weight; a scorer reading the factor takes a quarter of it. The two
+    cannot both pass.
 
-    The ``None`` case pins the documented fallback rather than an accident: a
-    pillar outside `BasePillar` supplies no factor, and
-    `apply_staleness_penalty` says that falls back to the age-based ramp.
+    The withheld case reports no factor at 30 days, where the ramp is 0.5, and is
+    the half that pins the documented fallback. At 0 days it would pin nothing:
+    the ramp answers 1.0 there and so does a quiet ``factor = 1.0`` default, so
+    an implementation that dropped the fallback entirely would still pass. The
+    age is 30 for exactly that reason.
     """
     configured = CONFIG.weights[PillarName.INFLATION]
 
     supplied = score_currencies([], [_FactorDouble(0.25)], CONFIG, ASOF)
-    withheld = score_currencies([], [_FactorDouble(None)], CONFIG, ASOF)
+    withheld = score_currencies(
+        [], [_FactorDouble(None, staleness_days=30)], CONFIG, ASOF
+    )
 
     for row in supplied:
         score = row.pillars[PillarName.INFLATION]
@@ -900,4 +923,4 @@ def test_the_scorer_takes_the_pillars_factor_rather_than_the_default_ramp() -> N
     for row in withheld:
         score = row.pillars[PillarName.INFLATION]
         assert score.z is not None, "the double did not score; it raised"
-        assert score.weight == pytest.approx(configured)
+        assert score.weight == pytest.approx(configured * 0.5)
