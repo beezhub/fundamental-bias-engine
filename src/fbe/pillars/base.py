@@ -391,9 +391,10 @@ class BasePillar(ABC):
         component the currency had data for. They are a per-run measurement about
         the inputs rather than about the score, so nothing in `scoring.py` reads
         them: the aggregator sees their effect only through the weight, once,
-        via `pillar_freshness`. Without them a reader cannot tell a pillar
-        carrying one stale component from a pillar that is uniformly late, and
-        the two call for different action.
+        via the `pillar_freshness` result recorded on
+        ``PillarScore.freshness_factor``. Without them a reader cannot tell a
+        pillar carrying one stale component from a pillar that is uniformly late,
+        and the two call for different action.
 
         The run's own blend standard deviation should also be returned to the
         caller for storage, since it is the next run's history.
@@ -468,6 +469,13 @@ class BasePillar(ABC):
                 inputs=inputs,
                 diagnostics=diagnostics,
                 blend_divisor_path=self.last_blend_divisor_path,
+                # Computed here because this is the only place holding both the
+                # extracted slice and the finished score. `score_currencies`
+                # receives the score alone, and re-deriving the slice there would
+                # put the registry's indicator keys in front of a module that is
+                # deliberately free of them. The absent branch above does not
+                # reach this: `missing_score` states its own 0.0.
+                freshness_factor=self.pillar_freshness(per_currency, asof),
             )
         return scores
 
@@ -1498,12 +1506,15 @@ class BasePillar(ABC):
         if it were stale. Staleness and absence are separate facts and each is
         counted in exactly one place.
 
-        The caller is `scoring.score_currencies`, which passes this to
-        `scoring.apply_staleness_penalty` as ``freshness_factor``. A pillar-level
-        scalar computed from ``PillarScore.staleness_days`` alone cannot do this
-        job: GROWTH holding a five-month-old GDP print and a five-day-old retail
-        sales print would report the age of the retail print and take full
-        weight.
+        `compute` records the result on `PillarScore.freshness_factor`, and
+        `scoring.score_currencies` reads it there and passes it to
+        `scoring.apply_staleness_penalty` as ``freshness_factor``. It travels on
+        the score rather than being recomputed by the scorer because this method
+        needs the extracted slice, which `compute` holds and the scorer is never
+        given. A pillar-level scalar computed from ``PillarScore.staleness_days``
+        alone cannot do this job: GROWTH holding a five-month-old GDP print and a
+        five-day-old retail sales print would report the age of the retail print
+        and take full weight.
 
         """
         factors = self.component_freshness(extracted, asof)
@@ -1562,6 +1573,12 @@ class BasePillar(ABC):
             asof=asof,
             staleness_days=age,
             notes=notes,
+            # No data is not fresh data, which is `pillar_freshness`'s own rule
+            # for a currency holding no component at all. Stating it here rather
+            # than leaving ``None`` keeps an absent pillar off the age-based
+            # fallback, where the sentinel age happens to give 0.0 as well and
+            # the agreement would be a coincidence rather than a decision.
+            freshness_factor=0.0,
         )
 
 

@@ -31,6 +31,7 @@ import ast
 import inspect
 import re
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -48,8 +49,9 @@ from fbe.pillars.base import (
 from fbe.pillars.growth import GrowthPillar
 from fbe.pillars.inflation import InflationPillar
 from fbe.pillars.monetary import MonetaryPillar
-from fbe.scoring import freshness
-from fbe.types import Frequency, Observation
+from fbe.scoring import freshness, score_currencies
+from fbe.types import Frequency, Observation, PillarName, PillarScore
+from fbe.universe import G10
 
 ASOF = date(2026, 9, 10)
 """Run date from the issue, chosen so the registry's own ``last_observed`` dates
@@ -559,3 +561,343 @@ def test_the_docstring_names_missing_score_as_the_path_for_an_absent_pillar() ->
     doc = inspect.getdoc(BasePillar.staleness_days) or ""
 
     assert "missing_score" in doc
+
+
+# ----------------------------------------------------------------------
+# The factor reaching the composite
+# ----------------------------------------------------------------------
+
+PUNCTUAL_MONTHLY_AGE = DEFAULT_PUBLICATION_LAG_DAYS[Frequency.MONTHLY]
+"""Age of a monthly print on the day the visibility rule first admits it.
+
+45 days, which is also `ScoringConfig.max_staleness_days`. The two being equal
+is the defect in one line: the first day a punctual monthly series is visible to
+the model is the day the default ramp values it at nothing.
+"""
+
+
+def _inflation_observations(age_days: int) -> list[Observation]:
+    """CPI and core CPI for the whole G10 at one age.
+
+    Values differ per currency because `MIN_CROSS_SECTION` refuses to
+    standardise fewer than three usable readings, and a flat cross-section has
+    no spread to normalise against, so every ``z`` would come back ``None`` and
+    the test would pass on an absence rather than on a score.
+    """
+    period = _days_before(age_days)
+    return [
+        _obs(indicator, currency, period, value=1.0 + offset * 0.25)
+        for offset, currency in enumerate(G10)
+        for indicator in ("cpi_yoy", "core_cpi_yoy")
+    ]
+
+
+def _inflation_through_the_scorer(
+    observations: Sequence[Observation],
+    config: ScoringConfig = CONFIG,
+) -> dict[str, PillarScore]:
+    """Run INFLATION alone through `score_currencies` and index by currency.
+
+    Through the aggregator rather than through `compute`, because the join
+    between the two is where the factor was being dropped and neither side's
+    own tests cross it.
+    """
+    scored = score_currencies(observations, [InflationPillar(config)], config, ASOF)
+    return {row.currency: row.pillars[PillarName.INFLATION] for row in scored}
+
+
+def test_one_currencys_stale_data_does_not_discount_another() -> None:
+    """The factor is per currency, and the perturbation proves it.
+
+    Every other fixture here ages the whole universe together, so a scorer that
+    took one currency's factor and applied it to all eight would pass them all.
+    This one leaves seven currencies punctual at 45 days and pushes USD alone to
+    210 days, past CPI's 200-day allowance.
+
+    USD must lose its INFLATION weight and the other seven must keep every bit of
+    theirs. The failure this guards against is the one this repository fears
+    most: a number that is plausible for the wrong currency.
+    """
+    punctual = _days_before(PUNCTUAL_MONTHLY_AGE)
+    expired = _days_before(210)
+    observations = [
+        _obs(
+            indicator,
+            currency,
+            expired if currency == "USD" else punctual,
+            value=1.0 + offset * 0.25,
+        )
+        for offset, currency in enumerate(G10)
+        for indicator in ("cpi_yoy", "core_cpi_yoy")
+    ]
+
+    scores = _inflation_through_the_scorer(observations)
+    configured = CONFIG.weights[PillarName.INFLATION]
+
+    assert scores["USD"].z is None
+    assert scores["USD"].weight == 0.0
+    for currency in G10:
+        if currency == "USD":
+            continue
+        assert scores[currency].z is not None, f"{currency} caught USD's staleness"
+        assert scores[currency].weight == pytest.approx(configured)
+
+
+def test_a_currency_with_no_data_leaves_the_scorer_carrying_no_weight() -> None:
+    """An absent pillar reports 0.0 freshness, not a missing factor.
+
+    `missing_score` states it rather than leaving ``None`` and letting the
+    age-based fallback reach the same answer through the sentinel age. The two
+    agreeing today is a coincidence of ``max_staleness_days + 1`` sitting past
+    the ramp, and a run that raised the ceiling would separate them: issue #28
+    is that exact bug one level down.
+
+    Weight rather than composite, because ``z`` is ``None`` here and every
+    arithmetic consumer already skips the pillar on that. What a full weight
+    would corrupt is the report, which shows an absent pillar at the weight it
+    would have had.
+    """
+    observations = [
+        _obs(
+            indicator, currency, _days_before(PUNCTUAL_MONTHLY_AGE), value=1.0 + offset
+        )
+        for offset, currency in enumerate(G10)
+        if currency != "USD"
+        for indicator in ("cpi_yoy", "core_cpi_yoy")
+    ]
+
+    scores = _inflation_through_the_scorer(observations)
+
+    assert scores["USD"].z is None
+    assert scores["USD"].freshness_factor == 0.0
+    assert scores["USD"].weight == 0.0
+
+
+def test_a_punctual_monthly_pillar_keeps_its_weight_through_the_scorer() -> None:
+    """Criterion 1. A punctual print carries close to its full weight.
+
+    CPI stamped 45 days before the run is the ordinary case, not a late one.
+    Its allowance is 200 days, full weight runs to ``200 * 15 / 45 = 66.67``
+    days, and 45 is inside that, so the factor is 1.0 and INFLATION leaves the
+    scorer with the whole 0.15 the configuration gave it.
+
+    Before the fix the scorer judged the same print against the global 45-day
+    ceiling, where `freshness` is exactly 0.0, so the weight was 0.0 and ``z``
+    was cleared.
+    """
+    scores = _inflation_through_the_scorer(
+        _inflation_observations(PUNCTUAL_MONTHLY_AGE)
+    )
+    configured = CONFIG.weights[PillarName.INFLATION]
+
+    for currency in G10:
+        score = scores[currency]
+        assert score.z is not None, f"{currency} lost its score to the ramp"
+        assert score.weight == pytest.approx(configured)
+
+
+def test_the_registry_allowance_decides_the_weight_the_scorer_applies() -> None:
+    """Criterion 2. Override one indicator's allowance and the weight moves.
+
+    With CPI's allowance cut from 200 days to 60, full weight runs to
+    ``60 * 15 / 45 = 20`` days and the ramp reaches zero at 60, so a 45-day-old
+    print sits at ``(60 - 45) / (60 - 20) = 0.375`` and the pillar leaves with
+    ``0.15 * 0.375 = 0.05625``.
+
+    The override is the point. A test that only checked the 200-day answer
+    would still pass if the implementation read the global default and happened
+    to agree.
+    """
+    observations = _inflation_observations(PUNCTUAL_MONTHLY_AGE)
+    configured = CONFIG.weights[PillarName.INFLATION]
+
+    full = _inflation_through_the_scorer(observations)
+    narrowed = {
+        key: (
+            replace(spec, max_staleness_days=60)
+            if key in ("cpi_yoy", "core_cpi_yoy")
+            else spec
+        )
+        for key, spec in INDICATORS.items()
+    }
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("fbe.pillars.base.INDICATORS", narrowed)
+        reduced = _inflation_through_the_scorer(observations)
+
+    for currency in G10:
+        assert full[currency].weight == pytest.approx(configured)
+        assert reduced[currency].weight == pytest.approx(configured * 0.375)
+
+
+def test_a_pillar_genuinely_past_its_allowance_still_loses_its_weight() -> None:
+    """Criterion 3. The ramp still bites, tested either side of the boundary.
+
+    CPI's allowance is 200 days. At 199 the factor is
+    ``(200 - 199) / (200 - 66.67) = 0.0075``, so the pillar survives on a
+    sliver of weight. At 200 it is 0.0, the weight is zero and ``z`` is cleared,
+    which is the marker the aggregator reads.
+
+    This is the half of the fix that could have been lost. Scaling the ramp to
+    the registry must not turn it off.
+    """
+    inside = _inflation_through_the_scorer(_inflation_observations(199))
+    past = _inflation_through_the_scorer(_inflation_observations(200))
+    configured = CONFIG.weights[PillarName.INFLATION]
+
+    for currency in G10:
+        assert inside[currency].z is not None
+        assert inside[currency].weight == pytest.approx(configured * 0.0075)
+        assert past[currency].z is None
+        assert past[currency].weight == 0.0
+
+
+HISTORY_STEP_DAYS: dict[Frequency, int] = {
+    Frequency.DAILY: 1,
+    Frequency.WEEKLY: 7,
+    Frequency.MONTHLY: 30,
+    Frequency.QUARTERLY: 91,
+    Frequency.IRREGULAR: 30,
+}
+"""Gap between consecutive periods of a series, by how often it publishes."""
+
+HISTORY_POINTS = 24
+"""Observations per series, enough to clear `MIN_TIME_SERIES_WINDOW` of 12.
+
+EMPLOYMENT reads a six-month change and RISK reads a drawdown and a volatility
+z-score, so neither can be scored from a single print however fresh it is. A
+fixture of one observation per series would leave both absent and the coverage
+this test asserts on would be measuring the fixture rather than the ramp.
+"""
+
+
+def _punctual_universe() -> list[Observation]:
+    """Every registered indicator, published on time, with history behind it.
+
+    The newest observation of each series is aged at the assumed publication lag
+    for its own frequency, which is the youngest age at which the visibility rule
+    admits an unstamped print. That is the ordinary case: a monthly series is 45
+    days old the day it lands and a quarterly one is 120.
+
+    Values fall with age so the series have a direction, and differ per currency
+    so the cross-section has a spread to standardise against.
+    """
+    return [
+        _obs(
+            key,
+            currency,
+            _days_before(
+                DEFAULT_PUBLICATION_LAG_DAYS[spec.frequency]
+                + point * HISTORY_STEP_DAYS[spec.frequency]
+            ),
+            value=10.0 + offset * 0.25 - point * 0.1,
+            frequency=spec.frequency,
+        )
+        for key, spec in INDICATORS.items()
+        for offset, currency in enumerate([*G10, "GLOBAL"])
+        for point in range(HISTORY_POINTS)
+    ]
+
+
+def test_real_pillars_reach_a_usable_composite_on_ordinary_inputs() -> None:
+    """Criterion 4. The end-to-end assertion whose absence hid all of this.
+
+    Every pillar's own tests call `compute` or its internals, and the
+    aggregator's tests build `PillarScore` values by hand, so nothing before this
+    drove real pillars through `score_currencies`. Both halves were tested and
+    the join between them was not.
+
+    Before the fix this run came back at coverage 0.30 for every currency, with
+    only MONETARY surviving on its daily yields, which is under
+    ``ScoringConfig.min_coverage`` of 0.60 and so refused by the CLI. After it,
+    0.7925: the 0.80 the five implemented pillars hold between them, less the
+    0.05 GROWTH gives up because its quarterly GDP component is genuinely past
+    its own full-weight plateau. EXTERNAL and POSITIONING are still scaffolded
+    and hold the remaining 0.20.
+
+    The floor is asserted rather than the exact figure, because 0.7925 moves the
+    day either scaffolded pillar lands and that is not a regression.
+    """
+    scored = score_currencies(
+        _punctual_universe(), default_pillars(CONFIG), CONFIG, ASOF
+    )
+
+    assert len(scored) == len(G10)
+    for row in scored:
+        assert row.coverage >= CONFIG.min_coverage, (
+            f"{row.currency} covered {row.coverage:.4f} of the pillar weight, "
+            f"under the {CONFIG.min_coverage} the CLI refuses below"
+        )
+        assert row.composite != 0.0
+        # The pillar this defect was reported against, pinned by name. Coverage
+        # alone could be carried by MONETARY's daily yields, which is exactly
+        # the state the fix had to move off.
+        inflation = row.pillars[PillarName.INFLATION]
+        assert inflation.z is not None
+        assert inflation.weight == pytest.approx(CONFIG.weights[PillarName.INFLATION])
+
+
+class _FactorDouble:
+    """A pillar whose reported factor contradicts its own age.
+
+    Not a `BasePillar`. The point is to stand where a third-party implementation
+    of the `fbe.types.Pillar` protocol stands, and to let the factor and the age
+    disagree so that a test can tell which one the scorer read.
+    """
+
+    def __init__(self, factor: float | None) -> None:
+        self.name = PillarName.INFLATION
+        self.requires: Sequence[str] = ()
+        self._factor = factor
+
+    def compute(
+        self,
+        observations: Sequence[Observation],
+        currencies: Sequence[str],
+        asof: date,
+    ) -> dict[str, PillarScore]:
+        return {
+            currency: PillarScore(
+                pillar=self.name,
+                currency=currency,
+                raw=None,
+                z=0.5,
+                score=0.5,
+                weight=0.0,
+                asof=asof,
+                staleness_days=0,
+                freshness_factor=self._factor,
+            )
+            for currency in currencies
+        }
+
+
+def test_the_scorer_takes_the_pillars_factor_rather_than_the_default_ramp() -> None:
+    """Criterion 5. The wire, tested where the two answers disagree.
+
+    The double reports ``staleness_days`` of 0, at which the default ramp is
+    1.0, alongside a freshness factor of 0.25. A scorer reading the age would
+    leave the full weight; a scorer reading the factor takes a quarter of it.
+    The two cannot both pass.
+
+    The ``None`` case pins the documented fallback rather than an accident: a
+    pillar outside `BasePillar` supplies no factor, and
+    `apply_staleness_penalty` says that falls back to the age-based ramp.
+    """
+    configured = CONFIG.weights[PillarName.INFLATION]
+
+    supplied = score_currencies([], [_FactorDouble(0.25)], CONFIG, ASOF)
+    withheld = score_currencies([], [_FactorDouble(None)], CONFIG, ASOF)
+
+    for row in supplied:
+        score = row.pillars[PillarName.INFLATION]
+        # Without this the test can pass through `_unscored`, which carries the
+        # configured weight untouched. A double that raises inside `compute` is
+        # caught by `score_currencies` and turned into exactly that, so an
+        # assertion on the weight alone cannot tell a scorer that read the
+        # factor from a pillar that never ran.
+        assert score.z is not None, "the double did not score; it raised"
+        assert score.weight == pytest.approx(configured * 0.25)
+    for row in withheld:
+        score = row.pillars[PillarName.INFLATION]
+        assert score.z is not None, "the double did not score; it raised"
+        assert score.weight == pytest.approx(configured)
