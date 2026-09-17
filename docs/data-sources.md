@@ -823,7 +823,8 @@ keys currently in that position.
 | `trade_balance` | 8/8 | 8/8 | good |
 | `current_account_gdp` | 0/8 | 8/8 | all eight frozen at 2024Q4 |
 | `cot_net_pct_oi` | 8/8 | 8/8 | good, 8-10 days stale by design |
-| `equity_index` | 8/8 | 8/8 | USD and JPY daily, rest monthly |
+| `equity_index` | 8/8 | 8/8 | USD and JPY daily, rest monthly; **consumed by no pillar**, see below |
+| `world_equity_index` | global | global | good; the equity half of the risk regime |
 | `vol_index` | global | global | good |
 | `commodity_price` | global + CAD, AUD | | NZD dairy manual |
 
@@ -1001,7 +1002,8 @@ a free machine-readable source, not the operator's typing.
 | `trade_balance` | external | `usd` | monthly | 150d | 100% | 100% |
 | `current_account_gdp` | external | `percent_of_gdp` | quarterly | 210d | 0% | 100% |
 | `cot_net_pct_oi` | positioning | `contracts` | weekly | 21d | 100% | 100% |
-| `equity_index` | risk | `index` | daily | 75d | 100% | 100% |
+| `equity_index` | risk (unconsumed) | `index` | daily | 75d | 100% | 100% |
+| `world_equity_index` | risk | `index` | daily | 7d | 100% | 100% |
 | `vol_index` | risk | `index` | daily | 7d | 100% | 100% |
 | `commodity_price` | external | `index` | monthly | 90d | 100% | 100% |
 
@@ -1292,9 +1294,13 @@ Pillar: **positioning**. Canonical unit: `contracts`. Staleness allowance: 21 da
 
 #### `equity_index`
 
-Benchmark equity index for each economy. Feeds the risk pillar in two ways: as a proxy for the local growth and earnings picture, and, in concert with `CurrencyMeta.risk_beta`, as a read on whether the market is in risk-on or risk-off.
+Benchmark equity index for each economy. Registered and verified across all eight, with clean current coverage, and **consumed by no pillar today**.
 
-Pillar: **risk**. Canonical unit: `index`. Staleness allowance: 75 days. Fresh coverage: 100%.
+RISK is attributed to it in the registry but does not ask for it: `RiskPillar.requires` names `world_equity_index` and `vol_index`, and neither of those is this key. Read its 100% coverage as a series held ready, not as a live input.
+
+The pillar wants one regime number that all eight currencies share, which the betas in `CurrencyMeta` then re-sign per currency. Eight local indices would give eight regimes and leave the betas with nothing to act on. Six of the eight refs below are monthly OECD share price indices in any case, which cannot date a drawdown. Whether a per-currency equity term belongs in GROWTH, where a local index reads as an earnings and growth signal rather than as a regime one, is a scoring decision for `quant-analyst` and is not settled here.
+
+Pillar: **risk**, unconsumed. Canonical unit: `index`. Staleness allowance: 75 days. Fresh coverage: 100%.
 
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1306,6 +1312,22 @@ Pillar: **risk**. Canonical unit: `index`. Staleness allowance: 75 days. Fresh c
 | CAD | oecd | `DSD_STES@DF_FINMARK/CAN.M.SHARE.IX......` | index | monthly | level | yes | 2026-08-01 | OECD share price index; taken from the OECD API rather than FRED's mirror of the same OECD material, which runs two months behind |
 | AUD | oecd | `DSD_STES@DF_FINMARK/AUS.M.SHARE.IX......` | index | monthly | level | yes | 2026-08-01 | OECD share price index; taken from the OECD API rather than FRED's mirror of the same OECD material, which runs two months behind |
 | NZD | oecd | `DSD_STES@DF_FINMARK/NZL.M.SHARE.IX......` | index | monthly | level | yes | 2026-08-01 | OECD share price index; taken from the OECD API rather than FRED's mirror of the same OECD material, which runs two months behind |
+
+#### `world_equity_index`
+
+A single global equity benchmark, currently the S&P 500, and the equity half of the risk regime. A single global number, not a per-currency one: it sets the regime, and the currencies then sort themselves by `CurrencyMeta.risk_beta`.
+
+**A United States index is standing in for the world here, and the substitution is the risk pillar's largest known weakness.** What the pillar therefore measures is US risk appetite, so a European or Japanese shock registers only once it crosses the Atlantic. The stand-in is recorded at the point of use rather than left implicit in a ticker, because a reader who does not recognise `SP500` would otherwise take a global reading at face value. Replace the ref with a genuine free daily world index when one can be verified; nothing else has to change, which is the point of naming the key for what it measures.
+
+Separate from `equity_index` above, and deliberately so. A key whose refs are GLOBAL is a global reading and a key whose refs are per-currency is a per-currency reading; one key never holds both. Putting a GLOBAL ref on `equity_index` instead would have silently changed what `coverage_report()` and `identifier_coverage()` describe, because both short-circuit on a GLOBAL ref and report the key on that ref alone, so the eight would have stopped being counted with nothing raising.
+
+The 7-day allowance is `vol_index`'s, and for the same reason: both are daily closes of the same market, so a gap wider than a long weekend means the feed has stopped rather than that the exchange was shut.
+
+Pillar: **risk**. Canonical unit: `index`. Staleness allowance: 7 days. Fresh coverage: 100%.
+
+| Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| GLOBAL | fred | `SP500` | index | daily | level | yes | 2026-09-08 | daily close; FRED holds a rolling ten-year window only. A US index used as the world proxy, per this key's description |
 
 #### `vol_index`
 

@@ -1571,10 +1571,19 @@ EQUITY_INDEX = IndicatorSpec(
     frequency=Frequency.DAILY,
     max_staleness_days=75,
     description=(
-        "Benchmark equity index for each economy. Feeds the risk pillar in two "
-        "ways: as a proxy for the local growth and earnings picture, and, in "
-        "concert with `CurrencyMeta.risk_beta`, as a read on whether the market "
-        "is in risk-on or risk-off."
+        "Benchmark equity index for each economy. Registered and verified "
+        "across all eight with clean current coverage, and consumed by no "
+        "pillar today: RISK is attributed here but asks for "
+        "`world_equity_index` and `vol_index`, and neither of those is this "
+        "key. Held ready, so read its coverage as availability rather than as "
+        "a live input. RISK wants one regime number that all eight currencies "
+        "share, which the betas in `CurrencyMeta` then re-sign per currency; "
+        "eight local indices would give eight regimes and leave the betas with "
+        "nothing to act on. Six of the eight refs below are monthly OECD share "
+        "price indices in any case, which cannot date a drawdown. Whether a "
+        "per-currency equity term belongs in GROWTH, where a local index reads "
+        "as an earnings and growth signal rather than as a regime one, is a "
+        "scoring decision and is open."
     ),
     series={
         "USD": _ref(
@@ -1645,6 +1654,55 @@ EQUITY_INDEX = IndicatorSpec(
             Frequency.MONTHLY,
             date(2026, 8, 1),
             note=f"OECD share price index; {_OECD_FRESHER}",
+        ),
+    },
+)
+
+
+WORLD_EQUITY_INDEX = IndicatorSpec(
+    key="world_equity_index",
+    pillar=PillarName.RISK,
+    unit="index",
+    frequency=Frequency.DAILY,
+    max_staleness_days=7,
+    description=(
+        "A single global equity benchmark, currently the S&P 500. **A United "
+        "States index is standing in for the world here, and the substitution "
+        "is the risk pillar's largest known weakness.** What the pillar "
+        "therefore measures is US risk appetite, so a European or Japanese "
+        "shock registers only once it crosses the Atlantic. The stand-in is "
+        "recorded here, at the point of use, rather than left implicit in a "
+        "ticker, because a reader who does not recognise SP500 would otherwise "
+        "take a global reading at face value. Replace the ref with a genuine "
+        "free daily world index when one can be verified; nothing else has to "
+        "change, which is the point of naming the key for what it measures.\n"
+        "\n"
+        "Separate from `equity_index`, which holds eight per-currency "
+        "benchmarks, and deliberately so. A key whose refs are GLOBAL is a "
+        "global reading and a key whose refs are per-currency is a "
+        "per-currency reading; one key never holds both. Putting a GLOBAL ref "
+        "on `equity_index` instead would have silently changed what "
+        "`coverage_report` and `identifier_coverage` describe, because both "
+        "short-circuit on a GLOBAL ref and report the key on that ref alone, "
+        "so the eight would have stopped being counted with nothing raising.\n"
+        "\n"
+        "The 7-day allowance is `vol_index`'s, and for the same reason: both "
+        "are daily closes of the same market, so a gap wider than a long "
+        "weekend means the feed has stopped rather than that the exchange was "
+        "shut. It is far tighter than `equity_index`'s 75 days because that "
+        "key's six monthly refs have to live inside the same number."
+    ),
+    series={
+        GLOBAL: _ref(
+            SOURCE_FRED,
+            "SP500",
+            "index",
+            Frequency.DAILY,
+            date(2026, 9, 8),
+            note=(
+                "daily close; FRED holds a rolling ten-year window only. A US "
+                "index used as the world proxy, per this key's description"
+            ),
         ),
     },
 )
@@ -1904,6 +1962,7 @@ INDICATORS: Mapping[str, IndicatorSpec] = {
         CURRENT_ACCOUNT_GDP,
         COT_NET_PCT_OI,
         EQUITY_INDEX,
+        WORLD_EQUITY_INDEX,
         VOL_INDEX,
         COMMODITY_PRICE,
     )
@@ -1912,7 +1971,9 @@ INDICATORS: Mapping[str, IndicatorSpec] = {
 entries name and what `Observation.indicator` carries."""
 
 
-UNCONSUMED_INDICATORS: frozenset[str] = frozenset({"yield_10y", "pmi_composite"})
+UNCONSUMED_INDICATORS: frozenset[str] = frozenset(
+    {"yield_10y", "pmi_composite", "equity_index"}
+)
 """Registered indicators that name a pillar but that no pillar asks for.
 
 An `IndicatorSpec` carries a ``pillar`` field, and the natural reading of that
@@ -1931,6 +1992,15 @@ deliberate statement, not a way to quiet the test.
 verified 8/8 and losing that would mean re-verifying eight sources if a scoring
 decision ever wants it. It is specifically not a fallback for ``yield_2y``; see
 its own description and issue #26.
+
+``equity_index`` is here because the risk pillar reads a global regime and this
+key holds eight per-currency benchmarks, which is a different quantity.
+``world_equity_index`` carries the reading the pillar actually consumes. The
+eight stay registered rather than being deleted: their coverage is verified and
+a later per-currency equity component, a local growth or earnings read, is the
+obvious consumer for them. Marking them unconsumed is the reversible choice and
+keeps their coverage figure from reading as a live input while it is not one.
+See the ruling on issue #159.
 
 ``pmi_composite`` is here for a different reason, and the difference matters. It
 is not held in reserve for want of a decision; it is retired from GROWTH by one.

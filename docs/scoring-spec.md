@@ -721,7 +721,7 @@ world did.
 
 | Sub-indicator | Key | Transformation | Sign rule | Sub-weight |
 | --- | --- | --- | --- | --- |
-| Equity drawdown from 52-week high | `equity_index` | Percent below the rolling high, negative | More drawdown is risk-off | 0.50 (into `R`) |
+| Equity drawdown from 52-week high | `world_equity_index` | Percent below the rolling high, negative | More drawdown is risk-off | 0.50 (into `R`) |
 | Volatility index | `vol_index` | Time-series z over `lookback_years` | Higher volatility is risk-off | 0.50 (into `R`) |
 | Currency risk beta | `CurrencyMeta.risk_beta` | Static multiplier | Re-signs with `R` | Multiplier |
 

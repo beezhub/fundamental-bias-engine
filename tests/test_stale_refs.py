@@ -7,9 +7,15 @@ It then skipped every indicator holding a ``GLOBAL`` ref outright, so those two
 claims were both false and the docstring's "an empty mapping means the registry
 is entirely healthy" was false with them.
 
-Two indicators are affected and each is the sole input to a pillar component:
-``vol_index`` for RISK on a 7-day allowance, and ``commodity_price`` for EXTERNAL
-on 90 days. A ``GLOBAL`` ref covers the whole universe by construction, one print
+Three indicators are affected and each is the sole input to a pillar component:
+``world_equity_index`` and ``vol_index`` for RISK on a 7-day allowance, and
+``commodity_price`` for EXTERNAL on 90 days. The 7 and the 90 are far enough
+apart that an off-by-one on one boundary cannot hide behind the other, which is
+why the tests below sweep both. ``world_equity_index`` carries the same 7 days
+and the same ``last_observed`` as ``vol_index``, so it lands on a boundary those
+sweeps already cover and needs no case of its own.
+
+A ``GLOBAL`` ref covers the whole universe by construction, one print
 serving all eight currencies, so the gap is never one leg of one score. It is a
 pillar component going dark for every currency at once, and it was the one class
 of gap that could not reach the list an operator is told to work through.
@@ -58,13 +64,20 @@ the rename rather than asserting against a name that no longer exists.
 """
 
 
-def test_the_registry_still_holds_the_two_global_indicators() -> None:
+def test_the_registry_still_holds_its_global_indicators() -> None:
     """Guards every other test here from going quietly blind.
 
     A sweep over a derived list passes vacuously if the list empties, so the
-    premise is asserted rather than assumed.
+    premise is asserted rather than assumed. Spelled out rather than counted,
+    so a key gained or lost has to be acknowledged here: ``world_equity_index``
+    joined when the risk pillar's global equity reading was given its own key,
+    separate from the eight per-currency benchmarks under ``equity_index``.
     """
-    assert set(GLOBAL_REF_INDICATORS) == {"vol_index", "commodity_price"}
+    assert set(GLOBAL_REF_INDICATORS) == {
+        "vol_index",
+        "commodity_price",
+        "world_equity_index",
+    }
 
 
 # --- the boundary, which is criterion 2 ------------------------------------
@@ -110,8 +123,8 @@ def test_a_global_indicator_is_reported_against_the_whole_universe() -> None:
 
 # --- the unfetchable half of criterion 1 -----------------------------------
 #
-# Both registered GLOBAL refs are fetchable today, so the branch that catches an
-# unfetchable one is never exercised by the live registry. Deleting the
+# All three registered GLOBAL refs are fetchable today, so the branch that
+# catches an unfetchable one is never exercised by the live registry. Deleting the
 # ``fetchable`` check from the fix passes every other test in this module, which
 # is how this gap was found. The spec below is synthetic for exactly that reason.
 
@@ -235,8 +248,8 @@ def test_nothing_at_zero_coverage_is_missing_from_the_worklist(asof: date) -> No
 
     `stale_refs` calls itself the complement of `coverage_report`. This is that
     sentence as an assertion, swept over every registered indicator so it covers
-    the two ``GLOBAL`` ones and the eighteen per-currency ones together, which is
-    what criterion 3 asks for.
+    the three ``GLOBAL`` ones and the eighteen per-currency ones together, which
+    is what criterion 3 asks for.
 
     Zero coverage is the strongest case and the one the defect hid: an indicator
     covering none of the universe that an operator is never told about.

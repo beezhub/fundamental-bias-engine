@@ -327,7 +327,7 @@ def test_risk_emits_nothing_in_a_calm_market() -> None:
     _skip_if_scaffolded(RiskPillar._normalise)
 
     pillar = RiskPillar()
-    normalised = pillar._normalise({c: {"risk_r": 0.0} for c in G10})
+    normalised = pillar._normalise({c: {"risk_response": 0.0} for c in G10})
 
     assert all(value == 0.0 for value in normalised.values())
     assert statistics.pstdev(list(normalised.values())) == 0.0
