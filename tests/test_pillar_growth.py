@@ -741,3 +741,31 @@ def test_the_score_band_is_read_from_the_config(pillar: GrowthPillar) -> None:
 
     assert max(abs(score.score) for score in scores.values()) <= 0.25
     assert any(abs(score.score) == 0.25 for score in scores.values())
+
+
+def test_the_fixture_reproduces_a_hand_computed_blend(pillar: GrowthPillar) -> None:
+    """Four numbers computed outside the pillar, to six places.
+
+    Recomputed from the readings at the top of this file without any of the
+    pillar's own helpers: a population z-score per component across the four
+    currencies, weighted by section 3.3's sub-weights, then centred on the
+    run's own blend mean and divided by its blend standard deviation, which is
+    `blend_divisor`'s fallback while this pillar has no stored history. The
+    fallback is asserted too, because a score computed under the rolling
+    estimate is not on the same scale.
+
+    This is the one assertion here that pins the whole pipeline rather than one
+    step of it, and it is the assertion a reader can check with a calculator.
+    """
+    expected = {
+        "USD": 1.249409,
+        "EUR": -0.424124,
+        "GBP": -1.392068,
+        "JPY": 0.566784,
+    }
+
+    scores = pillar.compute(universe(), FOUR, ASOF)
+
+    assert scores["USD"].blend_divisor_path == "run_local"
+    for currency, z in expected.items():
+        assert scores[currency].z == pytest.approx(z, abs=5e-7)

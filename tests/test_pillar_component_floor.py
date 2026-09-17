@@ -217,8 +217,8 @@ def _full_coverage(
         # A drop naming a key the pillar does not require withholds nothing, so
         # the currency keeps full coverage and the assertion about its floor
         # passes against a fixture that never put it on one. That is how the
-        # two GROWTH cases below went on asserting `pmi_composite` for a
-        # fortnight after #23 substituted it out of `requires`.
+        # two GROWTH cases below went on naming `pmi_composite` after #23
+        # substituted it out of `requires`.
         assert not unknown, (
             f"{pillar.name} does not require {unknown} for {currency}, so "
             "dropping it withholds nothing"
