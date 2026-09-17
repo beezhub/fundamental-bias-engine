@@ -56,11 +56,12 @@ by a day each run and misses every time.
 
 TTL
 ---
-`DataConfig.cache_ttl_hours`, default 12. One TTL for every source is a
-simplification with a real cost: a COT file is valid for a week and a VIX close
-for a few hours, and 12 hours serves neither well. `SUGGESTED_TTL_HOURS` below
-records what each source actually wants, so the simplification is at least
-documented rather than accidental.
+Per source, from `SUGGESTED_TTL_HOURS`, with `DataConfig.cache_ttl_hours`
+(default 12) as the fallback for a source the table does not name. One TTL for
+every source would have a real cost: a COT file is valid for a week and a VIX
+close for a few hours, and 12 hours serves neither well. `DiskCache.ttl_for`
+resolves the figure and `get` applies it, so the table is the wire rather than a
+note about one.
 
 TTL is measured from the fetch time in the sidecar, not from file mtime, which a
 backup or a checkout can change.
@@ -129,8 +130,12 @@ SUGGESTED_TTL_HOURS: Mapping[str, int] = {
     "forexfactory": 24,
     "manual": 0,
 }
-"""What each source's cadence actually justifies, against the single
-`DataConfig.cache_ttl_hours` the config currently applies to all of them.
+"""The TTL each source's cadence justifies, and the one `DiskCache.get` applies.
+
+`ttl_for` reads this table, and `get` reads `ttl_for`, so a source named here is
+governed by its own figure. ``DataConfig.cache_ttl_hours`` is the fallback for a
+source this table does not name, not a global position these figures merely
+document.
 
 ``cftc`` gets 72 hours because the report only changes on Friday afternoons, so
 a Tuesday refetch can only return what is already on disk. ``stooq`` gets 6
@@ -391,6 +396,11 @@ class DiskCache:
             The entry. Offline, an expired entry is returned rather than
             refused, because a stale number with an honest age beats a hole.
 
+            The TTL applied is the source's own, from `ttl_for`, not
+            ``DataConfig.cache_ttl_hours`` unless the table does not name the
+            source. A caller needing a different figure should not reach past
+            this method for it; the table is the place to change.
+
         Raises:
             CacheMiss: If no entry exists, if its sidecar cannot be read, or if
                 it has expired and the run is online, in which case the caller
@@ -399,13 +409,37 @@ class DiskCache:
 
         """
         entry = self._load(source, key)
-        if not self.offline and self.is_expired(entry):
+        ttl = self.ttl_for(source)
+        if not self.offline and self.is_expired(entry, ttl_hours=ttl):
             raise CacheMiss(
                 f"cache entry for {source}/{key} is "
                 f"{self.age_hours(entry):.1f} hours old, past the "
-                f"{self.ttl_hours} hour TTL"
+                f"{ttl} hour TTL"
             )
         return entry
+
+    def ttl_for(self, source: str) -> int:
+        """Return the TTL in hours that governs one source.
+
+        Args:
+            source: Source name, as `get` and `put` take it.
+
+        Returns:
+            That source's figure from `SUGGESTED_TTL_HOURS`, or
+            ``DataConfig.cache_ttl_hours`` for a source the table does not name.
+
+        This exists so the rule lives in one place. `get` derives the TTL from
+        the source it was already given rather than taking it as an argument,
+        because a per-call parameter puts the table's existence in every future
+        caller's head: forgetting it reinstates the global TTL silently, which
+        is the defect this method was added to close. See issue #73.
+
+        ``.get`` with a default rather than a ``try``: a source absent from the
+        table is the ordinary case, not an error, and the config value is the
+        documented fallback for it.
+
+        """
+        return SUGGESTED_TTL_HOURS.get(source, self.ttl_hours)
 
     def put(
         self,
@@ -553,8 +587,10 @@ class DiskCache:
 
         Args:
             entry: The entry to test.
-            ttl_hours: Override for the default TTL, so a source can apply its
-                own figure from `SUGGESTED_TTL_HOURS`.
+            ttl_hours: The TTL to apply, overriding
+                ``DataConfig.cache_ttl_hours``. `get` passes each source's own
+                figure here, resolved by `ttl_for`; ``None`` keeps the
+                configured default.
 
         Returns:
             True when the entry is older than the TTL. Always False offline,

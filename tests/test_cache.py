@@ -349,6 +349,120 @@ def test_is_expired_is_always_false_offline(offline_cache: DiskCache) -> None:
     assert offline_cache.is_expired(entry, ttl_hours=1) is False
 
 
+# --- the per-source TTL, reached through the public read path ---------------
+#
+# `is_expired` has taken a TTL override since it was written and `get` never
+# passed one, so `SUGGESTED_TTL_HOURS` was a table nothing could consult. The
+# tests below go through `get` for that reason: the one above proves the leaf
+# works and says nothing about whether any caller can reach it, which is the
+# case the engineering standards name as testing the value and not the wire.
+
+
+def test_a_cftc_entry_outlives_the_global_ttl_through_get(cache: DiskCache) -> None:
+    """The report changes on Friday, so a Tuesday refetch returns Friday's bytes.
+
+    24 hours old against a 12 hour global default and a 72 hour figure for this
+    source. Before the fix `get` applied the global one and raised, so the
+    source refetched five mornings a week where the table documents one.
+    """
+    key = cache.key_for("cftc", "legacy", {"code": "099741"})
+    cache.put("cftc", key, BODY, {"code": "099741"})
+    _age_entry(cache, "cftc", key, hours=24)
+
+    assert cache.get("cftc", key).source == "cftc"
+
+
+def test_a_manual_entry_expires_within_the_hour_through_get(
+    cache: DiskCache,
+) -> None:
+    """Zero is the figure `manual` carries, and zero has to reach the read path.
+
+    This is the direction that costs a number rather than a request. An operator
+    who corrects a typo and reruns must not be served the value they just fixed,
+    and through `get` the global 12 hours would have served it for the rest of
+    the day with no error and nothing on the page to say the file was not read.
+    """
+    key = cache.key_for("manual", "yields", {"file": "yields.yaml"})
+    cache.put("manual", key, BODY, {"file": "yields.yaml"})
+    _age_entry(cache, "manual", key, hours=1)
+
+    with pytest.raises(CacheMiss):
+        cache.get("manual", key)
+
+
+def test_a_source_with_no_table_entry_falls_back_to_the_configured_ttl(
+    cache: DiskCache,
+) -> None:
+    """The default still governs anything the table does not name."""
+    key = cache.key_for("oecd", "bts", {"flow": "DSD_STES@DF_BTS"})
+    cache.put("oecd", key, BODY, {"flow": "DSD_STES@DF_BTS"})
+    _age_entry(cache, "oecd", key, hours=18)
+
+    assert "oecd" not in SUGGESTED_TTL_HOURS
+    with pytest.raises(CacheMiss):
+        cache.get("oecd", key)
+
+
+def test_the_fallback_follows_the_configured_value_not_a_constant(
+    cache_config: DataConfig,
+) -> None:
+    """Criterion 5. The fallback proved on the wire rather than by coincidence.
+
+    18 hours expires under the default 12 and survives under 36. Asserting only
+    the first would pass against an implementation that hardcoded 12, which is
+    the config-drift defect this repository keeps finding.
+    """
+    key_source, params = "oecd", {"flow": "DSD_STES@DF_BTS"}
+
+    strict = DiskCache(cache_config)
+    key = strict.key_for(key_source, "bts", params)
+    strict.put(key_source, key, BODY, params)
+    _age_entry(strict, key_source, key, hours=18)
+    with pytest.raises(CacheMiss):
+        strict.get(key_source, key)
+
+    lenient = DiskCache(replace(cache_config, cache_ttl_hours=36))
+    assert lenient.get(key_source, key).source == key_source
+
+
+def test_offline_serves_a_zero_ttl_entry_whatever_its_age(
+    cache_config: DataConfig,
+) -> None:
+    """Criterion 6. Offline never expires anything, including the strictest TTL.
+
+    `manual` is the case that would break first if the new branch computed the
+    TTL before consulting `offline`, because its figure expires everything.
+    """
+    online = DiskCache(cache_config)
+    key = online.key_for("manual", "yields", {"file": "yields.yaml"})
+    online.put("manual", key, BODY, {"file": "yields.yaml"})
+    _age_entry(online, "manual", key, hours=99)
+
+    offline = DiskCache(replace(cache_config, offline=True))
+
+    assert offline.get("manual", key).source == "manual"
+
+
+def test_the_miss_message_names_the_ttl_that_was_applied(cache: DiskCache) -> None:
+    """A message naming the global TTL while a different one expired the entry
+    sends an operator to change a setting that had no part in the decision.
+    """
+    key = cache.key_for("stooq", "eurusd", {"s": "eurusd"})
+    cache.put("stooq", key, BODY, {"s": "eurusd"})
+    _age_entry(cache, "stooq", key, hours=8)
+
+    with pytest.raises(CacheMiss, match=r"6 hour TTL"):
+        cache.get("stooq", key)
+
+
+def test_ttl_for_is_the_one_place_the_rule_lives(cache: DiskCache) -> None:
+    """Every table entry, plus the fallback, read off the method `get` uses."""
+    for source, hours in SUGGESTED_TTL_HOURS.items():
+        assert cache.ttl_for(source) == hours, source
+
+    assert cache.ttl_for("oecd") == cache.ttl_hours
+
+
 def test_is_expired_honours_the_ttl_override(cache: DiskCache) -> None:
     """A source applies its own SUGGESTED_TTL_HOURS against one shared default."""
     entry = CacheEntry(
