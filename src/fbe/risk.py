@@ -35,7 +35,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import ROUND_FLOOR, Decimal
 from enum import StrEnum
+from math import isfinite
 from typing import Protocol, runtime_checkable
 
 from fbe.config import RiskConfig
@@ -48,6 +50,8 @@ __all__ = [
     "JPY_PIP_SIZE",
     "STANDARD_PIP_SIZE",
     "CONVERSION_PIVOT",
+    "MIN_STOP_SPREAD_MULTIPLE",
+    "SIZING_SHORTFALL_TOLERANCE",
     "CONVICTION_BAND_POSITION",
     "MIN_REWARD_TO_RISK",
     "LIMITS",
@@ -88,6 +92,43 @@ G10 currency AND against ZAR. A retail feed can be relied on for USDZAR and for
 the seven G10 dollar pairs; it cannot be relied on for ZARJPY or ZARCHF, which
 are not quoted anywhere the owner will be looking. Pivoting through the dollar
 is therefore not a fallback, it is the normal route for this account.
+"""
+
+
+MIN_STOP_SPREAD_MULTIPLE: float = 2.0
+"""Multiple of the typical spread a stop must clear before it is flagged.
+
+Local to this module rather than in `RiskConfig`, because it is a reporting
+threshold and not a risk limit: nothing refuses on it and nothing sizes from
+it. Two because the spread is paid twice, once entering and once leaving, so a
+stop inside that width is inside the cost of the round turn and the broker
+takes the trade out before the market has had a view.
+
+Indicative only, like the spreads it is applied to. It warns and does not
+refuse, because `Broker.typical_spread_pips` is sampled at the London and New
+York overlap and the owner watching their own terminal knows better than the
+profile does.
+"""
+
+
+SIZING_SHORTFALL_TOLERANCE: float = 0.20
+"""Fraction of intended risk that may be lost to lot rounding before warning.
+
+Local to this module for the same reason as `MIN_STOP_SPREAD_MULTIPLE`: it
+changes what is said, never what is traded.
+
+Some shortfall is arithmetically unavoidable, because rounding down to a lot
+step is what keeps the cap intact. The question this threshold answers is when
+the gap stops being rounding and starts meaning the account cannot express the
+ladder's intent. A fifth is the line: below it the trade is the trade that was
+asked for, above it the size is close enough to the broker's floor that the
+conviction rung has effectively been ignored.
+
+Both worked examples in ``docs/risk-and-execution.md`` section 2 sit inside it
+and are therefore quiet, including example B at 10.5%, which that document
+presents as the normal consequence of a lot step. A warning that fires on the
+routine case is a warning the reader learns to skip, and the one it would then
+also skip is the refusal above it.
 """
 
 
@@ -277,6 +318,106 @@ def pip_size(pair: str) -> float:
     return JPY_PIP_SIZE if quote == "JPY" else STANDARD_PIP_SIZE
 
 
+def _checked_rate(key: str, quoted: float) -> float:
+    """Return ``quoted``, or raise if it cannot be used as a conversion factor.
+
+    Args:
+        key: Pair string the rate was read from, named in the message so the
+            corrupt entry can be found in the feed.
+        quoted: The rate as the feed supplied it.
+
+    Returns:
+        ``quoted`` unchanged, in the same direction it was quoted.
+
+    Raises:
+        MissingRateError: If the rate is zero, negative or not finite.
+
+    Note:
+        A non-positive rate is corrupt data, not a small number. Zero divides,
+        a negative silently flips the sign of every money figure downstream,
+        and a NaN propagates into a position size that compares false against
+        every limit it is later checked against. Refusing the rate is the only
+        one of those four outcomes a reader would notice.
+
+    """
+    if not isfinite(quoted) or quoted <= 0.0:
+        raise MissingRateError(
+            f"rate {key} is {quoted!r}, which cannot be used as a conversion "
+            f"factor. A rate must be finite and strictly positive."
+        )
+    return quoted
+
+
+def _leg(source: str, target: str, rates: Mapping[str, float]) -> float | None:
+    """Resolve one hop by identity, direct quote or inverted quote, or not at all.
+
+    Args:
+        source: ISO code being converted from.
+        target: ISO code being converted into.
+        rates: Mid rates keyed by market-convention pair string.
+
+    Returns:
+        Units of ``target`` per one unit of ``source``, or ``None`` when
+        neither quote direction is present. ``None`` means absent, which is a
+        different answer from a rate that is present and unusable: that one
+        raises rather than returning here, so a corrupt quote is never routed
+        around by falling through to the pivot.
+
+    Raises:
+        MissingRateError: If a quote exists but is zero, negative or not
+            finite.
+
+    Note:
+        Identity returns 1.0 before ``rates`` is touched at all, which is the
+        only circumstance in which this module produces a factor of 1.0.
+
+    """
+    if source == target:
+        return 1.0
+    key = f"{source}{target}"
+    quoted = rates.get(key)
+    if quoted is not None:
+        return _checked_rate(key, quoted)
+    inverse_key = f"{target}{source}"
+    inverted = rates.get(inverse_key)
+    if inverted is not None:
+        return 1.0 / _checked_rate(inverse_key, inverted)
+    return None
+
+
+def _round_down_to_step(value: float, step: float) -> float:
+    """Round ``value`` down to the nearest multiple of ``step``.
+
+    Args:
+        value: Lots as the sizing solve produced them, always non-negative.
+        step: Broker lot step, strictly positive.
+
+    Returns:
+        The largest multiple of ``step`` at or below ``value``. Never above it,
+        under any input, because rounding up breaches the risk cap by
+        construction.
+
+    Raises:
+        ValueError: If ``step`` is not strictly positive.
+
+    Note:
+        The arithmetic is done in `decimal` rather than on floats, and that is
+        not fastidiousness. ``0.29 / 0.01`` evaluates to 28.999999999999996 in
+        binary floating point, so flooring the raw quotient turns 0.29 lots
+        into 0.28 and silently drops a whole lot step of a position the account
+        asked for. Fourteen multiples of 0.01 below 2.0 lots behave this way.
+        The conversion goes through ``str`` so each value is read at the
+        decimal it displays as, which is the number the broker's contract
+        specification is written in.
+
+    """
+    if step <= 0.0:
+        raise ValueError(f"lot_step must be strictly positive, got {step!r}")
+    quantum = Decimal(str(step))
+    steps = (Decimal(str(value)) / quantum).to_integral_value(rounding=ROUND_FLOOR)
+    return float(steps * quantum)
+
+
 def convert_rate(
     from_currency: str,
     to_currency: str,
@@ -340,8 +481,33 @@ def convert_rate(
             be inverted or multiplied through.
 
     """
-    raise NotImplementedError(
-        "fbe.risk.convert_rate is scaffolded; see docs/roadmap.md Phase 4"
+    source = from_currency.upper()
+    target = to_currency.upper()
+    middle = pivot.upper()
+
+    direct = _leg(source, target, rates)
+    if direct is not None:
+        return direct
+
+    if middle not in (source, target):
+        first = _leg(source, middle, rates)
+        second = _leg(middle, target, rates)
+        if first is not None and second is not None:
+            return first * second
+
+    looked_for = (
+        f"{source}{target}",
+        f"{target}{source}",
+        f"{source}{middle}",
+        f"{middle}{source}",
+        f"{middle}{target}",
+        f"{target}{middle}",
+    )
+    raise MissingRateError(
+        f"no rate from {source} to {target}: neither a direct quote nor a "
+        f"single hop through {middle} could be built. Looked for "
+        f"{', '.join(looked_for)}. Supply one of these and do not substitute "
+        f"a rate of 1.0, a stale rate or a wider search."
     )
 
 
@@ -399,8 +565,17 @@ def pip_value(
         ValueError: If ``units`` is negative or ``pair`` is malformed.
 
     """
-    raise NotImplementedError(
-        "fbe.risk.pip_value is scaffolded; see docs/roadmap.md Phase 4"
+    if units < 0.0:
+        raise ValueError(
+            f"units must be non-negative, got {units!r}. Direction is carried "
+            f"by the entry and the stop, not by the sign of the size."
+        )
+    normalised = pair.upper()
+    _, quote = split_pair(normalised)
+    return (
+        units
+        * pip_size(normalised)
+        * convert_rate(quote, account_currency.upper(), rates)
     )
 
 
@@ -521,9 +696,93 @@ def position_size(
             and must not be approximated.
 
     """
-    raise NotImplementedError(
-        "fbe.risk.position_size is scaffolded; see docs/roadmap.md Phase 4"
-    )
+    normalised = pair.upper()
+    _, quote = split_pair(normalised)
+    account_currency = config.account_currency.upper()
+    warnings: list[str] = []
+
+    requested = config.risk_per_trade_min if risk_fraction is None else risk_fraction
+    fraction = min(max(requested, config.risk_per_trade_min), config.risk_per_trade_max)
+    if fraction != requested:
+        warnings.append(
+            f"risk_fraction {requested:g} is outside the configured band "
+            f"[{config.risk_per_trade_min:g}, {config.risk_per_trade_max:g}]; "
+            f"clamped to {fraction:g} rather than honoured"
+        )
+
+    risk_amount = config.account_balance * fraction
+    stop_distance_pips = abs(entry - stop) / pip_size(normalised)
+
+    # Both conversions are resolved before anything is reported, so a missing
+    # route raises instead of producing a result with a zero size that reads
+    # like a refusal the trade earned.
+    value_per_pip = pip_value(normalised, 1.0, account_currency, rates)
+    conversion = convert_rate(quote, account_currency, rates)
+
+    def _result(
+        units: float, lots: float, realised: float, notional: float
+    ) -> PositionSize:
+        return PositionSize(
+            pair=normalised,
+            account_currency=account_currency,
+            account_balance=config.account_balance,
+            risk_fraction=fraction,
+            risk_amount=risk_amount,
+            realised_risk_amount=realised,
+            entry=entry,
+            stop=stop,
+            stop_distance_pips=stop_distance_pips,
+            units=units,
+            lots=lots,
+            notional=notional,
+            warnings=tuple(warnings),
+        )
+
+    if stop_distance_pips == 0.0:
+        warnings.append(
+            f"entry {entry:g} equals stop {stop:g}, so the stop distance is "
+            f"zero and no size can be derived from it"
+        )
+        return _result(0.0, 0.0, 0.0, 0.0)
+
+    typical_spread = broker.typical_spread_pips.get(normalised)
+    if typical_spread is None:
+        warnings.append(
+            f"{broker.name} lists no typical spread for {normalised}, so the "
+            f"tight-stop check was not performed rather than passed"
+        )
+    elif stop_distance_pips < MIN_STOP_SPREAD_MULTIPLE * typical_spread:
+        warnings.append(
+            f"stop distance {stop_distance_pips:.1f} pips is inside "
+            f"{MIN_STOP_SPREAD_MULTIPLE:g}x the typical spread of "
+            f"{typical_spread:g} pips for {normalised}"
+        )
+
+    raw_units = risk_amount / (stop_distance_pips * value_per_pip)
+    raw_lots = raw_units / broker.contract_size
+    lots = _round_down_to_step(raw_lots, broker.lot_step)
+
+    if lots < broker.min_lot:
+        warnings.append(
+            f"computed size {raw_lots:.6f} lots is below {broker.name}'s "
+            f"minimum of {broker.min_lot:g} lots; refusing to size rather "
+            f"than taking the minimum, which would risk more than the "
+            f"configured band allows"
+        )
+        return _result(0.0, 0.0, 0.0, 0.0)
+
+    units = lots * broker.contract_size
+    realised = units * stop_distance_pips * value_per_pip
+    notional = units * entry * conversion
+
+    if realised < risk_amount * (1.0 - SIZING_SHORTFALL_TOLERANCE):
+        warnings.append(
+            f"rounding to {broker.name}'s {broker.lot_step:g} lot step leaves "
+            f"{realised:.2f} at risk against an intended {risk_amount:.2f}, a "
+            f"materially smaller trade than the risk fraction asked for"
+        )
+
+    return _result(units, lots, realised, notional)
 
 
 def risk_fraction_for(conviction: Conviction, config: RiskConfig) -> float:
