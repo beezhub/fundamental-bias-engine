@@ -92,7 +92,20 @@ class Observation:
         currency: ISO 4217 code the observation describes, e.g. ``"USD"``.
             Use ``"GLOBAL"`` for cross-market series such as VIX.
         value: The published value in the unit given by ``unit``.
-        period: The period the data describes, not the day it was released.
+        period: The first day of the span the figure describes. August 2026
+            monthly is ``2026-08-01`` and 2026Q2 is ``2026-04-01``. A
+            point-in-time reading has no span and is stamped on its own day:
+            a yield is the trading day it closed and a COT snapshot is the
+            Tuesday the positions were counted. First-day because that is how
+            FRED and the OECD stamp their series, because the first day of a
+            span is defined at every frequency where the last day is not for
+            ``Frequency.IRREGULAR``, and because it makes the age a module
+            computes an upper bound on how old the information is, which
+            errs toward less weight rather than more. Age is therefore days
+            since the period began: ``BasePillar.staleness_days`` computes it
+            that way and ``BasePillar._visible`` admits an unstamped
+            observation on ``period`` plus an assumed lag. Release timing
+            never lives here; it lives on ``released_at``.
         released_at: When the number hit the tape. Used to avoid look-ahead
             bias when backtesting; may be ``None`` for series where the source
             does not publish a release timestamp.

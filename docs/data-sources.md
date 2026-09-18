@@ -683,9 +683,10 @@ Optional: `unit`, `frequency`, `released_at`, `revision`, `meta`.
   warning: a typo that silently creates a new indicator is invisible until a
   pillar quietly reports missing data.
 - `currency` must be in `G10`, or `"GLOBAL"`.
-- `period` is the period the number describes, not the day you typed it. Use the
-  first of the month for monthly series, matching FRED, so manual and fetched
-  observations sort together.
+- `period` is the first day of the span the number describes, not the day you
+  typed it: `2026-08-01` for August 2026, `2026-04-01` for 2026Q2. That matches
+  FRED and the OECD, so manual and fetched observations sort together, and it
+  is the convention every module that ages an observation reads.
 - `unit` and `frequency` should match the registry's `SeriesRef`. A mismatch is
   refused rather than coerced: a PMI entered as a percentage instead of an index
   will score, and score wrongly.

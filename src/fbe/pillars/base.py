@@ -51,10 +51,16 @@ DEFAULT_PUBLICATION_LAG_DAYS: Mapping[Frequency, int] = {
 """Assumed gap between a period starting and its number being published.
 
 Used only when an observation has no ``released_at``, to decide whether a
-historical run could have seen it. The values are measured from ``period``, which
-is the first day of the period described, so the monthly figure of 45 days covers
-a month elapsing plus the usual two-week statistical lag, and the quarterly
-figure of 120 days covers a quarter elapsing plus a month.
+historical run could have seen it. The values are measured from ``period``, the
+first day of the span described per the `Observation` contract, so the monthly
+figure of 45 days covers a month elapsing plus the usual two-week statistical
+lag, and the quarterly figure of 120 days covers a quarter elapsing plus a month.
+
+Each entry must sit strictly below the age at which the indicators of that
+frequency reach a freshness of zero, or the assumed-lag path admits only
+observations that are already worthless: an observation admitted at exactly the
+allowance carries a factor of 0.0 on the day it becomes visible. The registry's
+per-indicator allowances are what keep that true, and #8 is where it is tested.
 
 The annual figure of 552 days is measured rather than assumed. The World Bank
 nominal GDP family on FRED, the only annual series the registry carries, last
@@ -1411,10 +1417,10 @@ class BasePillar(ABC):
     def staleness_days(self, observations: Sequence[Observation], asof: date) -> int:
         """Return the age in days of the freshest observation in a set.
 
-        Age is measured from ``period``, the period the data describes, not from
-        ``released_at``. A GDP print published yesterday for the quarter that
-        ended four months ago is four months old as far as the model is
-        concerned, whatever the release timestamp says.
+        Age is measured from ``period``, the first day of the span the data
+        describes, not from ``released_at``. A GDP print published yesterday for
+        the quarter that began four months ago is four months old as far as the
+        model is concerned, whatever the release timestamp says.
 
         Args:
             observations: The observations a pillar consumed for one currency.

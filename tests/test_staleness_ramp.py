@@ -550,6 +550,63 @@ def test_a_period_stamped_on_the_run_date_is_zero_days_old() -> None:
     assert pillar.staleness_days([_obs("yield_2y", "USD", ASOF)], ASOF) == 0
 
 
+# ----------------------------------------------------------------------
+# The stamping convention (issue #27)
+# ----------------------------------------------------------------------
+#
+# `Observation.period` is the first day of the span a figure describes, so age
+# is days since the period began. Two modules used to read it two ways: the
+# lag table assumed first-day stamping and the `staleness_days` docstring
+# anchored its example on the quarter's end, a month apart for a monthly series
+# and a quarter apart for a quarterly one. The difference lands on the
+# effective weight, so the convention is pinned here in arithmetic and in the
+# contract's own wording.
+
+
+def test_a_monthly_print_is_aged_from_the_first_day_of_its_month() -> None:
+    """Criterion 3. US CPI for August 2026 on the day the BLS publishes it.
+
+    ``period = 2026-08-01`` and ``asof = 2026-09-11`` is 41 days. Under
+    last-day stamping the same print would be 10 days old, and the two readings
+    put INFLATION's headline component at different effective weights on the
+    same run.
+    """
+    pillar = MonetaryPillar()
+    august_cpi = _obs("cpi_yoy", "USD", date(2026, 8, 1))
+
+    assert pillar.staleness_days([august_cpi], date(2026, 9, 11)) == 41
+
+
+def test_the_contract_states_first_day_stamping_with_both_examples() -> None:
+    """Criterion 1. The convention lives on ``Observation.period``.
+
+    The two examples are the ones every module in this area quotes: the month
+    and the quarter. A reader who finds only "the period the data describes"
+    has to guess which day, and the two modules that age it once guessed
+    differently.
+    """
+    doc = inspect.getdoc(Observation) or ""
+
+    assert "first day" in doc
+    assert "2026-08-01" in doc
+    assert "2026-04-01" in doc
+
+
+def test_staleness_days_anchors_its_example_on_the_start_of_the_span() -> None:
+    """The one-word correction from the ruling.
+
+    The docstring's GDP example read "the quarter that ended four months ago",
+    which is the last-day reading, forty lines below a lag table that assumes
+    the first day. An example is where a reader goes to learn what age means,
+    so it must not contradict the arithmetic under it.
+    """
+    doc = inspect.getdoc(BasePillar.staleness_days) or ""
+
+    assert "first day" in doc
+    assert "the quarter that began" in doc
+    assert "the quarter that ended" not in doc
+
+
 def test_the_docstring_names_missing_score_as_the_path_for_an_absent_pillar() -> None:
     """Criterion 4.
 
