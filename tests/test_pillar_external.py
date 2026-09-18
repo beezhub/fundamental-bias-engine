@@ -613,6 +613,10 @@ def test_the_window_is_three_months_and_not_three_observations(
     `BasePillar.momentum` counts observations and says so in its own docstring,
     which is why this pillar does not use it. A three-day return on oil is a
     real number in the right unit and is not what the pillar is for.
+
+    This case has four points and the oldest is exactly three months back, so
+    the two rules coincide here. `test_three_observations_back_is_not_three_months_back`
+    is the one that separates them.
     """
     daily = [
         obs(
@@ -793,3 +797,179 @@ def test_every_currency_in_the_universe_gets_a_score(pillar: ExternalPillar) -> 
 
     assert set(scores) == set(G10)
     assert all(score.z is not None for score in scores.values())
+
+
+def test_a_currency_outside_the_universe_raises(pillar: ExternalPillar) -> None:
+    """`commodity_link` is read from `universe.meta`, which has no default.
+
+    A currency the universe does not carry must not quietly take the five
+    currencies' deliberate `0.0`, which is a statement about a known export
+    basket rather than a fallback for an unknown one.
+    """
+    with pytest.raises(KeyError, match="XYZ"):
+        components(pillar, universe(), ("USD", "EUR", "GBP", "XYZ"))
+
+
+def test_a_non_finite_nominal_gdp_raises(pillar: ExternalPillar) -> None:
+    """NaN passes every comparison, so `<= 0.0` would let it through.
+
+    A NaN denominator gives a NaN component, a NaN z-score and a NaN score, and
+    nothing on the way raises.
+    """
+    broken = [
+        item
+        for item in universe()
+        if not (item.indicator == "gdp_nominal_usd" and item.currency == "CHF")
+    ]
+    broken.append(obs("gdp_nominal_usd", "CHF", float("nan"), GDP_PERIOD))
+
+    with pytest.raises(ValueError, match="CHF"):
+        components(pillar, broken)
+
+
+def test_the_fixture_reproduces_a_hand_computed_blend(pillar: ExternalPillar) -> None:
+    """Eight scores computed outside the pillar, to six places.
+
+    Recomputed from the readings at the top of this file without any of the
+    pillar's own helpers: a population z-score per component across the
+    currencies that have it, weighted by section 3.5's sub-weights, renormalised
+    per currency over the weight present, then centred on the run's blend mean
+    and divided by its blend standard deviation.
+
+    NZD is the interesting row. It carries a `commodity_link` and the fixture
+    gives it no price, so its terms of trade is absent rather than zero, it
+    renormalises over the 0.70 it holds, and it takes no part in that
+    component's cross-section. A pillar that gave it the five currencies' `0.0`
+    would move every other currency's terms-of-trade z-score as well as its own.
+
+    This is the one assertion here that covers the whole pipeline rather than
+    one step of it.
+    """
+    expected = {
+        "USD": -0.784983,
+        "EUR": 0.519763,
+        "GBP": -0.981758,
+        "JPY": 1.011608,
+        "CHF": 0.589116,
+        "CAD": 1.577646,
+        "AUD": -1.426829,
+        "NZD": -0.504564,
+    }
+
+    scores = pillar.compute(universe(), G10, ASOF)
+
+    assert scores["USD"].blend_divisor_path == "run_local"
+    assert scores["NZD"].z is not None
+    for currency, z in expected.items():
+        assert scores[currency].z == pytest.approx(z, abs=5e-7)
+
+
+def test_a_linked_currency_with_no_price_leaves_that_cross_section(
+    pillar: ExternalPillar,
+) -> None:
+    """The converse of giving NZD a zero, which is what makes the row above pin
+    something.
+
+    Handing an absent reading the five currencies' deliberate zero would put a
+    ninth point into the terms-of-trade cross-section and move CAD and AUD,
+    which have real commodity moves and nothing wrong with their data.
+    """
+    absent = pillar.compute(universe(), G10, ASOF)
+    with_zero = pillar.compute([*universe(), *commodity("NZD", 50.0, 50.0)], G10, ASOF)
+
+    assert absent["CAD"].z != with_zero["CAD"].z
+    assert absent["AUD"].z != with_zero["AUD"].z
+
+
+def test_the_newest_level_wins_over_an_older_one(pillar: ExternalPillar) -> None:
+    """Every level in the fixture had one period, so nothing pinned which one is read.
+
+    A mutation reading the oldest observation rather than the newest survived
+    the whole file until this was added, because one observation is both.
+    """
+    older_account = obs("current_account_gdp", "USD", -9.9, date(2026, 1, 1))
+    older_gdp = obs("gdp_nominal_usd", "USD", 15e12, date(2024, 1, 1))
+
+    values = components(pillar, [*universe(), older_account, older_gdp])
+
+    assert values["USD"]["current_account_gdp"] == -3.3
+    # The older GDP is half the newer one, so reading it would double the trend.
+    assert values["USD"]["trade_trend"] == pytest.approx(0.1)
+
+
+def test_three_observations_back_is_not_three_months_back(
+    pillar: ExternalPillar,
+) -> None:
+    """The daily case, with enough points that the two answers differ.
+
+    An earlier version of this test gave crude four observations with the oldest
+    exactly three months back, so counting observations and counting months
+    landed on the same reading and a pillar doing either passed. The series now
+    has six points clustered at the recent end: three observations back is
+    2026-05-28 and three months back is 2026-03-01, and only one of them gives
+    the +10.0 this asserts.
+    """
+    daily = [
+        obs(
+            "commodity_price",
+            "CAD",
+            value,
+            period,
+            frequency=Frequency.DAILY,
+            released_at=published(period, 1),
+        )
+        for period, value in (
+            (BASELINE, 80.0),
+            (date(2026, 5, 27), 86.0),
+            (date(2026, 5, 28), 86.5),
+            (date(2026, 5, 29), 87.0),
+            (date(2026, 5, 30), 87.5),
+            (NEWEST, 88.0),
+        )
+    ]
+    observations = [
+        *[
+            item
+            for item in universe()
+            if not (item.currency == "CAD" and item.indicator == "commodity_price")
+        ],
+        *daily,
+    ]
+
+    values = components(pillar, observations)
+
+    # Three months back is 80.0, giving +10.0. Three observations back is 86.5,
+    # which would give about +1.73.
+    assert values["CAD"]["terms_of_trade"] == pytest.approx(10.0)
+
+
+def test_the_baseline_is_the_newest_reading_the_window_admits(
+    pillar: ExternalPillar,
+) -> None:
+    """Two readings inside the window, and the later one is the baseline.
+
+    Taking the first qualifying reading instead would widen the window silently
+    by however far back the series happens to start, which is the same defect as
+    the unbounded tolerance and is not caught by a series with one candidate.
+    """
+    candidates = [
+        obs("commodity_price", "CAD", value, period)
+        for period, value in (
+            (date(2026, 2, 20), 79.0),
+            (BASELINE, 80.0),
+            (NEWEST, 88.0),
+        )
+    ]
+    observations = [
+        *[
+            item
+            for item in universe()
+            if not (item.currency == "CAD" and item.indicator == "commodity_price")
+        ],
+        *candidates,
+    ]
+
+    values = components(pillar, observations)
+
+    # 88 against 80 is +10.0. Against the earlier 79.0 it would be about +11.39.
+    assert values["CAD"]["terms_of_trade"] == pytest.approx(10.0)

@@ -316,11 +316,14 @@ def _trade_trend(
     level = _newest(gdp)
     if window is None or level is None:
         return None
-    if level <= 0.0:
+    if not level > 0.0:
+        # Written as a negated `>` rather than `<= 0.0` so that a NaN is caught.
+        # Every comparison with NaN is False, so `level <= 0.0` would pass one
+        # through and the currency would score NaN rather than raising.
         raise ValueError(
             f"{currency} reports a nominal GDP of {level}, which cannot scale a "
-            "trade balance. A non-positive level is a corrupt registry entry or "
-            "a corrupt source, not a currency with no data."
+            "trade balance. A non-positive or non-finite level is a corrupt "
+            "registry entry or a corrupt source, not a currency with no data."
         )
     baseline, newest = window
     return (newest - baseline) / level * 100.0
@@ -364,6 +367,8 @@ def _terms_of_trade(
     if window is None:
         return None
     baseline, newest = window
-    if baseline <= 0.0:
+    if not baseline > 0.0:
+        # Negated `>` for the same reason as `_trade_trend`'s denominator: a NaN
+        # baseline would pass `<= 0.0` and return a NaN return.
         return None
     return (newest / baseline - 1.0) * 100.0
