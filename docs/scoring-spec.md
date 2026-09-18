@@ -808,6 +808,10 @@ drawdown that is the start of a crisis produce the same reading.
 The discount is applied at two levels, and the ramp is scaled to each series'
 own release calendar rather than measured in absolute days.
 
+**The convention.** `Observation.period` is the first day of the span a figure
+describes, `2026-08-01` for August 2026 and `2026-04-01` for 2026Q2, so an
+input's age is the days since its period began, never since it was published.
+
 **The ramp.** For one input, let `s` be its age in days from `Observation.period`,
 `S` be that indicator's allowance, and `s0 = S * (staleness_full_days /
 max_staleness_days)`, one third of `S` on the shipped defaults:
