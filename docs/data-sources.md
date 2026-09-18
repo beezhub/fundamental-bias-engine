@@ -569,7 +569,8 @@ six keys. The same week is also at `.xml` and `.csv`, both verified. Siblings
 | `impact` | `High`, `Medium`, `Low` or `Holiday`, capitalised exactly so. |
 | `forecast`, `previous`, `actual` | Display strings, not numbers: `"0.8%"`, `"-1.2K"`, `"3.75%"`, or empty. `actual` is absent until the release lands. |
 
-A week carries 80 to 100 rows across all currencies.
+A week carries roughly 100 rows across all currencies. The payload captured for
+the tests holds 105.
 
 `Holiday` is not an impact level, it is a market closure. Treating it as low
 impact means trading into a thin book. It belongs in a liquidity check, not a
@@ -621,6 +622,26 @@ once.
 
 Because the feed covers only the current week, a Friday run cannot see Monday's
 events. Fetch early in the week and keep the cached copy.
+
+`CalendarSource.horizon` reports that limit as a number rather than leaving it
+to be remembered: the latest instant the week it holds can vouch for, or `None`
+when it holds nothing usable. It is drawn from the events actually present, not
+from the calendar week they came out of, because the feed carries no field
+saying how far it runs and claiming a full week from a payload ending on Tuesday
+would assert coverage of three days nobody has seen. `fbe.calendar_guard` reads
+it alongside the events to build a `CalendarCoverage`. The source does not build
+one itself: `CalendarCoverage` lives in the guard, which is downstream, and the
+import edge between the two stays absent in both directions.
+
+`CalendarSource.available` answers on configuration rather than reachability,
+which is the contract every source here holds and which
+`tests/test_datasource_base.py` enforces by asserting no request is made. Online
+it is always `True`, since the feed needs no credential. Offline it is `True`
+only when the cache holds a week that still decodes, so a rate-limit page left
+behind by an older run answers `False` rather than promising a week that
+`events` will refuse. An unreachable feed is not reported here at all; it is
+reported by `events` raising, which is the only place a failed fetch can be told
+apart from a quiet week.
 ---
 
 ## Manual entries

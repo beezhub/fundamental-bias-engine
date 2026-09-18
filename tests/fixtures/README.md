@@ -188,3 +188,37 @@ marker for that date and the yen body omits the row.
 What a constructed body cannot do is break the build when FRED changes a unit
 or a scale underneath us, which is the point of a spot check. A human with a
 key should record real responses over these. See #56.
+
+## Forex Factory calendar
+
+Captured 2026-09-18 against `https://nfs.faireconomy.media/ff_calendar_thisweek.json`,
+no credential, no headers beyond the client's defaults.
+
+| File | Request | Status |
+| --- | --- | --- |
+| `forexfactory_calendar_thisweek.json` | the feed's only URL, no parameters | 200 |
+
+Byte-exact as returned. 105 rows for the week of 2026-09-14, carrying exactly
+the six keys the module docstring records and nothing else: there is no `actual`
+key on any row in this capture, which is why `_display` has to treat an absent
+key and an empty string alike.
+
+The week is a good one to have caught. It holds an FOMC decision, a Bank of
+England decision and a Bank of Japan decision, so the rate-decision patterns are
+exercised against three different central banks' wording rather than one. The
+four FOMC rows land on two instants thirty minutes apart, which is the
+overlapping case `blackout_windows` has to merge. The merge tests build that
+shape by hand rather than reading it from here, so re-capturing this file in a
+quieter week costs nothing: what the fixture contributes is evidence that the
+shape is real, not the coverage itself.
+
+Every `date` in it carries `-04:00`, US Eastern in summer. That is a limitation
+of this capture rather than of the feed: the offset moves to `-05:00` in
+November, so the daylight-saving test uses a written payload carrying both.
+A capture taken in winter would hold `-05:00` throughout and the parser must not
+care either way.
+
+The spot check reads one row, the Federal Funds Rate at `2026-09-16T14:00:00-04:00`,
+and asserts it arrives as 18:00 UTC with its forecast and previous intact. That
+is the assertion that breaks the build if the publisher renames a field, changes
+the offset convention, or starts coercing its display strings to numbers.
