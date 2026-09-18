@@ -856,8 +856,20 @@ pillar's own factor is the sub-weighted mean of its components' factors, from
 section 4.2. A single pillar-level age cannot do this: GROWTH would report the
 age of whichever series updated last and carry the other at full weight.
 
+The pillar's factor travels to the scorer on `PillarScore.freshness_factor`,
+written by `BasePillar.compute` and read by `scoring.score_currencies`, which
+passes it to `apply_staleness_penalty`. It rides on the score because
+`pillar_freshness` needs the extracted slice that only `compute` holds, and the
+scorer is never given one: resolving an allowance there would put the registry's
+indicator keys in front of a module that is deliberately free of them. A score
+carrying `None` has no measured factor, which is the honest answer for an
+implementation of the `Pillar` protocol that is not a `BasePillar`, and the
+scorer falls back to the age-based ramp for it.
+
 The per-component factors are published in `PillarScore.diagnostics` under
-`freshness.<component>`. Nothing in `scoring.py` reads them. `PillarScore.staleness_days`
+`freshness.<component>`. Nothing in `scoring.py` reads them, which is why the
+pillar-level factor has a field of its own rather than a diagnostics key: it is
+read to compute a weight, not to display one. `PillarScore.staleness_days`
 keeps its meaning, the age of the freshest input the pillar saw, and is reported
 rather than used to compute the discount.
 
@@ -1656,6 +1668,12 @@ An implementer should assert, at minimum:
   registry calls the series usable, and a series the registry calls stale has a
   factor of exactly zero. Assert it for `cpi_yoy` on AUD, `gdp_yoy` on USD and
   `yield_2y` on GBP at minimum.
+- The pillar's factor reaches the composite. Real pillars driven through
+  `scoring.score_currencies` on punctual inputs, one print per registered
+  indicator at `DEFAULT_PUBLICATION_LAG_DAYS`, leave every currency above
+  `ScoringConfig.min_coverage`. Asserting this on either side alone is what let
+  the scorer age every pillar against the global ceiling while the pillars
+  computed the right factor and nothing read it.
 - Components of one pillar are aged separately, so a 162-day-old GDP print and a
   5-day-old retail sales print produce two different factors and the older enters
   the blend at a reduced sub-weight rather than at 0.30.

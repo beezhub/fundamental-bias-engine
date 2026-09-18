@@ -198,6 +198,36 @@ class PillarScore:
     needed to compare two days. Recorded by `fbe.pillars.base.BasePillar.compute`
     on every score it builds, absent ones included.
     """
+    freshness_factor: float | None = None
+    """Fraction of its configured weight this pillar's inputs still justify.
+
+    A pure multiplier in ``[0.0, 1.0]``, carrying no unit and no sign: 1.0 means
+    every input is inside its own release schedule, 0.0 means the pillar is past
+    it and drops out of the composite entirely. It never touches ``score``, only
+    ``weight``, because a stale pillar has not changed its mind, it has stopped
+    being able to see.
+
+    Written by `fbe.pillars.base.BasePillar.compute` from `pillar_freshness`,
+    which ages each component against that indicator's own allowance in the
+    registry and averages over the sub-weights the currency actually holds. Read
+    by `fbe.scoring.score_currencies`, which passes it to
+    `fbe.scoring.apply_staleness_penalty` as ``freshness_factor``. Nothing else
+    reads it.
+
+    ``None`` means the pillar did not compute one, which is the honest answer
+    for an implementation of `Pillar` that is not a `BasePillar`. The scorer
+    then falls back to `fbe.scoring.freshness` on ``staleness_days`` alone,
+    which knows no allowance and judges every series as if it published monthly.
+    That fallback is conservative rather than correct, so ``None`` is a marked
+    absence and not a neutral default: 1.0 would claim the inputs were checked
+    and found fresh.
+
+    A typed field rather than a `diagnostics` key, for the reason
+    `blend_divisor_path` gives above and the stronger form of it. ``diagnostics``
+    is documented as never read by the aggregator, and this number exists to
+    change the weight the aggregator applies, so it is read for correctness and
+    not for display.
+    """
 
 
 @dataclass(frozen=True, slots=True)

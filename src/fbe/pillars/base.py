@@ -371,8 +371,8 @@ class BasePillar(ABC):
         Returns:
             One `PillarScore` per currency, keyed by ISO code.
 
-        Two things are recorded on every score, because neither is recoverable
-        from the numbers afterwards, and both have a typed home rather than a
+        Three things are recorded on every score, because none is recoverable
+        from the numbers afterwards, and each has a typed home rather than a
         line of prose. Which path `blend_divisor` took goes to
         ``PillarScore.blend_divisor_path``: scores computed under the fallback
         are not on the same scale as scores computed under the rolling estimate,
@@ -380,9 +380,13 @@ class BasePillar(ABC):
         How many inputs were admitted by the assumed publication lag rather than
         a real ``released_at`` goes to
         ``PillarScore.diagnostics["assumed_lag_inputs"]``, which is how much of
-        the run rests on `DEFAULT_PUBLICATION_LAG_DAYS` rather than on fact.
+        the run rests on `DEFAULT_PUBLICATION_LAG_DAYS` rather than on fact. The
+        third is `pillar_freshness`, which goes to
+        ``PillarScore.freshness_factor`` and is the only one of the three the
+        aggregator acts on: it is the fraction of the configured weight this
+        pillar's inputs justify, and `scoring.score_currencies` multiplies by it.
 
-        ``notes`` carries neither. It is human prose for the report's working
+        ``notes`` carries none of them. It is human prose for the report's working
         and nothing may parse it for a decision, which is what
         `fbe.types.PillarScore.notes` now says. Issue #51 records the ruling.
 
@@ -391,9 +395,10 @@ class BasePillar(ABC):
         component the currency had data for. They are a per-run measurement about
         the inputs rather than about the score, so nothing in `scoring.py` reads
         them: the aggregator sees their effect only through the weight, once,
-        via `pillar_freshness`. Without them a reader cannot tell a pillar
-        carrying one stale component from a pillar that is uniformly late, and
-        the two call for different action.
+        via the `pillar_freshness` result recorded on
+        ``PillarScore.freshness_factor``. Without them a reader cannot tell a
+        pillar carrying one stale component from a pillar that is uniformly late,
+        and the two call for different action.
 
         The run's own blend standard deviation should also be returned to the
         caller for storage, since it is the next run's history.
@@ -468,6 +473,13 @@ class BasePillar(ABC):
                 inputs=inputs,
                 diagnostics=diagnostics,
                 blend_divisor_path=self.last_blend_divisor_path,
+                # Computed here because this is the only place holding both the
+                # extracted slice and the finished score. `score_currencies`
+                # receives the score alone, and re-deriving the slice there would
+                # put the registry's indicator keys in front of a module that is
+                # deliberately free of them. The absent branch above does not
+                # reach this: `missing_score` states its own 0.0.
+                freshness_factor=self.pillar_freshness(per_currency, asof),
             )
         return scores
 
@@ -1498,12 +1510,15 @@ class BasePillar(ABC):
         if it were stale. Staleness and absence are separate facts and each is
         counted in exactly one place.
 
-        The caller is `scoring.score_currencies`, which passes this to
-        `scoring.apply_staleness_penalty` as ``freshness_factor``. A pillar-level
-        scalar computed from ``PillarScore.staleness_days`` alone cannot do this
-        job: GROWTH holding a five-month-old GDP print and a five-day-old retail
-        sales print would report the age of the retail print and take full
-        weight.
+        `compute` records the result on `PillarScore.freshness_factor`, and
+        `scoring.score_currencies` reads it there and passes it to
+        `scoring.apply_staleness_penalty` as ``freshness_factor``. It travels on
+        the score rather than being recomputed by the scorer because this method
+        needs the extracted slice, which `compute` holds and the scorer is never
+        given. A pillar-level scalar computed from ``PillarScore.staleness_days``
+        alone cannot do this job: GROWTH holding a five-month-old GDP print and a
+        five-day-old retail sales print would report the age of the retail print
+        and take full weight.
 
         """
         factors = self.component_freshness(extracted, asof)
@@ -1539,12 +1554,24 @@ class BasePillar(ABC):
             asof: Run date.
             notes: Short human-readable reason, shown in the report's working.
                 Say which indicator was missing, not just that data was thin.
-            staleness_days: Override for the freshness field. Defaults to
+            staleness_days: Override for the reported age. Defaults to
                 ``ScoringConfig.max_staleness_days + 1``, marking the pillar as
-                past its useful life.
+                past its useful life. It is reported, not acted on: the discount
+                is decided by ``freshness_factor`` below, so overriding this does
+                not buy an absent pillar any weight back.
 
         Returns:
-            A neutral `PillarScore` carrying this pillar's configured weight.
+            A neutral `PillarScore` carrying this pillar's configured weight and
+            a ``freshness_factor`` of ``0.0``, so the weight survives
+            `scoring.apply_staleness_penalty` as zero and the pillar drops out of
+            `coverage`. ``z`` is ``None``, which is the marker the aggregator
+            reads; the weight is what a report shows to say what the run lost.
+
+            The ``0.0`` is stated rather than left to the age-based fallback,
+            which reaches the same answer today only because the default age is
+            one day past the ramp. A run configuring a higher
+            ``max_staleness_days`` would separate them and hand an absent pillar
+            partial weight, which is issue #28 one level down.
 
         """
         age = (
@@ -1562,6 +1589,12 @@ class BasePillar(ABC):
             asof=asof,
             staleness_days=age,
             notes=notes,
+            # No data is not fresh data, which is `pillar_freshness`'s own rule
+            # for a currency holding no component at all. Stating it here rather
+            # than leaving ``None`` keeps an absent pillar off the age-based
+            # fallback, where the sentinel age happens to give 0.0 as well and
+            # the agreement would be a coincidence rather than a decision.
+            freshness_factor=0.0,
         )
 
 

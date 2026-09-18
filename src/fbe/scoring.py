@@ -69,11 +69,13 @@ def score_currencies(
            full observation set goes to every pillar because normalisation is
            cross-sectional and no pillar can judge one currency in isolation.
         2. Apply `apply_staleness_penalty` to each `PillarScore`, passing the
-           pillar's own `BasePillar.pillar_freshness` as the factor. The pillar
-           computes it because the per-indicator allowance is a registry fact and
-           the indicator keys are the pillar's, not the scorer's. Omitting it
-           falls back to the default ramp, which reads every series as if it
-           published monthly.
+           factor the pillar recorded on `PillarScore.freshness_factor`. The
+           pillar computes it, in `BasePillar.pillar_freshness`, because the
+           per-indicator allowance is a registry fact and the indicator keys are
+           the pillar's, not the scorer's. It rides on the score because the
+           factor needs the extracted slice that only `compute` holds, and this
+           module is not given one. A score carrying ``None`` falls back to the
+           default ramp, which reads every series as if it published monthly.
         3. Build each currency's `composite`, `coverage` and `dispersion`.
         4. Rank by composite, descending, so rank 1 is the strongest currency.
 
@@ -171,9 +173,16 @@ def score_currencies(
             # The weights are the run's, not the pillar's. This module weights
             # and the pillars do the economics, so a pillar emitting a weight
             # that disagrees with `ScoringConfig` does not get to change the
-            # composite.
+            # composite. The discount on that weight is the pillar's, though,
+            # because the allowance is per indicator and lives in the registry,
+            # which this module stays free of. A score carrying no factor falls
+            # back to the age-based ramp, which reads every series as if it
+            # published monthly.
             per_currency[currency][pillar.name] = apply_staleness_penalty(
-                replace(score, weight=weight), config, asof
+                replace(score, weight=weight),
+                config,
+                asof,
+                freshness_factor=score.freshness_factor,
             )
 
     scored = [
@@ -593,6 +602,7 @@ def apply_staleness_penalty(
         freshness_factor: The pillar's own freshness in ``[0.0, 1.0]``, from
             `BasePillar.pillar_freshness`, which ages each component against its
             own indicator allowance and averages over the sub-weights present.
+            `score_currencies` reads it off `PillarScore.freshness_factor`.
             ``None`` falls back to ``freshness(pillar_score.staleness_days,
             config)``, which knows no allowance and therefore judges every
             series as if it published monthly. That fallback is the conservative
