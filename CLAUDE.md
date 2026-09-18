@@ -49,17 +49,21 @@ Observation    -->  PillarScore  -->  CurrencyScore --> PairBias     -->  BiasRe
 
 ## What is implemented and what is not
 
-Three modules are real. Everything else is scaffolding at varying stages.
+The vocabulary, the universe, the config and the scoring chain are real.
+Everything else is scaffolding at varying stages. Each module is written from
+the repository root so the row can be checked against the file it names, which
+`tests/test_module_status_table.py` does.
 
 | Module | Status |
 | --- | --- |
 | `src/fbe/types.py` | Implemented. The shared vocabulary. |
 | `src/fbe/universe.py` | Implemented. G10, metadata, the 28 pairs. |
-| `src/fbe/config.py` | Implemented apart from `load_config()`. |
+| `src/fbe/config.py` | Implemented. Defaults, file and environment. |
+| `src/fbe/scoring.py`, `src/fbe/bias.py` | Implemented. Composite and pair rows. |
+| `src/fbe/pillars/*` | In progress |
 | `src/fbe/datasources/*` | In progress |
-| `src/fbe/pillars/*`, `scoring.py`, `bias.py` | In progress |
-| `src/fbe/risk.py`, `calendar_guard.py`, `journal.py` | In progress |
-| `src/fbe/cli.py`, `report.py`, `dashboard/*` | In progress |
+| `src/fbe/risk.py`, `src/fbe/calendar_guard.py`, `src/fbe/journal.py` | In progress |
+| `src/fbe/cli.py`, `src/fbe/report.py`, `src/fbe/dashboard/*` | In progress |
 
 **How to tell without checking this table:** a stub raises `NotImplementedError`
 with a message naming the fully qualified callable and pointing at the phase of
