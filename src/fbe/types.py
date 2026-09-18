@@ -77,6 +77,7 @@ class Frequency(StrEnum):
     WEEKLY = "weekly"
     MONTHLY = "monthly"
     QUARTERLY = "quarterly"
+    ANNUAL = "annual"
     IRREGULAR = "irregular"
 
 
