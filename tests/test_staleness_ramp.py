@@ -762,9 +762,16 @@ HISTORY_STEP_DAYS: dict[Frequency, int] = {
     Frequency.WEEKLY: 7,
     Frequency.MONTHLY: 30,
     Frequency.QUARTERLY: 91,
+    Frequency.ANNUAL: 365,
     Frequency.IRREGULAR: 30,
 }
-"""Gap between consecutive periods of a series, by how often it publishes."""
+"""Gap between consecutive periods of a series, by how often it publishes.
+
+Every member of `Frequency` needs an entry. This mapping and
+`DEFAULT_PUBLICATION_LAG_DAYS` are the only two indexed by a spec's frequency,
+and both are indexed with a bare subscript, so a new member without an entry
+fails here while building the fixture rather than inside the test it breaks.
+"""
 
 HISTORY_POINTS = 24
 """Observations per series, enough to clear `MIN_TIME_SERIES_WINDOW` of 12.

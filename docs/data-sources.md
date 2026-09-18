@@ -823,6 +823,7 @@ keys currently in that position.
 | `business_confidence_mfg` | 8/8 | 8/8 | free, **consumed by no pillar**; see below |
 | `trade_balance` | 8/8 | 8/8 | good |
 | `current_account_gdp` | 0/8 | 8/8 | all eight frozen at 2024Q4 |
+| `gdp_nominal_usd` | 8/8 | 8/8 | annual; one year behind on every leg by design |
 | `cot_net_pct_oi` | 8/8 | 8/8 | good, 8-10 days stale by design |
 | `equity_index` | 8/8 | 8/8 | USD and JPY daily, rest monthly; **consumed by no pillar**, see below |
 | `world_equity_index` | global | global | good; the equity half of the risk regime |
@@ -1003,6 +1004,7 @@ a free machine-readable source, not the operator's typing.
 | `business_confidence_mfg` | growth (unconsumed) | `percentage_balance` | monthly | 270d | 100% | 100% |
 | `trade_balance` | external | `usd` | monthly | 150d | 100% | 100% |
 | `current_account_gdp` | external | `percent_of_gdp` | quarterly | 210d | 0% | 100% |
+| `gdp_nominal_usd` | external | `usd` | annual | 916d | 100% | 100% |
 | `cot_net_pct_oi` | positioning | `contracts` | weekly | 21d | 100% | 100% |
 | `equity_index` | risk (unconsumed) | `index` | daily | 75d | 100% | 100% |
 | `world_equity_index` | risk | `index` | daily | 7d | 100% | 100% |
@@ -1298,6 +1300,29 @@ Pillar: **external**. Canonical unit: `percent_of_gdp`. Staleness allowance: 210
 | CAD | fred | `CANB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
 | AUD | fred | `AUSB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
 | NZD | fred | `NZLB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
+
+#### `gdp_nominal_usd`
+
+Nominal gross domestic product at market prices, in actual US dollars, from the World Bank's national accounts through FRED. The denominator `trade_trend` is taken over, and nothing else consumes it.
+
+**Actual dollars, not millions or billions.** `trade_balance` is published on the same scale, so the ratio is taken between two quantities in one unit with no conversion step. A series filed here in national currency, or in millions, would give a plausible number for every currency and raise nothing, because the cross-sectional z-score absorbs a common factor exactly. That is why issue #158 chose this family over a quarterly one.
+
+Annual rather than quarterly, and that was measured rather than preferred. The OECD quarterly family `*GDPNQDSMEI` resolves for all eight, is denominated in national currency, and stopped publishing at 2023-07-01. Converting it would buy an FX step, a date convention and a series three years stale, so there is nothing to convert.
+
+The allowance of 916 days follows `IndicatorSpec.max_staleness_days`' own rule from a measured lag rather than an assumed one: the 2025 reference year was published on 2026-07-07, 188 days after the year ended, so the newest print is 916 days old on the day before its successor is due. On a 2026-09 run that leaves `trade_trend` entering at about half of its declared 0.30. Whether ageing a scaling constant like a signal is right at all is argued on #126 and is not settled here.
+
+Pillar: **external**. Canonical unit: `usd`. Staleness allowance: 916 days. Fresh coverage: 100%.
+
+| Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| USD | fred | `MKTGDPUSA646NWDB` | usd | annual | level | yes | 2025-01-01 | - |
+| EUR | fred | `MKTGDPDEA646NWDB` | usd | annual | level | yes | 2025-01-01 | - |
+| GBP | fred | `MKTGDPGBA646NWDB` | usd | annual | level | yes | 2025-01-01 | - |
+| JPY | fred | `MKTGDPJPA646NWDB` | usd | annual | level | yes | 2025-01-01 | - |
+| CHF | fred | `MKTGDPCHA646NWDB` | usd | annual | level | yes | 2025-01-01 | - |
+| CAD | fred | `MKTGDPCAA646NWDB` | usd | annual | level | yes | 2025-01-01 | - |
+| AUD | fred | `MKTGDPAUA646NWDB` | usd | annual | level | yes | 2025-01-01 | - |
+| NZD | fred | `MKTGDPNZA646NWDB` | usd | annual | level | yes | 2025-01-01 | - |
 
 #### `cot_net_pct_oi`
 

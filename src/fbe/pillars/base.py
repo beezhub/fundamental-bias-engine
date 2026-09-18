@@ -45,6 +45,7 @@ DEFAULT_PUBLICATION_LAG_DAYS: Mapping[Frequency, int] = {
     Frequency.WEEKLY: 7,
     Frequency.MONTHLY: 45,
     Frequency.QUARTERLY: 120,
+    Frequency.ANNUAL: 552,
     Frequency.IRREGULAR: 45,
 }
 """Assumed gap between a period starting and its number being published.
@@ -54,6 +55,12 @@ historical run could have seen it. The values are measured from ``period``, whic
 is the first day of the period described, so the monthly figure of 45 days covers
 a month elapsing plus the usual two-week statistical lag, and the quarterly
 figure of 120 days covers a quarter elapsing plus a month.
+
+The annual figure of 552 days is measured rather than assumed. The World Bank
+nominal GDP family on FRED, the only annual series the registry carries, last
+published its 2025 reference year on 2026-07-07, and 2025-01-01 to 2026-07-07 is
+552 days. It is the binding case of the eight: the US series published a week
+earlier. Issue #158 carries the measurements and the ruling that set this entry.
 
 They are deliberately generous. An assumed lag that is too long costs a backtest
 a little realism at the margin; one that is too short manufactures profit out of

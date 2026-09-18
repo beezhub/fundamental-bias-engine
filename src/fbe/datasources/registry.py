@@ -1582,6 +1582,99 @@ TRADE_BALANCE = IndicatorSpec(
 )
 
 
+GDP_NOMINAL_USD = IndicatorSpec(
+    key="gdp_nominal_usd",
+    pillar=PillarName.EXTERNAL,
+    unit="usd",
+    frequency=Frequency.ANNUAL,
+    max_staleness_days=916,
+    description=(
+        "Nominal gross domestic product at market prices, in actual US dollars, "
+        "from the World Bank's national accounts through FRED. The denominator "
+        "``trade_trend`` is taken over, and nothing else consumes it. "
+        "**Actual dollars, not millions or billions.** ``trade_balance`` is "
+        "published on the same scale, so the ratio is taken between two "
+        "quantities in one unit with no conversion step, which is the whole "
+        "reason issue #158 was ruled this way: a conversion is where this "
+        "project's worst recorded defect came from. A series filed here in "
+        "national currency, or in millions, gives a plausible number for every "
+        "currency and raises nothing, because the cross-sectional z-score "
+        "absorbs a common factor exactly. "
+        "Annual rather than quarterly, and that was measured rather than "
+        "preferred. The OECD quarterly family ``*GDPNQDSMEI`` resolves for all "
+        "eight and is national currency, and it stopped publishing at "
+        "2023-07-01, so converting it would buy an FX step, a date convention "
+        "and a series three years stale. There is nothing to convert. "
+        "The allowance of 916 days follows `IndicatorSpec.max_staleness_days`' "
+        "own rule from a measured lag: the 2025 reference year was published on "
+        "2026-07-07, which is 188 days after the year ended, so the newest print "
+        "is 916 days old on the day before its successor is due. On a 2026-09 "
+        "run that leaves ``trade_trend`` entering at about half of its declared "
+        "0.30 rather than at full weight. Whether ageing a scaling constant like "
+        "a signal is right at all is argued on #126; it is not decided here. "
+        "Verified 8 of 8 on 2026-09-18, one year behind on every leg."
+    ),
+    series={
+        "USD": _ref(
+            SOURCE_FRED,
+            "MKTGDPUSA646NWDB",
+            "usd",
+            Frequency.ANNUAL,
+            date(2025, 1, 1),
+        ),
+        "EUR": _ref(
+            SOURCE_FRED,
+            "MKTGDPDEA646NWDB",
+            "usd",
+            Frequency.ANNUAL,
+            date(2025, 1, 1),
+        ),
+        "GBP": _ref(
+            SOURCE_FRED,
+            "MKTGDPGBA646NWDB",
+            "usd",
+            Frequency.ANNUAL,
+            date(2025, 1, 1),
+        ),
+        "JPY": _ref(
+            SOURCE_FRED,
+            "MKTGDPJPA646NWDB",
+            "usd",
+            Frequency.ANNUAL,
+            date(2025, 1, 1),
+        ),
+        "CHF": _ref(
+            SOURCE_FRED,
+            "MKTGDPCHA646NWDB",
+            "usd",
+            Frequency.ANNUAL,
+            date(2025, 1, 1),
+        ),
+        "CAD": _ref(
+            SOURCE_FRED,
+            "MKTGDPCAA646NWDB",
+            "usd",
+            Frequency.ANNUAL,
+            date(2025, 1, 1),
+        ),
+        "AUD": _ref(
+            SOURCE_FRED,
+            "MKTGDPAUA646NWDB",
+            "usd",
+            Frequency.ANNUAL,
+            date(2025, 1, 1),
+        ),
+        "NZD": _ref(
+            SOURCE_FRED,
+            "MKTGDPNZA646NWDB",
+            "usd",
+            Frequency.ANNUAL,
+            date(2025, 1, 1),
+        ),
+    },
+)
+
+
 CURRENT_ACCOUNT_GDP = IndicatorSpec(
     key="current_account_gdp",
     pillar=PillarName.EXTERNAL,
@@ -2069,6 +2162,7 @@ INDICATORS: Mapping[str, IndicatorSpec] = {
         BUSINESS_CONFIDENCE_MFG,
         TRADE_BALANCE,
         CURRENT_ACCOUNT_GDP,
+        GDP_NOMINAL_USD,
         COT_NET_PCT_OI,
         EQUITY_INDEX,
         WORLD_EQUITY_INDEX,
