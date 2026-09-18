@@ -63,7 +63,13 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 
 from fbe.config import DataConfig
-from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy, SourceError
+from fbe.datasources.base import (
+    BaseDataSource,
+    ProbeRequest,
+    RateLimit,
+    RetryPolicy,
+    SourceError,
+)
 from fbe.datasources.fred import FredSource
 from fbe.datasources.registry import INDICATORS, SeriesRef
 from fbe.types import Observation
@@ -73,6 +79,7 @@ __all__ = [
     "FRED_RISK_SERIES",
     "FRED_SPOT_SERIES",
     "MAX_SPOT_STALENESS_DAYS",
+    "PROBE_WINDOW_DAYS",
     "RATE_LIMIT",
     "SPOT_LOOKBACK_DAYS",
     "STOOQ_CLOSE_COLUMN",
@@ -96,6 +103,11 @@ This is the whole of the anti-bot defence. The challenge page arrives with HTTP
 200, so status alone says the request succeeded, and anything that is not this
 header is refused rather than parsed. Held as a constant because it is the one
 string that decides whether a body is data."""
+
+PROBE_WINDOW_DAYS = 14
+"""How far back the ``fbe doctor`` probe asks for sessions. Two weeks, so the
+answer is a handful of rows rather than a year of them, and still holds at
+least one session across any holiday week."""
 
 STOOQ_DATE_FORMAT = "%Y%m%d"
 """How ``d1`` and ``d2`` are written. Not the format of the ``Date`` column in
@@ -399,6 +411,43 @@ class PricesSource(BaseDataSource):
         # the order is sorted rather than trusted.
         rows.sort(key=lambda row: row[0])
         return rows
+
+    def probe_request(self) -> ProbeRequest:
+        """Ask for a short session history, which a healthy Stooq answers in CSV.
+
+        A bare GET of `STOOQ_CSV_URL` carries no symbol and no window, so even
+        a healthy Stooq does not answer it with a session history, and a probe
+        that decoded that answer would refuse a working source. This asks the
+        way `fetch_stooq` asks: the ``USD`` symbol from `STOOQ_SYMBOLS` over
+        the last `PROBE_WINDOW_DAYS`, so the body is the one `_decode` already
+        knows how to recognise and the check is the same one every real fetch
+        makes. A window that held no session comes back as the header alone,
+        which `_decode` accepts as an empty history, so a holiday week is not
+        reported as a block.
+
+        The symbol is unverified, like every entry in `STOOQ_SYMBOLS`. If it is
+        wrong, doctor reports that Stooq answered but did not serve a session
+        history, which is the honest answer: it is the symbol the engine would
+        ask for, and a source that cannot serve it is not serving the engine.
+
+        Returns:
+            The request and `_decode` as its check. `_decode` raises
+            `_BodyNotCsv`, a `SourceError`, for the challenge page and for
+            anything else that is not a session history.
+
+        """
+        end = _today()
+        start = end - timedelta(days=PROBE_WINDOW_DAYS)
+        return ProbeRequest(
+            path="",
+            params={
+                "s": STOOQ_SYMBOLS["USD"],
+                "d1": start.strftime(STOOQ_DATE_FORMAT),
+                "d2": end.strftime(STOOQ_DATE_FORMAT),
+                "i": "d",
+            },
+            verify=self._decode,
+        )
 
     def available(self) -> bool:
         """Report whether the Stooq endpoint answers with CSV rather than HTML.

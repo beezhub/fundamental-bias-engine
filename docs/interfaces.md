@@ -119,6 +119,19 @@ cache writability, entry count and age against `cache_ttl_hours`;
 and whether a previous report exists to diff against. Each check prints its own
 verdict, so one failure does not hide the rest.
 
+The probe is a request the source vouches for, not a bare GET of its root. A
+source that describes one (`BaseDataSource.probe_request`) is asked that, and a
+2xx whose body the source does not recognise as its own content is a warning,
+`stooq answered but did not serve its own content: ...`, with no latency. That
+is the line Stooq's anti-bot page produces: it arrives as HTTP 200 with HTML,
+and a status check alone printed it as `stooq 310ms`. A source that describes
+no probe request is judged on the status of its root, as before, because doctor
+cannot tell what that source's content looks like and refusing a healthy root
+that serves no data would be the same defect with the sign flipped. The
+warning is distinct from a timeout, from a credential refusal (HTTP 401 or
+403) and from an error status, since each needs a different response from the
+operator.
+
 | Option | Default | Meaning |
 |---|---|---|
 | `--timeout` | `5.0` | Seconds per reachability probe. |
