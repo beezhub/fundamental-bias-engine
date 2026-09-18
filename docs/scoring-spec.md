@@ -574,6 +574,24 @@ in any macro series.
 | Trade balance momentum | `trade_balance` | 3-month change, percent of GDP | Improving is positive | 0.30 |
 | Terms of trade | `commodity_price` | 3-month return on the linked commodity, percent | Rising export price is positive | 0.30 |
 
+**The trade balance is scaled by `gdp_nominal_usd`.** The registry publishes the
+balance in actual US dollars, so a denominator on the same scale gives a ratio
+with no conversion step, which is why issue #158 ruled for a dollar-denominated
+GDP level rather than a national-currency one. It is annual, because the only
+free quarterly family is in national currency and stopped publishing in 2023,
+and it therefore carries a 916-day allowance derived from its measured
+publication lag. Two consequences follow and neither is hidden: `trade_trend`
+ages on the older of its two inputs, so it enters at roughly half its declared
+0.30 on a current run, and whether a scaling constant should be aged like a
+signal at all is an open argument recorded on #126.
+
+The numerator is a monthly flow and the denominator an annual level, so the
+figure is smaller than an annual current-account share. It is not annualised:
+multiplying by twelve would apply one constant to all eight currencies, change
+no ranking, and make the number read as an annual rate it is not. Each component
+is z-scored across the universe before the blend, so what has to be comparable
+is this quantity across currencies, which it is.
+
 The terms of trade term reads `CurrencyMeta.commodity_link`: crude oil for CAD,
 iron ore for AUD, dairy for NZD. A currency with no dominant commodity link takes
 **0.0** for this term rather than being treated as missing. This is a deliberate
