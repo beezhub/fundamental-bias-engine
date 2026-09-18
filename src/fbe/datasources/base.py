@@ -27,7 +27,7 @@ import math
 import time
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from types import MappingProxyType
@@ -39,7 +39,13 @@ from fbe.datasources.cache import CREDENTIAL_PARAMS, CacheMiss, DiskCache
 from fbe.datasources.registry import SeriesRef
 from fbe.types import Observation
 
-__all__ = ["BaseDataSource", "RateLimit", "RetryPolicy", "SourceError"]
+__all__ = [
+    "BaseDataSource",
+    "ProbeRequest",
+    "RateLimit",
+    "RetryPolicy",
+    "SourceError",
+]
 
 REQUEST_TIMEOUT_SECONDS = 30.0
 """Per-request timeout. The engine runs from a morning routine against a
@@ -104,6 +110,40 @@ class RateLimit:
     requests: int = 60
     per_seconds: float = 60.0
     min_interval_seconds: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeRequest:
+    """One request a source vouches for, and how to tell its answer is genuine.
+
+    ``fbe doctor`` used to judge a source on the status code of a bare GET of
+    ``base_url``. Stooq answers a blocked request with HTTP 200 and an HTML
+    proof-of-work page, so that verdict printed a blocked source as healthy
+    with a latency to prove it. The fix cannot be to run the bare GET through
+    the source's own decoder either: a healthy Stooq does not serve CSV at its
+    root, so that reports a working source as blocked, which is the same
+    defect with the sign flipped. Hence this: the source names a request that
+    a healthy instance answers with its own content, and the check that tells
+    that content from anything else.
+
+    Attributes:
+        path: Path relative to the source's ``base_url``, the empty string for
+            the root, exactly as `BaseDataSource._request` takes it.
+        params: Query parameters to send. Never a credential: doctor prints
+            what it asked for on failure, and the request does not go through
+            the source's own client.
+        verify: Called with the raw body of a 2xx response. Returns for a body
+            that is this source's own content and raises `SourceError` naming
+            what was expected for anything else. A body it refuses is reported
+            as answered-but-not-served, which is a different line from a
+            timeout, a refusal and an error status because it needs a
+            different response from the operator.
+
+    """
+
+    path: str
+    params: Mapping[str, str]
+    verify: Callable[[bytes], object]
 
 
 class BaseDataSource(ABC):
@@ -174,6 +214,24 @@ class BaseDataSource(ABC):
             The credential, or ``None`` when the source needs none or none is
             configured. ``None`` means the parameter is not sent at all, which
             is correct for the anonymous endpoints several sources expose.
+
+        """
+        return None
+
+    def probe_request(self) -> ProbeRequest | None:
+        """Describe the request ``fbe doctor`` should make to check this source.
+
+        Returns:
+            A `ProbeRequest` for a source that can name one cheap request and
+            recognise its own answer to it, or ``None``, which is the base's
+            answer. ``None`` does not mean the source is blocked or healthy; it
+            means doctor has nothing better than a bare GET of ``base_url``
+            judged on its status code, which is the verdict every source had
+            before this hook existed and which a source keeps until it
+            overrides this. A source whose provider is known to answer a
+            blocked request with a 2xx and the wrong body should override it,
+            because for that provider the status-only verdict is the wrong
+            answer on exactly the day the operator runs doctor.
 
         """
         return None

@@ -91,6 +91,7 @@ from fbe import config as config_module
 from fbe import report as report_module
 from fbe.bias import apply_filters, at_least, blocking, build_pair_biases
 from fbe.datasources import ALL_SOURCES
+from fbe.datasources.base import ProbeRequest, SourceError
 from fbe.datasources.cache import DiskCache
 from fbe.datasources.collect import (
     CollectionResult,
@@ -616,11 +617,37 @@ def _probe(source: object, timeout: float) -> tuple[CheckStatus, str]:
         rather than a failure: one dead source is a recorded coverage gap, not
         a reason to refuse the whole run.
 
+        A source that describes a `ProbeRequest` is asked that and its 2xx
+        body is handed to the request's own check; a body the source does not
+        recognise is a warning saying the source answered but did not serve
+        its own content, with no latency, because a latency is what made the
+        blocked line and the healthy line read the same. A source that
+        describes none is judged on the status of a bare GET of ``base_url``,
+        which is the verdict it always had: this function cannot tell what a
+        source's content looks like, so it does not guess, and guessing with a
+        shared decoder would refuse healthy sources whose root serves no data.
+
     """
     name = getattr(source, "name", "unknown")
     url = getattr(source, "base_url", "")
     if not url:
         return CheckStatus.WARN, f"{name} names no base URL to probe"
+
+    describe = getattr(source, "probe_request", None)
+    try:
+        request: ProbeRequest | None = describe() if callable(describe) else None
+    except Exception as error:  # noqa: BLE001
+        # Describing a probe touches no network, so a raise here is a defect
+        # in the source, and it is reported as one rather than allowed to
+        # take the rest of the report down with it.
+        return (
+            CheckStatus.WARN,
+            f"{name} could not describe a probe: {type(error).__name__}: {error}",
+        )
+    params: Mapping[str, str] = {}
+    if request is not None:
+        url = f"{url}{request.path}"
+        params = request.params
 
     # httpx logs the request line at INFO with the full URL, and a source is
     # free to carry a credential in its base URL. `BaseDataSource` pins this
@@ -629,7 +656,7 @@ def _probe(source: object, timeout: float) -> tuple[CheckStatus, str]:
 
     started = time.monotonic()
     try:
-        response = httpx.get(url, timeout=timeout)
+        response = httpx.get(url, params=params, timeout=timeout)
     except httpx.TimeoutException:
         return CheckStatus.WARN, f"{name} unreachable (timeout after {timeout}s)"
     except Exception as error:  # noqa: BLE001
@@ -640,6 +667,17 @@ def _probe(source: object, timeout: float) -> tuple[CheckStatus, str]:
 
     elapsed = (time.monotonic() - started) * 1000
     if response.is_success:
+        if request is not None:
+            try:
+                request.verify(response.content)
+            except SourceError as error:
+                # The status said success and the body says otherwise. Stooq's
+                # anti-bot page arrives exactly like this, and it is the one
+                # case an operator running doctor most needs named.
+                return (
+                    CheckStatus.WARN,
+                    f"{name} answered but did not serve its own content: {error}",
+                )
         return CheckStatus.OK, f"{name} {elapsed:.0f}ms"
     if response.status_code in (401, 403):
         # The commonest real failure, and it is a credential problem wearing a

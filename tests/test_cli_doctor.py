@@ -23,12 +23,28 @@ import pytest
 import respx
 from typer.testing import CliRunner, Result
 
-from fbe.cli import EXIT_OK, EXIT_UNUSABLE, KEY_PREFIX_LENGTH, LABEL_WIDTH, app
+from fbe.cli import (
+    EXIT_OK,
+    EXIT_UNUSABLE,
+    KEY_PREFIX_LENGTH,
+    LABEL_WIDTH,
+    CheckStatus,
+    _check_sources,
+    _probe,
+    app,
+)
 from fbe.config import Config, DataConfig, load_config
-from fbe.datasources.base import BaseDataSource, RateLimit
+from fbe.datasources.base import BaseDataSource, ProbeRequest, RateLimit, SourceError
 from fbe.datasources.cache import DiskCache
+from fbe.datasources.prices import STOOQ_CSV_URL, PricesSource
 from fbe.datasources.registry import SeriesRef
 from fbe.types import Observation
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+CHALLENGE_BODY = (FIXTURES / "stooq_challenge.html").read_text()
+"""Stooq's anti-bot page, served with HTTP 200. Committed by PR #99."""
+CSV_BODY = (FIXTURES / "stooq_spx_daily.csv").read_text()
+"""A genuine Stooq session history, so the fix cannot be a blanket refusal."""
 
 CREDENTIAL = "abcdef0123456789abcdef0123456789"
 PROBE_URL = "https://example.test/api/"
@@ -1203,3 +1219,206 @@ def test_no_line_claims_anything_about_the_model_on_a_failing_run(
 
     for word in FORBIDDEN:
         assert word not in lowered
+
+
+# --- a 200 whose body is not the source's own content (issue #102) ----------
+#
+# `_probe` judged a source on its status code alone. Stooq answers a blocked
+# request with HTTP 200 and an HTML proof-of-work page, so on the commonest
+# real blocking mode doctor printed `stooq 118ms` and sent the operator to look
+# somewhere else. The fix is a request each source vouches for, with its own
+# check of the body, and not a bare GET of `base_url` run through a shared
+# decoder: that would refuse a healthy source, which is the same defect with
+# the sign flipped.
+
+VOUCHED_MARKER = b"served-by-vouching"
+
+
+class _Vouching(_Reachable):
+    """A source that describes its own probe and recognises its own content."""
+
+    name = "vouching"
+
+    def probe_request(self) -> ProbeRequest:
+        return ProbeRequest(path="probe", params={"q": "1"}, verify=self._verify)
+
+    @staticmethod
+    def _verify(body: bytes) -> None:
+        if VOUCHED_MARKER not in body:
+            raise SourceError("expected the marker and got something else")
+
+
+class _BadDescription(_Reachable):
+    """A source whose probe description is itself broken."""
+
+    name = "baddesc"
+
+    def probe_request(self) -> ProbeRequest:
+        raise KeyError("XXX")
+
+
+class _NoBaseUrl(_Reachable):
+    """A source with nothing to probe, which is a warning and not a request."""
+
+    name = "nobase"
+    base_url = ""
+
+
+@respx.mock
+def test_a_challenge_page_at_200_is_not_reported_as_healthy(tmp_path: Path) -> None:
+    """Criterion 2. The committed challenge page, at HTTP 200, is a warning.
+
+    The message carries no latency: a timing is what made the healthy line
+    and the blocked line indistinguishable.
+    """
+    respx.get(url__startswith=STOOQ_CSV_URL).mock(
+        return_value=httpx.Response(200, text=CHALLENGE_BODY)
+    )
+
+    status, detail = _probe(PricesSource(DataConfig(cache_dir=tmp_path)), 5.0)
+
+    assert status is CheckStatus.WARN
+    assert "ms" not in detail
+    assert "did not serve its own content" in detail
+
+
+@respx.mock
+def test_a_genuine_session_history_at_200_is_healthy(tmp_path: Path) -> None:
+    """Criterion 3. The same source with a real body is OK and timed."""
+    respx.get(url__startswith=STOOQ_CSV_URL).mock(
+        return_value=httpx.Response(200, text=CSV_BODY)
+    )
+
+    status, detail = _probe(PricesSource(DataConfig(cache_dir=tmp_path)), 5.0)
+
+    assert status is CheckStatus.OK
+    assert detail.startswith("stooq ")
+    assert detail.endswith("ms")
+
+
+@respx.mock
+def test_the_prices_probe_asks_for_a_session_history_not_the_bare_root(
+    tmp_path: Path,
+) -> None:
+    """The trap the issue names. A bare GET of `base_url` never returns CSV,
+    even from a healthy Stooq, so the probe has to ask for a symbol and a
+    window the way `fetch_stooq` does."""
+    route = respx.get(url__startswith=STOOQ_CSV_URL).mock(
+        return_value=httpx.Response(200, text=CSV_BODY)
+    )
+
+    _probe(PricesSource(DataConfig(cache_dir=tmp_path)), 5.0)
+
+    params = route.calls.last.request.url.params
+    assert set(params.keys()) >= {"s", "d1", "d2", "i"}
+
+
+@respx.mock
+def test_the_blocked_message_is_distinct_from_every_other_warning() -> None:
+    """Criterion 1. Four failures, four different sentences.
+
+    A timeout, a refusal, an error status and a body that is not the source's
+    content each need a different response from the operator, so the wording
+    that tells them apart is what is pinned here.
+    """
+    url = PROBE_URL + "probe"
+    respx.get(url).mock(return_value=httpx.Response(200, content=b"<html>"))
+    blocked = _probe(_Vouching(DataConfig()), 5.0)[1]
+    respx.get(url).mock(side_effect=httpx.ReadTimeout("slow"))
+    timed_out = _probe(_Vouching(DataConfig()), 5.0)[1]
+    respx.get(url).mock(return_value=httpx.Response(403))
+    refused = _probe(_Vouching(DataConfig()), 5.0)[1]
+    respx.get(url).mock(return_value=httpx.Response(503))
+    errored = _probe(_Vouching(DataConfig()), 5.0)[1]
+
+    assert "did not serve its own content" in blocked
+    assert "timeout" in timed_out and "did not serve" not in timed_out
+    assert "credential" in refused and "did not serve" not in refused
+    assert "HTTP 503" in errored and "did not serve" not in errored
+
+
+@respx.mock
+def test_a_vouched_probe_sends_the_path_and_params_the_source_named() -> None:
+    route = respx.get(PROBE_URL + "probe").mock(
+        return_value=httpx.Response(200, content=VOUCHED_MARKER)
+    )
+
+    status, _ = _probe(_Vouching(DataConfig()), 5.0)
+
+    assert status is CheckStatus.OK
+    assert route.calls.last.request.url.params["q"] == "1"
+
+
+@respx.mock
+def test_a_source_with_no_base_url_keeps_its_current_line() -> None:
+    """Criterion 4, first half. Nothing to probe is a warning, never a request
+    and never a report of being blocked."""
+    route = respx.get(url__startswith="https://").mock(return_value=httpx.Response(200))
+
+    status, detail = _probe(_NoBaseUrl(DataConfig()), 5.0)
+
+    assert status is CheckStatus.WARN
+    assert "names no base URL" in detail
+    assert "did not serve" not in detail
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_a_source_that_describes_no_probe_is_judged_on_status_alone() -> None:
+    """Criterion 4, second half. A source that has not said what its content
+    looks like keeps the status-only verdict it had, whatever the body."""
+    respx.get(PROBE_URL).mock(return_value=httpx.Response(200, content=b"<html>"))
+
+    status, detail = _probe(_Reachable(DataConfig()), 5.0)
+
+    assert status is CheckStatus.OK
+    assert detail.endswith("ms")
+
+
+@respx.mock
+def test_an_offline_run_never_sends_a_vouched_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Criterion 5. `_check_sources` short circuits before `_probe`, and the
+    new request path must not have opened a way round it."""
+    route = respx.get(url__startswith=PROBE_URL).mock(
+        return_value=httpx.Response(200, content=VOUCHED_MARKER)
+    )
+    monkeypatch.setattr("fbe.cli.ALL_SOURCES", (_Vouching,))
+    config = Config(data=DataConfig(cache_dir=tmp_path / "cache", offline=True))
+
+    lines = _check_sources(config, 5.0)
+
+    assert route.call_count == 0
+    assert any("offline so no probe" in line.detail for line in lines)
+
+
+@respx.mock
+def test_a_blocked_source_prints_as_a_warning_line_under_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end through the command, so the verdict reaches the operator."""
+    respx.get(PROBE_URL + "probe").mock(
+        return_value=httpx.Response(200, content=b"<html>challenge</html>")
+    )
+    respx.get(SECOND_URL).mock(return_value=httpx.Response(200))
+    monkeypatch.setattr("fbe.cli.ALL_SOURCES", (_Vouching, _SecondReachable))
+
+    result = _run(_config_file(tmp_path))
+
+    block = _block(result, "sources")
+    assert any("did not serve its own content" in line for line in block)
+    assert not any("vouching" in line and "ms" in line for line in block)
+
+
+@respx.mock
+def test_a_probe_description_that_raises_is_a_warning_not_a_traceback() -> None:
+    """Doctor's own rule: nothing under the sources check raises."""
+    route = respx.get(url__startswith=PROBE_URL).mock(return_value=httpx.Response(200))
+
+    status, detail = _probe(_BadDescription(DataConfig()), 5.0)
+
+    assert status is CheckStatus.WARN
+    assert "could not describe a probe" in detail
+    assert "KeyError" in detail
+    assert route.call_count == 0
