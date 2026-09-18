@@ -26,6 +26,7 @@ from fbe.risk import (
     DEFAULT_BROKER,
     Broker,
     MissingRateError,
+    _round_down_to_step,
     convert_rate,
     pip_value,
     position_size,
@@ -43,8 +44,22 @@ RATES: dict[str, float] = {"USDZAR": USDZAR, "USDJPY": USDJPY, "GBPUSD": GBPUSD}
 JPY_ZAR = USDZAR / USDJPY  # 0.119355
 GBP_ZAR = GBPUSD * USDZAR  # 23.125
 
-MICRO_BROKER = DEFAULT_BROKER
-"""0.01 minimum and 0.01 step, the common retail floor."""
+MICRO_BROKER = Broker(
+    name="test-micro",
+    min_lot=0.01,
+    lot_step=0.01,
+    contract_size=100_000.0,
+    max_lot=50.0,
+    typical_spread_pips=dict(DEFAULT_BROKER.typical_spread_pips),
+)
+"""0.01 minimum and 0.01 step, the common retail floor.
+
+Declared here rather than aliased to `DEFAULT_BROKER`. That constant's own
+docstring tells the owner to replace every value in it, and if they do and
+their broker turns out to offer nano lots, five tests below stop asserting what
+their names say: the two refusals become sizeable trades and both example B
+figures move. The fixtures a test reasons about have to be fixed by the test.
+"""
 
 NANO_BROKER = Broker(
     name="test-nano",
@@ -258,6 +273,14 @@ def test_pip_value_rejects_negative_units() -> None:
 
 
 def test_pip_value_rejects_a_malformed_pair() -> None:
+    """Guards an upstream contract rather than anything in this module.
+
+    The ``ValueError`` comes from `fbe.universe.split_pair`, so no change to
+    the sizing chain can break this. It is here because a five-character pair
+    reaching the sizing path at all would mean a caller had built a pair string
+    by hand, and the next question after that is whether it was built in market
+    order.
+    """
     with pytest.raises(ValueError):
         pip_value("EUR", 1.0, "ZAR", RATES)
 
@@ -320,7 +343,7 @@ def test_worked_example_a_is_refused_at_a_micro_broker(config: RiskConfig) -> No
     assert size.lots == 0.0
     assert size.realised_risk_amount == 0.0
     assert size.notional == 0.0
-    assert any("minimum" in warning.lower() for warning in size.warnings)
+    assert any("refusing to size" in warning for warning in size.warnings)
 
 
 def test_worked_example_b_usdjpy_at_a_micro_broker(config: RiskConfig) -> None:
@@ -465,17 +488,16 @@ def test_rounding_never_exceeds_the_intended_risk(config: RiskConfig) -> None:
 def test_a_size_landing_exactly_on_a_lot_step_keeps_that_step(
     config: RiskConfig,
 ) -> None:
-    """Binary floating point must not cost a whole lot step at an exact multiple.
+    """A solve that lands on an exact lot step keeps that step.
 
-    0.29 is the smallest multiple of the default 0.01 step where ``0.29 / 0.01``
-    evaluates to 28.999999999999996, so a floor of the raw quotient returns
-    0.28 and quietly drops a full micro lot of a position the account asked
-    for. The balance below is chosen only because it lands the solve exactly on
-    0.29 lots: 29,000 units x 25 pips x R0.00185 = R1,341.25, which is 1% of
-    R134,125.00.
+    The balance is chosen so the solve lands on 0.29 lots: 29,000 units x 25
+    pips x R0.00185 = R1,341.25, which is 1% of R134,125.00. This rounds down
+    like every other size and comes back the size it started as.
 
-    This rounds down like every other size. It is the same size it started as,
-    which is the point.
+    Note what this does NOT prove. The solve produces 0.2900000000000062, not
+    the double nearest to 0.29, and a naive float floor handles that value
+    correctly. The floating point hazard `_round_down_to_step` guards is pinned
+    where it is reachable, on that function directly, in the test below.
     """
     rich = RiskConfig(account_balance=134_125.00)
     size = position_size(
@@ -490,6 +512,84 @@ def test_a_size_landing_exactly_on_a_lot_step_keeps_that_step(
     assert size.lots == pytest.approx(0.29)
     assert size.units == pytest.approx(29_000.0)
     assert size.realised_risk_amount == pytest.approx(size.risk_amount)
+
+
+def test_the_lot_step_rounding_survives_binary_floating_point() -> None:
+    """The mechanism, pinned on the helper where it is actually reachable.
+
+    ``0.29 / 0.01`` evaluates to 28.999999999999996 in binary floating point,
+    so flooring the raw quotient returns 0.28 and quietly drops a whole micro
+    lot of a position the account asked for. Fourteen multiples of 0.01 below
+    two lots behave this way, and a broker's contract specification is written
+    in decimal, so the value a person types is exactly the value that breaks.
+
+    Rounding down is still absolute: a size genuinely below a step boundary
+    stays below it and is never nudged up to reach one.
+    """
+    assert _round_down_to_step(0.29, 0.01) == pytest.approx(0.29)
+    assert _round_down_to_step(0.58, 0.01) == pytest.approx(0.58)
+    assert _round_down_to_step(0.2899999, 0.01) == pytest.approx(0.28)
+    assert _round_down_to_step(0.011171171171171172, 0.01) == pytest.approx(0.01)
+
+
+def test_a_minimum_that_is_not_a_multiple_of_the_step_still_refuses(
+    config: RiskConfig,
+) -> None:
+    """The minimum is checked against the rounded size, not the raw solve.
+
+    Example B solves to 0.011171 lots, which is above this broker's 0.01
+    minimum but rounds down to zero at its 0.02 step. Checking the raw figure
+    would pass the minimum test and then return a zero-unit position with no
+    warning saying why, which reads as a trade the engine simply declined to
+    describe.
+
+    Every other broker in this file has ``min_lot == lot_step``, and under that
+    condition the two readings agree exactly, so this is the only fixture that
+    can tell them apart.
+    """
+    odd = Broker(
+        name="test-coarse-step",
+        min_lot=0.01,
+        lot_step=0.02,
+        contract_size=100_000.0,
+        max_lot=50.0,
+        typical_spread_pips=dict(DEFAULT_BROKER.typical_spread_pips),
+    )
+    size = position_size(
+        "USDJPY", 155.00, 155.30, config, RATES, risk_fraction=0.02, broker=odd
+    )
+    assert size.units == 0.0
+    assert size.realised_risk_amount == 0.0
+    assert any("refusing to size" in warning for warning in size.warnings), (
+        size.warnings
+    )
+
+
+def test_a_zero_stop_distance_still_raises_when_the_rate_is_missing(
+    config: RiskConfig,
+) -> None:
+    """Ordering: the conversion resolves before the zero-distance return.
+
+    Both are failures, but they are not the same failure. A zero stop distance
+    is a fact about the trade the caller passed in, and the caller gets it back
+    as a warning so a batch over a shortlist keeps going. A missing rate means
+    the engine does not know what any trade on this pair would cost, and that
+    has to raise whatever else is wrong with the row.
+
+    Returning the warning here instead would report a soft failure on a pair
+    the engine cannot size at all, and the next valid row for that pair would
+    then raise, from a code path the caller has already seen succeed.
+    """
+    with pytest.raises(MissingRateError):
+        position_size(
+            "USDCHF",
+            0.9000,
+            0.9000,
+            config,
+            {"USDJPY": USDJPY},
+            risk_fraction=0.01,
+            broker=NANO_BROKER,
+        )
 
 
 def test_units_always_agree_with_the_rounded_lots(config: RiskConfig) -> None:
@@ -704,7 +804,7 @@ def test_a_size_below_the_broker_minimum_refuses_rather_than_taking_the_minimum(
         broker=MICRO_BROKER,
     )
     assert size.units == 0.0
-    assert any("minimum" in warning.lower() for warning in size.warnings)
+    assert any("refusing to size" in warning for warning in size.warnings)
 
 
 def test_an_entry_equal_to_the_stop_returns_a_zero_size_rather_than_raising(
@@ -937,7 +1037,22 @@ def test_the_account_currency_is_read_from_config_and_not_retyped() -> None:
 def test_the_broker_contract_size_is_read_and_not_assumed(
     config: RiskConfig,
 ) -> None:
-    """100,000 is the retail norm, which is exactly why it must not be a literal."""
+    """100,000 is the retail norm, which is exactly why it must not be a literal.
+
+    Example B's solve against a 10,000 unit contract, worked by hand:
+
+        raw units     = 1,117.117                       (unchanged by contract size)
+        raw lots      = 1,117.117 / 10,000    = 0.11171
+        rounded down  = 0.111 lots at a 0.001 step
+        units         = 0.111 x 10,000        = 1,110
+        realised risk = 1,110 x 30 x R0.00119355 = R39.75
+        notional      = 1,110 x 155.00 x 0.119355 = R20,535.00
+
+    Asserting ``units == lots * 10_000`` instead would prove nothing: units are
+    defined as lots times the contract size, so that identity holds however the
+    lots were arrived at. A solve that divided by a hardcoded 100,000 returns
+    110 units here, a position ten times too small, and passes the identity.
+    """
     ten_k = Broker(
         name="test-ten-thousand",
         min_lot=0.001,
@@ -949,7 +1064,10 @@ def test_the_broker_contract_size_is_read_and_not_assumed(
     size = position_size(
         "USDJPY", 155.00, 155.30, config, RATES, risk_fraction=0.02, broker=ten_k
     )
-    assert size.units == pytest.approx(size.lots * 10_000.0)
+    assert size.lots == pytest.approx(0.111)
+    assert size.units == pytest.approx(1110.0)
+    assert size.realised_risk_amount == pytest.approx(39.75, abs=0.005)
+    assert size.notional == pytest.approx(20535.00)
 
 
 def test_a_long_and_a_short_of_the_same_width_size_identically(

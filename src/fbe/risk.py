@@ -693,7 +693,13 @@ def position_size(
     Raises:
         MissingRateError: Propagated from `pip_value` or `convert_rate` when the
             ZAR conversion route is missing. Sizing without it is not possible
-            and must not be approximated.
+            and must not be approximated. Resolved before the zero stop
+            distance case below, so a row that is both unpriceable and badly
+            formed raises rather than coming back as a warning: a warning would
+            report a soft failure on a pair nothing here can size at all.
+        ValueError: If ``broker.lot_step`` is not strictly positive, or if
+            ``pair`` is not six characters. Both are malformed inputs rather
+            than facts about the trade, so neither is reported as a warning.
 
     """
     normalised = pair.upper()
@@ -764,10 +770,10 @@ def position_size(
 
     if lots < broker.min_lot:
         warnings.append(
-            f"computed size {raw_lots:.6f} lots is below {broker.name}'s "
-            f"minimum of {broker.min_lot:g} lots; refusing to size rather "
-            f"than taking the minimum, which would risk more than the "
-            f"configured band allows"
+            f"computed size {raw_lots:.6f} lots rounds down to {lots:g} at "
+            f"{broker.name}'s {broker.lot_step:g} step, below its minimum of "
+            f"{broker.min_lot:g} lots; refusing to size rather than taking the "
+            f"minimum, which would risk more than the configured band allows"
         )
         return _result(0.0, 0.0, 0.0, 0.0)
 
