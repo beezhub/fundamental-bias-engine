@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from fbe.bias import UNCHECKED_SUFFIX
 from fbe.config import RiskConfig
 from fbe.risk import (
     DEFAULT_BROKER,
@@ -212,6 +213,103 @@ def test_a_corrupt_rate_on_the_second_hop_raises() -> None:
     """The check covers every leg of the route, not just the first one."""
     with pytest.raises(MissingRateError):
         convert_rate("JPY", "ZAR", {"USDJPY": USDJPY, "USDZAR": 0.0})
+
+
+def test_a_quoted_rate_of_exactly_one_is_refused_as_a_placeholder() -> None:
+    """The eighteenfold bug wearing a value instead of an absence.
+
+    Every other guard in this module fires on a rate being missing. A rates
+    mapping initialised with ones, which is what an unpopulated manual YAML or
+    a hand-built dict looks like, is not missing anything: it resolves, and it
+    resolves to the one factor that is always wrong between two different
+    currencies.
+
+    On the plan's own account the consequence is R370 at risk against a R20
+    budget, 18.5% of the balance, reported as R20.00 on a ticket carrying no
+    warnings. That is the prime directive table's second row reproduced
+    exactly.
+    """
+    with pytest.raises(MissingRateError, match="placeholder"):
+        convert_rate("USD", "ZAR", {"USDZAR": 1.0})
+    with pytest.raises(MissingRateError, match="placeholder"):
+        convert_rate("ZAR", "USD", {"USDZAR": 1.0})
+
+
+def test_a_placeholder_rate_is_refused_all_the_way_up_through_sizing(
+    config: RiskConfig,
+) -> None:
+    """The refusal has to reach the caller, not be caught and warned about.
+
+    Sizing cannot continue without knowing what a pip costs, so this raises
+    rather than returning a warning-carrying zero result.
+    """
+    with pytest.raises(MissingRateError):
+        position_size(
+            "EURUSD",
+            1.0850,
+            1.0825,
+            config,
+            {"USDZAR": 1.0},
+            risk_fraction=0.01,
+            broker=NANO_BROKER,
+        )
+
+
+def test_identity_is_still_one_after_the_placeholder_rule() -> None:
+    """The rule must not break the one legitimate 1.0.
+
+    Converting a currency to itself is not a quote and never reads `rates`, so
+    it is unaffected.
+    """
+    assert convert_rate("ZAR", "ZAR", {}) == 1.0
+    assert pip_value("EURZAR", 1.0, "ZAR", {}) == pytest.approx(0.0001)
+
+
+def test_a_pivot_product_of_exactly_one_is_arithmetic_and_allowed() -> None:
+    """Only a QUOTED 1.0 is refused, never a computed one.
+
+    ``1.25 x 0.8`` is exactly 1.0 in binary floating point, so a route built
+    from two legs that are each plainly real can land on 1.0 by arithmetic.
+    Refusing that would reject a genuine rate set. The rates here are chosen
+    to make the product exact, not because 0.8 is a plausible USDZAR.
+    """
+    assert convert_rate("GBP", "ZAR", {"GBPUSD": 1.25, "USDZAR": 0.8}) == 1.0
+
+
+def test_a_boolean_rate_is_refused_rather_than_read_as_one() -> None:
+    """``USDZAR: yes`` in a manual YAML parses as ``True``.
+
+    ``isfinite(True)`` is True and ``True <= 0.0`` is False, so a bool passes
+    both numeric guards and lands as a factor of 1.0, which is finding one all
+    over again. It type-checks too, because ``bool`` is a subtype of ``int``.
+    """
+    with pytest.raises(MissingRateError, match="boolean"):
+        convert_rate("USD", "ZAR", {"USDZAR": True})
+
+
+def test_an_integer_rate_comes_back_as_a_float() -> None:
+    """The declared return type has to hold at runtime, not just to mypy."""
+    assert isinstance(convert_rate("USD", "ZAR", {"USDZAR": 18}), float)
+
+
+def test_a_pivot_product_that_is_no_longer_usable_raises() -> None:
+    """Two legs that are each finite and positive can still multiply to zero.
+
+    JPY to USD resolves to 1e-200 and USD to ZAR to 1e-200, and their product
+    underflows. A zero factor divides inside `position_size`, and an infinite
+    one is reported as a size below the broker minimum, which blames the lot
+    step for what is actually a corrupt rate. The documented return is a
+    strictly positive multiplier, so the product is checked as well as the
+    legs.
+    """
+    with pytest.raises(MissingRateError):
+        convert_rate("JPY", "ZAR", {"USDZAR": 1e-200, "USDJPY": 1e200})
+
+
+def test_an_inverted_leg_that_overflows_raises() -> None:
+    """Reciprocating a subnormal gives infinity, which is not a rate."""
+    with pytest.raises(MissingRateError):
+        convert_rate("USD", "ZAR", {"ZARUSD": 1e-320})
 
 
 # --------------------------------------------------------------------------
@@ -959,6 +1057,111 @@ def test_a_missing_conversion_route_propagates(config: RiskConfig) -> None:
             risk_fraction=0.01,
             broker=NANO_BROKER,
         )
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0850, 0.0])
+def test_a_malformed_price_raises_instead_of_returning_a_pass_shaped_result(
+    bad: float, config: RiskConfig
+) -> None:
+    """Every guard on the sizing path is a ``<`` or an ``==``, and NaN fails both.
+
+    Without an explicit check a NaN entry sails past the zero-distance return,
+    past the below-minimum refusal and past the shortfall check, and comes
+    back as a `PositionSize` whose every money field is NaN and whose
+    ``warnings`` tuple is EMPTY. Section 8 of ``docs/risk-and-execution.md``
+    lets the owner tick the sizing box when ``warnings`` is empty, so the
+    result would be shaped exactly like one that passed.
+
+    A negative price is the same category: it returns a negative ``notional``
+    on a field documented as face value in the account currency, silently.
+    """
+    with pytest.raises(ValueError):
+        position_size(
+            "EURUSD",
+            bad,
+            1.0825,
+            config,
+            RATES,
+            risk_fraction=0.01,
+            broker=NANO_BROKER,
+        )
+    with pytest.raises(ValueError):
+        position_size(
+            "EURUSD",
+            1.0850,
+            bad,
+            config,
+            RATES,
+            risk_fraction=0.01,
+            broker=NANO_BROKER,
+        )
+
+
+def test_a_non_finite_risk_fraction_raises_rather_than_warning_falsely(
+    config: RiskConfig,
+) -> None:
+    """Clamping a NaN returns a NaN and reports that it clamped it.
+
+    ``min(max(nan, lo), hi)`` is ``nan``, and ``nan != nan`` is True, so the
+    clamp warning fires having clamped nothing: "clamped to nan rather than
+    honoured". A warning that asserts a correction which did not happen is
+    worse than no warning, because the reader acts on it.
+    """
+    with pytest.raises(ValueError):
+        position_size(
+            "EURUSD",
+            1.0850,
+            1.0825,
+            config,
+            RATES,
+            risk_fraction=float("nan"),
+            broker=NANO_BROKER,
+        )
+
+
+def test_an_unperformed_check_is_marked_so_a_consumer_can_skip_it(
+    config: RiskConfig,
+) -> None:
+    """The unchecked warning carries the suffix the pair filters already use.
+
+    `DEFAULT_BROKER`'s docstring tells the owner to replace the constant, and
+    the natural replacement leaves ``typical_spread_pips`` empty. Every
+    correctly sized ticket then carries a warning, ``warnings`` is never
+    empty, and a consumer reading "any warning blocks" refuses all 28 pairs.
+    That is the failure where a gate that refuses everything gets switched off
+    along with the checks that were working.
+
+    The marker is what lets a consumer tell "this check did not run" from
+    "this trade has a problem", which is the distinction ADR 0002 rule 4
+    requires and `fbe.bias.apply_filters` already implements.
+    """
+    blind = Broker(
+        name="test-no-spreads",
+        min_lot=0.001,
+        lot_step=0.001,
+        contract_size=100_000.0,
+        max_lot=50.0,
+    )
+    size = position_size(
+        "EURUSD", 1.0850, 1.0825, config, RATES, risk_fraction=0.01, broker=blind
+    )
+    unchecked = [w for w in size.warnings if UNCHECKED_SUFFIX in w]
+    assert len(unchecked) == 1
+    assert unchecked[0].startswith(f"spread{UNCHECKED_SUFFIX}")
+
+    # A real finding must NOT carry the marker, or the distinction is useless.
+    tight = position_size(
+        "EURUSD",
+        1.0850,
+        1.0849,
+        config,
+        RATES,
+        risk_fraction=0.01,
+        broker=NANO_BROKER,
+    )
+    spread_findings = [w for w in tight.warnings if "spread" in w.lower()]
+    assert spread_findings
+    assert all(UNCHECKED_SUFFIX not in w for w in spread_findings)
 
 
 # --------------------------------------------------------------------------

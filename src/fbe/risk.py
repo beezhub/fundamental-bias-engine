@@ -40,6 +40,7 @@ from enum import StrEnum
 from math import isfinite
 from typing import Protocol, runtime_checkable
 
+from fbe.bias import UNCHECKED_SUFFIX
 from fbe.config import RiskConfig
 from fbe.types import Conviction, PositionSize
 from fbe.universe import split_pair
@@ -207,8 +208,13 @@ class Broker:
             "micro lot" floor. Some brokers offer 0.001 nano lots, which on an
             account this size is the difference between several G10 pairs being
             tradeable and being untradeable.
-        lot_step: Increment above the minimum. Sizes must land on a multiple of
-            this, always by rounding down.
+        lot_step: Increment sizes must land on, always reached by rounding
+            down. Multiples are counted from zero, not from ``min_lot``, so
+            with a 0.01 minimum and a 0.02 step the valid sizes are 0.02 and
+            0.04 rather than 0.01 and 0.03. Every retail broker seen so far
+            has ``min_lot == lot_step``, under which the two readings are the
+            same, and the from-zero reading is what `position_size` implements
+            and what ``tests/test_position_size.py`` pins.
         contract_size: Base-currency units in one standard lot. 100,000 across
             G10 spot FX at essentially every retail broker.
         max_lot: Largest single ticket. Irrelevant at this account size, held
@@ -330,7 +336,8 @@ def _checked_rate(key: str, quoted: float) -> float:
         ``quoted`` unchanged, in the same direction it was quoted.
 
     Raises:
-        MissingRateError: If the rate is zero, negative or not finite.
+        MissingRateError: If the rate is zero, negative, not finite, a
+            ``bool``, or exactly 1.0.
 
     Note:
         A non-positive rate is corrupt data, not a small number. Zero divides,
@@ -339,13 +346,51 @@ def _checked_rate(key: str, quoted: float) -> float:
         every limit it is later checked against. Refusing the rate is the only
         one of those four outcomes a reader would notice.
 
+        Exactly 1.0 is refused because callers reach here only after `_leg`
+        has already returned on identity, so this is a quote between two
+        currencies that are not the same one. It is the eighteenfold bug
+        wearing a value instead of an absence: a manual YAML or a mapping
+        initialised with ones resolves, sizes eighteen times too large on a
+        rand account, and reports the intended risk amount on a ticket
+        carrying no warnings. Every other guard in this module fires on
+        absence and not one of them sees this.
+
+        The cost of being wrong is asymmetric, and that is the whole argument.
+        A genuine mid rate of exactly 1.00000 is possible, since USDCHF and
+        EURCHF have both traded through parity. Refusing one raises an error
+        the owner reads and works around in seconds. Accepting a placeholder
+        is a position eighteen times too large that nothing on the screen
+        reports. Note this refuses a quoted leg only: a pivot product of
+        exactly 1.0 built from two legitimate legs is arithmetic rather than a
+        placeholder, and 1.25 x 0.8 is exactly 1.0 in binary floating point.
+
+        ``bool`` is refused separately because ``isfinite(True)`` is True and
+        ``True <= 0.0`` is False, so it would otherwise pass as a factor of
+        1.0, and ``bool`` is a subtype of ``int``, so a type checker does not
+        object either. A manual YAML is the realistic producer: ``USDZAR: yes``
+        and ``USDZAR: on`` both parse as ``True``.
+
     """
+    if isinstance(quoted, bool):
+        raise MissingRateError(
+            f"rate {key} is the boolean {quoted!r}, not a number. A YAML "
+            f"value of yes, no, on or off parses this way; write the rate as "
+            f"a decimal instead."
+        )
     if not isfinite(quoted) or quoted <= 0.0:
         raise MissingRateError(
             f"rate {key} is {quoted!r}, which cannot be used as a conversion "
             f"factor. A rate must be finite and strictly positive."
         )
-    return quoted
+    if quoted == 1.0:
+        raise MissingRateError(
+            f"rate {key} is exactly 1.0 between two different currencies, "
+            f"refused as an unpopulated placeholder rather than used. Sizing "
+            f"on a placeholder 1.0 is the failure this module exists to "
+            f"prevent. If the pair really is at parity, supply the two pivot "
+            f"legs instead."
+        )
+    return float(quoted)
 
 
 def _leg(source: str, target: str, rates: Mapping[str, float]) -> float | None:
@@ -368,8 +413,9 @@ def _leg(source: str, target: str, rates: Mapping[str, float]) -> float | None:
             finite.
 
     Note:
-        Identity returns 1.0 before ``rates`` is touched at all, which is the
-        only circumstance in which this module produces a factor of 1.0.
+        Identity returns 1.0 before ``rates`` is touched at all. It is the
+        only way a factor of 1.0 is read from ``rates``, because
+        `_checked_rate` refuses a quoted 1.0 between two different currencies.
 
     """
     if source == target:
@@ -381,8 +427,44 @@ def _leg(source: str, target: str, rates: Mapping[str, float]) -> float | None:
     inverse_key = f"{target}{source}"
     inverted = rates.get(inverse_key)
     if inverted is not None:
-        return 1.0 / _checked_rate(inverse_key, inverted)
+        return _checked_rate(
+            f"1/{inverse_key}", 1.0 / _checked_rate(inverse_key, inverted)
+        )
     return None
+
+
+def _finite_product(
+    source: str, middle: str, target: str, first: float, second: float
+) -> float:
+    """Multiply two resolved legs, refusing a product that is no longer usable.
+
+    Args:
+        source: ISO code the route starts at, named in the message only.
+        middle: Pivot currency, named in the message only.
+        target: ISO code the route ends at, named in the message only.
+        first: Units of ``middle`` per one unit of ``source``, already checked.
+        second: Units of ``target`` per one unit of ``middle``, already checked.
+
+    Returns:
+        Units of ``target`` per one unit of ``source``, strictly positive and
+        finite.
+
+    Raises:
+        MissingRateError: If the product underflows to zero or overflows to
+            infinity. Both need absurd rates, so this is about the contract
+            holding rather than about a case seen in a feed. Exactly 1.0 is
+            NOT refused here, unlike a quoted leg: a product is arithmetic on
+            two rates that were each already accepted.
+
+    """
+    product = first * second
+    if not isfinite(product) or product <= 0.0:
+        raise MissingRateError(
+            f"the route {source} to {target} through {middle} resolves to "
+            f"{product!r}, which cannot be used as a conversion factor. The "
+            f"two legs were {first!r} and {second!r}."
+        )
+    return product
 
 
 def _round_down_to_step(value: float, step: float) -> float:
@@ -411,7 +493,7 @@ def _round_down_to_step(value: float, step: float) -> float:
         specification is written in.
 
     """
-    if step <= 0.0:
+    if not step > 0.0:
         raise ValueError(f"lot_step must be strictly positive, got {step!r}")
     quantum = Decimal(str(step))
     steps = (Decimal(str(value)) / quantum).to_integral_value(rounding=ROUND_FLOOR)
@@ -432,8 +514,11 @@ def convert_rate(
 
     Resolution order, first match wins:
         0. Identity. ``from_currency == to_currency`` returns 1.0 without
-           touching ``rates``. This is the only circumstance in which this
-           module ever produces a factor of 1.0.
+           touching ``rates``. This is the only circumstance in which a factor
+           of 1.0 is ever READ from this module's inputs: a quoted rate of
+           exactly 1.0 between two different currencies is refused as an
+           unpopulated placeholder, for the reason in `_checked_rate`. A pivot
+           product can still come to 1.0 by arithmetic, and that is allowed.
         1. Direct, quoted as ``f"{from}{to}"``. Return the rate as is. For USD
            to ZAR that is ``rates["USDZAR"]``, so R18.50 per dollar.
         2. Direct, quoted inverted as ``f"{to}{from}"``. Return ``1 / rate``.
@@ -476,9 +561,12 @@ def convert_rate(
 
     Raises:
         MissingRateError: If no direct or single-pivot route exists, or if any
-            rate on the chosen route is zero, negative or not finite. A
-            non-positive rate is corrupt data, not a small number, and must not
-            be inverted or multiplied through.
+            rate on the chosen route is zero, negative, not finite, a ``bool``
+            or exactly 1.0. A non-positive rate is corrupt data, not a small
+            number, and must not be inverted or multiplied through. A quoted
+            1.0 between two different currencies is treated as an unpopulated
+            placeholder; see `_checked_rate` for why that is worth a false
+            positive at parity.
 
     """
     source = from_currency.upper()
@@ -493,7 +581,13 @@ def convert_rate(
         first = _leg(source, middle, rates)
         second = _leg(middle, target, rates)
         if first is not None and second is not None:
-            return first * second
+            # Re-checked because each leg being finite and positive does not
+            # make their product so: it can still underflow to zero or
+            # overflow to infinity, and the documented return contract is a
+            # strictly positive multiplier. A zero factor would divide inside
+            # `position_size` and an infinite one would be reported as a size
+            # below the broker minimum, blaming the lot step for a bad rate.
+            return _finite_product(source, middle, target, first, second)
 
     looked_for = (
         f"{source}{target}",
@@ -667,9 +761,31 @@ def position_size(
         * Stop distance below roughly twice the pair's typical spread, from
           ``broker.typical_spread_pips``. A stop that tight is inside the noise
           the broker itself creates.
+        * ``spread:unchecked`` when ``broker.typical_spread_pips`` carries no
+          entry for the pair, so the check above did not run. A check that
+          could not run is not a check that passed, and the suffix is
+          `fbe.bias.UNCHECKED_SUFFIX`, the convention the pair filters already
+          use for the same distinction. It matters more than it looks:
+          `DEFAULT_BROKER`'s docstring tells the owner to replace the
+          constant, the natural replacement leaves ``typical_spread_pips``
+          empty, and a consumer reading "any warning blocks" would then refuse
+          all 28 pairs. Consumers should treat a line carrying this suffix as
+          non-blocking, as `fbe.bias.apply_filters` does.
+        * The ``risk_fraction`` clamp described at step 1, which is the only
+          warning here that reports an adjustment rather than an observation.
         * ``entry`` equal to ``stop``, which would divide by zero. Return a
           zero-size result carrying the warning rather than raising, so a batch
-          run over a shortlist does not abort on one bad row.
+          run over a shortlist does not abort on one bad row. A price that is
+          negative or not finite is a different case and raises, because it is
+          a malformed input rather than a fact about the trade.
+
+    Not checked here, and deliberately: ``broker.max_lot`` is never compared
+    against the computed size. It can only bind on an account far larger than
+    the one the plan describes, and exceeding it produces a ticket the broker
+    rejects rather than a breach of the 1-2% rule, so nothing about the risk
+    cap is at stake. The list above is otherwise the complete set, and this
+    paragraph exists so a future caller sizing on a grown account learns the
+    gap from the contract rather than from a rejected order.
 
     Args:
         pair: Pair to size, e.g. ``"EURUSD"``.
@@ -706,6 +822,30 @@ def position_size(
     _, quote = split_pair(normalised)
     account_currency = config.account_currency.upper()
     warnings: list[str] = []
+
+    # Checked before anything is computed, because every guard further down is
+    # a `<` or an `==` and all of those are False for a NaN. Without this, a
+    # NaN price sails past the zero-distance return, past the below-minimum
+    # refusal and past the shortfall check, and comes back as a PositionSize
+    # whose every money field is NaN and whose `warnings` tuple is EMPTY.
+    # Section 8 of docs/risk-and-execution.md lets the owner tick the sizing
+    # box when `warnings` is empty, so an unchecked input would produce a
+    # pass-shaped result. A malformed price is not a fact about the trade, so
+    # it raises here rather than being reported as a warning.
+    for label, price in (("entry", entry), ("stop", stop)):
+        if not isfinite(price) or price <= 0.0:
+            raise ValueError(
+                f"{label} must be a finite, strictly positive price, got "
+                f"{price!r}. A negative price yields a negative notional and "
+                f"a NaN yields a size that passes every check by failing "
+                f"every comparison."
+            )
+    if risk_fraction is not None and not isfinite(risk_fraction):
+        raise ValueError(
+            f"risk_fraction must be finite, got {risk_fraction!r}. Clamping a "
+            f"NaN returns a NaN while reporting that it was clamped, which is "
+            f"a warning that states something untrue."
+        )
 
     requested = config.risk_per_trade_min if risk_fraction is None else risk_fraction
     fraction = min(max(requested, config.risk_per_trade_min), config.risk_per_trade_max)
@@ -754,8 +894,9 @@ def position_size(
     typical_spread = broker.typical_spread_pips.get(normalised)
     if typical_spread is None:
         warnings.append(
-            f"{broker.name} lists no typical spread for {normalised}, so the "
-            f"tight-stop check was not performed rather than passed"
+            f"spread{UNCHECKED_SUFFIX}: {broker.name} lists no typical spread "
+            f"for {normalised}, so the tight-stop check did not run. This is "
+            f"a statement about what was checked, not about the trade."
         )
     elif stop_distance_pips < MIN_STOP_SPREAD_MULTIPLE * typical_spread:
         warnings.append(
