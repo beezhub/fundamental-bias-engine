@@ -137,6 +137,7 @@ command to remember.
 - [ ] Stale and missing data are visible on the page, not hidden. A pair at 60% coverage says so.
 - [ ] The config digest appears on the report, so an old report can be tied to the weights that made it.
 - [ ] The dashboard is readable on a phone, because the morning routine does not happen at a desk.
+- [ ] A blocker carried by every pair renders once as a run condition rather than on all 28 rows, and every blocker kind present carries its count against the total. `docs/interfaces.md` states the rule and the strict all-rows test it turns on.
 - [ ] No text on the page claims a measured edge.
 
 ## Phase 6: journal-based evaluation
