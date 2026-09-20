@@ -18,6 +18,7 @@ a real source.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import date
@@ -115,7 +116,7 @@ def test_the_penalty_scales_the_weight_by_the_freshness_factor(
 ) -> None:
     original = _score(PillarName.MONETARY, 1.5, 0.30)
 
-    penalised = apply_staleness_penalty(original, config, ASOF, freshness_factor=0.4)
+    penalised = apply_staleness_penalty(original, config, freshness_factor=0.4)
 
     assert penalised.weight == pytest.approx(0.12, abs=1e-12)
 
@@ -124,7 +125,7 @@ def test_the_penalty_leaves_the_score_untouched(config: ScoringConfig) -> None:
     """Discounting both the weight and the score applies the penalty twice."""
     original = _score(PillarName.MONETARY, 1.5, 0.30)
 
-    penalised = apply_staleness_penalty(original, config, ASOF, freshness_factor=0.4)
+    penalised = apply_staleness_penalty(original, config, freshness_factor=0.4)
 
     assert penalised.score == pytest.approx(1.5, abs=1e-12)
 
@@ -133,7 +134,7 @@ def test_the_penalty_does_not_mutate_its_input(config: ScoringConfig) -> None:
     """A report needs the original beside the penalised version to explain itself."""
     original = _score(PillarName.MONETARY, 1.5, 0.30)
 
-    apply_staleness_penalty(original, config, ASOF, freshness_factor=0.4)
+    apply_staleness_penalty(original, config, freshness_factor=0.4)
 
     assert original.weight == pytest.approx(0.30, abs=1e-12)
 
@@ -141,7 +142,7 @@ def test_the_penalty_does_not_mutate_its_input(config: ScoringConfig) -> None:
 def test_a_full_freshness_factor_changes_nothing(config: ScoringConfig) -> None:
     original = _score(PillarName.MONETARY, 1.5, 0.30)
 
-    penalised = apply_staleness_penalty(original, config, ASOF, freshness_factor=1.0)
+    penalised = apply_staleness_penalty(original, config, freshness_factor=1.0)
 
     assert penalised.weight == pytest.approx(0.30, abs=1e-12)
     assert penalised.z == pytest.approx(1.5, abs=1e-12)
@@ -158,7 +159,7 @@ def test_an_expired_pillar_loses_its_z_as_well_as_its_weight(
     """
     original = _score(PillarName.MONETARY, 1.5, 0.30)
 
-    penalised = apply_staleness_penalty(original, config, ASOF, freshness_factor=0.0)
+    penalised = apply_staleness_penalty(original, config, freshness_factor=0.0)
 
     assert penalised.weight == pytest.approx(0.0, abs=1e-12)
     assert penalised.z is None
@@ -167,7 +168,7 @@ def test_an_expired_pillar_loses_its_z_as_well_as_its_weight(
 def test_an_expired_pillar_says_why_in_its_notes(config: ScoringConfig) -> None:
     original = _score(PillarName.MONETARY, 1.5, 0.30)
 
-    penalised = apply_staleness_penalty(original, config, ASOF, freshness_factor=0.0)
+    penalised = apply_staleness_penalty(original, config, freshness_factor=0.0)
 
     assert penalised.notes
     assert penalised.notes != original.notes
@@ -178,7 +179,7 @@ def test_an_expired_pillar_keeps_any_note_it_already_carried(
 ) -> None:
     original = replace(_score(PillarName.MONETARY, 1.5, 0.30), notes="cpi_yoy missing")
 
-    penalised = apply_staleness_penalty(original, config, ASOF, freshness_factor=0.0)
+    penalised = apply_staleness_penalty(original, config, freshness_factor=0.0)
 
     assert "cpi_yoy missing" in penalised.notes
 
@@ -189,7 +190,7 @@ def test_a_pillar_still_inside_its_allowance_keeps_its_z(
     """Only a factor of zero clears the marker, not any discount at all."""
     original = _score(PillarName.MONETARY, 1.5, 0.30)
 
-    penalised = apply_staleness_penalty(original, config, ASOF, freshness_factor=0.01)
+    penalised = apply_staleness_penalty(original, config, freshness_factor=0.01)
 
     assert penalised.z == pytest.approx(1.5, abs=1e-12)
 
@@ -200,7 +201,7 @@ def test_the_factor_falls_back_to_the_ramp_when_none_is_given(
     """30 days on the shipped ramp is (45 - 30) / (45 - 15), which is 0.5."""
     original = _score(PillarName.MONETARY, 1.5, 0.30, staleness_days=30)
 
-    penalised = apply_staleness_penalty(original, config, ASOF)
+    penalised = apply_staleness_penalty(original, config)
 
     assert freshness(30, config) == pytest.approx(0.5, abs=1e-12)
     assert penalised.weight == pytest.approx(0.15, abs=1e-12)
@@ -218,7 +219,7 @@ def test_a_freshness_factor_outside_the_band_is_refused(
     original = _score(PillarName.MONETARY, 1.5, 0.30)
 
     with pytest.raises(ValueError, match="freshness factor"):
-        apply_staleness_penalty(original, config, ASOF, freshness_factor=factor)
+        apply_staleness_penalty(original, config, freshness_factor=factor)
 
 
 def test_the_ends_of_the_band_are_allowed(config: ScoringConfig) -> None:
@@ -226,10 +227,10 @@ def test_the_ends_of_the_band_are_allowed(config: ScoringConfig) -> None:
     original = _score(PillarName.MONETARY, 1.5, 0.30)
 
     assert apply_staleness_penalty(
-        original, config, ASOF, freshness_factor=0.0
+        original, config, freshness_factor=0.0
     ).weight == pytest.approx(0.0, abs=1e-12)
     assert apply_staleness_penalty(
-        original, config, ASOF, freshness_factor=1.0
+        original, config, freshness_factor=1.0
     ).weight == pytest.approx(0.30, abs=1e-12)
 
 
@@ -930,3 +931,93 @@ def test_the_scores_are_currency_scores(config: ScoringConfig) -> None:
     ranked = score_currencies([], _one_pillar_each(UNIVERSE), config, ASOF)
 
     assert all(isinstance(row, CurrencyScore) for row in ranked)
+
+
+# --- the signature offers no control that does nothing (#190) ---------------
+
+
+def test_the_penalty_takes_no_date_parameter() -> None:
+    """A date argument here changed nothing, and the Args entry said it did.
+
+    The promise was the defect rather than the arithmetic. A replay that loaded
+    stored scores, passed today's date to age them and read the weights back
+    would get the original run's weights returned unchanged, with coverage and
+    the composite reading exactly as they did on the day. Nothing raised.
+
+    Asserted on the signature rather than by calling, because the failure being
+    guarded against is a parameter that exists and is ignored, which no call can
+    distinguish from one that is absent.
+    """
+    parameters = inspect.signature(apply_staleness_penalty).parameters
+
+    assert "asof" not in parameters, sorted(parameters)
+
+
+def test_the_docstring_names_the_two_parameters_that_re_age_a_score() -> None:
+    """The replacement for the removed promise has to be findable where it was.
+
+    A reader who reached for `asof` reached for it because the Args entry named
+    it. Deleting that entry without saying what does work leaves them to guess,
+    and the two that do work are not obvious: one is a field on the score being
+    passed in, not a parameter at all.
+    """
+    doc = inspect.getdoc(apply_staleness_penalty) or ""
+
+    assert "asof" not in doc
+
+    # Both names appear in the `freshness_factor` Args entry already, so
+    # asserting they are present anywhere in the docstring passes whether or not
+    # the replay guidance exists. A mutation that deleted the guidance survived
+    # exactly that assertion. Scope to the paragraph that answers the question.
+    guidance = doc.partition("Re-ageing a stored score")[2]
+
+    assert guidance, doc
+    assert "staleness_days" in guidance, guidance
+    assert "freshness_factor" in guidance, guidance
+    assert "takes no date" in guidance, guidance
+
+
+def test_a_stored_score_is_re_aged_by_the_age_on_the_score(
+    config: ScoringConfig,
+) -> None:
+    """The working control, pinned where the broken one used to be advertised.
+
+    20 days is inside the ramp: ``(45 - 20) / (45 - 15)`` is ``25 / 30``, so the
+    weight is ``0.30 * 0.8333...``. 100 days is past the 45-day allowance, so
+    the factor is 0.0 and the weight with it. Both figures computed by hand.
+
+    This is a regression guard rather than a demonstration of the defect. The
+    route always worked; it was simply not the one the documentation pointed
+    at, and the arithmetic is identical on both sides of the change. It cannot
+    literally be run against the old signature, which demanded a date, but the
+    same call with that date supplied returns 0.25 and 0.0, checked before the
+    parameter was removed.
+    """
+    fresh = _score(PillarName.MONETARY, 1.5, 0.30, staleness_days=20)
+    stale = _score(PillarName.MONETARY, 1.5, 0.30, staleness_days=100)
+
+    fresh_weight = apply_staleness_penalty(fresh, config).weight
+    stale_weight = apply_staleness_penalty(stale, config).weight
+
+    assert fresh_weight == pytest.approx(0.30 * 25 / 30, abs=1e-12)
+    assert stale_weight == pytest.approx(0.0, abs=1e-12)
+    assert fresh_weight != stale_weight
+
+
+def test_a_stored_score_is_re_aged_by_an_explicit_freshness_factor(
+    config: ScoringConfig,
+) -> None:
+    """The second working route, and the one a replay should prefer.
+
+    The age on the score is judged against the global ramp, which knows no
+    per-indicator allowance. A replay that has the allowances passes the factor
+    it wants instead, and that number reaches the weight unchanged.
+    """
+    original = _score(PillarName.MONETARY, 1.5, 0.30, staleness_days=20)
+
+    assert apply_staleness_penalty(
+        original, config, freshness_factor=0.25
+    ).weight == pytest.approx(0.075, abs=1e-12)
+    assert apply_staleness_penalty(
+        original, config, freshness_factor=0.75
+    ).weight == pytest.approx(0.225, abs=1e-12)

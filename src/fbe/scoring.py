@@ -181,7 +181,6 @@ def score_currencies(
             per_currency[currency][pillar.name] = apply_staleness_penalty(
                 replace(score, weight=weight),
                 config,
-                asof,
                 freshness_factor=score.freshness_factor,
             )
 
@@ -587,7 +586,6 @@ def freshness(
 def apply_staleness_penalty(
     pillar_score: PillarScore,
     config: ScoringConfig,
-    asof: date,
     freshness_factor: float | None = None,
 ) -> PillarScore:
     """Discount a pillar's weight by the age of its inputs.
@@ -596,9 +594,6 @@ def apply_staleness_penalty(
         pillar_score: The score as the pillar produced it, carrying its
             configured weight.
         config: Scoring configuration supplying the staleness thresholds.
-        asof: The date the run represents. Present so the penalty can be
-            recomputed against a date other than the one the pillar used, which
-            a backtest replaying stored scores needs.
         freshness_factor: The pillar's own freshness in ``[0.0, 1.0]``, from
             `BasePillar.pillar_freshness`, which ages each component against its
             own indicator allowance and averages over the sub-weights present.
@@ -634,12 +629,17 @@ def apply_staleness_penalty(
     happens on the pillar side where the indicator keys are known. This module
     stays free of the registry: it takes a factor and a ramp, and computes.
 
+    **Re-ageing a stored score**, which a replay needs, is done through the two
+    inputs that carry age rather than through a run date. ``staleness_days`` on
+    the score being passed in is what the fallback ramp reads, so a replay that
+    wants a different age passes a score carrying that age. ``freshness_factor``
+    overrides the ramp outright and is the better route, because the ramp here
+    knows no per-indicator allowance and judges every series as if it published
+    monthly. This function derives no age of its own and takes no date: both
+    quantities arrive from the caller, and a date would be a third route that
+    changed nothing.
+
     """
-    # ``asof`` is accepted because the docstring above promises a penalty that
-    # can be recomputed against a date other than the one the pillar used. The
-    # age itself arrives on the score, as ``staleness_days``, so nothing here
-    # needs to derive it; a replay passes the score it stored and the factor it
-    # wants.
     factor = (
         freshness(pillar_score.staleness_days, config)
         if freshness_factor is None
