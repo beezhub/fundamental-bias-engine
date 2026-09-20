@@ -419,7 +419,7 @@ silently doubles the risk.
 | `--conviction` | from the engine | Override when the technical setup is better or worse than the bias. |
 | `--direction` | from the engine | Override. Sizing against the engine's bias is allowed and warned about. |
 | `--balance`, `-b` | configured balance | Account balance. |
-| `--risk`, `-r` | conviction-scaled | Risk fraction, clamped to the plan's 1-2% band. |
+| `--risk`, `-r` | conviction-scaled | Risk fraction, for example `0.015`. Clamped to the band `RiskConfig` holds, with a warning on the ticket naming both ends. The parser refuses only a negative value; it does not restate the band, which it cannot read. |
 | `--force` | off | Size anyway inside a blackout. Exits 3 without it. |
 | `--format` | `table` | `table`, `json` or `csv`. |
 
