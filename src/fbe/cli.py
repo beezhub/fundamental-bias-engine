@@ -2507,9 +2507,9 @@ def calendar(
 
 @app.command(
     help=(
-        "Size a proposed trade from its stop distance, inside the plan's 1-2% "
-        "risk band. Entry and stop are named options because two bare numbers "
-        "on a command line are easy to transpose."
+        "Size a proposed trade from its stop distance, inside the risk band "
+        "RiskConfig holds. Entry and stop are named options because two bare "
+        "numbers on a command line are easy to transpose."
     ),
 )
 def size(
@@ -2568,12 +2568,20 @@ def size(
             "--risk",
             "-r",
             help=(
-                "Risk fraction for this trade, for example 0.01 for 1%. "
-                "Defaults to the conviction-scaled value inside the plan's "
-                "1-2% band, and is clamped to that band."
+                "Risk fraction for this trade, for example 0.015 for 1.5%. "
+                "Defaults to the conviction-scaled value inside the band "
+                "RiskConfig sets. A value outside that band is clamped to it "
+                "and the ticket says so."
             ),
+            # The floor is a sanity check: a negative fraction is nonsense,
+            # not a policy. The band itself is not restated here. Typer
+            # enforces min and max before --config is read, so a bound written
+            # here cannot follow RiskConfig, and one that duplicated it
+            # advertised a ceiling the run did not have once the operator
+            # lowered theirs. `position_size` clamps to the configured band
+            # and names both ends in a warning, which is the check that can
+            # see the config.
             min=0.0,
-            max=0.02,
         ),
     ] = None,
     force: Annotated[
@@ -2597,8 +2605,8 @@ def size(
     command line are easy to transpose, and a transposed stop silently doubles
     the risk.
 
-    The risk fraction is derived from conviction inside the plan's 1-2% band and
-    is clamped there. Anything the risk module flags, a stop tighter than the
+    The risk fraction is derived from conviction inside the band `RiskConfig`
+    holds and is clamped there. Anything the risk module flags, a stop tighter than the
     typical spread, exposure that collides with an open correlated position, a
     pair whose bias points the other way, comes back as a warning attached to
     the `fbe.types.PositionSize` rather than being silently applied.
@@ -2648,7 +2656,7 @@ def size(
         conviction: Optional conviction override.
         direction: Optional direction override.
         balance: Optional account balance override.
-        risk: Optional risk fraction override inside the 1-2% band.
+        risk: Optional risk fraction override, clamped to the configured band.
         force: Proceed despite an active blackout window.
         output_format: table, json or csv.
 
