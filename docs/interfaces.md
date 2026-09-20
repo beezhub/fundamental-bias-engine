@@ -610,6 +610,40 @@ Sections, in order:
 6. **Data coverage and warnings.**
 7. **What changed since the last run.**
 
+### A blocker true for every pair is a run condition
+
+A blocker carried by all 28 pairs is one fact about the run, not 28 facts about
+pairs. It is printed once, in the header, and not repeated on the rows. A
+blocker carried by some pairs stays on those rows, where it is telling the
+reader something that separates them.
+
+For each blocker kind present, the report gives the count against the total, so
+`event:unchecked` on 3 of 28 and the same key on 28 of 28 read differently
+without anyone counting rows.
+
+**The all-rows test is strict.** 27 of 28 is not every pair, and stays per row.
+A threshold here would be a free parameter deciding what the reader is not
+told, and the pair that differs from the other 27 is the one worth seeing.
+
+The vocabulary being counted already exists and this rule adds nothing to it.
+`BLOCKERS` in `src/fbe/bias.py` maps every blocker string `apply_filters` can
+append to whether it blocks the trade, and the two suffix conventions sit beside
+it: `UNCHECKED_SUFFIX` for a check that never ran, `UNKNOWN_SUFFIX` for a check
+that ran and could not tell. Counting how many rows carry a given key is
+arithmetic over the `PairBias.blockers` lists and needs no new field and no new
+type.
+
+This is the converse of rule 3 in
+`docs/decisions/0002-representing-not-known.md`, which says a marker that is not
+rendered does not exist. A marker rendered so often that it stops being read
+arrives at the same place by the opposite route, so the two are read together.
+
+What this rule does not do: it changes how a gap is printed, and nothing else. A
+report reading "calendar unchecked, 28 of 28" is a run with no calendar, exactly
+as it was before. ADR 0002's own warning, that a visible marker can feel like a
+fix while the integration behind it is still missing, applies to this rule more
+than to most.
+
 ### Why reports go to disk
 
 A bias call you cannot audit a week later is worthless. When a trade goes wrong
@@ -715,6 +749,19 @@ and never a hue at the midpoint; categorical hues in fixed order, never cycled;
 text in text tokens rather than in a series colour; dark mode chosen against the
 dark surface rather than flipped automatically; and a legend plus a table view
 so nothing is carried by colour alone.
+
+### A blocker true for every pair is a run condition
+
+The same rule the report follows, set out with its reasoning under "The report"
+above. A blocker carried by all 28 pairs is printed once, in the header, and not
+repeated on the cards or in the matrix. A blocker carried by some pairs stays on
+those. Each blocker kind present carries its count against the total, and the
+all-rows test is strict: 27 of 28 stays per row.
+
+It matters more here than in the report. This is the layout Phase 5 asks to be
+readable at arm's length on a phone, and two or three markers repeated down 28
+rows is the density at which the morning review carries on in form and stops in
+substance.
 
 ### Publishing constraints
 
