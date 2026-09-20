@@ -104,6 +104,12 @@ in a comment, and moves the issue to `status:ready`. "I would rather a human
 decided" is not a ruling. Ruling with the reason stated and the cost named is
 what the role is for, and a ruling can be reopened with evidence later.
 
+The ADR lands through a pull request, the same way as any other change: a
+`docs/` branch, the record plus its row in `docs/decisions/README.md`, the pull
+request linked from the issue. Pushing the branch is not the last step. Until
+the pull request merges, the comment on the issue is the ruling and the ADR is
+a draft nobody can find from `main`.
+
 If the question **is** one of the four kinds, the architect says so plainly in a
 comment, names which kind, and leaves the label. It then goes to the owner in
 the form below rather than as a technical write-up.

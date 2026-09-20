@@ -201,6 +201,13 @@ days.** The ruling goes on the issue, an ADR goes in `docs/decisions/` when the
 decision is cross-cutting, and the issue moves to `status:ready`. "I would
 rather a human decided" is not a ruling.
 
+An ADR is a change to `main` and lands like one: on a branch, through a pull
+request that indexes it in `docs/decisions/README.md`, linked from the issue it
+rules on. A branch pushed and left is not a record. Five were left that way and
+the folder the project treats as authoritative was missing them for weeks, which
+is issue #151. Until the pull request merges, the ruling on the issue is the
+authority and the ADR is a draft.
+
 **The same test applies to anything a lane writes on a pull request**, not only
 to an issue at `status:needs-decision`. The `writing` skill lists the phrases
 that give it away and settles merge mechanics, which is the case that went
