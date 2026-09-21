@@ -209,6 +209,33 @@ class PositioningPillar(BasePillar):
         excess = CONTRARIAN_SLOPE * (magnitude - SIGN_FLIP_Z)
         return -sign * min(excess, CONTRARIAN_CAP)
 
+    @staticmethod
+    def branch(p: float | None) -> str:
+        """Name the branch of `response` a positioning z-score falls on.
+
+        Args:
+            p: The positioning z-score, or ``None``.
+
+        Returns:
+            ``"momentum"``, ``"fading"`` or ``"contrarian"``, and ``""`` for
+            ``None``. The names are section 7.4's own column values.
+
+        Beside `response` and reading the same two constants, because it is the
+        same split. `_notes` had its own copy of the comparisons, which is two
+        places for one rule: a ``<`` where the other has ``<=`` would mislabel a
+        currency sitting exactly on a join, and no fixture currency sits there,
+        so nothing would have caught it.
+
+        """
+        if p is None:
+            return ""
+        magnitude = abs(p)
+        if magnitude <= MOMENTUM_PEAK_Z:
+            return "momentum"
+        if magnitude <= SIGN_FLIP_Z:
+            return "fading"
+        return "contrarian"
+
     # No `_extract` override. `BasePillar._extract` returns one row per period
     # over the whole visible history, sorted by period ascending, which is
     # exactly what a time-series z-score reads: the base class reduces vintages
@@ -400,16 +427,9 @@ class PositioningPillar(BasePillar):
         history = extracted.get(INDICATOR, ())
         if p is None or net is None or not reports or not history:
             return ""
-        magnitude = abs(p)
-        if magnitude <= MOMENTUM_PEAK_Z:
-            branch = "momentum"
-        elif magnitude <= SIGN_FLIP_Z:
-            branch = "fading"
-        else:
-            branch = "contrarian"
         return (
             f"{currency} net leveraged funds {net:+.1f}% of open interest on "
             f"{history[-1].period.isoformat()}, {p:+.2f} standard deviations "
             f"from its own mean over {int(reports)} weekly reports, "
-            f"{branch} branch"
+            f"{self.branch(p)} branch"
         )

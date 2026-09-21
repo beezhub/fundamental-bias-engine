@@ -44,6 +44,7 @@ from fbe.datasources.registry import INDICATORS
 from fbe.pillars.base import MIN_TIME_SERIES_WINDOW, BasePillar
 from fbe.pillars.positioning import (
     CONTRARIAN_CAP,
+    CONTRARIAN_SLOPE,
     MOMENTUM_PEAK_Z,
     SIGN_FLIP_Z,
     PositioningPillar,
@@ -67,8 +68,8 @@ WEEKS = 20
 
 Eight more than `MIN_TIME_SERIES_WINDOW` so a test can shorten a history and
 still be testing the floor rather than the fixture. It also has to clear
-``2 * p ** 2 + 1``, which is 12.5 at the section 7.4 fixture's widest reading of
--2.40, or `window` cannot build a history with that z and a real spread.
+``2 * p ** 2 + 1``, which is 12.52 at the section 7.4 fixture's widest reading
+of -2.40, or `window` cannot build a history with that z and a real spread.
 """
 
 # Section 7.4 of `docs/scoring-spec.md`: {currency: (net_pct_oi, mean, p, f(p))}.
@@ -223,8 +224,18 @@ def test_the_window_helper_reproduces_the_z_it_was_built_for() -> None:
     for currency, (net, mean, p, _) in FIXTURE.items():
         series = weekly(currency, window(net, mean, p))
 
+        values = [item.value for item in series]
+
         assert len(series) == WEEKS, currency
         assert series[-1].value == pytest.approx(net), currency
+        # The mean and the spread, not only their ratio. `time_series_z` is
+        # ``(newest - mean) / sd``, so any wrong pair with the right ratio
+        # would satisfy the z assertion below and leave the fixture claiming a
+        # history it does not have.
+        assert statistics.fmean(values) == pytest.approx(mean, abs=1e-9), currency
+        assert statistics.stdev(values) == pytest.approx((net - mean) / p, abs=1e-9), (
+            currency
+        )
         assert BasePillar.time_series_z(
             series, ScoringConfig().lookback_years, ASOF
         ) == pytest.approx(p, abs=1e-9), currency
@@ -338,6 +349,12 @@ def test_an_unstamped_report_falls_back_to_the_assumed_weekly_lag(
     assert visible["USD"][INDICATOR][-1].period == NEWEST - timedelta(weeks=1)
     assert admitted["USD"][INDICATOR][-1].period == NEWEST
 
+    # And the count of inputs resting on the assumption, which is the diagnostic
+    # the unstamped path exists to feed. Every print here is unstamped, so it is
+    # the whole history.
+    scored = PositioningPillar().compute(series, ["USD"], NEWEST + timedelta(days=7))
+    assert scored["USD"].diagnostics["assumed_lag_inputs"] == pytest.approx(WEEKS)
+
 
 # --- p, and the shape function it feeds --------------------------------------
 
@@ -355,22 +372,39 @@ def test_p_is_the_time_series_z_of_the_currencys_own_history(
         ), currency
 
 
-def test_the_lookback_window_is_the_configured_one(pillar: PositioningPillar) -> None:
+def test_the_lookback_window_is_the_configured_one() -> None:
     """The wire, not the value. A hardcoded window would pass the test above.
 
-    Thirteen weeks of a twenty-week history is a different mean and a different
-    spread, so the same newest reading carries a different z. The assertion is
-    that the answer moves with the configuration, not what it moves to.
+    The twenty-week fixture cannot show this: every positive ``lookback_years``
+    holds all twenty weeks, so one, three and five all give the same z and a
+    corrupted window would be invisible. The history here is long enough for
+    the bound to bite, so three years and five years take different windows of
+    it, and the newest reading carries a different z in each. Both are real
+    readings rather than one being a refusal, which is what makes it a test of
+    the window rather than of the floor.
     """
-    short = PositioningPillar(ScoringConfig(lookback_years=0))
-    observations = universe()
+    trending = [float(index) for index in range(280)]
+    observations = weekly("USD", trending)
 
-    default_z = pillar.compute(observations, ["USD"], ASOF)["USD"].z
-    short_z = short.compute(observations, ["USD"], ASOF)["USD"].z
+    three = PositioningPillar(ScoringConfig(lookback_years=3))
+    five = PositioningPillar(ScoringConfig(lookback_years=5))
+    three_z = three.compute(observations, ["USD"], ASOF)["USD"].z
+    five_z = five.compute(observations, ["USD"], ASOF)["USD"].z
 
-    assert default_z is not None
-    assert short_z is None, "a zero-year window holds one week, under the floor"
-    assert pillar.config.lookback_years == 5
+    assert three_z is not None and five_z is not None
+    assert three_z != pytest.approx(five_z)
+    assert ScoringConfig().lookback_years == 5
+    assert five_z == pytest.approx(
+        PositioningPillar.response(BasePillar.time_series_z(observations, 5, ASOF))
+    )
+
+    # And the note counts the window rather than the history, which is the
+    # first fixture here where the two differ: 280 weekly prints, of which 261
+    # fall inside the five years before the run date and 156 inside three.
+    five_note = five.compute(observations, ["USD"], ASOF)["USD"].notes
+    three_note = three.compute(observations, ["USD"], ASOF)["USD"].notes
+    assert "over 261 weekly reports" in five_note
+    assert "over 156 weekly reports" in three_note
 
 
 def test_the_lookback_is_anchored_on_the_run_date_and_not_on_the_last_print(
@@ -406,6 +440,10 @@ def test_the_lookback_is_anchored_on_the_run_date_and_not_on_the_last_print(
         "the fixture must separate the two anchors or this test proves nothing"
     )
     assert scored.z == pytest.approx(PositioningPillar.response(anchored))
+    # The window the note reports is anchored the same way: 157 of the 200
+    # prints fall inside the five years before the run date, where all 200 fall
+    # inside the five years before the newest print.
+    assert "over 157 weekly reports" in scored.notes
 
 
 def test_a_history_under_the_window_floor_scores_none_rather_than_zero(
@@ -540,7 +578,10 @@ def test_a_currency_with_no_contract_scores_none_and_not_neutral(
     assert scores["NZD"].z is None
     assert scores["NZD"].raw is None
     assert scores["NZD"].score == 0.0
-    assert "NZD" in scores["NZD"].notes
+    # The indicator key, not the currency code. `compute` puts the code in the
+    # note on every branch, so asserting it would pass with the absent-indicator
+    # list empty, which is the half of the message a reader needs.
+    assert "cot_net_pct_oi" in scores["NZD"].notes
     assert scores["USD"].z is not None, "the rest of the universe still scores"
 
 
@@ -588,6 +629,20 @@ def test_normalise_returns_the_response_unchanged(pillar: PositioningPillar) -> 
     )
 
     assert normalised == responses
+
+
+def test_transform_refuses_a_slice_built_without_the_series(
+    pillar: PositioningPillar,
+) -> None:
+    """`BasePillar._extract` guarantees the key, carrying an empty sequence.
+
+    So a missing key means the mapping was built some other way, and a `.get`
+    would read that as a currency with no contract, which is a reading. The
+    same reasoning as `_normalise`'s guard below, and this repository's rule is
+    that a failure has to be tested to fail.
+    """
+    with pytest.raises(KeyError):
+        pillar._transform({"USD": {}}, ASOF)
 
 
 def test_normalise_refuses_a_mapping_built_without_the_response(
@@ -672,10 +727,12 @@ def test_emit_sd_reports_the_spread_the_spec_publishes(
     """
     scores = pillar.compute(universe(), list(G10), ASOF)
 
-    emitted = [scores[currency].score for currency in G10]
-
+    # Not recomputed as a population standard deviation over the eight scores
+    # here: that is definitionally what `_emit_sd` does when all eight score, so
+    # it would check the base class rather than this pillar.
+    # `tests/test_emit_sd.py` owns that, including the rule that excludes a
+    # currency the pillar could not score.
     assert scores["USD"].diagnostics["emit_sd"] == pytest.approx(EMIT_SD, abs=5e-5)
-    assert statistics.pstdev(emitted) == pytest.approx(EMIT_SD, abs=5e-5)
     assert all(
         scores[currency].diagnostics["emit_sd"] == scores["USD"].diagnostics["emit_sd"]
         for currency in G10
@@ -699,6 +756,67 @@ def test_the_pillar_disagrees_with_a_crowded_long(pillar: PositioningPillar) -> 
 
 
 # --- the response function's four properties ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("p", "expected"),
+    [
+        (0.0, "momentum"),
+        (0.9, "momentum"),
+        (MOMENTUM_PEAK_Z, "momentum"),
+        (-MOMENTUM_PEAK_Z, "momentum"),
+        (1.5, "fading"),
+        (SIGN_FLIP_Z, "fading"),
+        (-SIGN_FLIP_Z, "fading"),
+        (2.4, "contrarian"),
+        (-12.0, "contrarian"),
+        (None, ""),
+    ],
+)
+def test_the_branch_names_follow_the_same_two_constants_as_the_response(
+    p: float | None, expected: str
+) -> None:
+    """The split lives once, beside `response`, and both joins are pinned.
+
+    Each boundary belongs to the branch below it, which is what makes the label
+    agree with the value: at ``|p| = 1`` both branches give magnitude 1.0 and at
+    ``|p| = 2`` both give zero, so a currency exactly on a join is described by
+    either name and the code has to pick one and keep picking it.
+    """
+    assert PositioningPillar.branch(p) == expected
+
+
+def test_a_ragged_run_reads_each_currency_at_its_own_newest_week(
+    pillar: PositioningPillar,
+) -> None:
+    """A real run does not arrive with every contract at the same week.
+
+    One source failing part way leaves one currency a fortnight behind the rest,
+    and both the headline number and the note read the newest print per
+    currency rather than per run. Every currency in the section 7.4 fixture
+    shares a newest period, so nothing there could tell a per-currency read from
+    a per-run one.
+    """
+    behind = NEWEST - timedelta(weeks=2)
+    observations = [
+        observation
+        for currency, (net, mean, p, _) in FIXTURE.items()
+        for observation in weekly(
+            currency,
+            window(net, mean, p),
+            newest=behind if currency == "CHF" else NEWEST,
+        )
+    ]
+
+    scores = pillar.compute(observations, list(G10), ASOF)
+
+    assert behind.isoformat() in scores["CHF"].notes
+    assert NEWEST.isoformat() in scores["USD"].notes
+    assert scores["CHF"].raw == pytest.approx(FIXTURE["CHF"][0])
+    assert scores["CHF"].staleness_days > scores["USD"].staleness_days
+    assert scores["CHF"].z == pytest.approx(FIXTURE["CHF"][3], abs=5e-3), (
+        "a fortnight behind is still that currency's own record"
+    )
 
 
 @pytest.mark.parametrize("p", [0.0, 0.25, 1.0, 1.5, 2.0, 2.4, 3.33, 4.0, 12.0])
@@ -747,7 +865,7 @@ def test_the_contrarian_branch_saturates_below_the_clip() -> None:
     The cap is what stops the weakest data in the model from becoming its
     loudest voice at an extreme, which `CONTRARIAN_CAP` records.
     """
-    saturation = SIGN_FLIP_Z + CONTRARIAN_CAP / 1.5
+    saturation = SIGN_FLIP_Z + CONTRARIAN_CAP / CONTRARIAN_SLOPE
 
     for p in (saturation, 4.0, 10.0, 100.0):
         response = PositioningPillar.response(p)
