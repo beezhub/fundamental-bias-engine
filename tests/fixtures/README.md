@@ -189,6 +189,44 @@ What a constructed body cannot do is break the build when FRED changes a unit
 or a scale underneath us, which is the point of a spot check. A human with a
 key should record real responses over these. See #56.
 
+## CFTC Commitments of Traders
+
+Captured 2026-09-21 against `https://publicreporting.cftc.gov/resource/`, no
+credential, no headers beyond the client's defaults.
+
+| File | Request | Status |
+| --- | --- | --- |
+| `cot_tff_futures_only_2026_09_08.json` | `gpe5-46if.json` with `$where` on `report_date_as_yyyy_mm_dd` and `cftc_contract_market_code`, one request per contract | 200 |
+
+Seven rows, one per non-dollar G10 contract, for report date 2026-09-08. Each
+row is byte-exact as returned and carries every column the dataset answered
+with, not the four the source reads. That is deliberate: a capture trimmed
+to the columns the code wants cannot show a renamed column, which is the failure
+this fixture exists to catch.
+
+The rows are not all the same width. Ninety distinct keys appear across the
+seven, and an individual row carries 86 to 90 of them, because Socrata omits a
+column it has no value for rather than sending a null. Every omission in this
+capture is a trader-count column, and none of the four the source reads is ever
+absent: the two leveraged-funds legs, open interest and the report date. That is
+the fact worth having captured, because the code refuses a row missing a column
+it reads, and a fixture whose rows all arrived at one width would not show that
+the feed varies.
+
+The report date is a Tuesday and the file name says so. Positions are snapped at
+Tuesday's close and published the following Friday afternoon, so a fixture named
+for its publication date would encode the mistake the source is built to avoid.
+
+The spot check reads the euro row and asserts the two published integers and the
+open interest, 94808 long, 128093 short and 942464 open interest, then asserts
+the observation the source builds from them. Those are figures nobody here
+chose. The seven together net to an implied dollar reading of +30.637% of open
+interest, which the ruling on #174 arrived at independently as +0.3064 as a
+ratio, from its own capture of the same report date.
+
+There is no dollar row. There is no liquid dollar contract in this dataset,
+which is why the dollar reading is derived rather than fetched.
+
 ## Forex Factory calendar
 
 Captured 2026-09-18 against `https://nfs.faireconomy.media/ff_calendar_thisweek.json`,

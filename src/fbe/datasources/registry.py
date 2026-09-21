@@ -159,7 +159,14 @@ TRANSFORMS: tuple[str, ...] = (
 the year-on-year percentage change. ``diff`` means take the period-on-period
 change, which is how a stock of employed persons becomes an employment change.
 ``net_position`` is the COT-specific reduction of long and short contract
-counts to a single signed number. ``chg_1m`` and ``chg_3m`` mean the source
+counts to the canonical percent: the leveraged-funds net divided by open
+interest and multiplied by a hundred, which is what `fbe.datasources.cot`
+emits and what ``cot_net_pct_oi`` means. It used to stop at the signed
+contract count, which left the ref's declared unit naming a quantity no
+consumer wanted; issue #174 completed it. The hint covers the whole reduction
+because it is used by that one key and by nothing else, so there is no second
+consumer to surprise.
+``chg_1m`` and ``chg_3m`` mean the source
 publishes a percent level and the caller must resample it to month-end (or
 quarter-end for the three-month case), difference over one or three periods,
 and rescale the percentage-point result into basis points by multiplying by
@@ -336,11 +343,27 @@ def _manual(
 
 
 def _cftc(series_id: str, last_observed: date, note: str = "") -> SeriesRef:
-    """Build a CFTC `SeriesRef` for a currency futures contract market code."""
+    """Build a CFTC `SeriesRef` for a currency futures contract market code.
+
+    The unit is the percent of open interest, not the contract count.
+    `SeriesRef.unit` is echoed onto every `Observation`, and
+    `fbe.datasources.cot` divides the leveraged-funds net by open interest and
+    scales it before emitting, so naming contracts here would put a unit on the
+    observation that its value is not in. Issue #174 is where that division
+    landed and ADR 0011 records the scale.
+
+    The dollar ref is the loose one. Its value is the negated sum of the seven
+    other legs, so it is a sum of seven percents of seven different
+    denominators rather than a percent of any one open interest, and it sits on
+    roughly seven times their scale. It carries this unit because the scale of
+    its terms is the closest true thing and because `_observation` copies the
+    unit from the ref, not because the label is exact. Whether the derived leg
+    deserves a unit of its own is recorded as open in ADR 0011.
+    """
     return SeriesRef(
         source=SOURCE_CFTC,
         series_id=series_id,
-        unit="contracts",
+        unit="percent_of_open_interest",
         frequency=Frequency.WEEKLY,
         transform="net_position",
         verified=True,
@@ -1725,26 +1748,38 @@ all eight."""
 COT_NET_PCT_OI = IndicatorSpec(
     key="cot_net_pct_oi",
     pillar=PillarName.POSITIONING,
-    unit="contracts",
+    unit="percent_of_open_interest",
     frequency=Frequency.WEEKLY,
     max_staleness_days=21,
     description=(
         "Net speculative position in CME currency futures from the CFTC "
-        "Commitments of Traders report. A crowded position is a reason to fade "
-        "a fundamental view, not to add to it, so this pillar usually works "
-        "against the others by design. "
-        "Named for what `fbe.pillars.positioning.PositioningPillar` and "
-        "`docs/scoring-spec.md` section 3.6 actually want: net non-commercial "
-        "positioning as a share of open interest, ``(long - short) / "
-        "open_interest``, not the raw contract count this key held under its "
-        "previous name. That division is not yet implemented anywhere: "
-        "`unit` below is still ``contracts`` because `fbe.datasources.cot` "
-        "returns raw net position and open interest and leaves the division "
-        "to the caller, and no caller performs it yet. Fetching under this "
-        "key today still yields raw contracts, not a percentage; the rename "
-        "makes the pillar's lookup resolve, it does not make the numbers "
-        "match the name. See the related collector work before trusting a "
-        "score built on it."
+        "Commitments of Traders report, as a percent of open interest. A "
+        "crowded position is a reason to fade a fundamental view, not to add "
+        "to it, so this pillar usually works against the others by design. "
+        "``(lev_money_positions_long - lev_money_positions_short) / "
+        "open_interest_all * 100`` on the Traders in Financial Futures "
+        "futures-only dataset, which `fbe.datasources.cot` performs, so "
+        "what arrives under this key is that percent and not the contract "
+        "count the key held under its previous name. "
+        "**Leveraged funds, not non-commercial.** Issue #174's ruling settled "
+        "that and `docs/decisions/0011-positioning-reads-leveraged-funds.md` "
+        "records it. Leveraged funds are the money whose crowding "
+        "mean-reverts, which is the property section 3.6 of "
+        "`docs/scoring-spec.md` reasons from; non-commercial is a Legacy "
+        "report category that TFF does not carry, and reassembling it from "
+        "TFF's asset manager, leveraged funds and other reportable columns "
+        "discards the only thing the TFF report buys. "
+        "**A percent, matching the key's name.** Section 3.6 wrote the "
+        "quantity as a plain division and called it a share, and this "
+        "description said the same until #174, against the key's own name, "
+        "`fbe.pillars.positioning.PositioningPillar`'s docstring, section "
+        "7.4's column header and the section 7 fixture, all of which read a "
+        "percent. ADR 0011 settled it for the percent and section 3.6 has "
+        "been corrected. The scale is free for the score, since the pillar "
+        "z-scores this series against its own history, and it is not free "
+        "for a reader: see `fbe.datasources.cot.PERCENT_SCALE`. "
+        "The dollar leg carries no contract of its own and is derived: see "
+        "its ref note below and `fbe.datasources.cot.CotSource.derive_usd_position`."
     ),
     series={
         "USD": _cftc(

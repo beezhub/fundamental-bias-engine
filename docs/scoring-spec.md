@@ -619,15 +619,26 @@ evidence that the buyers have already bought, which makes the position fragile:
 the next piece of good news has no new money behind it, and the next piece of bad
 news forces liquidation.
 
-**The transformation.** From the CFTC Commitments of Traders report, take net
-non-commercial positioning as a share of open interest:
+**The transformation.** From the CFTC Traders in Financial Futures report, take
+the net leveraged-funds position as a percent of open interest:
 
-    share(c) = (non_commercial_long - non_commercial_short) / open_interest
+    pct(c) = (lev_money_long - lev_money_short) / open_interest * 100
+
+Leveraged funds rather than the non-commercial bucket this section named until
+ADR 0011, which records the ruling and the measurement behind it. Non-commercial
+is a Legacy report category meaning everything that is not a dealer, so it
+carries benchmark and overlay flow that does not unwind on a bad print, and that
+unwinding is the one property this pillar is built on.
+
+Percent rather than the bare ratio, so that the key's name, this formula, the
+registry `unit` and `PositioningPillar`'s docstring all describe one quantity.
+The scale cancels in the z-score below, so it decides what a reader is shown and
+not what the pillar scores.
 
 Then z-score against that currency's own history over `lookback_years` (default
 5, minimum 3 to be meaningful):
 
-    p(c) = ( share(c) - mean_hist(share(c)) ) / sd_hist(share(c))
+    p(c) = ( pct(c) - mean_hist(pct(c)) ) / sd_hist(pct(c))
 
 This is the only pillar using time-series rather than cross-sectional
 normalisation, for the reason given in section 2.3.
@@ -680,7 +691,7 @@ force. A crowded long is a reason to be less long, not more.
 
 | Sub-indicator | Key | Transformation | Sign rule | Sub-weight |
 | --- | --- | --- | --- | --- |
-| CFTC net non-commercial share of open interest | `cot_net_pct_oi` | Time-series z over `lookback_years`, then `f(p)` above | Non-monotonic, see function | 1.00 |
+| CFTC net leveraged funds, percent of open interest | `cot_net_pct_oi` | Time-series z over `lookback_years`, then `f(p)` above | Non-monotonic, see function | 1.00 |
 
 **What this pillar actually contributes, which is not 0.10.** POSITIONING is
 excluded from the section 2.3 re-standardisation, for the reason that section
@@ -1333,7 +1344,7 @@ only country whose unemployment rate fell, scores positively on that term.
 
 ### 7.4 POSITIONING
 
-| Currency | net non-commercial, % of OI | 3-year mean | 3-year sd | `p` | `f(p)` | branch |
+| Currency | net leveraged funds, % of OI | 3-year mean | 3-year sd | `p` | `f(p)` | branch |
 | --- | --- | --- | --- | --- | --- | --- |
 | USD | +26.2 | +9.8 | 8.63 | +1.90 | +0.10 | fading |
 | EUR | -2.4 | +3.6 | 10.00 | -0.60 | -0.60 | momentum |

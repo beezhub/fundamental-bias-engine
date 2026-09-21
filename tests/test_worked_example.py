@@ -105,7 +105,7 @@ SPEC_ANCHORS: Mapping[str, str] = {
     "7.2 sub-weights": "Blending 0.40 headline and 0.60 core",
     "7.3 growth inputs": "| Currency | `gdp_yoy` | `pmi_composite` |",
     "7.3 scores": "| Pillar | `sd(blend)` | scaling |",
-    "7.4 positioning": "| Currency | net non-commercial, % of OI |",
+    "7.4 positioning": "| Currency | net leveraged funds, % of OI |",
     "7.4 jpy": "computed as `-(-1) * 1.5 * (2.40 - 2.00) = +0.60`",
     "7.4 saturation": "No currency in this run reaches the contrarian saturation",
     "7.5 components": "dd_component  = clip(-6.5 / 10.0)",

@@ -479,9 +479,18 @@ long the foreign currency and therefore short dollars. Net the seven, flip the
 sign, and that is the implied speculative dollar position. The legs must be
 normalised first: raw contract counts are not comparable across contracts with
 different notionals, and open interest differs by more than an order of
-magnitude between EUR and NZD. Normalise each leg by its own open interest or by
-its own multi-year percentile before summing. That work belongs to the scoring
-layer; the source returns raw counts.
+magnitude between EUR and NZD. Each leg is normalised by its own open interest
+before the sum, in the source, because `cot_net_pct_oi` is a percent of open
+interest and sources emit canonical keys. Only `fetch_contract` hands back raw
+rows, which is what `derive_usd_position` reads.
+
+A week that one of the seven did not publish has no dollar reading at all. A sum
+cannot tell an absent leg from a leg at zero, so summing the six that did
+publish would report the dollar as less exposed than they imply, with nothing
+marking it: on the 2026-09-08 capture, losing the Canadian leg alone moves the
+dollar from +30.64 to +14.08. One contract answering with nothing for a whole
+window is the other case and stops the run, because the dollar series would
+otherwise just stop, and that reads as a dollar with no positioning.
 
 ### Rate limits and terms
 
@@ -1350,20 +1359,24 @@ Pillar: **external**. Canonical unit: `usd`. Staleness allowance: 916 days. Fres
 
 Net speculative position in CME currency futures from the CFTC Commitments of Traders report. A crowded position is a reason to fade a fundamental view, not to add to it, so this pillar usually works against the others by design.
 
-This key was renamed from `cot_net_position` to match `fbe.pillars.positioning.PositioningPillar` and `docs/scoring-spec.md` section 3.6, both of which want net non-commercial positioning as a share of open interest, `(long - short) / open_interest`, not a raw contract count. The rename is not a fix for that gap: the division by open interest is not implemented anywhere yet, so a fetch under this key today still returns raw contracts, and `Canonical unit` below still says so honestly. Do not treat the identifier resolving as evidence the percentage is being computed.
+`CotSource` emits `(lev_money_positions_long - lev_money_positions_short) / open_interest_all * 100` from the TFF futures-only dataset `gpe5-46if`. Leveraged funds rather than the Legacy report's non-commercial bucket, and a percent rather than the bare ratio, both for the reasons ADR 0011 records. The division and the scale happen here, in the source, because sources emit canonical keys; `fetch_contract` returns the raw Socrata rows and `derive_usd_position` is the only caller that wants them.
 
-Pillar: **positioning**. Canonical unit: `contracts`. Staleness allowance: 21 days. Fresh coverage: 100%.
+The key was renamed from `cot_net_position` when the division was still unimplemented, and the paragraph that used to sit here said so. That gap closed in #174, which is why `Canonical unit` below now reads `percent_of_open_interest`.
+
+**The dollar row below is not fetched.** There is no liquid dollar contract in TFF, so the dollar reading is the sign-flipped net of the seven other legs, each taken as a percent of its own open interest before they are added. A raw sum of contract counts would be a euro reading wearing a dollar label: open interest differs by more than an order of magnitude between EUR and NZD. The ICE contract `098662` stays registered as the cross-check it is described as, and `CotSource` does not query it today.
+
+Pillar: **positioning**. Canonical unit: `percent_of_open_interest`. Staleness allowance: 21 days. Fresh coverage: 100%.
 
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| USD | cftc | `098662` | contracts | weekly | net_position | yes | 2026-09-01 | USD Index on ICE, in the Legacy report (6dca-aqww), not TFF. The primary dollar read is the sign-flipped complement of the other seven; this contract is a small, thinly held cross-check. |
-| EUR | cftc | `099741` | contracts | weekly | net_position | yes | 2026-09-01 | EURO FX, CME, TFF gpe5-46if |
-| GBP | cftc | `096742` | contracts | weekly | net_position | yes | 2026-09-01 | BRITISH POUND, CME |
-| JPY | cftc | `097741` | contracts | weekly | net_position | yes | 2026-09-01 | JAPANESE YEN, CME |
-| CHF | cftc | `092741` | contracts | weekly | net_position | yes | 2026-09-01 | SWISS FRANC, CME |
-| CAD | cftc | `090741` | contracts | weekly | net_position | yes | 2026-09-01 | CANADIAN DOLLAR, CME |
-| AUD | cftc | `232741` | contracts | weekly | net_position | yes | 2026-09-01 | AUSTRALIAN DOLLAR, CME |
-| NZD | cftc | `112741` | contracts | weekly | net_position | yes | 2026-09-01 | NZ DOLLAR, CME |
+| USD | cftc | `098662` | percent_of_open_interest | weekly | net_position | yes | 2026-09-01 | USD Index on ICE, in the Legacy report (6dca-aqww), not TFF. The primary dollar read is the sign-flipped complement of the other seven; this contract is a small, thinly held cross-check. |
+| EUR | cftc | `099741` | percent_of_open_interest | weekly | net_position | yes | 2026-09-01 | EURO FX, CME, TFF gpe5-46if |
+| GBP | cftc | `096742` | percent_of_open_interest | weekly | net_position | yes | 2026-09-01 | BRITISH POUND, CME |
+| JPY | cftc | `097741` | percent_of_open_interest | weekly | net_position | yes | 2026-09-01 | JAPANESE YEN, CME |
+| CHF | cftc | `092741` | percent_of_open_interest | weekly | net_position | yes | 2026-09-01 | SWISS FRANC, CME |
+| CAD | cftc | `090741` | percent_of_open_interest | weekly | net_position | yes | 2026-09-01 | CANADIAN DOLLAR, CME |
+| AUD | cftc | `232741` | percent_of_open_interest | weekly | net_position | yes | 2026-09-01 | AUSTRALIAN DOLLAR, CME |
+| NZD | cftc | `112741` | percent_of_open_interest | weekly | net_position | yes | 2026-09-01 | NZ DOLLAR, CME |
 
 #### `equity_index`
 

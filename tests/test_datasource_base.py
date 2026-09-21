@@ -37,6 +37,7 @@ from fbe.datasources.base import (
 )
 from fbe.datasources.cache import DiskCache
 from fbe.datasources.calendar import CalendarSource
+from fbe.datasources.cot import CotSource
 from fbe.datasources.fred import FredSource
 from fbe.datasources.manual import ManualSource
 from fbe.datasources.registry import SeriesRef
@@ -736,13 +737,18 @@ def test_observation_uses_the_ref_source_not_the_source_name(
 
 # --- availability -----------------------------------------------------------
 
-SCAFFOLDED_AVAILABLE = set(ALL_SOURCES) - {FredSource, ManualSource, CalendarSource}
+SCAFFOLDED_AVAILABLE = set(ALL_SOURCES) - {
+    FredSource,
+    ManualSource,
+    CalendarSource,
+    CotSource,
+}
 """Sources whose ``available()`` is still a stub.
 
 Remove a class from this set in the change that implements its ``available()``,
 which is what makes the test below start demanding a real answer instead of a
-raise. `FredSource` came out in #56, `ManualSource` in #60 and `CalendarSource`
-in #178."""
+raise. `FredSource` came out in #56, `ManualSource` in #60, `CalendarSource`
+in #178 and `CotSource` in #174."""
 
 
 def test_available_is_true_when_the_base_has_no_prerequisite(source: _Source) -> None:
