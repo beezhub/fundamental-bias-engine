@@ -633,3 +633,38 @@ def test_the_fixture_provenance_is_recorded() -> None:
     for name in ("boc_2y_yield.json", "ecb_2y_spot.csv", "rba_f2_2y.csv"):
         assert name in readme
     assert "truncated" in readme
+
+
+# ---------------------------------------------------------------------------
+# available: configuration, never connectivity
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_available_is_true_and_makes_no_request(source: CurvesSource) -> None:
+    """No provider here takes a key, so nothing in the config can rule the
+    source out, and the answer is not allowed to cost a request to any of
+    them."""
+    route = respx.route().mock(return_value=httpx.Response(200, text=""))
+
+    assert source.available() is True
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_offline_on_a_cold_cache_is_available_and_fetch_raises(
+    tmp_path: Path,
+) -> None:
+    """Offline with nothing cached is a failed fetch, not an unavailable source.
+
+    Reporting it here would print "unavailable, not configured", which sends
+    the operator to look for a credential that does not exist. The cold cache
+    is `fetch`'s to name, and it names the provider it could not serve.
+    """
+    route = respx.route().mock(return_value=httpx.Response(200, text=""))
+    offline = CurvesSource(DataConfig(cache_dir=tmp_path / "cache", offline=True))
+
+    assert offline.available() is True
+    with pytest.raises(SourceError, match="offline"):
+        offline.fetch(["yield_2y"], ["AUD"], date(2026, 8, 1), date(2026, 9, 1))
+    assert route.call_count == 0
