@@ -356,6 +356,10 @@ def write_report(
         ValueError: When the report holds a value JSON cannot carry, such as a
             NaN produced by a division by zero upstream. A NaN written out
             reads back as a number and poisons any average computed over it.
+        TypeError: When the report holds a value that could be written but not
+            read back as what it is, which today means a date or a sequence
+            inside an `fbe.types.Observation`'s free-form ``meta``. See
+            `_encoded_opaque`.
 
     """
     markdown_path = out_dir / FILENAME_FORMAT.format(asof=report.asof)
@@ -372,7 +376,12 @@ def write_report(
     # Both payloads are built before anything is opened, so a rendering or
     # serialisation failure cannot leave a half-written file on disk.
     rendered = render_report(report, diff=diff, config=config)
-    payload = json.dumps(_encoded(report), indent=2, sort_keys=True, allow_nan=False)
+    payload = json.dumps(
+        _encoded(report, BiasReport, "report"),
+        indent=2,
+        sort_keys=True,
+        allow_nan=False,
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     markdown_temp = out_dir / f".{markdown_path.name}.writing"
@@ -411,7 +420,10 @@ def load_report(path: Path) -> BiasReport:
     Returns:
         The reconstructed report. Every sequence comes back as a tuple and
         every mapping as a dict, which is what the producers in this package
-        emit, so a report written and read back compares equal to itself.
+        emit, so a report written and read back compares equal to itself. That
+        holds for every field, free-form provenance included, because
+        `_encoded_opaque` refuses at write time the values it could not
+        restore here.
 
     Raises:
         FileNotFoundError: When the sidecar is absent. A report whose numbers
@@ -425,7 +437,10 @@ def load_report(path: Path) -> BiasReport:
             in from the dataclass default would silently invent a number.
 
     """
-    sidecar = path if path.suffix == ".json" else path.with_suffix(".json")
+    # ``with_suffix`` is the identity on a path that already ends ``.json``,
+    # so one call covers both the Markdown path `write_report` returns and the
+    # sidecar path `latest_report` returns.
+    sidecar = path.with_suffix(".json")
     try:
         payload = json.loads(sidecar.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
@@ -737,11 +752,13 @@ def _departure_reason(pair: str, rows: Mapping[str, PairBias]) -> str:
 # guessing from the value in front of it.
 
 
-def _encoded(value: Any) -> Any:
-    """Turn a report and everything inside it into JSON-safe values.
+def _encoded(value: Any, hint: Any, where: str) -> Any:
+    """Turn one value into the JSON form its annotation says it has.
 
     Args:
-        value: Any value reachable from a `fbe.types.BiasReport`.
+        value: The value as the dataclass holds it.
+        hint: The annotation it sits under, resolved to real types.
+        where: Dotted path to this value inside the report, for the message.
 
     Returns:
         The same information as dicts, lists, strings, numbers, booleans and
@@ -755,49 +772,162 @@ def _encoded(value: Any) -> Any:
         for one that does not, because that would move the timestamp.
 
     Raises:
-        TypeError: When a mapping key is neither a string nor an enum, which no
-            producer here emits, or when a value is of a type JSON cannot
-            carry. Refused rather than coerced with ``str``: a key silently
-            stringified comes back as a string and stops matching the key the
-            writer used.
+        TypeError: When a value cannot be written without losing what it is.
+            The annotation is read here for the same reason `_decoded` reads
+            it: JSON has no date, no tuple and no enum, so a value written
+            under a field annotated `typing.Any` comes back as whatever JSON
+            made of it and nothing can restore the difference. Refusing at
+            write time is the only point where the file and the object are
+            both in hand.
 
     """
-    if isinstance(value, Enum):
-        return value.value
-    # datetime before date: datetime subclasses date, and the other order
-    # writes an instant as a bare day and loses the time.
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    if is_dataclass(value) and not isinstance(value, type):
+    origin = get_origin(hint)
+    if origin in (Union, UnionType):
+        return _encoded_union(value, hint, where)
+    if origin is not None:
+        return _encoded_container(value, hint, origin, where)
+    if hint is Any:
+        return _encoded_opaque(value, where)
+    if isinstance(hint, type):
+        if issubclass(hint, Enum):
+            return _encoded_enum(value, where)
+        if is_dataclass(hint):
+            return _encoded_dataclass(value, hint, where)
+        # One branch for both, because ``isoformat`` already writes each one
+        # in full: a date gives a day and an instant gives a day and a time.
+        # The distinction is only needed on the way back, where `_decoded`
+        # picks the ``fromisoformat`` that refuses the other's string.
+        if issubclass(hint, datetime | date):
+            return _encoded_stamp(value, where)
+    # Scalars pass through. ``json.dumps`` is the backstop for anything an
+    # annotation promised and a producer did not deliver, and it refuses NaN
+    # and infinity as well, which `write_report` turns into its own message.
+    return value
+
+
+def _encoded_union(value: Any, hint: Any, where: str) -> Any:
+    """Encode an optional value, keeping ``None`` as an absence."""
+    if value is None:
+        return None
+    present = [member for member in get_args(hint) if member is not type(None)]
+    if len(present) != 1:
+        raise TypeError(f"{where} is annotated {hint!r}, which is ambiguous to write")
+    return _encoded(value, present[0], where)
+
+
+def _encoded_container(value: Any, hint: Any, origin: Any, where: str) -> Any:
+    """Encode a mapping or a sequence, one element at a time."""
+    arguments = get_args(hint)
+    if isinstance(origin, type) and issubclass(origin, Mapping):
+        key_hint, value_hint = arguments
         return {
-            item.name: _encoded(getattr(value, item.name)) for item in fields(value)
+            _encoded_key(key, key_hint, where): _encoded(
+                item, value_hint, f"{where}[{key!r}]"
+            )
+            for key, item in value.items()
         }
-    if isinstance(value, Mapping):
-        return {_encoded_key(key): _encoded(item) for key, item in value.items()}
-    if isinstance(value, str | bool | int | float) or value is None:
-        return value
-    if isinstance(value, Sequence):
-        return [_encoded(item) for item in value]
-    raise TypeError(
-        f"{type(value).__name__} has no JSON form, so it cannot be written to "
-        "a report sidecar"
-    )
+    if isinstance(origin, type) and issubclass(origin, Sequence):
+        return [
+            _encoded(item, arguments[0], f"{where}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    raise TypeError(f"{where} is annotated {hint!r}, which a sidecar cannot carry")
 
 
-def _encoded_key(key: Any) -> str:
-    """Return a mapping key as the string JSON will hold."""
-    if isinstance(key, Enum):
+def _encoded_dataclass(value: Any, hint: type, where: str) -> dict[str, Any]:
+    """Encode one dataclass as an object keyed by field name."""
+    hints = _annotations(hint)
+    return {
+        item.name: _encoded(
+            getattr(value, item.name), hints[item.name], f"{where}.{item.name}"
+        )
+        for item in fields(hint)
+    }
+
+
+def _encoded_enum(value: Any, where: str) -> Any:
+    """Encode an enum member as its value."""
+    if not isinstance(value, Enum):
+        raise TypeError(f"{where} should be an enum member, found {value!r}")
+    return value.value
+
+
+def _encoded_stamp(value: Any, where: str) -> str:
+    """Encode a day or an instant in ISO 8601."""
+    if not isinstance(value, date):
+        raise TypeError(f"{where} should be a date or a datetime, found {value!r}")
+    return value.isoformat()
+
+
+def _encoded_key(key: Any, hint: Any, where: str) -> str:
+    """Return a mapping key as the string JSON will hold.
+
+    Refused rather than coerced with ``str``: a key silently stringified comes
+    back as a string and stops matching the key the writer used, so a lookup
+    that worked before the round trip returns nothing after it.
+    """
+    if isinstance(hint, type) and issubclass(hint, Enum):
+        if not isinstance(key, hint):
+            raise TypeError(f"{where} is keyed by {hint.__name__}, found {key!r}")
         encoded = key.value
         if not isinstance(encoded, str):
             raise TypeError(f"{key!r} has a non-string value and cannot key an object")
         return encoded
+    if hint is str:
+        if not isinstance(key, str):
+            raise TypeError(f"{where} is keyed by str, found {key!r}")
+        return key
+    raise TypeError(f"{where} is keyed by {hint!r}, which a sidecar cannot carry")
+
+
+_OPAQUE_SCALARS = (bool, int, float, str)
+
+
+def _encoded_opaque(value: Any, where: str) -> Any:
+    """Encode a value under a `typing.Any` annotation, refusing a lossy one.
+
+    `fbe.types.Observation.meta` is the only such field. It is free-form
+    provenance read from ``data/manual/*.yaml``, so it carries whatever
+    ``yaml.safe_load`` produced, and an unquoted ``vintage: 2026-06-29`` is a
+    ``datetime.date`` rather than a string.
+
+    Nothing here can restore that on the way back: `_decoded` has only
+    ``Any`` to go on, so it returns what JSON gave it. Writing the date as
+    ``"2026-06-29"`` would make a report that does not equal itself after a
+    round trip, and the loss would be invisible on the page and in the file.
+
+    So a value JSON has no type for is refused with its path and the fix,
+    rather than quietly changed. The nearest correct place for the rule is
+    `fbe.datasources.manual`, which could require the block to be
+    JSON-shaped at the point an operator writes it; this is the last place it
+    can still be caught.
+    """
+    if value is None or isinstance(value, _OPAQUE_SCALARS):
+        return value
+    if isinstance(value, Mapping):
+        return {
+            _encoded_opaque_key(key, where): _encoded_opaque(item, f"{where}[{key!r}]")
+            for key, item in value.items()
+        }
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        return [
+            _encoded_opaque(item, f"{where}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    raise TypeError(
+        f"{where} is a {type(value).__name__}, which JSON has no type for, so it "
+        "would read back as something else. Free-form provenance has to be "
+        "written as text, a number or a boolean: quote it in the YAML."
+    )
+
+
+def _encoded_opaque_key(key: Any, where: str) -> str:
+    """Return a free-form mapping's key, which JSON requires to be a string."""
     if isinstance(key, str):
         return key
     raise TypeError(
-        f"{key!r} is a {type(key).__name__} and cannot key a JSON object. Only "
-        "strings and string-valued enums reach a sidecar."
+        f"{where} is keyed by a {type(key).__name__} and JSON objects are keyed "
+        "by strings, so the key would read back as text. Quote it in the YAML."
     )
 
 

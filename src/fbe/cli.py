@@ -2899,9 +2899,11 @@ def _compare_line(diff: report_module.ReportDiff | None, baseline: Path | None) 
         saying there was none. Counted from `fbe.report.ReportDiff` rather than
         recomputed, so the line and the section under it cannot disagree.
 
-        A changed config digest is said on this line too. It is the one case
-        where the section's numbers are there to be read and must not be, and
-        a reader who stopped at the console would not have seen it.
+        The counts hold on a digest change too, because the report withholds
+        only the score table there and keeps the direction and conviction
+        moves: a flip is a change in the story rather than a score movement.
+        The withholding is said on this line as well, since a reader who
+        stopped at the console would otherwise not know the table was cut.
 
     """
     if diff is None or baseline is None:

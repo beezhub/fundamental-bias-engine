@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from fbe.types import (
     PairBias,
     PillarName,
     PillarScore,
+    TradeIdea,
 )
 
 runner = CliRunner()
@@ -153,6 +155,13 @@ def run(
         calendar_guard: object = None,
         cost_ratio: object = None,
     ) -> PairBias:
+        # Recorded as well as replaced. The identity keeps the test off
+        # `apply_filters`' own behaviour, and without the record nothing here
+        # would notice the command dropping the call entirely, which strips
+        # the blockers and the tradeable flag from every row on the page.
+        filtered = captured.setdefault("filtered", [])
+        assert isinstance(filtered, list)
+        filtered.append((bias_in.pair, tuple(sorted(scores_in)), asof_in))
         return bias_in
 
     monkeypatch.setattr("fbe.cli.collect", fake_collect)
@@ -162,7 +171,11 @@ def run(
     return runner.invoke(app, ["report", "--asof", ASOF.isoformat(), *args]), captured
 
 
-def previous_run(directory: Path, config_digest: str | None = None) -> Path:
+def previous_run(
+    directory: Path,
+    config_digest: str | None = None,
+    pairs: Sequence[PairBias] = (),
+) -> Path:
     """A report for the day before, written the way a real run writes one.
 
     The digest defaults to the one this invocation will compute, so the diff
@@ -173,7 +186,10 @@ def previous_run(directory: Path, config_digest: str | None = None) -> Path:
         asof=YESTERDAY,
         generated_at=datetime(2026, 9, 8, 6, 0, tzinfo=UTC),
         currencies=(score("USD", 1.2, 1), score("EUR", -0.2, 2)),
-        pairs=(bias(),),
+        pairs=tuple(pairs) if pairs else (bias(),),
+        # The same single idea this run's fixtures produce, so a test that
+        # does not set out to move the shortlist counts no shortlist moves.
+        shortlist=(TradeIdea(bias=bias()),),
         config_digest=(
             load_config().digest() if config_digest is None else config_digest
         ),
@@ -344,8 +360,9 @@ def test_a_rerun_on_the_same_day_does_not_diff_against_itself(
 
     result, _ = run(monkeypatch, "--out", str(tmp_path))
 
-    assert "bias-2026-09-09" not in result.stdout.split("Wrote")[-1].split("\n")[1:][0]
-    assert "No baseline report" in result.stdout
+    compare_line = result.stdout.splitlines()[-1]
+    assert "No baseline report" in compare_line
+    assert "Compared against" not in result.stdout
 
 
 def test_a_changed_digest_is_said_on_the_console_too(
@@ -463,3 +480,201 @@ def test_the_sidecar_is_plain_json_anything_can_parse(
 
     assert payload["asof"] == "2026-09-09"
     assert payload["pairs"][0]["direction"] == "short"
+
+
+# --- the wire into the page --------------------------------------------------
+
+
+def test_every_pair_goes_through_the_filters(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Dropping the call removes the blocker markers and the tradeable flag
+    from every row, and the report still writes and still looks like one.
+
+    The whole call is recorded, not only the pair. Handing `apply_filters` an
+    empty score map loses the coverage blockers, and handing it today's date
+    moves the event window off the run.
+    """
+    _, captured = run(monkeypatch, "--out", str(tmp_path))
+
+    assert captured["filtered"] == [("EURUSD", ("EUR", "USD"), ASOF)]
+
+
+def test_the_currency_ranking_reaches_the_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Section 1 of the report is the ranking. An empty one renders as a table
+    with headings and no rows, which reads as a run that scored nothing."""
+    run(monkeypatch, "--out", str(tmp_path))
+
+    loaded = load_report(tmp_path / "bias-2026-09-09.json")
+
+    assert [row.currency for row in loaded.currencies] == ["USD", "EUR"]
+    assert "+1.20" in (tmp_path / "bias-2026-09-09.md").read_text()
+
+
+def test_the_config_reaches_the_renderer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without it the pillar columns silently fall back from configured-weight
+    order to declaration order and the weights block disappears, while every
+    number on the page stays plausible.
+    """
+    run(monkeypatch, "--out", str(tmp_path))
+
+    rendered = (tmp_path / "bias-2026-09-09.md").read_text()
+
+    # The weights block is the visible half, and it is the half that vanishes.
+    # The column order is the half that matters more and it cannot be asserted
+    # from the CLI, because the shipped defaults happen to put the heaviest
+    # pillar first already, so weight order and declaration order agree.
+    # `tests/test_report.py` pins the ordering on a config where they differ.
+    assert "Pillar weights:" in rendered
+    assert "monetary 0.30" in rendered
+
+
+def test_the_shortlist_is_ranked_and_not_merely_truncated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Slicing the pair list would pass a length check and hand the owner the
+    wrong trade.
+
+    The high-conviction pair is second in the list the bias layer produced, so
+    a slice takes the low-conviction one. This is the decision about which
+    trade gets handed over, and a count is not enough to pin it.
+    """
+    monkeypatch.setenv("FBE_RISK_MAX_CONCURRENT_POSITIONS", "1")
+    unranked = (
+        bias("EURUSD", -0.9, Direction.SHORT, Conviction.LOW),
+        bias("GBPJPY", 2.4, Direction.LONG, Conviction.HIGH),
+    )
+
+    result, _ = run(monkeypatch, "--out", str(tmp_path), biases=unranked)
+
+    assert result.exit_code == 0, result.stdout
+    picked = load_report(tmp_path / "bias-2026-09-09.json").shortlist
+    assert [idea.bias.pair for idea in picked] == ["GBPJPY"]
+
+
+def test_an_untradeable_pair_never_reaches_the_shortlist(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The first rule `fbe.bias.shortlist` applies, and a slice applies none."""
+    blocked = (
+        replace(
+            bias("EURUSD", -2.4, Direction.SHORT, Conviction.HIGH),
+            tradeable=False,
+            blockers=("cost",),
+        ),
+        bias("GBPJPY", 0.9, Direction.LONG, Conviction.LOW),
+    )
+
+    result, _ = run(monkeypatch, "--out", str(tmp_path), biases=blocked)
+
+    assert result.exit_code == 0, result.stdout
+    picked = load_report(tmp_path / "bias-2026-09-09.json").shortlist
+    assert [idea.bias.pair for idea in picked] == ["GBPJPY"]
+
+
+def test_the_run_stamp_carries_an_offset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Phase 6 joins journal entries to this stamp. A naive one compared
+    against an offset-aware one is wrong by the machine's offset, with nothing
+    on the page to say so."""
+    run(monkeypatch, "--out", str(tmp_path))
+
+    loaded = load_report(tmp_path / "bias-2026-09-09.json")
+
+    assert loaded.generated_at.utcoffset() is not None
+    assert "UTC" in (tmp_path / "bias-2026-09-09.md").read_text()
+
+
+def test_the_warnings_say_which_pillars_could_not_score(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A run on six pillars looks exactly like a run on seven, apart from the
+    coverage column, unless the reason is carried up to the page."""
+    unscored = replace(
+        score("USD", 1.2, 1),
+        pillars={
+            PillarName.POSITIONING: PillarScore(
+                pillar=PillarName.POSITIONING,
+                currency="USD",
+                raw=None,
+                z=None,
+                score=0.0,
+                weight=0.0,
+                asof=ASOF,
+                notes="POSITIONING could not score: the CFTC source is scaffolded",
+            )
+        },
+    )
+
+    run(monkeypatch, "--out", str(tmp_path), scores=(unscored,))
+
+    loaded = load_report(tmp_path / "bias-2026-09-09.json")
+
+    assert any("CFTC source is scaffolded" in line for line in loaded.warnings)
+
+
+# --- the console line --------------------------------------------------------
+
+
+def test_the_console_counts_the_flips_and_the_shortlist_moves(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The published example in ``docs/interfaces.md`` is this line, and the
+    counts on it are what a reader uses to decide whether to open the file."""
+    previous_run(tmp_path, pairs=(bias("EURUSD", 1.4, Direction.LONG),))
+
+    result, _ = run(monkeypatch, "--out", str(tmp_path))
+
+    assert "1 direction flip, 0 shortlist changes." in result.stdout
+
+
+def test_an_unchanged_run_counts_nothing_and_says_so_in_the_plural(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Zero is plural. "0 direction flip" is the sort of line a reader stops
+    trusting, and the singular is what the published example uses for one."""
+    previous_run(tmp_path)
+
+    result, _ = run(monkeypatch, "--out", str(tmp_path))
+
+    assert "0 direction flips, 0 shortlist changes." in result.stdout
+
+
+def test_the_published_console_line_still_reproduces() -> None:
+    """``docs/interfaces.md`` publishes this line. A published example that
+    does not reproduce is worse than no example, so it is a fixture here.
+
+    Built from a `ReportDiff` directly rather than from a run, because the
+    example's counts are one flip and two shortlist moves and the point is the
+    wording, not how a run reaches those numbers.
+    """
+    from fbe.cli import _compare_line
+    from fbe.report import PairChange, ReportDiff
+
+    diff = ReportDiff(
+        previous_asof=YESTERDAY,
+        current_asof=ASOF,
+        pairs=(
+            PairChange(
+                pair="AUDJPY",
+                previous_direction=Direction.LONG,
+                current_direction=Direction.SHORT,
+                previous_conviction=Conviction.MEDIUM,
+                current_conviction=Conviction.MEDIUM,
+                flipped=True,
+            ),
+        ),
+        shortlist_added=("EURUSD",),
+        shortlist_removed=(("GBPJPY", "blocked: coverage"),),
+    )
+
+    line = _compare_line(diff, Path("data/reports/bias-2026-09-08.json"))
+
+    assert line == (
+        "Compared against bias-2026-09-08.json: 1 direction flip, 2 shortlist changes."
+    )

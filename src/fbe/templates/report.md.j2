@@ -163,16 +163,22 @@ call as a low-conviction call regardless of the spread it produces.
 {% if not diff %}
 No baseline report to compare against. This is the first run, or `--compare
 none` was passed.
-{% elif diff.config_changed %}
-The config digest changed since {{ diff.previous_asof.strftime('%Y-%m-%d') }}.
-Score movements below are not comparable: re-weighting the pillars moves every
-currency at once, and reading that as a market move is the fastest way to talk
-yourself into a trade that is not there. Re-run the previous date on the current
-config for a like-for-like comparison.
 {% else %}
 Against {{ diff.previous_asof.strftime('%Y-%m-%d') }}:
 
-{% if diff.currencies %}
+{% if diff.config_changed %}
+The config digest changed since {{ diff.previous_asof.strftime('%Y-%m-%d') }},
+so the score table is withheld: re-weighting the pillars moves every currency
+at once, and reading that as a market move is the fastest way to talk yourself
+into a trade that is not there. Re-run the previous date on the current config
+for a like-for-like comparison.
+
+{# The direction and conviction moves below are kept. A flip is a change in
+   the story rather than a score movement, and it is the loudest thing this
+   engine can say, so a re-weighting must not be able to silence it. The
+   score deltas are the only part a digest change makes incomparable. #}
+{% endif %}
+{% if diff.currencies and not diff.config_changed %}
 | CCY | Then | Now | Delta | Rank |
 |---|---:|---:|---:|---|
 {% for change in diff.currencies -%}
@@ -184,7 +190,7 @@ Against {{ diff.previous_asof.strftime('%Y-%m-%d') }}:
 Direction and conviction moves:
 
 {% for change in diff.pairs -%}
-- {{ change.pair }}: {{ change.previous_direction.value if change.previous_direction else 'n/a' }} to {{ change.current_direction.value if change.current_direction else 'n/a' }}, {{ change.previous_conviction.value if change.previous_conviction else 'n/a' }} to {{ change.current_conviction.value if change.current_conviction else 'n/a' }}{{ ' (flip)' if change.flipped }}
+- {{ change.pair }}: {{ change.previous_direction.value if change.previous_direction else 'n/a' }} to {{ change.current_direction.value if change.current_direction else 'n/a' }}, {{ change.previous_conviction.value if change.previous_conviction else 'n/a' }} to {{ change.current_conviction.value if change.current_conviction else 'n/a' }}, spread {{ '%+.2f' | format(change.previous_spread) if change.previous_spread is not none else 'n/a' }} to {{ '%+.2f' | format(change.current_spread) if change.current_spread is not none else 'n/a' }}{{ ' (flip)' if change.flipped }}
 {% endfor %}
 {% endif %}
 

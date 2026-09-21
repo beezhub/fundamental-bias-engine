@@ -31,10 +31,12 @@ from typing import Any
 import pytest
 from jinja2 import UndefinedError
 
+import fbe
 from fbe.cli import _pillar_order as cli_pillar_order
 from fbe.config import Config, DataConfig, RiskConfig, ScoringConfig
 from fbe.report import (
     SIDECAR_FORMAT,
+    TEMPLATE_NAME,
     CurrencyChange,
     ReportDiff,
     _grid,
@@ -59,6 +61,8 @@ from fbe.types import (
     PositionSize,
     TradeIdea,
 )
+
+PACKAGE_ROOT = Path(fbe.__file__).resolve().parent
 
 ASOF = date(2026, 6, 30)
 YESTERDAY = date(2026, 6, 29)
@@ -594,7 +598,9 @@ def test_a_date_field_holding_an_instant_raises(tmp_path: Path) -> None:
     payload["asof"] = "2026-06-30T17:00:00+00:00"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(ValueError):
+    # Matched on the field. `load_report` wraps everything in ValueError, so a
+    # bare raises passes for any unrelated decode failure in the same file.
+    with pytest.raises(ValueError, match="asof"):
         load_report(path)
 
 
@@ -843,7 +849,7 @@ def two_runs(
     )
 
 
-def test_the_two_asof_dates_are_carried(tmp_path: Path) -> None:
+def test_the_two_asof_dates_are_carried() -> None:
     diff = two_runs((currency_score("USD", 1.0),), (currency_score("USD", 1.0),))
 
     assert diff.previous_asof == YESTERDAY
@@ -1206,7 +1212,14 @@ def test_pairs_come_back_widest_disagreement_first() -> None:
 def test_the_grid_is_the_one_the_grid_helper_builds() -> None:
     """`_grid` is the single place mirrored cells are produced. A second
     orientation rule here would invert the lower triangle of the matrix while
-    every number on screen stayed plausible."""
+    every number on screen stayed plausible.
+
+    The expectation is `_grid`'s own output rather than a literal grid, which
+    would normally mean comparing the implementation with itself. It is
+    defensible here because `_grid` has its own suite in
+    ``tests/test_grid.py``: what this asserts is that `build_context` calls
+    it rather than orienting cells a second way.
+    """
     report = bias_report(pairs=(pair_bias("EURUSD", -1.42, Direction.SHORT),))
 
     assert build_context(report)["grid"] == _grid(report.pairs)
@@ -1225,7 +1238,18 @@ def test_the_pillar_columns_follow_the_configured_weights() -> None:
 
     context = build_context(bias_report(), config=config)
 
-    assert tuple(context["pillar_order"]) == tuple(_pillar_order(config))
+    # The literal order, not `_pillar_order(config)`. Delegating the
+    # expectation to the implementation compares it with itself and passes for
+    # any ordering at all, including none.
+    assert tuple(context["pillar_order"]) == (
+        PillarName.INFLATION,
+        PillarName.EMPLOYMENT,
+        PillarName.RISK,
+        PillarName.MONETARY,
+        PillarName.GROWTH,
+        PillarName.EXTERNAL,
+        PillarName.POSITIONING,
+    )
 
 
 def test_no_config_leaves_the_weights_block_with_nothing_to_render() -> None:
@@ -1296,7 +1320,13 @@ def test_a_pillar_with_no_score_prints_a_marker_rather_than_a_number() -> None:
     )
 
     ranking = rendered.split("## 1.")[1].split("## 2.")[0]
-    assert "+0.00" not in ranking
+    row = next(line for line in ranking.splitlines() if line.startswith("| 1 |"))
+    # Both halves. Asserting only the absence of the number passes against a
+    # template that dropped the pillar columns entirely.
+    assert "+0.00" not in row
+    # Counted on " . |" rather than "| . |": adjacent cells share a pipe, so
+    # the second form finds three of six.
+    assert row.count(" . |") == len(PillarName) - 1
 
 
 def test_the_report_claims_no_measured_edge() -> None:
@@ -1315,15 +1345,59 @@ def test_no_baseline_renders_the_first_run_line() -> None:
     assert "No baseline report" in rendered
 
 
-def test_a_changed_config_renders_the_not_comparable_warning() -> None:
-    diff = diff_reports(
-        bias_report(asof=YESTERDAY, config_digest="abc123"),
-        bias_report(config_digest="ff0099"),
+def changed_config_diff() -> ReportDiff:
+    """Two runs on different weights, one of them with a direction flip."""
+    return diff_reports(
+        bias_report(
+            asof=YESTERDAY,
+            currencies=(currency_score("USD", 1.00, rank=1),),
+            pairs=(pair_bias("EURUSD", 0.40, Direction.LONG),),
+            shortlist=(),
+            config_digest="abc123",
+        ),
+        bias_report(
+            currencies=(currency_score("USD", 1.90, rank=1),),
+            pairs=(pair_bias("EURUSD", -0.60, Direction.SHORT),),
+            shortlist=(),
+            config_digest="ff0099",
+        ),
     )
 
-    rendered = render_report(bias_report(config_digest="ff0099"), diff=diff)
 
-    assert "not comparable" in rendered
+def test_a_changed_config_withholds_the_score_table() -> None:
+    """Re-weighting moves every currency at once. Printed as a delta it is a
+    market move that did not happen, on the section a reader turns to first."""
+    rendered = render_report(
+        bias_report(config_digest="ff0099"), diff=changed_config_diff()
+    )
+
+    changed = rendered.split("## 6.")[1]
+    assert "digest changed" in changed
+    assert "| CCY | Then | Now | Delta | Rank |" not in changed
+
+
+def test_a_changed_config_still_shows_a_direction_flip() -> None:
+    """A flip is a change in the story, not a score movement, and
+    `diff_reports` calls it the loudest thing this engine can say. A
+    re-weighting must not be able to silence it: the pillars were re-weighted
+    and the model also reversed its side, and the second fact is still true.
+    """
+    rendered = render_report(
+        bias_report(config_digest="ff0099"), diff=changed_config_diff()
+    )
+
+    changed = rendered.split("## 6.")[1]
+    assert "EURUSD: long to short" in changed
+    assert "(flip)" in changed
+
+
+def test_a_reported_pair_shows_both_its_spreads_on_the_page() -> None:
+    """ "long to short" alone does not say whether the model moved a long way
+    or barely crossed zero, and those call for different amounts of attention.
+    """
+    rendered = render_report(bias_report(), diff=changed_config_diff())
+
+    assert "spread +0.40 to -0.60" in rendered
 
 
 def test_a_template_directory_override_is_used(tmp_path: Path) -> None:
@@ -1347,3 +1421,199 @@ def test_a_template_reading_a_key_the_context_lacks_raises(tmp_path: Path) -> No
 
     with pytest.raises(UndefinedError):
         render_report(bias_report(), template_dir=tmp_path)
+
+
+# --- the codec's refusals ----------------------------------------------------
+
+
+def test_an_absent_sidecar_raises_rather_than_reading_as_an_empty_run(
+    tmp_path: Path,
+) -> None:
+    """A report whose numbers cannot be read back is not a report. An empty
+    one returned here is a run with no opinions, which is the quiet default
+    the whole package is written against."""
+    with pytest.raises(FileNotFoundError):
+        load_report(tmp_path / "bias-2026-06-30.json")
+
+
+def test_a_not_a_number_is_refused_rather_than_written(tmp_path: Path) -> None:
+    """A NaN arrives from a division by zero upstream. Written out it reads
+    back as a number and poisons any average computed over the column."""
+    broken = bias_report(
+        pairs=(pair_bias("EURUSD", spread=float("nan")),), shortlist=()
+    )
+
+    with pytest.raises(ValueError, match="[Nn]a[Nn]"):
+        write_report(broken, tmp_path)
+
+
+def test_a_mapping_key_that_is_not_a_string_is_refused(tmp_path: Path) -> None:
+    """JSON objects are keyed by strings. A key coerced with ``str`` comes back
+    as a string and stops matching the key the writer used, so a lookup that
+    worked before the round trip returns nothing after it."""
+    scored = replace(pillar_score(), inputs=(observation(meta={7: "seven"}),))
+    broken = bias_report(
+        currencies=(currency_score("USD", 1.2, pillars={PillarName.MONETARY: scored}),)
+    )
+
+    with pytest.raises(TypeError, match="keyed by"):
+        write_report(broken, tmp_path)
+
+
+def test_a_date_in_free_form_provenance_is_refused_rather_than_flattened(
+    tmp_path: Path,
+) -> None:
+    """``meta`` comes from ``data/manual/*.yaml`` through ``yaml.safe_load``,
+    and an unquoted ``vintage: 2026-06-29`` is a `datetime.date`, not a string.
+
+    JSON has no date, and `_decoded` has only `typing.Any` to go on, so a date
+    written as ``"2026-06-29"`` reads back as text and the report no longer
+    equals itself. The loss is invisible on the page and in the file, so it is
+    refused at the one point where both are in hand.
+    """
+    scored = replace(
+        pillar_score(), inputs=(observation(meta={"vintage": date(2026, 6, 29)}),)
+    )
+    broken = bias_report(
+        currencies=(currency_score("USD", 1.2, pillars={PillarName.MONETARY: scored}),)
+    )
+
+    with pytest.raises(TypeError, match="quote it"):
+        write_report(broken, tmp_path)
+
+
+def test_a_sequence_in_free_form_provenance_round_trips_as_a_list(
+    tmp_path: Path,
+) -> None:
+    """A YAML list is the one nested shape JSON does carry, so it is kept
+    rather than refused, and it comes back as a list because that is what it
+    was written as."""
+    scored = replace(
+        pillar_score(), inputs=(observation(meta={"tags": ["revised", "final"]}),)
+    )
+    original = bias_report(
+        currencies=(currency_score("USD", 1.2, pillars={PillarName.MONETARY: scored}),)
+    )
+
+    restored = load_report(write_report(original, tmp_path))
+
+    assert restored == original
+
+
+@pytest.mark.parametrize(
+    "field_path, value",
+    [
+        (("pairs", 0, "spread"), True),
+        (("pairs", 0, "tradeable"), 1),
+        (("currencies", 0, "rank"), True),
+    ],
+)
+def test_a_boolean_is_not_a_number_and_a_number_is_not_a_boolean(
+    tmp_path: Path, field_path: tuple[str, int, str], value: object
+) -> None:
+    """``bool`` is a subclass of ``int`` in Python, so ``true`` in a risk
+    figure passes an ``isinstance`` check and is then arithmetic."""
+    markdown = write_report(bias_report(), tmp_path)
+    path = sidecar_of(markdown)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    section, index, name = field_path
+    payload[section][index][name] = value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=name):
+        load_report(path)
+
+
+def test_a_scalar_where_a_list_belongs_raises(tmp_path: Path) -> None:
+    """Wrapped in a one-element tuple instead, a single blocker string would
+    become 14 one-character blockers and every one of them would render."""
+    markdown = write_report(bias_report(), tmp_path)
+    path = sidecar_of(markdown)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["pairs"][0]["blockers"] = "cost:unchecked"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="blockers"):
+        load_report(path)
+
+
+def test_a_sidecar_that_cannot_be_placed_takes_the_markdown_with_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of both-or-neither, and the half that fails silently.
+
+    A Markdown with no sidecar is invisible to a reader looking for a problem
+    and perfectly readable to ``--compare``, so the run reports success and the
+    what-changed section is empty forever.
+    """
+    import fbe.report as report_module
+
+    real_replace = report_module.os.replace
+    calls: list[int] = []
+
+    def failing_replace(source: object, destination: object) -> None:
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError("the sidecar could not be put in place")
+        real_replace(source, destination)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(report_module.os, "replace", failing_replace)
+
+    with pytest.raises(OSError, match="sidecar"):
+        write_report(bias_report(), tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_newest_report_is_chosen_by_date_and_not_by_name(tmp_path: Path) -> None:
+    """``bias-*.json`` matches a basic-format ISO date too, and ``'0' > '-'``,
+    so a name sort puts ``bias-20260101.json`` after every extended-format
+    name. ``--compare last`` would then diff against a six-month-old run and
+    report half a year of drift as the overnight move."""
+    write_dated(tmp_path, date(2026, 6, 30))
+    (tmp_path / "bias-20260101.json").write_text("{}", encoding="utf-8")
+
+    found = latest_report(tmp_path)
+
+    assert found is not None
+    assert found.name == "bias-2026-06-30.json"
+
+
+# --- criterion 6, which this branch does not meet ----------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "report.md.j2 derives realised risk as a share of balance by dividing. "
+        "PositionSize carries no field for it, and adding one changes "
+        "src/fbe/types.py, which needs an architect ruling naming every "
+        "consumer in the same commit. Recorded on issue #210."
+    ),
+)
+def test_the_report_template_derives_no_number_by_division() -> None:
+    """Acceptance criterion 6: every number in the Markdown is a field.
+
+    The live violation is one expression:
+
+        {{ '%.2f%%' | format(idea.size.realised_risk_amount
+                             / idea.size.account_balance * 100) }}
+
+    It predates this branch and the criterion is still not met while it
+    stands. Two things follow from it. The percentage exists nowhere but the
+    template, so nothing downstream can check the number the owner reads
+    against the 1-2% rule. And it is unguarded, so a zero balance makes the
+    whole morning report unwritable with a `ZeroDivisionError` out of a
+    template.
+
+    Multiplying a fraction by 100 elsewhere in the file is a unit conversion
+    rather than a derivation: the value is on a field and only its scale
+    changes, so it does not fail this.
+
+    Strict, so that adding `realised_risk_fraction` to `PositionSize` and
+    reading it here turns this into an unexpected pass and fails the suite,
+    which is the signal to delete the marker rather than the test.
+    """
+    template = (PACKAGE_ROOT / "templates" / TEMPLATE_NAME).read_text(encoding="utf-8")
+
+    assert " / " not in template
