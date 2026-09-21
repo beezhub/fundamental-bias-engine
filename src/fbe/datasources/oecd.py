@@ -473,16 +473,24 @@ class OecdSource(BaseDataSource):
         return tuple(parsed)
 
     def available(self) -> bool:
-        """Report whether the OECD API answers, or a warm cache exists.
+        """Report availability, which is always true: the API needs no key.
 
         Returns:
-            Whether this source can be used on this run.
+            Whether this source can be used on this run. Always ``True``: the
+            public SDMX endpoint is open, so there is nothing about the
+            configuration that could rule this source out, and there is no
+            directory or credential to check.
+
+        This answers about configuration rather than connectivity, which is the
+        contract `BaseDataSource.available` sets and
+        ``tests/test_datasource_base.py`` enforces across every source: no
+        implementation here may make a request. So an unreachable or throttled
+        API is not reported here, it is reported by `fetch` raising, and an
+        offline run with nothing cached is reported the same way, which is the
+        only place that distinction can be made without a network call.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.oecd.OecdSource.available is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        return True
 
     def fetch(
         self,

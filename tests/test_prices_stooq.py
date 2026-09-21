@@ -818,3 +818,39 @@ def test_the_symbol_table_still_covers_the_eight_currencies() -> None:
     from fbe.universe import G10
 
     assert set(STOOQ_SYMBOLS) == set(G10)
+
+
+# --- available: configuration, never connectivity ---------------------------
+
+
+@respx.mock
+def test_available_is_true_and_makes_no_request(source: PricesSource) -> None:
+    """The endpoint needs no key, so nothing in the config can rule it out.
+
+    The challenge page is deliberately not consulted here. Whether Stooq is
+    serving CSV today is a question about connectivity, and it belongs to
+    `probe_request`, which doctor reads, and to `fetch_stooq`, which raises
+    on it. Answering it here would cost a request on every run.
+    """
+    route = respx.route().mock(return_value=httpx.Response(200, text=""))
+
+    assert source.available() is True
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_offline_on_a_cold_cache_is_available_and_fetch_raises(
+    data_config: DataConfig,
+) -> None:
+    """Offline with nothing cached is a failed fetch, not an unavailable source.
+
+    Reporting it here would print "unavailable, not configured", which sends
+    the operator to look for a credential that does not exist.
+    """
+    route = respx.route().mock(return_value=httpx.Response(200, text=""))
+    offline = PricesSource(replace(data_config, offline=True))
+
+    assert offline.available() is True
+    with pytest.raises(SourceError, match="offline"):
+        offline.fetch_stooq("eurusd", START, END)
+    assert route.call_count == 0

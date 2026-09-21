@@ -864,3 +864,37 @@ def test_the_bts_fixture_provenance_is_recorded() -> None:
     for currency in ("EUR", "AUD"):
         ref = registry.INDICATORS["business_confidence_mfg"].series[currency]
         assert ref.series_id.split("/")[1] in readme
+
+
+# ---------------------------------------------------------------------------
+# available: configuration, never connectivity
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_available_is_true_and_makes_no_request(source: OecdSource) -> None:
+    """The endpoint needs no key and no directory, so nothing in the config can
+    rule it out, and the answer is not allowed to cost a request."""
+    route = _route().mock(return_value=httpx.Response(200, text=""))
+
+    assert source.available() is True
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_offline_on_a_cold_cache_is_available_and_fetch_raises(
+    tmp_path: Path,
+) -> None:
+    """Offline with nothing cached is a failed fetch, not an unavailable source.
+
+    Reporting it here would print "unavailable, not configured", which sends
+    the operator to look for a credential that does not exist. The cold cache
+    is `fetch`'s to name, and it names the request it could not serve.
+    """
+    route = _route().mock(return_value=httpx.Response(200, text=""))
+    offline = OecdSource(DataConfig(cache_dir=tmp_path / "cache", offline=True))
+
+    assert offline.available() is True
+    with pytest.raises(SourceError, match="offline"):
+        offline.fetch(["cpi_yoy"], ["GBP"], START, END)
+    assert route.call_count == 0
