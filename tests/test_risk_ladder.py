@@ -180,6 +180,53 @@ def test_an_inverted_band_raises_for_every_level_including_none() -> None:
 @pytest.mark.parametrize(
     "band",
     [
+        RiskConfig(risk_per_trade_max=float("nan")),
+        RiskConfig(risk_per_trade_min=float("nan")),
+        RiskConfig(risk_per_trade_max=float("inf")),
+    ],
+)
+def test_a_non_finite_band_endpoint_raises(band: RiskConfig) -> None:
+    """``min > max`` is False for any NaN, so the inversion guard cannot see one.
+
+    A NaN band returns NaN from every rung. An infinite ceiling is worse in one
+    specific way: LOW comes back NaN because ``0.0 * inf`` is NaN, so the
+    lowest rung of an unbounded band is the nonsense one.
+
+    `Config.validate()` shares the blind spot and returns no problems for the
+    first two, so nothing else in the system refuses them either.
+    """
+    with pytest.raises(ValueError):
+        risk_fraction_for(Conviction.HIGH, band)
+
+
+def test_a_negative_floor_raises_rather_than_sizing_below_the_plan() -> None:
+    """The quietest of the three bad bands, and the one with no other guard.
+
+    With a floor of -1% and the default ceiling, MEDIUM returns 0.5%, half the
+    plan's intended minimum. It is inside the configured band, so
+    `position_size` neither clamps it nor warns, and the ticket arrives with an
+    empty warnings tuple, which section 8 lets the owner tick the sizing box
+    on. LOW returns -1%, which is refused downstream but blamed on lot
+    rounding rather than on the fraction.
+    """
+    with pytest.raises(ValueError):
+        risk_fraction_for(Conviction.MEDIUM, RiskConfig(risk_per_trade_min=-0.01))
+
+
+def test_every_conviction_level_has_a_rung_and_a_reward_bar() -> None:
+    """Adding a level to `Conviction` must fail here rather than in production.
+
+    Both maps raise `KeyError` for an absent level, which is the right
+    behaviour, and this states the exhaustiveness rather than leaving it to be
+    discovered by the tests that happen to iterate.
+    """
+    assert set(CONVICTION_BAND_POSITION) == set(Conviction)
+    assert set(MIN_REWARD_TO_RISK) == set(Conviction)
+
+
+@pytest.mark.parametrize(
+    "band",
+    [
         RiskConfig(),
         RiskConfig(risk_per_trade_max=0.015),
         RiskConfig(risk_per_trade_min=0.005, risk_per_trade_max=0.01),
@@ -330,17 +377,45 @@ def test_a_non_finite_ratio_would_have_cleared_the_bar_either_way() -> None:
     assert not nan >= min_acceptable_rr(Conviction.HIGH)
 
 
-def test_a_target_on_the_wrong_side_still_returns_a_ratio() -> None:
-    """Pinned as behaviour, not endorsed as a feature.
+def test_a_target_on_the_same_side_as_the_stop_raises() -> None:
+    """Untradeable whichever direction the setup is meant, so it is refused.
 
-    A long whose target sits below its entry is a nonsense setup, and because
-    both legs are absolute this function scores it 3.0 rather than refusing it.
-    That is the documented cost of being direction-agnostic: this measures
-    geometry only, and the docstring sends the caller to check the target
-    against structure. A caller that trusts this number alone can act on a
-    target on the wrong side of the entry.
+    Read long, the target sits behind the entry. Read short, the stop sits
+    between entry and target and is hit before the target can be. Knowing which
+    needs no direction argument, only that target and stop fall on the same
+    side of entry, so refusing costs nothing in expressiveness.
+
+    Left to the absolute-value arithmetic this scores 3.0 and clears every
+    minimum in `MIN_REWARD_TO_RISK`, which is a plausible number on a setup
+    that cannot be taken.
     """
-    assert reward_to_risk(entry=100.0, stop=98.0, target=94.0) == pytest.approx(3.0)
+    with pytest.raises(ValueError, match="same side"):
+        reward_to_risk(entry=100.0, stop=98.0, target=94.0)
+    with pytest.raises(ValueError, match="same side"):
+        reward_to_risk(entry=100.0, stop=102.0, target=106.0)
+
+
+def test_refusing_the_same_side_case_leaves_both_real_directions_alone() -> None:
+    """The guard must not catch the mirror-image pair it sits next to.
+
+    A long has its stop below and its target above; a short has them the other
+    way round. In both the product of the two offsets is negative, which is
+    what the guard tests, so neither is touched. A guard written on the sign of
+    one leg alone would refuse every short.
+    """
+    assert reward_to_risk(entry=100.0, stop=98.0, target=106.0) == pytest.approx(3.0)
+    assert reward_to_risk(entry=100.0, stop=102.0, target=94.0) == pytest.approx(3.0)
+
+
+def test_a_target_at_the_entry_is_a_zero_ratio_rather_than_a_refusal() -> None:
+    """Zero reward is a real measurement, not a malformed setup.
+
+    The product is 0.0 rather than positive, so the same-side guard does not
+    fire. A 0.0R setup clears no minimum, which is the right outcome and is
+    reached by measuring rather than by raising.
+    """
+    assert reward_to_risk(entry=100.0, stop=98.0, target=100.0) == 0.0
+    assert reward_to_risk(100.0, 98.0, 100.0) < min_acceptable_rr(Conviction.HIGH)
 
 
 def test_the_ratio_scales_with_the_distance_to_target() -> None:
@@ -571,6 +646,48 @@ def test_a_malformed_pair_raises_rather_than_being_attributed() -> None:
     """
     with pytest.raises(ValueError):
         correlated_exposure([PositionRisk("EURUS", 20.0, 2000.0)])
+
+
+def test_a_six_character_pair_whose_leg_is_not_a_currency_raises() -> None:
+    """One mistyped character defeats the exposure cap, and splits cleanly.
+
+    `split_pair` checks length and nothing else, so ``"EURUSO"`` parses exactly
+    as well as ``"EURUSD"`` and the position's risk lands on a currency that
+    does not exist. The real dollar leg goes unmeasured.
+
+    The cost is concrete. A book of long EURUSD at R40, long GBPUSD at R40 and
+    a journal row typed ``"EURUSO"`` at R20, all on R2,000, reports the dollar
+    at 4.0%. The real figure is R100, or 5%. A cap that breaches strictly above
+    4% therefore clears, and one more dollar trade is authorised. The journal
+    is hand-written and `OpenPosition` is structural, so nothing upstream
+    validates the string.
+    """
+    with pytest.raises(ValueError, match="G10"):
+        correlated_exposure([PositionRisk("EURUSO", 20.0, 2000.0)])
+    with pytest.raises(ValueError, match="G10"):
+        correlated_exposure([PositionRisk("XXXUSD", 20.0, 2000.0)])
+
+
+def test_the_denominator_is_each_position_own_balance_and_says_so() -> None:
+    """The understatement this function cannot fix, pinned so it cannot surprise.
+
+    Two R40 tickets opened at R4,000 report 2% on the shared dollar leg. That
+    same R80 against a balance now down to R2,000 is 4%, so a caller reading
+    the map as a fraction of the current account is understated by exactly the
+    ratio of the two balances, and most understated in a drawdown.
+
+    Asserted rather than merely documented, because a later change that
+    switched to a single denominator would be a silent behavioural change to
+    everything comparing this against a cap.
+    """
+    book = [
+        PositionRisk("EURUSD", 40.0, 4000.0),
+        PositionRisk("GBPUSD", 40.0, 4000.0),
+    ]
+    exposure = correlated_exposure(book)
+    assert exposure["USD"] == pytest.approx(0.02)
+    real_money_at_risk = 80.0
+    assert real_money_at_risk / 2000.0 == pytest.approx(0.04)
 
 
 def test_the_same_pair_twice_accumulates() -> None:

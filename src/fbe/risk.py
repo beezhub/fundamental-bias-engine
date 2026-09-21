@@ -43,7 +43,7 @@ from typing import Protocol, runtime_checkable
 from fbe.bias import UNCHECKED_SUFFIX
 from fbe.config import RiskConfig
 from fbe.types import Conviction, PositionSize
-from fbe.universe import split_pair
+from fbe.universe import G10, split_pair
 
 __all__ = [
     "Broker",
@@ -956,14 +956,60 @@ def risk_fraction_for(conviction: Conviction, config: RiskConfig) -> float:
         ``0.0`` for `Conviction.NONE`, which the caller must treat as no trade
         rather than as a tiny trade.
 
+        **Do not chain the NONE case into `position_size`.** That function
+        clamps a below-band fraction UP to ``risk_per_trade_min`` and reports
+        it as a warning rather than refusing, which is correct for a caller who
+        asked for too little and wrong for one who asked for nothing. So
+        ``position_size(..., risk_fraction=risk_fraction_for(conviction,
+        config))`` turns "the engine has no view on this pair" into a trade at
+        the band floor, described on the ticket as a clamp. Branch on NONE
+        before sizing. The plan's R2,000 hides this, because the broker minimum
+        refuses the resulting size anyway; it appears as the account grows,
+        which is the worst way for it to arrive.
+
     Raises:
-        ValueError: If ``config.risk_per_trade_min`` exceeds
-            ``risk_per_trade_max``, which would make the interpolation run
-            backwards and quietly return a fraction outside the band.
+        ValueError: If either band endpoint is not finite or is negative, or if
+            ``config.risk_per_trade_min`` exceeds ``risk_per_trade_max``. An
+            inverted band makes the interpolation run backwards and quietly
+            returns a fraction outside it. A non-finite endpoint slips past
+            that check entirely, because ``min > max`` is False for any NaN,
+            and returns a NaN from every rung. A negative floor is the quietest
+            of the three: it leaves MEDIUM at half the plan's intended minimum
+            while still inside the configured band, so nothing downstream
+            clamps it and nothing warns.
+        KeyError: If ``conviction`` is absent from `CONVICTION_BAND_POSITION`,
+            which means a level was added to `Conviction` without a position in
+            the band. Loud is correct: there is no defensible default position
+            for a level nobody has placed.
 
     """
-    # Checked before the NONE early return, so that one entry point cannot
-    # accept a band every other entry point refuses.
+    # All three checks run before the NONE early return, so that one entry
+    # point cannot accept a band every other entry point refuses.
+    #
+    # Non-finite first, because `min > max` is False for any NaN, so the
+    # inversion check below cannot see one. A NaN band returns a NaN fraction
+    # from every rung, and an infinite ceiling returns NaN from LOW alone,
+    # since `0.0 * inf` is NaN. `Config.validate()` shares the blind spot, so
+    # nothing else refuses it either.
+    for label, endpoint in (
+        ("risk_per_trade_min", config.risk_per_trade_min),
+        ("risk_per_trade_max", config.risk_per_trade_max),
+    ):
+        if not isfinite(endpoint):
+            raise ValueError(
+                f"{label} is {endpoint!r}, so the band has no endpoint to "
+                f"interpolate across. Every rung would return a NaN, which "
+                f"compares False against every limit it is later checked "
+                f"against."
+            )
+        if endpoint < 0.0:
+            raise ValueError(
+                f"{label} is {endpoint!r}. A negative endpoint puts part of "
+                f"the ladder below zero and the rest below the plan's floor "
+                f"while still inside the configured band, so `position_size` "
+                f"neither clamps it nor warns and the ticket carries no "
+                f"warnings at all."
+            )
     if config.risk_per_trade_min > config.risk_per_trade_max:
         raise ValueError(
             f"risk_per_trade_min {config.risk_per_trade_min:g} exceeds "
@@ -1023,6 +1069,15 @@ def reward_to_risk(entry: float, stop: float, target: float) -> float:
                 f"so a caller spelling its check `if rr < minimum` lets the "
                 f"setup through."
             )
+    if (target - entry) * (stop - entry) > 0.0:
+        raise ValueError(
+            f"target {target:g} and stop {stop:g} are on the same side of "
+            f"entry {entry:g}, which is untradeable whichever way the setup "
+            f"is meant: read long, the target is behind the entry; read "
+            f"short, the stop sits between entry and target and is hit first. "
+            f"No direction argument is needed to see this, and the ratio "
+            f"would otherwise come back positive and clear every minimum."
+        )
     risk = abs(entry - stop)
     if risk == 0.0:
         raise ValueError(
@@ -1045,7 +1100,14 @@ def min_acceptable_rr(conviction: Conviction) -> float:
         conviction: The engine's conviction on the pair.
 
     Returns:
-        The minimum acceptable ratio. Infinite for `Conviction.NONE`.
+        The minimum acceptable ratio. Infinite for `Conviction.NONE`, so that
+        no finite reward-to-risk can clear it. A large finite sentinel would be
+        a bar a generous enough target beats.
+
+    Raises:
+        KeyError: If ``conviction`` is absent from `MIN_REWARD_TO_RISK`, for
+            the same reason `risk_fraction_for` raises on a level with no band
+            position.
 
     """
     return MIN_REWARD_TO_RISK[conviction]
@@ -1326,6 +1388,28 @@ def correlated_exposure(
         figure would refuse trades on exposure the account does not actually
         carry.
 
+    **The denominators are not all the same, and the error is not symmetric.**
+    Each position is divided by the balance it was sized on, so positions
+    opened at different balances contribute fractions of different things, and
+    the sum is not a fraction of any single account. The caller compares it
+    against `RiskConfig.max_correlated_exposure`, which is defined on the
+    current balance.
+
+    That is per this function's contract and it is the right reading while the
+    balance is flat or rising: a ticket opened at R2,000 risking R20 really is
+    the 1% position it was sized as. It understates after a drawdown, by
+    exactly the ratio of entry balance to current balance, which makes it worst
+    precisely when the cap is load-bearing. Two R40 tickets opened at R4,000
+    report 2% on the shared leg; on a balance now down to R2,000 that same R80
+    is 4%, and a third full-size trade would be authorised on a leg already at
+    the cap.
+
+    Nothing here can fix that, because choosing a denominator is the caller's
+    decision and `check_limits` is where it belongs. What this function owes is
+    to say so rather than to let ``Returns`` read as though one balance were
+    involved. `docs/risk-and-execution.md` section 6 records the same problem
+    for a withdrawal.
+
     Attributing the full risk to both legs rather than splitting it in half is
     deliberate and conservative. A pair trade genuinely does put the whole stake
     on each leg's behaviour; the risk is not halved because two currencies are
@@ -1342,9 +1426,15 @@ def correlated_exposure(
             the difference, `check_limits`, takes that decision before calling.
 
     Returns:
-        Mapping of ISO currency code to total risk fraction of the account, for
-        every currency appearing in at least one open position. Currencies with
-        no exposure are absent rather than present with 0.0.
+        Mapping of ISO currency code to the summed risk fractions attributable
+        to it, for every currency appearing in at least one open position.
+        Currencies with no exposure are absent rather than present with 0.0,
+        because a padded 0.0 reads as a measurement of a currency nothing is
+        held in.
+
+        Each term is a fraction of its own position's entry balance, so the
+        total is a fraction of the current account only when every position was
+        sized on it. See the paragraph above before comparing it against a cap.
 
     Raises:
         ValueError: If any position's ``account_balance_at_entry`` is not
@@ -1358,9 +1448,14 @@ def correlated_exposure(
             returns a mapping with nowhere to carry one and the caller compares
             what it returns against a cap.
         ValueError: If a pair is not six characters, propagated from
-            `fbe.universe.split_pair`. A pair that cannot be split into two
-            legs would otherwise be attributed to a currency that does not
-            exist, leaving the real leg's exposure unmeasured.
+            `fbe.universe.split_pair`, or if either leg is not in `G10`.
+            `split_pair` checks length and nothing else, so ``"EURUSO"`` splits
+            as cleanly as ``"EURUSD"`` and would attribute this position's risk
+            to a currency that does not exist, leaving the real leg unmeasured
+            and the cap understated by the whole position. One mistyped
+            character in a hand-written journal row is the realistic producer,
+            and `OpenPosition` is a structural protocol with nothing validating
+            the pair string behind it.
 
     """
     exposure: dict[str, float] = {}
@@ -1383,6 +1478,16 @@ def correlated_exposure(
                 f"position behind a fabricated hedge."
             )
         base, quote = split_pair(position.pair.upper())
+        for leg in (base, quote):
+            if leg not in G10:
+                raise ValueError(
+                    f"{position.pair!r} has a leg {leg!r} that is not a G10 "
+                    f"currency. `split_pair` checks length only, so a single "
+                    f"mistyped character in a hand-written journal row splits "
+                    f"cleanly and attributes this position's risk to a "
+                    f"currency that does not exist, leaving the real leg "
+                    f"unmeasured and the exposure cap understated."
+                )
         fraction = risk / balance
         for leg in (base, quote):
             exposure[leg] = exposure.get(leg, 0.0) + fraction
