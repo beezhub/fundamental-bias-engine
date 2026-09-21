@@ -521,12 +521,30 @@ treated as no baseline: a run that asked for a specific baseline and printed
 `--out` defaults to the configured reports directory rather than to a literal
 path, so moving the data tree moves the reports with it.
 
-Two sections are thin until the layers behind them land, and each says so on the
+Three things are thin until the layers behind them land, and each says so on the
 page rather than rendering empty. The calendar is always empty because
 `fbe.calendar_guard` is scaffolded, and the warnings carry one line per run
 saying the blackout filter and the 24-hour conviction cap did not run. Shortlist
 entries carry no size, because a size needs an entry and a stop from the chart,
-and each entry names the `fbe size` call that would attach one.
+and each entry names the `fbe size` call that would attach one. They carry no
+written reasoning either, because nothing produces one yet, and the entry says
+that rather than leaving a blank paragraph under its heading.
+
+`fbe report` writes nothing and exits 1 when every currency scored on no usable
+data, which is the same condition `score` and `bias` exit 1 for. They print
+their rows first, because the rows carry the reasons. This one does not write,
+because the file is the committed audit trail and it is also tomorrow's
+baseline: a report of an outage becomes a one-day fundamental move on every
+currency the next morning.
+
+An unquoted date in a `data/manual/*.yaml` `meta` block stops the report being
+written, with a message naming the key. JSON has no date, so one written out
+would read back as text and the sidecar would no longer reconstruct the run.
+Quote it. `fbe score` and `fbe bias` are unaffected.
+
+Coverage and agreement are floored on the page, not rounded, which is what
+`fbe score` and `fbe bias` do in the terminal. Both flatter the run when
+rounded up.
 
 ### `fbe dashboard`
 

@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from datetime import date, datetime
@@ -349,15 +350,19 @@ def write_report(
             exists for this as-of date. Both are named in the message, because
             the one that exists is the one that says which half of an earlier
             run survived.
-        OSError: When either file cannot be written. Nothing is left behind:
-            both are written to temporary names first, and if the sidecar
-            cannot be put in place the Markdown just written is removed, so
-            the pair is never half replaced.
+        OSError: When either file cannot be written, leaving the directory as
+            it was. Both files are written under unique temporary names first,
+            and any Markdown already there is moved aside rather than
+            overwritten, so a sidecar that cannot be put in place restores the
+            earlier run's pair instead of destroying half of it. Unlinking the
+            new Markdown would not have been a rollback: `os.replace` has
+            already overwritten the earlier one by then, and that file is the
+            audit trail `CLAUDE.md` says no rerun can recreate.
         ValueError: When the report holds a value JSON cannot carry, such as a
             NaN produced by a division by zero upstream. A NaN written out
             reads back as a number and poisons any average computed over it.
         TypeError: When the report holds a value that could be written but not
-            read back as what it is, which today means a date or a sequence
+            read back as what it is, which today means a date or a tuple
             inside an `fbe.types.Observation`'s free-form ``meta``. See
             `_encoded_opaque`.
 
@@ -384,8 +389,18 @@ def write_report(
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    markdown_temp = out_dir / f".{markdown_path.name}.writing"
-    sidecar_temp = out_dir / f".{sidecar_path.name}.writing"
+    # Unique per call rather than named after the as-of date. Two runs for one
+    # date in one directory would otherwise share both temporary names, and an
+    # interleaving leaves this run's Markdown beside the other run's sidecar:
+    # a page and a set of numbers describing different runs, every figure in
+    # both of them plausible.
+    markdown_temp = _temporary(out_dir, markdown_path.name)
+    sidecar_temp = _temporary(out_dir, sidecar_path.name)
+    # An existing Markdown is moved aside rather than overwritten, so the pair
+    # already on disk can be put back if the sidecar cannot be placed.
+    kept = _temporary(out_dir, markdown_path.name) if markdown_path.is_file() else None
+    if kept is not None:
+        os.replace(markdown_path, kept)
     markdown_replaced = False
     try:
         markdown_temp.write_text(rendered, encoding="utf-8")
@@ -399,11 +414,37 @@ def write_report(
     except OSError:
         if markdown_replaced:
             markdown_path.unlink(missing_ok=True)
+        if kept is not None:
+            os.replace(kept, markdown_path)
+            kept = None
         raise
     finally:
-        markdown_temp.unlink(missing_ok=True)
-        sidecar_temp.unlink(missing_ok=True)
+        for temporary in (markdown_temp, sidecar_temp, kept):
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
     return markdown_path
+
+
+def _temporary(out_dir: Path, name: str) -> Path:
+    """Return a fresh hidden path in ``out_dir``, for a file being put in place.
+
+    Args:
+        out_dir: The directory the finished file belongs in. The temporary
+            file has to share it, because `os.replace` is only atomic within
+            one filesystem.
+        name: The finished file's name, carried into the temporary one so an
+            operator who finds a leftover knows what it was going to be.
+
+    Returns:
+        A path no other run holds. ``mkstemp`` creates the file and returns a
+        descriptor this closes immediately: the value here is the name, which
+        is reserved for this caller, and the writes that follow go through
+        `pathlib.Path` like every other write in this module.
+
+    """
+    handle, created = tempfile.mkstemp(dir=out_dir, prefix=f".{name}.", suffix=".part")
+    os.close(handle)
+    return Path(created)
 
 
 def load_report(path: Path) -> BiasReport:
@@ -423,7 +464,7 @@ def load_report(path: Path) -> BiasReport:
         emit, so a report written and read back compares equal to itself. That
         holds for every field, free-form provenance included, because
         `_encoded_opaque` refuses at write time the values it could not
-        restore here.
+        restore here: a date, a tuple, anything JSON has no type for.
 
     Raises:
         FileNotFoundError: When the sidecar is absent. A report whose numbers
@@ -799,9 +840,33 @@ def _encoded(value: Any, hint: Any, where: str) -> Any:
         # picks the ``fromisoformat`` that refuses the other's string.
         if issubclass(hint, datetime | date):
             return _encoded_stamp(value, where)
-    # Scalars pass through. ``json.dumps`` is the backstop for anything an
-    # annotation promised and a producer did not deliver, and it refuses NaN
-    # and infinity as well, which `write_report` turns into its own message.
+    return _encoded_scalar(value, hint, where)
+
+
+def _encoded_scalar(value: Any, hint: Any, where: str) -> Any:
+    """Check a scalar against its annotation on the way out.
+
+    The same shape check `_decoded_scalar` makes on the way in, made here so
+    that the run which produced a value its annotation does not describe is
+    the run that raises. Left to the decoder, a ``3.0`` in an ``int`` field
+    writes cleanly and takes down the next morning's ``--compare last``
+    instead, on a run that had nothing to do with it.
+
+    Anything the checks below do not recognise passes through, with
+    ``json.dumps`` as the backstop; it also refuses NaN and infinity, which
+    `write_report` turns into its own message.
+    """
+    if hint is bool:
+        if not isinstance(value, bool):
+            raise TypeError(f"{where} should be a bool, found {value!r}")
+    elif hint is int:
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise TypeError(f"{where} should be an int, found {value!r}")
+    elif hint is float:
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            raise TypeError(f"{where} should be a float, found {value!r}")
+    elif hint is str and not isinstance(value, str):
+        raise TypeError(f"{where} should be a str, found {value!r}")
     return value
 
 
@@ -909,11 +974,21 @@ def _encoded_opaque(value: Any, where: str) -> Any:
             _encoded_opaque_key(key, where): _encoded_opaque(item, f"{where}[{key!r}]")
             for key, item in value.items()
         }
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+    if isinstance(value, list):
         return [
             _encoded_opaque(item, f"{where}[{index}]")
             for index, item in enumerate(value)
         ]
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        # A list is the one nested shape JSON carries, so any other sequence
+        # is refused rather than flattened into one. A tuple written out comes
+        # back as a list and the report stops equalling itself, which is the
+        # same loss as the date below wearing a different type.
+        raise TypeError(
+            f"{where} is a {type(value).__name__}, and JSON has only the list, "
+            "so it would read back as a list. Free-form provenance holds "
+            "lists: write it as one."
+        )
     raise TypeError(
         f"{where} is a {type(value).__name__}, which JSON has no type for, so it "
         "would read back as something else. Free-form provenance has to be "

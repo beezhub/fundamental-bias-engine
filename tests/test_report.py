@@ -1395,9 +1395,36 @@ def test_a_reported_pair_shows_both_its_spreads_on_the_page() -> None:
     """ "long to short" alone does not say whether the model moved a long way
     or barely crossed zero, and those call for different amounts of attention.
     """
-    rendered = render_report(bias_report(), diff=changed_config_diff())
+    diff = diff_reports(
+        bias_report(
+            asof=YESTERDAY,
+            pairs=(pair_bias("EURUSD", 0.40, Direction.LONG),),
+            shortlist=(),
+        ),
+        bias_report(pairs=(pair_bias("EURUSD", -0.60, Direction.SHORT),), shortlist=()),
+    )
+
+    rendered = render_report(bias_report(), diff=diff)
 
     assert "spread +0.40 to -0.60" in rendered
+
+
+def test_a_changed_config_withholds_the_spreads_too() -> None:
+    """A spread is ``composite(base) - composite(quote)``, so it is a score
+    delta in another shape.
+
+    Printing one beside a withheld currency table invites exactly the
+    comparison the table was withheld to prevent: a re-weighting moves both
+    legs, and the reader is handed the difference and told the section is not
+    comparable in the same breath.
+    """
+    rendered = render_report(
+        bias_report(config_digest="ff0099"), diff=changed_config_diff()
+    )
+
+    changed = rendered.split("## 6.")[1]
+    assert "spreads not comparable" in changed
+    assert "spread +0.40 to -0.60" not in changed
 
 
 def test_a_template_directory_override_is_used(tmp_path: Path) -> None:
@@ -1617,3 +1644,104 @@ def test_the_report_template_derives_no_number_by_division() -> None:
     template = (PACKAGE_ROOT / "templates" / TEMPLATE_NAME).read_text(encoding="utf-8")
 
     assert " / " not in template
+
+
+# --- the write path under failure --------------------------------------------
+
+
+def failing_second_replace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Make the sidecar's `os.replace` fail and leave the Markdown's alone."""
+    import fbe.report as report_module
+
+    real_replace = report_module.os.replace
+    calls: list[int] = []
+
+    def replace_or_fail(source: object, destination: object) -> None:
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError("the sidecar could not be put in place")
+        real_replace(source, destination)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(report_module.os, "replace", replace_or_fail)
+
+
+def test_a_failed_sidecar_puts_the_previous_run_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unlinking the new Markdown is not a rollback when one was already there.
+
+    By the time the sidecar fails, `os.replace` has overwritten yesterday's
+    Markdown, so removing the new file removes the old one with it. That
+    leaves a sidecar with no Markdown, one of the two half states this
+    function exists to prevent, and it destroys an artefact `CLAUDE.md` says
+    no rerun can recreate.
+    """
+    write_report(bias_report(config_digest="first"), tmp_path)
+    markdown = tmp_path / "bias-2026-06-30.md"
+    before = (markdown.read_bytes(), sidecar_of(markdown).read_bytes())
+    failing_second_replace(monkeypatch)
+
+    with pytest.raises(OSError, match="sidecar"):
+        write_report(bias_report(config_digest="second"), tmp_path)
+
+    assert (markdown.read_bytes(), sidecar_of(markdown).read_bytes()) == before
+    assert sorted(item.name for item in tmp_path.iterdir()) == [
+        "bias-2026-06-30.json",
+        "bias-2026-06-30.md",
+    ]
+
+
+def test_two_runs_for_one_date_cannot_be_glued_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Temporary names shared between runs pair one run's page with another's
+    numbers.
+
+    With a name derived from the as-of date, two runs for one date in one
+    directory write to the same two temporary files. Interleaved, the second
+    run's Markdown ends up beside the first run's sidecar, nothing raises in
+    the first run, and every figure on both sides is plausible.
+
+    Reproduced here by starting a second write from inside the first, between
+    its two temporary writes.
+    """
+    import fbe.report as report_module
+
+    real_write_text = Path.write_text
+    started = False
+
+    def interleave(
+        self: Path, data: str, encoding: str | None = None, **kwargs: object
+    ) -> int:
+        nonlocal started
+        written = real_write_text(self, data, encoding=encoding)  # type: ignore[arg-type]
+        if not started and self.name.endswith(".part") and ".md." in self.name:
+            started = True
+            report_module.write_report(bias_report(config_digest="run-b"), tmp_path)
+        return written
+
+    monkeypatch.setattr(Path, "write_text", interleave)
+
+    write_report(bias_report(config_digest="run-a"), tmp_path)
+
+    markdown = tmp_path / "bias-2026-06-30.md"
+    assert load_report(markdown).config_digest in {"run-a", "run-b"}
+    assert load_report(markdown).config_digest in markdown.read_text(encoding="utf-8")
+
+
+def test_a_tuple_in_free_form_provenance_is_refused(tmp_path: Path) -> None:
+    """JSON has no tuple, so one written out reads back as a list and the
+    report stops equalling itself. Nothing produces a tuple in ``meta``
+    today; the point is that the guarantee `load_report` states holds for
+    whatever does."""
+    scored = replace(
+        pillar_score(), inputs=(observation(meta={"tags": ("revised", "final")}),)
+    )
+    broken = bias_report(
+        currencies=(currency_score("USD", 1.2, pillars={PillarName.MONETARY: scored}),)
+    )
+
+    with pytest.raises(TypeError, match="tuple"):
+        write_report(broken, tmp_path)

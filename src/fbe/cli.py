@@ -800,8 +800,9 @@ def _check_reports(config: Config) -> list[CheckLine]:
     """Say whether a previous report exists and whether its digest still matches.
 
     Reads only the ``config_digest`` out of the newest JSON sidecar rather than
-    reconstructing a report through `fbe.report.load_report`, which is
-    scaffolded until Phase 5. The filename convention comes from
+    reconstructing a report through `fbe.report.load_report`. That one raises
+    on a sidecar it cannot decode, and this check exists to report a damaged
+    report rather than to fail on it. The filename convention comes from
     `fbe.report.SIDECAR_GLOB` so it is not restated here. The two keys this
     reads, ``asof`` and ``config_digest``, are the only shape it assumes of the
     sidecar, and Phase 5 should keep both at the top level or update this.
@@ -2704,8 +2705,9 @@ def report(
             "--out",
             "-o",
             help=(
-                "Directory for the dated Markdown file. Defaults to the "
-                "configured reports directory, data/reports."
+                "Directory for the dated Markdown file and its JSON "
+                "sidecar. Defaults to the configured reports directory, "
+                "data/reports."
             ),
             file_okay=False,
         ),
@@ -2743,13 +2745,15 @@ def report(
     Args:
         ctx: Typer context carrying the effective config.
         asof: Point-in-time cutoff for observations.
-        out: Output directory for the dated file.
+        out: Output directory for both dated files.
         compare: Diff baseline, ``last``, ``none`` or a path.
         stdout: Print instead of writing.
 
-    Like `score` and `bias`, this reads the cache and never the network, and
-    computes nothing a renderer could compute: every number on the page is a
-    field on the `fbe.types.BiasReport` written beside it.
+    Like `score` and `bias`, this reads the cache and never the network. Every
+    number on the page is read off the `fbe.types.BiasReport` written beside
+    it, with one documented exception: the lower half of the pair matrix is 28
+    mirrored cells, derived by `fbe.report._grid` at render time from the 28
+    the run holds in market convention. Nothing else is computed here.
 
     Two sections of the report are thin today and say so rather than reading
     as empty. ``events`` is always empty because `fbe.calendar_guard` is
@@ -2764,8 +2768,16 @@ def report(
             silently treated as no baseline would print a report whose
             what-changed section said "first run" on the hundredth.
         typer.Exit: With `EXIT_UNUSABLE` when the cache held nothing for the
-            window, so an empty report cannot read as a working engine with no
-            opinions.
+            window, and when every currency came back at zero coverage, so a
+            report of a run that scored nothing cannot read as a working
+            engine with no opinions. Neither case writes a file: the report is
+            the committed audit trail and it is also tomorrow's baseline, so a
+            report of an outage becomes a fundamental move overnight.
+        TypeError: When an `fbe.types.Observation`'s free-form ``meta`` holds a
+            value JSON has no type for, which today means an unquoted date in
+            ``data/manual/*.yaml``. `fbe.report.write_report` refuses it rather
+            than writing a report that will not read back, and the message
+            names the path and the fix.
 
     """
     config = _effective_config(ctx)
@@ -2812,6 +2824,20 @@ def report(
         config.scoring,
         run_date,
     )
+    if _coverage_collapsed(scores):
+        # `score` and `bias` print their rows first and exit 1, because the
+        # rows carry the reasons. This one writes nothing. A report of a run
+        # that scored on no data is 28 neutral pairs and eight composites of
+        # zero, it goes into the committed audit trail, and tomorrow's
+        # --compare last reads it as a baseline and calls a data outage a
+        # one-day fundamental move on every currency.
+        typer.echo(
+            "Every currency scored on no usable data, so there is nothing to "
+            "record. Run fbe score to see which pillars came up short, and "
+            "fbe doctor to find out why."
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
+
     by_currency = {score.currency: score for score in scores}
     pairs = tuple(
         apply_filters(bias_row, by_currency, config, run_date)
@@ -2865,10 +2891,12 @@ def _baseline_path(compare: str | None, out_dir: Path, run_date: date) -> Path |
         report the intraday change as the day's move.
 
     Raises:
-        typer.BadParameter: When a path is given and does not exist. Falling
-            back to no baseline would print "no baseline report to compare
-            against" on a run that asked for a specific one, which reads as a
-            first run rather than as a typo.
+        typer.BadParameter: When a path is given and its sidecar does not
+            exist. Falling back to no baseline would print "no baseline report
+            to compare against" on a run that asked for a specific one, which
+            reads as a first run rather than as a typo. The sidecar is what is
+            checked because it is what `fbe.report.load_report` opens; a
+            Markdown whose sidecar is gone is not a baseline.
 
     """
     wanted = (compare or "last").strip()
@@ -2876,8 +2904,12 @@ def _baseline_path(compare: str | None, out_dir: Path, run_date: date) -> Path |
         return None
     if wanted.lower() == "last":
         return report_module.latest_report(out_dir, before=run_date)
+    # The sidecar, because that is the file `fbe.report.load_report` opens.
+    # Checking the Markdown instead accepts a pair whose sidecar is missing
+    # and then fails inside the read, which is a traceback rather than a
+    # refusal naming the option.
     given = Path(wanted)
-    if not given.exists():
+    if not given.with_suffix(".json").exists():
         raise typer.BadParameter(
             f"{given} does not exist, so there is nothing to compare against. "
             "Pass 'last' for the most recent report, or 'none' to skip the "

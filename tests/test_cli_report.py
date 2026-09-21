@@ -678,3 +678,62 @@ def test_the_published_console_line_still_reproduces() -> None:
     assert line == (
         "Compared against bias-2026-09-08.json: 1 direction flip, 2 shortlist changes."
     )
+
+
+# --- a run that scored nothing -----------------------------------------------
+
+
+def test_a_run_where_every_currency_scored_on_no_data_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The cache holds observations and every pillar is past its allowance.
+
+    ``result.usable`` is true, so the empty-cache guard does not fire. What
+    the run would otherwise write is eight composites of zero and 28 neutral
+    pairs, into the committed audit trail, and tomorrow's ``--compare last``
+    reads it as a baseline and reports a delta on every currency: a data
+    outage rendered as a one-day fundamental move.
+
+    `fbe score` and `fbe bias` exit 1 in the same situation, and
+    ``docs/interfaces.md`` reserves that code for it.
+    """
+    collapsed = (
+        replace(score("USD", 0.0, 1), coverage=0.0),
+        replace(score("EUR", 0.0, 2), coverage=0.0),
+    )
+
+    result, _ = run(monkeypatch, "--out", str(tmp_path), scores=collapsed)
+
+    assert result.exit_code == EXIT_UNUSABLE
+    assert "scored on no usable data" in result.stdout
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_one_currency_scoring_on_nothing_is_not_a_collapsed_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A thin currency in a working run is a fact the report should carry, not
+    a reason to withhold the whole record."""
+    thin = (replace(score("USD", 0.0, 1), coverage=0.0), score("EUR", -0.2, 2))
+
+    result, _ = run(monkeypatch, "--out", str(tmp_path), scores=thin)
+
+    assert result.exit_code == 0, result.stdout
+    assert (tmp_path / "bias-2026-09-09.json").exists()
+
+
+def test_compare_a_markdown_whose_sidecar_is_gone_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``load_report`` opens the sidecar, so that is the file to check.
+
+    Checking the Markdown accepts a pair whose sidecar is missing and then
+    fails inside the read, which reaches the operator as a traceback rather
+    than as a refusal naming the option.
+    """
+    baseline = previous_run(tmp_path / "archive")
+    baseline.with_suffix(".json").unlink()
+
+    result, _ = run(monkeypatch, "--out", str(tmp_path), "--compare", str(baseline))
+
+    assert result.exit_code == 2
