@@ -137,6 +137,7 @@ from fbe.types import Observation
 
 __all__ = [
     "BOC_BASE_URL",
+    "BOE_GLC_SERIES_PREFIX",
     "BOE_IADB_URL",
     "BOE_YIELD_CURVE_ZIP",
     "ECB_BASE_URL",
@@ -281,14 +282,33 @@ PROVIDER_FETCHERS: Mapping[str, str] = {
     "boc": "fetch_boc",
     "rba": "fetch_rba",
     "mof_jp": "fetch_jgb",
-    "boe": "fetch_boe_curve",
-    "snb": "fetch_snb",
     "rbnz": "fetch_rbnz",
 }
-"""Which method serves which provider key. A table rather than a chain of
-conditionals so that adding a provider is adding a row, and so that a ref
-naming a provider with no fetcher fails here by name instead of silently
-falling through to no observations."""
+"""Which method serves which provider key, for the providers whose fetcher
+takes the registry ``series_id`` as its first argument, unchanged. A table
+rather than a chain of conditionals so that adding such a provider is adding a
+row, and so that a ref naming a provider with no fetcher fails by name instead
+of silently falling through to no observations.
+
+Two providers are deliberately absent because their fetchers do not take a
+series id, and `CurvesSource._dispatch` is the one place that turns their
+``series_id`` into arguments:
+
+- ``boe``: ``GLC_NOMINAL_SPOT_SHORT/<maturity_years>`` goes to
+  `fetch_boe_curve` with the maturity parsed as a float; any other id is an
+  interactive database code and goes to `fetch_boe_iadb`.
+- ``snb``: ``<cube>/<tenor>`` goes to `fetch_snb`.
+
+Until #212 both rows were in this table and `_from_provider` handed every
+fetcher the raw series id, so the first GBP request raised ``TypeError`` and,
+because one provider failing costs the whole source, no two-year yield reached
+the cache."""
+
+BOE_GLC_SERIES_PREFIX = "GLC_NOMINAL_SPOT_SHORT"
+"""What a Bank of England ``series_id`` starts with when it names a point on
+the nominal spot curve rather than a database code. The registry writes the
+GBP two-year as ``GLC_NOMINAL_SPOT_SHORT/2.0``, and `fetch_boe_curve` selects
+the column by that maturity."""
 
 SERVED_TRANSFORMS: frozenset[str] = frozenset({"level"})
 """Transforms this source can emit today.
@@ -365,22 +385,19 @@ HEALTH_PROBES: Mapping[str, str] = {
     "rba": TWO_YEAR_REFS["AUD"][1],
     "mof_jp": TWO_YEAR_REFS["JPY"][1],
     "boe": TWO_YEAR_REFS["GBP"][1],
-    "snb": SNB_TENOR_2Y,
+    "snb": f"{SNB_BOND_CUBE}/{SNB_TENOR_2Y}",
     "rbnz": TWO_YEAR_REFS["NZD"][1],
 }
-"""One series per provider for `provider_health` to ask about. The 2-year point
-in each case, because that is the series the monetary pillar actually loses
-when a provider stops, so a health check on anything else could report a
-provider as alive while the number the engine needs is gone."""
+"""One series per provider for `provider_health` to ask about, each in the
+form `CurvesSource._dispatch` reads for that provider. The 2-year point in
+each case, because that is the series the monetary pillar actually loses when
+a provider stops, so a health check on anything else could report a provider
+as alive while the number the engine needs is gone."""
 
 HEALTH_PROBE_FROM_YEAR = 1990
 """How far back `provider_health` looks. Wide enough that a provider frozen
 years ago still reports the date it froze on rather than an absence, which is
 the distinction the method exists to draw."""
-
-BOE_HEALTH_MATURITY_YEARS = 2.0
-"""Maturity `provider_health` probes the gilt curve at, matching the tenor the
-registry reads."""
 
 RATE_LIMIT = RateLimit(requests=20, per_seconds=60.0, min_interval_seconds=1.0)
 """These are small public-sector servers, not commercial APIs. A daily run
@@ -666,17 +683,67 @@ class CurvesSource(BaseDataSource):
                 currency. No other provider is tried: each publishes only its
                 own country, so a fallback would be a different country's
                 curve presented as this one's.
-            NotImplementedError: For a provider still scaffolded. `fetch_jgb`,
-                `fetch_boe_curve` and `fetch_snb` are issue #59's.
 
         """
-        fetcher = getattr(self, PROVIDER_FETCHERS[ref.source])
         try:
-            return fetcher(ref.series_id, start, end)
+            return self._dispatch(ref.source, ref.series_id, start, end)
         except SourceError as error:
             raise SourceError(
                 f"{ref.source} could not supply {currency}: {error}"
             ) from error
+
+    def _dispatch(
+        self, provider: str, series_id: str, start: date, end: date
+    ) -> Sequence[tuple[date, float]]:
+        """Turn a provider key and a registry series id into a fetcher call.
+
+        The one place that knows how each provider's ``series_id`` maps onto
+        its fetcher's arguments. `_from_provider` and `provider_health` both
+        come through here, so the registry and the health check cannot read
+        the same id two different ways, which is how #212 happened: the
+        health check special-cased the two providers below and the registry
+        path did not.
+
+        Args:
+            provider: Provider key, one of `CURVE_SOURCES`.
+            series_id: The registry's identifier for that provider. Rules per
+                provider are on `PROVIDER_FETCHERS`.
+            start: Earliest session wanted.
+            end: Latest session wanted.
+
+        Returns:
+            ``(session, value)`` pairs in percent per annum, oldest first,
+            exactly as the fetcher returned them.
+
+        Raises:
+            SourceError: When the series id is not in the form the provider's
+                fetcher needs, naming the provider and the id. Raised rather
+                than guessed at, because a maturity read off a malformed id
+                would select a different tenor and present it as this one.
+                Also whatever the fetcher raises.
+
+        """
+        if provider == "boe":
+            prefix, _, maturity = series_id.partition("/")
+            if prefix != BOE_GLC_SERIES_PREFIX:
+                return self.fetch_boe_iadb([series_id], start, end)[series_id]
+            try:
+                maturity_years = float(maturity)
+            except ValueError as error:
+                raise SourceError(
+                    f"boe series id {series_id!r} does not end in a maturity in "
+                    f"years after {BOE_GLC_SERIES_PREFIX}/"
+                ) from error
+            return self.fetch_boe_curve(maturity_years, start, end)
+        if provider == "snb":
+            cube, separator, tenor = series_id.partition("/")
+            if not (cube and separator and tenor):
+                raise SourceError(
+                    f"snb series id {series_id!r} is not in the form cube/tenor"
+                )
+            return self.fetch_snb(cube, tenor, start, end)
+        fetcher = getattr(self, PROVIDER_FETCHERS[provider])
+        return fetcher(series_id, start, end)
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is one of the curve providers.
@@ -1387,11 +1454,4 @@ class CurvesSource(BaseDataSource):
         # published. A fixed end date would report every provider as frozen on
         # it, which is the answer the method exists to distinguish.
         end = date.today()
-        if provider == "snb":
-            # These two take a tenor and a maturity rather than a series ID,
-            # so they cannot go through the shared one-argument dispatch.
-            return self.fetch_snb(SNB_BOND_CUBE, SNB_TENOR_2Y, start, end)
-        if provider == "boe":
-            return self.fetch_boe_curve(BOE_HEALTH_MATURITY_YEARS, start, end)
-        fetcher = getattr(self, PROVIDER_FETCHERS[provider])
-        return fetcher(series_id, start, end)
+        return self._dispatch(provider, series_id, start, end)
