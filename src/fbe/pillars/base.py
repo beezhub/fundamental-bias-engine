@@ -26,54 +26,18 @@ from math import fsum, sqrt
 from statistics import median, pstdev
 
 from fbe.config import ScoringConfig
-from fbe.datasources.registry import INDICATORS
+from fbe.datasources import registry
+from fbe.datasources.registry import INDICATORS, publication_lag
 from fbe.scoring import freshness
-from fbe.types import Frequency, Observation, PillarName, PillarScore
+from fbe.types import Observation, PillarName, PillarScore
 
 __all__ = [
     "BasePillar",
     "MIN_CROSS_SECTION",
     "MIN_TIME_SERIES_WINDOW",
     "MIN_COMPONENT_WEIGHT",
-    "DEFAULT_PUBLICATION_LAG_DAYS",
     "staleness_allowance",
 ]
-
-
-DEFAULT_PUBLICATION_LAG_DAYS: Mapping[Frequency, int] = {
-    Frequency.DAILY: 1,
-    Frequency.WEEKLY: 7,
-    Frequency.MONTHLY: 45,
-    Frequency.QUARTERLY: 120,
-    Frequency.ANNUAL: 552,
-    Frequency.IRREGULAR: 45,
-}
-"""Assumed gap between a period starting and its number being published.
-
-Used only when an observation has no ``released_at``, to decide whether a
-historical run could have seen it. The values are measured from ``period``, the
-first day of the span described per the `Observation` contract, so the monthly
-figure of 45 days covers a month elapsing plus the usual two-week statistical
-lag, and the quarterly figure of 120 days covers a quarter elapsing plus a month.
-
-Each entry must sit strictly below the age at which the indicators of that
-frequency reach a freshness of zero, or the assumed-lag path admits only
-observations that are already worthless: an observation admitted at exactly the
-allowance carries a factor of 0.0 on the day it becomes visible. The registry's
-per-indicator allowances are what keep that true, and #8 is where it is tested.
-
-The annual figure of 552 days is measured rather than assumed. The World Bank
-nominal GDP family on FRED, the only annual series the registry carries, last
-published its 2025 reference year on 2026-07-07, and 2025-01-01 to 2026-07-07 is
-552 days. It is the binding case of the eight: the US series published a week
-earlier. Issue #158 carries the measurements and the ruling that set this entry.
-
-They are deliberately generous. An assumed lag that is too long costs a backtest
-a little realism at the margin; one that is too short manufactures profit out of
-numbers nobody had, and that error flatters rather than penalises, so it survives
-review. Where a source can supply a real ``released_at``, it should, and this
-table should never be reached.
-"""
 
 
 MIN_TIME_SERIES_WINDOW: int = 12
@@ -393,7 +357,7 @@ class BasePillar(ABC):
         How many inputs were admitted by the assumed publication lag rather than
         a real ``released_at`` goes to
         ``PillarScore.diagnostics["assumed_lag_inputs"]``, which is how much of
-        the run rests on `DEFAULT_PUBLICATION_LAG_DAYS` rather than on fact. The
+        the run rests on an assumed publication lag rather than on fact. The
         third is `pillar_freshness`, which goes to
         ``PillarScore.freshness_factor`` and is the only one of the three the
         aggregator acts on: it is the fraction of the configured weight this
@@ -648,9 +612,19 @@ class BasePillar(ABC):
         Returns:
             True when it had been published by ``asof``, inclusive on the day.
             With a ``released_at`` that is the fact. Without one it is an
-            assumption: the period's start plus the frequency's entry in
-            `DEFAULT_PUBLICATION_LAG_DAYS`, which is why a run records how many
-            of its inputs were admitted this way.
+            assumption: the period's start plus the leg's publication lag from
+            `fbe.datasources.registry.publication_lag`, which is the leg's own
+            measured lag where the registry holds one and the frequency's entry
+            in `DEFAULT_PUBLICATION_LAG_DAYS` otherwise. Either way a run
+            records how many of its inputs were admitted this way.
+
+        The leg is looked up by indicator and currency rather than read off the
+        observation because the observation carries no lag, only a frequency,
+        and one frequency covers legs whose sources differ by months: FRED's
+        mirror of the OECD tables publishes two to three months after the
+        statistics office it mirrors (#222). A key or currency the registry
+        does not carry falls back to the frequency table, which is the only
+        fact available for it.
 
         Period is deliberately not the test. US Q1 GDP has a period of 1 January
         and prints around 25 April, so a run dated 15 April that filtered on
@@ -672,7 +646,13 @@ class BasePillar(ABC):
         """
         if observation.released_at is not None:
             return observation.released_at.date() <= asof
-        lag = DEFAULT_PUBLICATION_LAG_DAYS[observation.frequency]
+        try:
+            ref = registry.series_for(observation.indicator, observation.currency)
+        except KeyError:
+            # An indicator the registry does not know, which the manual source
+            # permits. Its frequency is the only fact available.
+            ref = None
+        lag = publication_lag(ref, observation.frequency)
         return observation.period + timedelta(days=lag) <= asof
 
     @staticmethod
@@ -751,8 +731,9 @@ class BasePillar(ABC):
             should supply it wherever they can.
 
             ``released_at`` absent: visible when
-            ``period + DEFAULT_PUBLICATION_LAG_DAYS[frequency] <= asof``. An
-            assumption, not a fact, and the run records in
+            ``period + publication_lag(ref, frequency) <= asof``, the leg's own
+            lag where the registry measured one and the frequency's default
+            otherwise. An assumption, not a fact, and the run records in
             ``PillarScore.diagnostics["assumed_lag_inputs"]`` how many of its
             inputs were admitted this way, because that count is how much of the
             result rests on a guess. A count is a number, so it goes to
