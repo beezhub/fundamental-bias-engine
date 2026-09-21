@@ -345,11 +345,20 @@ def _manual(
 def _cftc(series_id: str, last_observed: date, note: str = "") -> SeriesRef:
     """Build a CFTC `SeriesRef` for a currency futures contract market code.
 
-    The unit is the share, not the contract count. `SeriesRef.unit` is echoed
-    onto every `Observation`, and `fbe.datasources.cot` divides the
-    leveraged-funds net by open interest before emitting, so naming contracts
-    here would put a unit on the observation that its value is not in. Issue
-    #174 is where that division landed.
+    The unit is the percent of open interest, not the contract count.
+    `SeriesRef.unit` is echoed onto every `Observation`, and
+    `fbe.datasources.cot` divides the leveraged-funds net by open interest and
+    scales it before emitting, so naming contracts here would put a unit on the
+    observation that its value is not in. Issue #174 is where that division
+    landed and ADR 0011 records the scale.
+
+    The dollar ref is the loose one. Its value is the negated sum of the seven
+    other legs, so it is a sum of seven percents of seven different
+    denominators rather than a percent of any one open interest, and it sits on
+    roughly seven times their scale. It carries this unit because the scale of
+    its terms is the closest true thing and because `_observation` copies the
+    unit from the ref, not because the label is exact. Whether the derived leg
+    deserves a unit of its own is recorded as open in ADR 0011.
     """
     return SeriesRef(
         source=SOURCE_CFTC,
@@ -1744,14 +1753,14 @@ COT_NET_PCT_OI = IndicatorSpec(
     max_staleness_days=21,
     description=(
         "Net speculative position in CME currency futures from the CFTC "
-        "Commitments of Traders report, as a share of open interest. A "
+        "Commitments of Traders report, as a percent of open interest. A "
         "crowded position is a reason to fade a fundamental view, not to add "
         "to it, so this pillar usually works against the others by design. "
         "``(lev_money_positions_long - lev_money_positions_short) / "
-        "open_interest_all`` on the Traders in Financial Futures "
-        "futures-only dataset, which `fbe.datasources.cot` performs, so what "
-        "arrives under this key is the share and not the contract count the "
-        "key held under its previous name. "
+        "open_interest_all * 100`` on the Traders in Financial Futures "
+        "futures-only dataset, which `fbe.datasources.cot` performs, so "
+        "what arrives under this key is that percent and not the contract "
+        "count the key held under its previous name. "
         "**Leveraged funds, not non-commercial.** Issue #174's ruling settled "
         "that and `docs/decisions/0011-positioning-reads-leveraged-funds.md` "
         "records it. Leveraged funds are the money whose crowding "
@@ -1761,14 +1770,14 @@ COT_NET_PCT_OI = IndicatorSpec(
         "TFF's asset manager, leveraged funds and other reportable columns "
         "discards the only thing the TFF report buys. "
         "**A percent, matching the key's name.** Section 3.6 wrote the "
-        "quantity as a plain division and called it a share, while the key, "
+        "quantity as a plain division and called it a share, and this "
+        "description said the same until #174, against the key's own name, "
         "`fbe.pillars.positioning.PositioningPillar`'s docstring, section "
-        "7.4's column header and the section 7 fixture all read it as a "
-        "percent. Four against one, so the source multiplies by 100 and "
-        "section 3.6 has been corrected. The scale is free for the score, "
-        "since the pillar z-scores this series against its own history, and "
-        "it is not free for a reader: see ADR 0011 and "
-        "`fbe.datasources.cot.PERCENT_SCALE`. "
+        "7.4's column header and the section 7 fixture, all of which read a "
+        "percent. ADR 0011 settled it for the percent and section 3.6 has "
+        "been corrected. The scale is free for the score, since the pillar "
+        "z-scores this series against its own history, and it is not free "
+        "for a reader: see `fbe.datasources.cot.PERCENT_SCALE`. "
         "The dollar leg carries no contract of its own and is derived: see "
         "its ref note below and `fbe.datasources.cot.CotSource.derive_usd_position`."
     ),

@@ -44,6 +44,8 @@ from fbe.datasources.cot import (
     CONTRACT_CODES,
     DATASETS,
     DEFAULT_DATASET,
+    ROW_LIMIT,
+    SNAPSHOT_WEEKDAY,
     TFF_FIELDS,
     CotSource,
 )
@@ -211,25 +213,33 @@ def test_the_query_is_composed_exactly(source: CotSource) -> None:
     )
     assert request.url.params["$order"] == TFF_FIELDS["report_date"]
     assert request.url.params["$limit"] == "2000"
-    assert int(request.url.params["$limit"]) > 1000
 
 
 def test_each_currency_is_requested_by_its_own_contract_code(
     source: CotSource,
 ) -> None:
-    """Asserted per currency, because a swap gives a real number under the wrong one."""
-    seen: dict[str, str] = {}
+    """Asserted per currency, because a swap gives a real number under the wrong one.
+
+    Driven through `fetch` rather than `fetch_contract`. The mapping from a
+    currency to a contract code lives in `fetch`; handing `fetch_contract` a
+    code and then finding that code in the `$where` tests string
+    interpolation, and stays green under a `fetch` that routes every currency
+    to its neighbour's contract.
+    """
+    asked: dict[str, str] = {}
 
     def responder(request: httpx.Request) -> httpx.Response:
-        seen[str(request.url.params["$where"])] = ""
+        where = str(request.url.params["$where"])
+        code = where.split("'")[1]
+        asked[code] = where
         return httpx.Response(200, json=[])
 
-    with respx.mock(assert_all_called=False) as router:
-        router.get(url__startswith=BASE_URL).mock(side_effect=responder)
-        for currency, code in CONTRACT_CODES.items():
-            seen.clear()
-            source.fetch_contract(code, START, END)
-            assert any(f"'{code}'" in where for where in seen), currency
+    for currency, code in CONTRACT_CODES.items():
+        asked.clear()
+        with respx.mock(assert_all_called=True) as router:
+            router.get(url__startswith=BASE_URL).mock(side_effect=responder)
+            source.fetch(["cot_net_pct_oi"], [currency], START, END)
+        assert list(asked) == [code], currency
 
 
 def test_a_non_default_dataset_is_honoured(source: CotSource) -> None:
@@ -247,6 +257,55 @@ def test_a_non_default_dataset_is_honoured(source: CotSource) -> None:
         )
 
     assert route.calls[0].request.url.path.endswith("/6dca-aqww.json")
+
+
+def test_a_row_for_another_contract_is_refused(source: CotSource) -> None:
+    """The contract code and the window are one `$where`, so both are checked.
+
+    `fetch` re-checks the report date window on the rows it got back, on the
+    stated grounds that a provider might have ignored `$where`. The contract
+    code sits in the same clause. Trusting one half and not the other leaves
+    the half whose failure is undetectable: a mis-routed code returns a real
+    position under the wrong currency, and every value is in range.
+    """
+    with (
+        respx.mock(assert_all_called=True) as router,
+        pytest.raises(SourceError, match="got a row for"),
+    ):
+        router.get(url__startswith=BASE_URL).mock(
+            return_value=httpx.Response(200, json=[row(CONTRACT_CODES["JPY"])])
+        )
+
+        source.fetch_contract(CONTRACT_CODES["EUR"], START, END)
+
+
+def test_a_response_at_the_row_limit_is_refused_as_truncated(
+    source: CotSource,
+) -> None:
+    """`$limit` moves the cliff, it does not remove it.
+
+    Sending 2000 instead of relying on 1000 changes nothing on its own: no code
+    compares the row count to the limit, so a longer horizon truncates exactly
+    as silently. The rows are ordered oldest first, so what a truncated answer
+    drops is the newest weeks, and a history that ends months ago reads as a
+    quiet market rather than as a short answer. The Legacy datasets this
+    method's `dataset` argument exposes carry about 2,080 weeks, which is
+    already over the limit.
+    """
+    full = [
+        row(CONTRACT_CODES["EUR"], report_date=date(2026, 1, 6) + timedelta(weeks=week))
+        for week in range(ROW_LIMIT)
+    ]
+
+    with (
+        respx.mock(assert_all_called=True) as router,
+        pytest.raises(SourceError, match="truncated"),
+    ):
+        router.get(url__startswith=BASE_URL).mock(
+            return_value=httpx.Response(200, json=full)
+        )
+
+        source.fetch_contract(CONTRACT_CODES["EUR"], START, END)
 
 
 def test_a_repeated_failure_raises_rather_than_returning_nothing(
@@ -400,10 +459,13 @@ def test_the_release_instant_is_1530_eastern_in_both_halves_of_the_year(
 ) -> None:
     """15:30 Eastern is 19:30 UTC in summer and 20:30 UTC in winter.
 
-    A fixed offset, or Eastern read as UTC, is four or five hours out. It shows
-    up only on a run dated that Friday evening, which is exactly the run where a
-    too-early timestamp admits a reading the CFTC had not published. Both halves
-    of the year are asserted because one of them passes under a fixed offset.
+    A fixed offset, or Eastern read as UTC, is four or five hours out. Nothing
+    reads the hour today: the visibility rule in `fbe.pillars.base` compares
+    ``released_at.date()`` against the run date, so a Friday-dated run sees the
+    reading whatever the hour. This pins the instant anyway, because it is a
+    published fact and the first consumer to compare times would inherit the
+    error silently. Both halves of the year are asserted because a fixed offset
+    passes in one of them.
     """
     with route_every_contract(
         {"EUR": [row(CONTRACT_CODES["EUR"], report_date=snapped)]}
@@ -415,6 +477,27 @@ def test_the_release_instant_is_1530_eastern_in_both_halves_of_the_year(
     # Compared as instants, so the assertion is about the moment rather than
     # about which offset the source chose to express it in.
     assert published == datetime.fromisoformat(instant)
+
+
+def test_a_report_date_that_is_not_a_tuesday_is_refused(source: CotSource) -> None:
+    """The release stamp is the report date plus three days, unconditionally.
+
+    Positions are snapped at Tuesday's close, and five docstrings in the module
+    say so. A Wednesday report date would therefore be stamped as released on a
+    Saturday, and the stamp is what the visibility rule reads, so the reading
+    would age from a day the CFTC never published on. A non-Tuesday means a
+    renamed or misread column rather than a week snapped on another day.
+    """
+    wednesday = date(2026, 9, 9)
+    assert wednesday.weekday() != SNAPSHOT_WEEKDAY
+
+    with (
+        route_every_contract(
+            {"EUR": [row(CONTRACT_CODES["EUR"], report_date=wednesday)]}
+        ),
+        pytest.raises(SourceError, match="rather than a Tuesday"),
+    ):
+        source.fetch(["cot_net_pct_oi"], ["EUR"], START, END)
 
 
 def test_the_release_timestamp_is_timezone_aware(source: CotSource) -> None:
@@ -572,22 +655,72 @@ def test_summing_and_averaging_the_legs_give_the_same_pillar_reading() -> None:
     assert from_sum == pytest.approx(from_average)
 
 
-def test_a_dollar_leg_with_no_rows_is_left_out_rather_than_counted_as_flat(
+def test_a_week_one_leg_did_not_publish_has_no_dollar_reading(
     source: CotSource,
 ) -> None:
     """A contract the CFTC did not publish is not a contract at zero.
 
-    Treating it as zero would report the dollar as less exposed than the legs
-    that did publish imply, and nothing would say a leg was missing.
+    And a sum cannot tell the two apart. Leaving the term out and adding a
+    zero produce the identical number, so "the missing leg takes no part" is
+    not a behaviour, it is a description of adding zero. The reading that comes
+    out is smaller in magnitude than the published legs imply and nothing marks
+    it, which is this repository's worst outcome rather than a tolerable gap.
+
+    So the date is not derived at all. An absent week is an absence the pillar
+    can represent, and `PositioningPillar` scores a currency on the history it
+    has.
     """
     rows = {
         "EUR": [row(CONTRACT_CODES["EUR"], lev_long="30000", lev_short="10000")],
         "GBP": [],
     }
 
+    assert source.derive_usd_position(rows) == []
+
+    # And the value that would have been reported, to say what was avoided
+    # rather than only that something was.
+    complete = dict(rows)
+    complete["GBP"] = [row(CONTRACT_CODES["GBP"], lev_long="0", lev_short="0")]
+    assert source.derive_usd_position(complete) == [(TUESDAY, pytest.approx(-20.0))]
+
+
+def test_a_dollar_week_is_dropped_only_for_the_leg_that_is_missing_it(
+    source: CotSource,
+) -> None:
+    """The completeness rule is per date, not per contract.
+
+    A leg that missed one week must not cost the dollar every other week it did
+    publish, which would turn one publication gap into a hole in the history.
+    """
+    earlier = date(2026, 9, 1)
+    rows = {
+        "EUR": [
+            row(CONTRACT_CODES["EUR"], report_date=earlier),
+            row(CONTRACT_CODES["EUR"], report_date=TUESDAY),
+        ],
+        "GBP": [row(CONTRACT_CODES["GBP"], report_date=TUESDAY)],
+    }
+
     derived = source.derive_usd_position(rows)
 
-    assert derived == [(TUESDAY, pytest.approx(-20.0))]
+    assert [when for when, _ in derived] == [TUESDAY]
+
+
+def test_two_rows_for_one_leg_and_week_are_refused(source: CotSource) -> None:
+    """One row per contract per week is this dataset's shape.
+
+    Summing both would double that leg's weight in the dollar, and the dollar
+    is the one series here that cannot be checked against a published figure.
+    """
+    duplicated = {
+        "EUR": [
+            row(CONTRACT_CODES["EUR"]),
+            row(CONTRACT_CODES["EUR"], lev_long="80000"),
+        ],
+    }
+
+    with pytest.raises(SourceError, match="two rows"):
+        source.derive_usd_position(duplicated)
 
 
 def test_the_dollar_is_derived_per_report_date(source: CotSource) -> None:
@@ -636,6 +769,46 @@ def test_a_dollar_week_outside_the_window_is_not_returned(source: CotSource) -> 
         )
 
     assert [item.period for item in observations] == [inside]
+
+
+def test_a_leg_empty_for_the_whole_window_stops_the_dollar_rather_than_emptying_it(
+    source: CotSource,
+) -> None:
+    """The completeness rule has a failure mode and this is it.
+
+    A date is derived only when every leg reported it, so one contract that
+    answers with nothing for the entire window leaves no complete date and the
+    dollar series comes back empty. Empty reads downstream as a currency with
+    no positioning, which is the distinction the twelfth criterion exists for:
+    a contract code that changed underneath us is not a quiet market.
+    """
+    rows = {
+        currency: [row(code)]
+        for currency, code in CONTRACT_CODES.items()
+        if currency != "NZD"
+    }
+    rows["NZD"] = []
+
+    with (
+        route_every_contract(rows),
+        pytest.raises(SourceError, match="no rows at all for NZD"),
+    ):
+        source.fetch(["cot_net_pct_oi"], ["USD"], START, END)
+
+
+def test_a_window_no_contract_published_is_an_absence_and_not_a_failure(
+    source: CotSource,
+) -> None:
+    """The converse, and what tells the two apart.
+
+    All seven empty is a window the dataset holds no week for, which is data: a
+    caller can ask for a range before the contracts listed. Six populated and
+    one empty is that one contract.
+    """
+    with route_every_contract({currency: [] for currency in CONTRACT_CODES}):
+        observations = source.fetch(["cot_net_pct_oi"], ["USD"], START, END)
+
+    assert observations == ()
 
 
 def test_the_dollar_reaches_fetch_as_its_own_observation(source: CotSource) -> None:
@@ -808,7 +981,6 @@ def test_the_latest_date_query_reads_more_than_one_row(source: CotSource) -> Non
 
     params = route.calls[0].request.url.params
     assert params["$order"] == f"{TFF_FIELDS['report_date']} DESC"
-    assert int(params["$limit"]) > 1
     assert params["$limit"] == "50"
 
 
@@ -822,6 +994,26 @@ def test_an_empty_dataset_gives_no_latest_date_rather_than_today(
         )
 
         assert source.latest_report_date() is None
+
+
+def test_rows_without_the_date_column_raise_rather_than_reading_as_empty(
+    source: CotSource,
+) -> None:
+    """`None` is reserved for a dataset that holds no week.
+
+    A renamed date column drops every row from the comprehension and would
+    otherwise arrive at the same `None`, which is the collision the method's own
+    docstring says it exists to avoid. The pillar ages against this answer.
+    """
+    with (
+        respx.mock(assert_all_called=True) as router,
+        pytest.raises(SourceError, match="changed shape"),
+    ):
+        router.get(url__startswith=BASE_URL).mock(
+            return_value=httpx.Response(200, json=[{"snapshot_date": "2026-09-08"}])
+        )
+
+        source.latest_report_date()
 
 
 def test_a_failure_while_asking_for_the_latest_date_raises(source: CotSource) -> None:
@@ -885,9 +1077,10 @@ def test_the_probe_names_the_dataset_this_source_actually_reads(
 
     assert probe is not None
     assert DEFAULT_DATASET in probe.path
-    assert not any(
-        str(value).lower().startswith("app") for value in probe.params.values()
-    )
+    # The key set, not a prefix on the values. No real Socrata app token starts
+    # with "app", and the token would arrive under a key named `$$app_token`,
+    # which a scan of the values cannot see at all.
+    assert set(probe.params) == {"$limit", "$order"}
 
 
 # --- offline and the cache ---------------------------------------------------

@@ -134,17 +134,26 @@ class PositioningPillar(BasePillar):
 
     The USD problem. The CFTC currency futures complex has no dollar contract;
     every contract in it is quoted against the dollar, so a net long euro
-    position is by construction a short dollar position. USD is handled by taking
-    the ICE US Dollar Index futures COT where the registry supplies it, and
-    otherwise by deriving the USD share of open interest as the negative of the
-    open-interest-weighted mean of the other seven shares. The derivation happens
-    before the time-series z-score so that the synthetic USD series has a history
-    on the same footing as the real ones.
+    position is by construction a short dollar position. The dollar reading is
+    derived in the data source, as the negative of the **sum** of the other
+    seven legs, each already a percent of its own open interest. It arrives
+    under ``cot_net_pct_oi`` for ``"USD"`` like any other reading, so the
+    derivation is behind the time-series z-score and the synthetic series has a
+    history on the same footing as the real ones.
+
+    Not an open-interest-weighted mean, which this docstring specified until
+    ADR 0011. That quantity is ``sum(net) / sum(open_interest)``, the raw
+    contract-count sum over total open interest, which is the euro-dominated
+    reading the source exists to avoid: on the 2026-09-08 capture it reads
+    +2.98 against the implemented +30.64. Not the ICE Dollar Index contract
+    either. The registry does carry a ref for it, contract 098662 in the Legacy
+    report, and `fbe.datasources.cot.CotSource` never queries it: it is too
+    thinly held to lead and is registered as a cross-check.
     """
 
     name = PillarName.POSITIONING
     requires: Sequence[str] = ("cot_net_pct_oi",)
-    headline_component = "net_share"
+    headline_component = "net_percent"
 
     component_indicators: Mapping[str, tuple[str, ...]] = {
         "positioning_response": ("cot_net_pct_oi",),
@@ -169,7 +178,7 @@ class PositioningPillar(BasePillar):
         """Map a positioning z-score onto the pillar's non-monotonic response.
 
         Args:
-            p: Net position share z-scored against the currency's own history
+            p: Net position percent z-scored against the currency's own history
                 over ``ScoringConfig.lookback_years``, or ``None`` when the
                 history is too short to z-score.
 
@@ -197,7 +206,7 @@ class PositioningPillar(BasePillar):
         currencies: Sequence[str],
         asof: date,
     ) -> Mapping[str, Mapping[str, Sequence[Observation]]]:
-        """Pull the share-of-open-interest history per currency.
+        """Pull the percent-of-open-interest history per currency.
 
         Args:
             observations: Full observation set for the run.
@@ -231,12 +240,14 @@ class PositioningPillar(BasePillar):
             asof: Run date.
 
         Returns:
-            ``{currency: {"positioning_response": value, "net_share": share}}``.
+            ``{currency: {"positioning_response": value, "net_percent": pct}}``.
             ``positioning_response`` is the shape function's output and is the
-            only component carrying sub-weight. ``net_share`` is the latest net
-            leveraged-funds position as a percent of open interest, carried
+            only component carrying sub-weight. ``net_percent`` is the latest
+            net leveraged-funds position as a percent of open interest, carried
             purely so `headline_component` can report a number a human
-            recognises; it takes no part in the blend.
+            recognises; it takes no part in the blend. Named for the percent it
+            holds: it was ``net_share`` while this pillar's docstring said the
+            source emitted a share, and ADR 0011 settled that it does not.
 
         A currency with fewer than two years of weekly reports inside the
         lookback window returns ``None`` for the response, because a positioning

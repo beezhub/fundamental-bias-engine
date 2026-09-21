@@ -40,6 +40,15 @@ has USD at +26.2 and `tests/test_worked_example.py` asserts that figure. Section
 3.6's formula was a bare division and called the result a share, a hundred times
 smaller than the same document's worked example.
 
+Section 3.6 was not alone, and the other one was a decision rather than a
+wording. The `COT_NET_PCT_OI` registry description ruled explicitly for the
+ratio, with reasoning: "**A share, not a percentage.** The value is in
+``[-1, 1]``, not ``[-100, 100]`` ... The ``pct`` in the key is historical, and
+the key is not renamed again because a rename costs every consumer while the
+unit field already says what the number is." That argument anticipates and
+rejects the one that wins below, so this record is reversing a prior decision
+and not merely correcting a loose sentence.
+
 ## Decision
 
 **`cot_net_pct_oi` is leveraged funds, over all open interest, in percent.**
@@ -86,22 +95,38 @@ that four currencies would be scored with opposite signs, and this record does
 not rule as though it did.
 
 **The scale follows the consumer's declared contract.** Four places read a
-percent and one wrote a ratio, so the formula's wording was the outlier. The
-scale is free for the score, since dividing every point of a series by the same
-constant leaves every time-series z-score unchanged, which is also why nothing
-would have raised had the ratio been emitted: `PositioningPillar` would have
-reported a headline number a hundred times flatter than the one section 7.4
-shows, and every score would have been correct. A quantity that cannot be
-checked by its effect on a score has to be pinned by its name.
+percent, and the two that wrote a ratio were the specification's formula and the
+registry description quoted above. The scale is free for the score, since
+dividing every point of a series by the same constant leaves every time-series
+z-score unchanged, which is also why nothing would have raised had the ratio
+been emitted: `PositioningPillar` would have reported a headline number a
+hundred times flatter than the one section 7.4 shows, and every score would have
+been correct. A quantity that cannot be checked by its effect on a score has to
+be pinned by its name.
+
+**Against the prior decision's own argument, which was that the unit field says
+what the number is.** It does, to a reader who looks at it. The rename it
+rejected is not on the table here and was never the only alternative: the key
+keeps its name, the unit field keeps saying what the number is, and the number
+becomes the one both of them describe. What the prior decision left standing was
+a pillar docstring, a worked example and a test all reading a percent from a key
+declared a share, which is four consumers to correct instead of one producer.
 
 ## Consequences
 
-Six places named the non-commercial numerator and now name leveraged funds:
+Seven places named the non-commercial numerator and now name leveraged funds:
 section 3.6's formula and prose, its sub-indicator table row, section 7.4's
-column label, the `COT_NET_PCT_OI` registry description, two docstrings in
-`src/fbe/pillars/positioning.py`, and the forward-looking measurement recipe in
+column label, the `COT_NET_PCT_OI` registry description, three docstrings in
+`src/fbe/pillars/positioning.py`, the `net_position` transform note in the
+registry, and the forward-looking measurement recipe in
 `docs/answers/scoring-maths.md`. `SPEC_ANCHORS` in
 `tests/test_worked_example.py` tracks the 7.4 label, so it moved with it.
+
+The same sweep for the scale reached further than the numerator's did, and two
+of its misses were found in review rather than by searching for the word:
+`cot.py`'s own module docstring and the CFTC section of `docs/data-sources.md`
+both still said the source returned raw contract counts and left the division to
+the scoring layer. Both are the first thing a reader of either file meets.
 
 **No number in section 7 changed.** Line 1336 is a column label on a fixture of
 fixed values, and `tests/test_worked_example.py` is explicit that a published
@@ -111,10 +136,58 @@ The registry `unit` is `percent_of_open_interest`, not `contracts`, and
 `SeriesRef.unit` is echoed onto every `Observation`, so the correction had to
 reach the refs and not only the spec-level entry.
 
+**A dollar week is derived only where every leg reported it.** A sum cannot
+tell an absent leg from a leg at zero, so a week one contract missed has no
+dollar reading rather than a reading built from the six that published. One leg
+empty for a whole window is the opposite case and raises: the series would
+otherwise stop with nothing said, and an empty sequence reads downstream as a
+currency with no positioning. All seven empty is a window the dataset holds no
+week for, which is data.
+
+`PositioningPillar`'s `headline_component` is `net_percent`, renamed from
+`net_share` in the same change. Nothing consumed it yet, `_transform` being
+scaffolded, so the rename was free now and would not have been after #175.
+
+`PositioningPillar`'s USD paragraph specified the negative of the
+open-interest-weighted mean of the seven legs. That quantity is
+``sum(net) / sum(open_interest)``, which is the raw contract-count sum over
+total open interest and therefore the euro-dominated reading the source exists
+to avoid: +2.98 against +30.64 on the capture above. It also gave the ICE Dollar
+Index contract precedence "where the registry supplies it", and the registry
+does supply it, so the stated rule resolved to a branch the source never takes.
+Both were corrected to describe the sum the source emits.
+
 Asset manager and dealer columns stay in `TFF_FIELDS` and are consumed by
 nothing. They are named so a cross-check is one query away, and the docstring
 says so, so the next reader does not take them for a description of what is
 built.
+
+## Two things this record leaves open
+
+**The derived dollar leg's unit is loose and knowingly so.** Its value is the
+sum of seven percents of seven different denominators, which is not a percent of
+any one open interest, and it sits on roughly seven times the scale of the legs
+it is built from. It carries `percent_of_open_interest` because `_observation`
+copies the unit from the ref and because the scale of its terms is the closest
+true thing available. Section 7.4 forces the sum rather than a mean: its USD row
+is +26.2 against legs in the tens, where a mean of seven would be nearer +4.
+Whether the derived leg deserves a unit of its own, and whether anything should
+distinguish a derived reading from a fetched one, is a change to `types.py` or to
+the registry's vocabulary and is not taken here.
+
+**The release stamp is derived from the period, which `BaseDataSource`
+forbids.** Its `_observation` docstring says `released_at` is "never derived
+from ``period``", because a lag assumed from a period is the look-ahead bias
+Phase 6 has to avoid. This source adds three days to the Tuesday. The exception
+is deliberate: the CFTC publishes on a fixed schedule, so the Friday is the
+release date rather than an assumption about it, and #174's second criterion
+requires it. What it costs is the case where the schedule does not hold.
+Publication has been suspended and backfilled before, and every Tuesday inside
+such a span is stamped as released three days later although none of them could
+be read until the catch-up. Closing that needs a published release calendar,
+which this dataset does not carry. The report date is checked to be a Tuesday so
+that the three-day addition cannot silently produce a release stamp on a day the
+CFTC never publishes on.
 
 ## What would reopen this
 

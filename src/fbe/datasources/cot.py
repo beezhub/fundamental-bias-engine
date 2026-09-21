@@ -69,10 +69,11 @@ is the speculative dollar position implied by the currency futures complex. It
 needs normalising before the legs can be added: raw contract counts are not
 comparable across contracts with different notional sizes, and open interest
 differs by more than an order of magnitude between EUR and NZD. Normalising each
-leg by its own open interest, or by its own multi-year percentile, is what makes
-the sum mean anything. That normalisation is the scoring layer's job, not this
-module's; this module returns raw contract counts and open interest and lets the
-pillar decide.
+leg by its own open interest is what makes the sum mean anything, and this
+module does it: `CotSource.fetch` emits the percent, because sources emit
+canonical keys and ``cot_net_pct_oi`` is a percent of open interest. Only
+`CotSource.fetch_contract` hands back raw rows, for `derive_usd_position` to
+normalise leg by leg before it nets them.
 """
 
 from __future__ import annotations
@@ -102,6 +103,7 @@ __all__ = [
     "PERCENT_SCALE",
     "RATE_LIMIT",
     "RELEASE_DAY",
+    "SNAPSHOT_WEEKDAY",
     "RELEASE_LAG_DAYS",
     "RELEASE_TIME_ET",
     "RELEASE_ZONE",
@@ -149,6 +151,16 @@ USD_INDEX_CODE = "098662"
 on the derived dollar position, never the primary read: see the module
 docstring."""
 
+SNAPSHOT_WEEKDAY = 1
+"""``date.weekday()`` for Tuesday, the day positions are snapped.
+
+Checked rather than assumed. `CotSource._released_at` adds `RELEASE_LAG_DAYS`
+to the report date unconditionally, so a report date that is not a Tuesday
+would carry a release stamp that is not a Friday, and the stamp is what the
+visibility rule reads. A non-Tuesday report date means a renamed or misread
+column rather than a week the CFTC snapped on a different day, so it stops the
+run."""
+
 RELEASE_DAY = "friday"
 RELEASE_TIME_ET = "15:30"
 """Positions are as of the preceding Tuesday's close. The lag is structural."""
@@ -166,9 +178,12 @@ the reading, which is what the visibility rule in `fbe.pillars.base` uses
 RELEASE_ZONE = ZoneInfo("America/New_York")
 """The release time is quoted in Eastern Time, which observes daylight saving.
 
-A fixed offset would be an hour out for half the year. 15:30 Eastern is 19:30
-UTC in summer and 20:30 UTC in winter, and the difference decides whether a run
-dated that Friday evening can see the reading."""
+A fixed offset would be an hour out for half the year: 15:30 Eastern is 19:30
+UTC in summer and 20:30 UTC in winter. Nothing reads the hour today, because
+`fbe.pillars.base` compares ``released_at.date()`` against the run date, so the
+zone is here because the instant is a fact about the release rather than because
+the visibility rule currently turns on it. A wrong instant would be a latent
+defect the first time anything compares times."""
 
 INDICATOR = "cot_net_pct_oi"
 """The one canonical key this source serves, read from the registry for its unit
@@ -182,10 +197,17 @@ Section 3.6 of ``docs/scoring-spec.md`` wrote this quantity as a plain division,
 places read the same key as a percent: the key's own name, `PositioningPillar`'s
 docstring in four sentences including "divided by open interest, in percent, so
 this pillar never sees a raw count", section 7.4's column header, and the
-section 7 fixture whose USD row is ``26.2``, which
-``tests/test_worked_example.py`` asserts. Four against one, so the formula's
-wording was the outlier: this module emits the percent, ADR 0011 records the
-choice, and section 3.6 now says the same thing.
+section 7 fixture whose USD row is ``26.2`` against a three-year mean of
+``+9.8``. The registry description used to make the opposite case explicitly,
+so it was four against two; ADR 0011 records the argument and reverses it, and
+section 3.6 now says the same thing as the rest.
+
+The fixture is read by a person and not by a test. What
+``tests/test_worked_example.py`` asserts on that row is ``(net - mean) / sd``,
+which is scale-invariant and would pass on ratios too, and
+`PositioningPillar._extract` is still scaffolded. So nothing executable links
+the spec's own worked example to this constant, which is why the constant
+carries the argument.
 
 The scale is free for the score, which is why nothing downstream would have
 raised on the ratio. The pillar z-scores this series against its own history,
@@ -427,6 +449,7 @@ class CotSource(BaseDataSource):
                     currency: self.fetch_contract(code, start, end)
                     for currency, code in CONTRACT_CODES.items()
                 }
+                self._check_every_leg_published(legs)
                 for report_date, net in self.derive_usd_position(legs):
                     if not start <= report_date <= end:
                         continue
@@ -520,13 +543,71 @@ class CotSource(BaseDataSource):
                 f"{self.name} expected a Socrata array of rows from {dataset} "
                 f"for contract {contract_code}, got {type(rows).__name__}"
             )
+        if len(rows) >= ROW_LIMIT:
+            raise SourceError(
+                f"{self.name} got {len(rows)} rows for contract "
+                f"{contract_code} from {dataset}, which is the $limit of "
+                f"{ROW_LIMIT}, so the history is truncated at an unknown "
+                "point. The rows are sorted oldest first, so what is missing "
+                "is the newest weeks, and a shortened history reads as a "
+                "quiet market rather than as a truncated query."
+            )
         for item in rows:
             if not isinstance(item, Mapping):
                 raise SourceError(
                     f"{self.name} got a {type(item).__name__} where "
                     f"{dataset} should hold a row for contract {contract_code}"
                 )
+            returned = item.get(TFF_FIELDS["contract_code"])
+            if returned != contract_code:
+                raise SourceError(
+                    f"{self.name} asked {dataset} for contract "
+                    f"{contract_code} and got a row for {returned!r}. The "
+                    "contract code and the report date window are the same "
+                    "$where clause, and the window is re-checked downstream, "
+                    "so this half is checked too: a mis-routed code returns a "
+                    "real position under the wrong currency, which no later "
+                    "check would catch."
+                )
         return tuple(rows)
+
+    def _check_every_leg_published(
+        self, legs: Mapping[str, Sequence[Mapping[str, str]]]
+    ) -> None:
+        """Refuse a dollar derivation where one leg answered with nothing at all.
+
+        Args:
+            legs: Raw rows per currency, one entry per contract in
+                `CONTRACT_CODES`.
+
+        Raises:
+            SourceError: Some legs returned rows for the window and at least
+                one returned none.
+
+        `derive_usd_position` returns only the dates every leg reported, so one
+        leg that is empty for the whole window empties the dollar series rather
+        than shortening it. That is the right answer for a week nobody
+        published and the wrong answer for a contract code that changed
+        underneath us: the series would simply stop, and an empty sequence
+        reads downstream as a currency with no positioning.
+
+        The distinguishing signal is the other six. All seven empty is a window
+        the dataset holds no week for, which is data. Six populated and one
+        empty is that one contract, which is a shape change.
+
+        """
+        empty = sorted(currency for currency, rows in legs.items() if not rows)
+        if empty and len(empty) != len(legs):
+            raise SourceError(
+                f"{self.name} got no rows at all for "
+                f"{', '.join(empty)} while the other "
+                f"{len(legs) - len(empty)} legs answered, so the dollar "
+                "derivation has no complete week. A contract that returns "
+                "nothing for a whole window is a changed contract code rather "
+                "than a quiet market, and deriving the dollar from the legs "
+                "that did answer would report it as less exposed than they "
+                "imply."
+            )
 
     def derive_usd_position(
         self,
@@ -549,38 +630,63 @@ class CotSource(BaseDataSource):
 
         Returns:
             ``(report_date, net_position)`` pairs for the dollar, oldest first,
-            where the net position is the negated sum of the seven legs, each
-            a percent of its own open interest. Positive means the complex
+            where the net position is the negated sum of the legs, each a
+            percent of its own open interest. Positive means the complex
             implies a net long dollar position.
 
-            A currency with no rows for a date takes no part in that date's sum
-            rather than entering as a zero. A leg the CFTC did not publish is
-            not a leg at a flat position, and counting it as one would report
-            the dollar as less exposed than the published legs imply with
-            nothing saying a leg was missing.
+            Only a date that every supplied leg reported is returned. A date
+            one leg is missing is not returned at all, because a sum cannot
+            tell an absent leg from a leg at zero: dropping the term and adding
+            a zero give the same number, and that number is smaller in
+            magnitude than the published legs imply with nothing marking it.
+            On the committed capture, losing the Canadian leg alone would move
+            the dollar from +30.64 to +14.08, in a complex whose individual
+            legs span -16.6 to +10.9. A week with no dollar reading is an
+            absence the pillar can represent. A halved one is a number.
 
         Raises:
-            SourceError: A row is missing a column this source reads, or a
-                contract reports zero open interest.
+            SourceError: A row is missing a column this source reads, a
+                contract reports zero open interest, or one leg carries two
+                rows for the same report date. The last would count that leg
+                twice, and one row per contract per week is the shape of this
+                dataset rather than an assumption about it.
 
         Each leg is a percent of its own open interest before the sum, not a
         contract count. Open interest differs by more than an order of magnitude
         between the euro and the New Zealand dollar, so a raw sum is a euro
-        reading wearing a dollar label.
-        On the committed capture the two disagree in sign for exactly that
-        reason, which ``tests/test_cot.py`` asserts.
+        reading wearing a dollar label. On the 2026-09-08 capture a raw count
+        sum gives +84,215 against this method's +30.64, and the two agree in
+        sign there, so the argument is about what the number means rather than
+        about a reproduced sign flip.
 
-        Summing rather than averaging is free. The pillar z-scores this series
-        against its own history, and dividing every point by the same constant
-        leaves every z-score unchanged, so nothing downstream can tell which
-        was chosen.
+        Summing rather than averaging is free, and the completeness rule above
+        is what makes it free. The pillar z-scores this series against its own
+        history, and dividing every point by the same constant leaves every
+        z-score unchanged. That constant is the leg count, so it has to be the
+        same on every returned date: with a varying leg count, sum and mean
+        differ by a date-varying divisor and the choice is no longer free.
 
         """
-        by_date: dict[date, float] = {}
-        for legs in rows.values():
+        per_leg: dict[str, dict[date, float]] = {}
+        for currency, legs in rows.items():
+            weeks: dict[date, float] = {}
             for report_date, percent in self._percents(legs):
-                by_date[report_date] = by_date.get(report_date, 0.0) + percent
-        return [(when, -by_date[when]) for when in sorted(by_date)]
+                if report_date in weeks:
+                    raise SourceError(
+                        f"{self.name} got two rows for {currency} on "
+                        f"{report_date}. One row per contract per week is this "
+                        "dataset's shape, and summing both would double that "
+                        "leg's weight in the dollar reading."
+                    )
+                weeks[report_date] = percent
+            per_leg[currency] = weeks
+        if not per_leg:
+            return []
+        complete = set.intersection(*(set(weeks) for weeks in per_leg.values()))
+        return [
+            (when, -sum(weeks[when] for weeks in per_leg.values()))
+            for when in sorted(complete)
+        ]
 
     def latest_report_date(self) -> date | None:
         """Return the most recent Tuesday for which positions are published.
@@ -621,6 +727,15 @@ class CotSource(BaseDataSource):
             if isinstance(item, Mapping) and TFF_FIELDS["report_date"] in item
         ]
         if not dates:
+            if rows:
+                raise SourceError(
+                    f"{self.name} got {len(rows)} rows from {DEFAULT_DATASET} "
+                    f"and not one carried {TFF_FIELDS['report_date']!r}, so "
+                    "the dataset has changed shape. Answering `None` here "
+                    "would report a renamed column as a dataset holding no "
+                    "week, and the positioning pillar ages against the "
+                    "difference."
+                )
             return None
         return max(dates)
 
@@ -663,8 +778,7 @@ class CotSource(BaseDataSource):
             built.append((report_date, (long - short) / open_interest * PERCENT_SCALE))
         return sorted(built)
 
-    @staticmethod
-    def _released_at(report_date: date) -> datetime:
+    def _released_at(self, report_date: date) -> datetime:
         """Return when the CFTC published the week snapped on ``report_date``.
 
         Args:
@@ -674,11 +788,45 @@ class CotSource(BaseDataSource):
             The following Friday at 15:30 Eastern, as an aware datetime. Eastern
             rather than a fixed offset because the release time is quoted in
             local time and observes daylight saving, so 15:30 is 19:30 UTC in
-            summer and 20:30 UTC in winter. An hour matters here only at the
-            margin, on a run dated that Friday evening, which is exactly when a
-            fixed offset would admit a reading that had not been published.
+            summer and 20:30 UTC in winter.
+
+        Raises:
+            SourceError: ``report_date`` is not a Tuesday. The three-day
+                addition below assumes it is, and every docstring in this
+                module says so, so a Wednesday report date would produce a
+                Saturday release stamp with nothing objecting. See
+                `SNAPSHOT_WEEKDAY`.
+
+        **This is derived from ``period``, which `BaseDataSource._observation`
+        says a release stamp never is.** That rule is there because a period and
+        a publication date are different facts and a lag assumed from the period
+        is the look-ahead bias Phase 6 has to avoid. The exception is taken
+        deliberately and only here: the CFTC publishes on a fixed schedule, so
+        the Friday is the release date rather than an assumption about it, and
+        the second acceptance criterion of #174 requires it. ADR 0011 records
+        the exception.
+
+        What the exception costs is the case where the schedule does not hold.
+        Publication has been suspended and backfilled before, and every Tuesday
+        inside such a span is stamped as released three days later although
+        nobody could read any of them until the catch-up. Closing that needs a
+        published release calendar, which this dataset does not carry.
+
+        The hour is not read by anything today. `fbe.pillars.base` compares
+        ``released_at.date()`` against the run date, so a run dated that Friday
+        sees the reading whatever the hour, and the aware timestamp is kept
+        because the moment is a fact about the release rather than because the
+        visibility rule currently uses it.
 
         """
+        if report_date.weekday() != SNAPSHOT_WEEKDAY:
+            raise SourceError(
+                f"{self.name} got report date {report_date}, a "
+                f"{report_date.strftime('%A')} rather than a Tuesday. "
+                "Positions are snapped at Tuesday's close and the release is "
+                "three days later, so this is a renamed or misread column "
+                "rather than a week the CFTC snapped on another day."
+            )
         published = report_date + timedelta(days=RELEASE_LAG_DAYS)
         hour, minute = (int(part) for part in RELEASE_TIME_ET.split(":"))
         return datetime.combine(published, time(hour, minute), tzinfo=RELEASE_ZONE)

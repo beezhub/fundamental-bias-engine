@@ -200,17 +200,18 @@ credential, no headers beyond the client's defaults.
 
 Seven rows, one per non-dollar G10 contract, for report date 2026-09-08. Each
 row is byte-exact as returned and carries every column the dataset answered
-with, not the twelve `TFF_FIELDS` reads. That is deliberate: a capture trimmed
+with, not the four the source reads. That is deliberate: a capture trimmed
 to the columns the code wants cannot show a renamed column, which is the failure
 this fixture exists to catch.
 
 The rows are not all the same width. Ninety distinct keys appear across the
 seven, and an individual row carries 86 to 90 of them, because Socrata omits a
 column it has no value for rather than sending a null. Every omission in this
-capture is a trader-count column, and none of the twelve the source reads is
-ever absent, which is the fact worth having captured: the code refuses a row
-missing a column it reads, and a fixture where rows arrive at uniform width
-would not show that the feed varies.
+capture is a trader-count column, and none of the four the source reads is ever
+absent: the two leveraged-funds legs, open interest and the report date. That is
+the fact worth having captured, because the code refuses a row missing a column
+it reads, and a fixture whose rows all arrived at one width would not show that
+the feed varies.
 
 The report date is a Tuesday and the file name says so. Positions are snapped at
 Tuesday's close and published the following Friday afternoon, so a fixture named

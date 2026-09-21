@@ -479,9 +479,18 @@ long the foreign currency and therefore short dollars. Net the seven, flip the
 sign, and that is the implied speculative dollar position. The legs must be
 normalised first: raw contract counts are not comparable across contracts with
 different notionals, and open interest differs by more than an order of
-magnitude between EUR and NZD. Normalise each leg by its own open interest or by
-its own multi-year percentile before summing. That work belongs to the scoring
-layer; the source returns raw counts.
+magnitude between EUR and NZD. Each leg is normalised by its own open interest
+before the sum, in the source, because `cot_net_pct_oi` is a percent of open
+interest and sources emit canonical keys. Only `fetch_contract` hands back raw
+rows, which is what `derive_usd_position` reads.
+
+A week that one of the seven did not publish has no dollar reading at all. A sum
+cannot tell an absent leg from a leg at zero, so summing the six that did
+publish would report the dollar as less exposed than they imply, with nothing
+marking it: on the 2026-09-08 capture, losing the Canadian leg alone moves the
+dollar from +30.64 to +14.08. One contract answering with nothing for a whole
+window is the other case and stops the run, because the dollar series would
+otherwise just stop, and that reads as a dollar with no positioning.
 
 ### Rate limits and terms
 
