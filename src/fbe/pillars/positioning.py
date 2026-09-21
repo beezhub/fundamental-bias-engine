@@ -50,14 +50,15 @@ errors, rather than becoming a routine operating point for CFTC futures data.
 class PositioningPillar(BasePillar):
     """Score CFTC futures positioning with a non-monotonic response.
 
-    The single component is ``cot_net_pct_oi``, net non-commercial positioning
-    as a share of open interest in percent, computed by the data source as
-    ``(non_commercial_long - non_commercial_short) / open_interest`` and
-    z-scored against that currency's own history over
-    ``ScoringConfig.lookback_years``. The share is used rather than the raw
-    contract count because open interest itself trends over years, and a net long
-    of 100,000 contracts means one thing in a market of 200,000 and something
-    else entirely in a market of 800,000. Call that z-score ``p``.
+    The single component is ``cot_net_pct_oi``, the net leveraged-funds
+    position as a percent of open interest, computed by the data source as
+    ``(lev_money_long - lev_money_short) / open_interest * 100`` and z-scored
+    against that currency's own history over ``ScoringConfig.lookback_years``.
+    The percent is used rather than the raw contract count because open interest
+    itself trends over years, and a net long of 100,000 contracts means one thing
+    in a market of 200,000 and something else entirely in a market of 800,000.
+    Leveraged funds rather than the Legacy report's non-commercial bucket, for
+    the reason ADR 0011 records. Call that z-score ``p``.
 
     The response function. ``p`` is mapped through ``response(p)``, which is
     piecewise linear, continuous, and odd, so ``f(-p) == -f(p)`` and there is no
@@ -233,9 +234,9 @@ class PositioningPillar(BasePillar):
             ``{currency: {"positioning_response": value, "net_share": share}}``.
             ``positioning_response`` is the shape function's output and is the
             only component carrying sub-weight. ``net_share`` is the latest net
-            non-commercial position as a percent of open interest, carried purely
-            so `headline_component` can report a number a human recognises; it
-            takes no part in the blend.
+            leveraged-funds position as a percent of open interest, carried
+            purely so `headline_component` can report a number a human
+            recognises; it takes no part in the blend.
 
         A currency with fewer than two years of weekly reports inside the
         lookback window returns ``None`` for the response, because a positioning

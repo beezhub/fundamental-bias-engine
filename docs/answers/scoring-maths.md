@@ -962,7 +962,7 @@ influence, which the specification does not currently say either way.
 
 **Not blocked: the lag.** Weekly persistence is measurable from CFTC history
 alone, with no returns and no journal. Once `datasources/cot.py` lands, compute
-the net non-commercial share of open interest per currency, take the AR(1)
+the net leveraged-funds percent of open interest per currency, take the AR(1)
 coefficient of the time-series z per currency over `lookback_years`, and read the
 attenuation off the table above. Roughly 260 weekly observations per currency at
 five years, which is ample for an AR(1) coefficient. This should be a spot-check
