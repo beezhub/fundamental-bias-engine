@@ -2,6 +2,11 @@
 
 <!-- What changed and why. Not how it was made. -->
 
+<!-- Closes: #NN if this meets every acceptance criterion, Refs: #NN if it is
+     partial. Plain text on its own line, NEVER inside backticks: a backticked
+     trailer is a code span, so GitHub parses no keyword and the merge closes
+     nothing. It cannot be fixed after the merge. -->
+
 Refs: #
 
 ## Acceptance criteria

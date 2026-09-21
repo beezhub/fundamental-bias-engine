@@ -106,16 +106,21 @@ def test_the_routines_give_the_command_that_separates_the_two_cases() -> None:
 def test_the_skill_gives_the_rule_for_choosing_the_trailer() -> None:
     """Criterion 2. Both halves, because either alone is a different rule.
 
-    "Use `Closes:`" without the partial case would have lanes closing issues
-    their pull request only half satisfies, which is the same defect pointing
-    the other way and a worse one: an issue closed with work outstanding is
+    "Use Closes:" without the partial case would have lanes closing issues their
+    pull request only half satisfies, which is the same defect pointing the
+    other way and a worse one: an issue closed with work outstanding is
     invisible, where one left open is merely untidy.
+
+    The trailers asserted here are bare rather than backticked, and that is the
+    rule rather than a typo. #132 found that a trailer shown in backticks is
+    what the next author copies into a pull request body, where it becomes a
+    code span and closes nothing.
     """
     body = _flat(SKILL)
 
     assert (
-        "**`Closes: #NN` when the pull request meets every acceptance criterion "
-        "on the issue. `Refs: #NN` when it is partial, or one of several.**" in body
+        "**Closes: #NN when the pull request meets every acceptance criterion "
+        "on the issue. Refs: #NN when it is partial, or one of several.**" in body
     )
 
 
