@@ -450,21 +450,28 @@ class PricesSource(BaseDataSource):
         )
 
     def available(self) -> bool:
-        """Report whether the Stooq endpoint answers with CSV rather than HTML.
-
-        The check is deliberately about the response shape, not about
-        reachability. Stooq's anti-bot layer returns HTTP 200 with a challenge
-        page, so a status check alone would report a broken source as healthy
-        and the engine would parse the challenge as an empty price series.
+        """Report availability, which is always true: the endpoint needs no key.
 
         Returns:
-            Whether this source can be used on this run.
+            Whether this source can be used on this run. Always ``True``: the
+            CSV endpoint is open, so there is nothing about the configuration
+            that could rule this source out, and there is no directory or
+            credential to check.
+
+        This answers about configuration rather than connectivity, which is the
+        contract `BaseDataSource.available` sets and
+        ``tests/test_datasource_base.py`` enforces across every source: no
+        implementation here may make a request. The stub this replaced wanted
+        to check that Stooq serves CSV rather than its anti-bot challenge page.
+        That check is real and it lives in two places already: `probe_request`,
+        which is what ``fbe doctor`` reads, and `fetch_stooq`, which raises on
+        the challenge with the browser advice attached. Repeating it here would
+        cost a request on every run and would report a blocked endpoint as
+        "not configured", which sends the operator to look for a credential
+        that does not exist.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.prices.PricesSource.available is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        return True
 
     def fetch(
         self,

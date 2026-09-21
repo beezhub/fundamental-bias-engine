@@ -31,7 +31,11 @@ from fbe.config import DataConfig
 from fbe.datasources import collect as collect_module
 from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy, SourceError
 from fbe.datasources.cache import BODY_SUFFIX, META_SUFFIX
+from fbe.datasources.curves import RBA_F2_URL, CurvesSource
 from fbe.datasources.fred import FredSource
+from fbe.datasources.oecd import BASE_URL as OECD_BASE_URL
+from fbe.datasources.oecd import OecdSource
+from fbe.datasources.prices import PricesSource
 from fbe.datasources.registry import SOURCE_MANUAL, SeriesRef
 from fbe.types import Frequency, Observation
 
@@ -639,7 +643,9 @@ def test_the_failure_names_the_source_and_says_what_happened(
 def test_a_scaffolded_source_is_skipped_rather_than_failing(
     data_config: DataConfig,
 ) -> None:
-    """Three sources still have a scaffolded ``available()`` on main today."""
+    """No shipped source is scaffolded here any more, since #208, but the
+    collector's answer to one must stay a skip: a source that has not landed
+    is not a source that failed."""
     alpha, alpha_asked = _source(
         "alpha",
         refs=[("cpi_yoy", "GBP")],
@@ -1435,3 +1441,45 @@ def test_the_cache_is_written_where_the_config_points(
     ]
     assert len(bodies) == 1
     assert json.loads(bodies[0].read_bytes()) == {"ok": True}
+
+
+@respx.mock
+def test_the_three_sources_landed_in_208_are_asked_rather_than_skipped(
+    data_config: DataConfig,
+) -> None:
+    """Before #208 ``fbe refresh`` printed these three as "scaffolded, not yet
+    built", and MONETARY and INFLATION scored n/a for every currency because
+    the two-year yields and the OECD prices never reached the cache. One real
+    series per source is enough to show the collector now asks them."""
+    fixtures = Path(__file__).parent / "fixtures"
+    respx.get(url__startswith=OECD_BASE_URL).mock(
+        return_value=httpx.Response(
+            200, text=(fixtures / "oecd_aus_cpi_quarterly.csv").read_text()
+        )
+    )
+    respx.get(RBA_F2_URL).mock(
+        return_value=httpx.Response(
+            200, text=(fixtures / "rba_f2_2y.csv").read_text(encoding="utf-8-sig")
+        )
+    )
+
+    result = collect_module.collect(
+        data_config,
+        start=date(2026, 5, 1),
+        end=date(2026, 9, 30),
+        sources=(OecdSource, CurvesSource, PricesSource),
+        indicators=["cpi_yoy", "yield_2y"],
+        currencies=["AUD"],
+    )
+
+    by_name = {o.source: o for o in result.outcomes}
+    assert by_name["oecd"].status is collect_module.SourceStatus.COMPLETED
+    assert by_name["curves"].status is collect_module.SourceStatus.COMPLETED
+    assert {(o.indicator, o.currency) for o in result.observations} == {
+        ("cpi_yoy", "AUD"),
+        ("yield_2y", "AUD"),
+    }
+    # Stooq is asked and answers honestly that the registry routes nothing to
+    # it today, which is a different line from "not yet built".
+    assert by_name["stooq"].status is collect_module.SourceStatus.SKIPPED
+    assert by_name["stooq"].detail == "no series routed to it"

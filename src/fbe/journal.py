@@ -21,9 +21,12 @@ Storage is JSONL under ``data/journal/``, one JSON object per line, append-only.
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
-from datetime import date, datetime
+from dataclasses import dataclass, field, fields
+from datetime import UTC, date, datetime
+from enum import Enum
 from pathlib import Path
 
 from fbe.config import DATA_DIR
@@ -34,6 +37,9 @@ __all__ = [
     "JOURNAL_PATH",
     "REVENGE_WINDOW_MINUTES",
     "OVERTRADING_TRADES_PER_WEEK",
+    "DATETIME_FIELDS",
+    "ENUM_FIELDS",
+    "PILLAR_FIELDS",
     "TradeRecord",
     "ConvictionStats",
     "DisciplineFlag",
@@ -250,13 +256,162 @@ class DisciplineFlag:
     detail: str
 
 
+def _ends_mid_line(path: Path) -> bool:
+    """Whether the file exists, holds bytes, and does not end in a newline.
+
+    Args:
+        path: Journal file, which may not exist.
+
+    Returns:
+        True when the last write was torn. An absent or empty file is False:
+        there is nothing to separate the next record from.
+
+    Note:
+        Read as the last byte rather than by loading the file, so the cost does
+        not grow with the history. A torn tail is the only state this cannot
+        tell apart from a deliberate one, and there is no deliberate one:
+        `append` is the only writer and it always terminates its line.
+
+    """
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return False
+    if size == 0:
+        return False
+    with path.open("rb") as handle:
+        handle.seek(-1, os.SEEK_END)
+        return handle.read(1) != b"\n"
+
+
+def _encode(value: object) -> object:
+    """Turn one field value into something `json.dumps` accepts.
+
+    Args:
+        value: A `TradeRecord` field value.
+
+    Returns:
+        The JSON-ready form: a datetime as ISO 8601 in UTC with its offset
+        written out, an enum as its value, a mapping keyed by its keys' string
+        values, anything else unchanged.
+
+    Raises:
+        ValueError: If a datetime is naive. `TradeRecord` documents its
+            timestamps as timezone-aware and `load` refuses a naive one on
+            read, so writing one would produce a line this module cannot read
+            back: the trade would be recorded and then lost.
+
+    Note:
+        Converted to UTC before being written, which is what `TradeRecord`
+        means by "timezone-aware UTC" and what keeps every line in the file
+        directly comparable. The instant is preserved exactly: an entry at
+        09:00 in the owner's SAST is stored as 07:00+00:00 and reads back as
+        the same moment. The offset is written out rather than dropped, because
+        a naive timestamp cannot be compared against `load`'s ``since`` without
+        guessing a zone.
+
+    """
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            raise ValueError(
+                f"{value!r} is naive. Journal timestamps are instants, and a "
+                f"record written without an offset cannot be ordered against "
+                f"one written from another zone."
+            )
+        return value.astimezone(UTC).isoformat()
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Mapping):
+        return {str(key): item for key, item in value.items()}
+    return value
+
+
+def _checked(record: TradeRecord) -> None:
+    """Refuse a record carrying a value `load` would later reject.
+
+    Args:
+        record: The trade about to be written.
+
+    Raises:
+        ValueError: If an enum field holds something outside its enum, or a
+            pillar map is keyed by something that is not a `PillarName`.
+
+    Note:
+        `TradeRecord` is a frozen dataclass and validates nothing at runtime,
+        so a plain string reaches here from any caller that is not statically
+        typed: a CLI flag, a hand-built dict, a YAML entry form. Written, it
+        succeeds, and the failure surfaces on the next read, by which point the
+        line is in the file and `load` refuses the whole journal rather than
+        one row, so every record written before it is unreadable too.
+
+        This is the rule `_encode` already applies to a naive timestamp,
+        applied to the other two things `_from_line` rejects. Checking on write
+        keeps the failure next to the trade that caused it.
+
+        The pillar keys are tested for being coercible to `PillarName` rather
+        than for being members already, because `load` coerces them and a bare
+        ``"monetary"`` round trips correctly. What must be refused is a key
+        that is not a pillar at all, such as ``"momentum"``, which writes
+        cleanly and then makes the file unreadable.
+
+        One related loss is not preventable here and is worth knowing about.
+        `PillarName` is a `StrEnum`, so a member and its equal string hash
+        equal and cannot coexist as separate keys: ``{PillarName.MONETARY:
+        1.0, "monetary": 2.0}`` is already a one-entry dict before this
+        function is reached. Nothing in this module can see the second value,
+        let alone keep it.
+
+    """
+    for name, enum_type in ENUM_FIELDS.items():
+        value = getattr(record, name)
+        if not isinstance(value, enum_type):
+            raise ValueError(
+                f"{name} is {value!r}, not a {enum_type.__name__}. Writing it "
+                f"would produce a line load refuses, which makes every record "
+                f"already in the file unreadable too."
+            )
+    for name in PILLAR_FIELDS:
+        for key in getattr(record, name):
+            try:
+                PillarName(key)
+            except ValueError as error:
+                raise ValueError(
+                    f"{name} is keyed by {key!r}, which is not a pillar name. "
+                    f"Written, it produces a line load refuses, which makes "
+                    f"every record already in the file unreadable too."
+                ) from error
+
+
+def _as_payload(record: TradeRecord) -> dict[str, object]:
+    """Flatten a record into the object written as one JSON line.
+
+    Args:
+        record: The trade to serialise.
+
+    Returns:
+        Every field of `TradeRecord`, keyed by field name.
+
+    Note:
+        Driven from ``dataclasses.fields`` rather than from a list of names
+        written out here. A hand-written list is a second copy of the record's
+        shape, and when the two disagree the new field is simply not persisted:
+        no error, no missing key on read because the default fills it, and the
+        loss is invisible until Phase 6 asks a question the data cannot answer.
+
+    """
+    return {item.name: _encode(getattr(record, item.name)) for item in fields(record)}
+
+
 def append(record: TradeRecord, path: Path = JOURNAL_PATH) -> None:
     """Append one record to the journal as a single JSON line.
 
     Creates the parent directory if it does not exist. Serialises enums by
     value, datetimes as ISO 8601 with an explicit UTC offset, and pillar maps as
-    plain objects keyed by pillar name. Writes with a trailing newline so the
-    next append starts cleanly even if the process died mid-line last time.
+    plain objects keyed by pillar name. Writes with a trailing newline, and
+    writes a separating newline first when the file does not already end in
+    one. The second half is what makes the first claim true after a torn write:
+    without it the next record is concatenated onto the fragment and both are
+    lost to a single unparseable line, rather than only the torn one.
 
     Never rewrites or truncates the file. Correcting a record means appending a
     corrected one with the same ``trade_id``; `load` keeps the last line per id.
@@ -272,11 +427,184 @@ def append(record: TradeRecord, path: Path = JOURNAL_PATH) -> None:
             rather than being logged and swallowed, because a trade that was
             taken but not recorded is worse than a failed write the owner
             notices immediately.
+        ValueError: If a timestamp on the record is naive. Writing one would
+            produce a line `load` refuses, so the trade would be recorded and
+            then unreadable.
 
     """
-    raise NotImplementedError(
-        "fbe.journal.append is scaffolded; see docs/roadmap.md Phase 4"
-    )
+    # Serialised before anything touches the filesystem, so a record this
+    # module refuses to write leaves no directory and no file behind.
+    _checked(record)
+    line = json.dumps(_as_payload(record), sort_keys=True, allow_nan=False)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Opened in append mode and never in "w", so no code path here can shorten
+    # the file. A correction is a new line carrying the same trade_id, and the
+    # superseded one stays where it is.
+    with path.open("a", encoding="utf-8") as handle:
+        if _ends_mid_line(path):
+            # A previous process died between the record and its newline.
+            # Without this, the next append is concatenated onto the fragment
+            # and BOTH become one unparseable line: the torn record is gone,
+            # which is expected, and this record is gone too, which is not.
+            # `load` refuses the whole file rather than skipping a line, so
+            # from that point every read raises and the only repair is editing
+            # the file by hand, which is what this design exists to avoid.
+            handle.write("\n")
+        handle.write(line + "\n")
+        # Flushed and synced because nothing else in the repository backs this
+        # file up, per CLAUDE.md, and because this function's own OSError
+        # rationale claims a trade taken but not recorded is the worse
+        # outcome. Without the sync, append can return on a record that a
+        # power loss then drops. One syscall on a file written a handful of
+        # times a week.
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+DATETIME_FIELDS: tuple[str, ...] = ("opened_at", "closed_at")
+"""`TradeRecord` fields written as ISO 8601 and read back as datetimes."""
+
+ENUM_FIELDS: Mapping[str, type[Enum]] = {
+    "direction": Direction,
+    "conviction": Conviction,
+}
+"""`TradeRecord` fields written as an enum value and read back as the member.
+
+Read back as members rather than as their strings because the failure of
+getting this wrong is silent: a ``direction`` left as ``"long"`` compares False
+against `fbe.types.Direction.LONG`, so a caller filtering the book finds
+nothing and reads an empty result as a period with no long trades in it.
+"""
+
+PILLAR_FIELDS: tuple[str, ...] = ("base_pillars", "quote_pillars")
+"""`TradeRecord` fields holding a pillar map, keyed by `PillarName` value."""
+
+
+def _cutoff(since: date | datetime | None) -> datetime | None:
+    """Resolve ``since`` into the instant records are compared against.
+
+    Args:
+        since: A date, a datetime, or ``None``.
+
+    Returns:
+        The cutoff instant, or ``None`` to keep everything.
+
+    Raises:
+        ValueError: If a datetime is naive. There is no correct zone to assume:
+            the owner trades in SAST, the records are stored in UTC, and
+            guessing either way moves the cutoff by two hours without saying so.
+
+    Note:
+        ``datetime`` is a subclass of ``date``, so it is tested first. The other
+        order reads every datetime as a date and silently widens an intraday
+        cutoff to midnight on the same day.
+
+    """
+    if since is None:
+        return None
+    if isinstance(since, datetime):
+        if since.tzinfo is None:
+            raise ValueError(
+                f"since must be timezone-aware, got the naive {since!r}. "
+                f"Journal timestamps are instants, and assuming a zone here "
+                f"would move the cutoff silently."
+            )
+        return since
+    return datetime(since.year, since.month, since.day, tzinfo=UTC)
+
+
+def _from_line(line: str, number: int, path: Path) -> TradeRecord:
+    """Parse one JSON line into a record, refusing anything it cannot build.
+
+    Args:
+        line: The stripped line, known to be non-empty.
+        number: 1-based line number, named in any error so the offending row
+            can be found by eye in a file with hundreds of them.
+        path: Journal file, named for the same reason.
+
+    Returns:
+        The record that line describes.
+
+    Raises:
+        ValueError: If the line is not a JSON object, omits a required field,
+            carries an unknown one, holds an unknown enum value, or carries a
+            naive ``opened_at``. Every one of these is reported rather than
+            skipped: dropping a line understates the trade count and flatters
+            every statistic Phase 6 computes from it, and a journal missing its
+            losses reports a hit rate the model never earned.
+
+    """
+    try:
+        payload = json.loads(line)
+    except ValueError as error:
+        raise ValueError(f"{path} line {number} is not valid JSON: {line!r}") from error
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"{path} line {number} is a {type(payload).__name__}, not a JSON "
+            f"object: {line!r}"
+        )
+
+    decoded = dict(payload)
+    for name in DATETIME_FIELDS:
+        raw = decoded.get(name)
+        if raw is None:
+            continue
+        if not isinstance(raw, str):
+            # Anything else reaches TradeRecord untouched and then fails on an
+            # attribute lookup, raising AttributeError rather than the
+            # ValueError this function documents. A caller wrapping load in
+            # `except ValueError` to report an unknown book crashes instead.
+            raise ValueError(
+                f"{path} line {number} has a {name} of {raw!r}, which is a "
+                f"{type(raw).__name__} rather than an ISO 8601 string"
+            )
+        try:
+            moment = datetime.fromisoformat(raw)
+        except ValueError as error:
+            raise ValueError(
+                f"{path} line {number} has a {name} that is not ISO 8601: {raw!r}"
+            ) from error
+        if moment.tzinfo is None:
+            # Checked for every datetime field, not just opened_at. A naive
+            # closed_at reads back fine and then raises TypeError inside the
+            # Phase 6 revenge rule, which compares it against the next trade's
+            # opened_at, far from the row that caused it.
+            raise ValueError(
+                f"{path} line {number} has a naive {name} {raw!r}. Journal "
+                f"timestamps are instants, and a naive one cannot be ordered "
+                f"against a record written from another zone."
+            )
+        decoded[name] = moment
+    for name, enum_type in ENUM_FIELDS.items():
+        raw = decoded.get(name)
+        if raw is not None:
+            try:
+                decoded[name] = enum_type(raw)
+            except ValueError as error:
+                raise ValueError(
+                    f"{path} line {number} has a {name} of {raw!r}, which is "
+                    f"not one of {[member.value for member in enum_type]}"
+                ) from error
+    for name in PILLAR_FIELDS:
+        raw = decoded.get(name)
+        if isinstance(raw, dict):
+            try:
+                decoded[name] = {PillarName(key): value for key, value in raw.items()}
+            except ValueError as error:
+                raise ValueError(
+                    f"{path} line {number} has a {name} keyed by something "
+                    f"that is not a pillar name: {sorted(raw)}"
+                ) from error
+
+    try:
+        entry = TradeRecord(**decoded)
+    except TypeError as error:
+        raise ValueError(
+            f"{path} line {number} does not describe a TradeRecord: {error}"
+        ) from error
+
+    return entry
 
 
 def load(
@@ -297,14 +625,41 @@ def load(
         has no history.
 
     Raises:
-        ValueError: If a line is present but unparseable. A corrupt journal is
-            reported, not skipped: silently dropping records would understate
-            the trade count and flatter every statistic computed from it.
+        ValueError: If a line is present but unparseable, if a line carries a
+            naive ``opened_at``, or if ``since`` is a naive datetime. A corrupt
+            journal is reported, not skipped: silently dropping records would
+            understate the trade count and flatter every statistic computed
+            from it. ``since`` is checked before the file is opened, so the
+            same bad argument behaves the same way on a machine with no
+            journal as on one with a full history.
 
     """
-    raise NotImplementedError(
-        "fbe.journal.load is scaffolded; see docs/roadmap.md Phase 4"
-    )
+    # Resolved before the file is looked at, so that a malformed ``since`` is
+    # refused whether or not a journal exists. Validating it after the early
+    # return would mean the same call raises on a machine that has traded and
+    # is silently accepted on one that has not.
+    cutoff = _cutoff(since)
+    if not path.exists():
+        return ()
+
+    latest: dict[str, TradeRecord] = {}
+    with path.open("r", encoding="utf-8") as handle:
+        for number, raw in enumerate(handle, start=1):
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            entry = _from_line(stripped, number, path)
+            # Last line per id wins. Insertion order is file order, so a
+            # correction appended later replaces the value and keeps the
+            # original's position, which the sort below then discards anyway.
+            latest[entry.trade_id] = entry
+
+    kept = [
+        entry
+        for entry in latest.values()
+        if cutoff is None or entry.opened_at >= cutoff
+    ]
+    return tuple(sorted(kept, key=lambda entry: entry.opened_at))
 
 
 def evaluate(records: Sequence[TradeRecord]) -> Mapping[Conviction, ConvictionStats]:
