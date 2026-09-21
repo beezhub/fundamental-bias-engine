@@ -578,20 +578,27 @@ class CurvesSource(BaseDataSource):
             ) from error
 
     def available(self) -> bool:
-        """Report whether at least one provider is reachable.
-
-        Deliberately not all-or-nothing. Each provider covers one currency, so
-        the ECB being down costs the euro's front end and nothing else, and
-        refusing to run the whole engine over that would be the wrong trade.
+        """Report availability, which is always true: no provider takes a key.
 
         Returns:
-            True when any provider answers, or when a warm cache exists.
+            Whether this source can be used on this run. Always ``True``: the
+            seven institutions publish openly, so there is nothing about the
+            configuration that could rule this source out, and there is no
+            directory or credential to check.
+
+        This answers about configuration rather than connectivity, which is the
+        contract `BaseDataSource.available` sets and
+        ``tests/test_datasource_base.py`` enforces across every source: no
+        implementation here may make a request. The stub this replaced promised
+        "true when any provider answers", which would have cost up to seven
+        requests on every run to learn something `fetch` reports anyway: a
+        provider that is down raises there, naming itself and its currency. An
+        offline run with nothing cached is reported the same way, by `fetch`
+        raising, which is the only place that distinction can be made without
+        a network call.
 
         """
-        raise NotImplementedError(
-            "fbe.datasources.curves.CurvesSource.available is scaffolded; "
-            "see docs/roadmap.md Phase 1"
-        )
+        return True
 
     def fetch(
         self,

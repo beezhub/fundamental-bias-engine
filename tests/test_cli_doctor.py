@@ -1422,3 +1422,24 @@ def test_a_probe_description_that_raises_is_a_warning_not_a_traceback() -> None:
     assert "could not describe a probe" in detail
     assert "KeyError" in detail
     assert route.call_count == 0
+
+
+@respx.mock
+def test_no_shipped_source_reports_as_scaffolded(tmp_path: Path) -> None:
+    """Runs against the real ``ALL_SOURCES``, offline so no probe is made.
+
+    Before #208 this printed three "scaffolded, not yet built" lines for the
+    curves, OECD and Stooq sources, which was true, and which hid that the
+    fetch paths behind them had landed months earlier. Offline, every source
+    that needs nothing configured reports available, and the line says so.
+    """
+    route = respx.route().mock(return_value=httpx.Response(200))
+
+    result = runner.invoke(
+        app, ["--config", str(_config_file(tmp_path)), "--offline", "doctor"]
+    )
+
+    assert route.call_count == 0
+    assert "scaffolded" not in result.stdout
+    for name in ("curves", "oecd", "stooq"):
+        assert f"{name} available, offline so no probe" in result.stdout
