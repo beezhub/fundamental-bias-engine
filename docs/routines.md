@@ -39,6 +39,29 @@ priority does not gate the implementation lanes. Build lane 1 is still barred
 from `p0` and `p1`, because a high-priority defect deserves a person deciding
 who fixes it.
 
+**A `type:requirement` converted from an approved proposal carries `roadmap`,
+and carries no `phase:N`.** The implementation lanes then claim it like any
+other work in their pool, at any priority. `roadmap` is the claim key for that
+pool rather than a statement about which document the work came from, which is
+how the rule above the corollary already uses it. The phase label is omitted
+rather than guessed: work that came from a proposal did not come from a phase of
+`docs/roadmap.md`, and stamping one on it would put a false provenance on the
+issue to satisfy a label schema. The `run:` label and the approval link in the
+issue body already record where it came from.
+
+That the human gate has already run is what makes this safe at `p1`. A person
+approved the proposal, the proposals desk wrote the acceptance criteria, and a
+person still merges the pull request. Ruled on #97.
+
+**A `type:requirement` carrying neither `roadmap` nor `routine-safe` belongs to
+no pool and nothing will claim it.** That is not a resting state, it is a
+labelling mistake, and the fix is to decide which pool it belongs in rather than
+to leave it at `status:ready` where the board reads it as queued. Five issues
+sat in it for a week, descended from proposals the owner had approved, while
+eleven lane slots a weekday passed over them and every lane correctly reported
+no qualifying issue. Nothing errors when this happens, which is why it is
+written down here.
+
 ## Who did what
 
 Every run is signed. The commits all carry the repository owner's name, and a
