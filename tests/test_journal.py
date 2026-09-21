@@ -749,6 +749,152 @@ def test_a_line_with_an_unknown_enum_value_raises(tmp_path: Path) -> None:
         load(path=path)
 
 
+def test_a_torn_previous_write_costs_one_line_and_not_two(tmp_path: Path) -> None:
+    """The claim three docstrings make, which was false until this test.
+
+    A process that dies between the record and its newline leaves a fragment.
+    Without separating it, the next append is concatenated onto that fragment
+    and both become one unparseable line: the torn record is gone, which is
+    expected, and the complete record written afterwards is gone too, which is
+    not. `load` refuses the whole file rather than one row, so from that point
+    every read raises and the only repair is editing by hand the file this
+    design exists to keep unedited.
+    """
+    path = tmp_path / "trades.jsonl"
+    append(record(trade_id="T1"), path)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"trade_id": "T2", "pair": "EUR')
+    append(record(trade_id="T3"), path)
+
+    assert len(lines(path)) == 3
+    with pytest.raises(ValueError) as excinfo:
+        load(path=path)
+    assert "T3" not in str(excinfo.value)
+
+
+def test_a_file_already_ending_cleanly_gains_no_blank_line(tmp_path: Path) -> None:
+    """The separator is written only when it is needed.
+
+    Writing one unconditionally would put a blank line between every pair of
+    records, doubling the file and making its line count meaningless.
+    """
+    path = tmp_path / "trades.jsonl"
+    append(record(trade_id="T1"), path)
+    append(record(trade_id="T2"), path)
+    assert lines(path) == [line for line in lines(path) if line.strip()]
+    assert len(lines(path)) == 2
+
+
+@pytest.mark.parametrize("bad", ["buy", None, 1])
+def test_writing_a_direction_outside_the_enum_raises(
+    bad: object, tmp_path: Path
+) -> None:
+    """`TradeRecord` is frozen but validates nothing, so this reaches the file.
+
+    Any caller that is not statically typed can supply it: a CLI flag, a
+    hand-built dict, a YAML entry form. Written, it succeeds, and the failure
+    surfaces on the next read, by which point `load` refuses the whole journal
+    and every record written before it is unreadable too.
+    """
+    path = tmp_path / "trades.jsonl"
+    append(record(trade_id="good"), path)
+    with pytest.raises(ValueError, match="Direction"):
+        append(record(trade_id="bad", direction=bad), path)
+    assert len(load(path=path)) == 1
+
+
+def test_writing_a_pillar_map_keyed_by_a_non_pillar_raises(tmp_path: Path) -> None:
+    """A key that is not a pillar writes cleanly and then breaks every read.
+
+    ``"momentum"`` is the shape of the mistake: a plausible name that is not
+    one of the seven. Written, it makes the whole journal unreadable, including
+    the records that came before it.
+
+    A bare ``"monetary"`` is accepted, because `load` coerces keys and it round
+    trips to the right pillar. The check is on the key being a pillar, not on
+    it already being a member.
+    """
+    path = tmp_path / "trades.jsonl"
+    with pytest.raises(ValueError, match="not a pillar name"):
+        append(record(base_pillars={"momentum": 1.0}), path)
+    assert not path.exists()
+
+    append(record(trade_id="ok", base_pillars={"monetary": 1.0}), path)
+    (loaded,) = load(path=path)
+    assert loaded.base_pillars == {PillarName.MONETARY: 1.0}
+
+
+def test_a_string_key_and_its_member_cannot_both_be_present(tmp_path: Path) -> None:
+    """Recorded because it looks like a loss this module could prevent, and is not.
+
+    `PillarName` is a `StrEnum`, so a member and its equal string hash equal
+    and collapse in the caller's own dict literal, before anything here runs.
+    The surviving key is the one inserted first and the second value is already
+    gone. Asserted so the next reader does not go looking for a guard in
+    `_checked` that cannot exist.
+    """
+    collapsed = {PillarName.MONETARY: 1.0, "monetary": 2.0}
+    assert len(collapsed) == 1
+    assert list(collapsed) == [PillarName.MONETARY]
+    assert collapsed[PillarName.MONETARY] == 2.0
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_money_figure_raises_rather_than_leaving_the_file(
+    bad: float, tmp_path: Path
+) -> None:
+    """``NaN`` and ``Infinity`` are Python's JSON extension, not JSON.
+
+    They round trip inside Python, so nothing here would notice, but the file
+    stops being the JSONL three documents promise and every non-Python reader
+    rejects it. A NaN also poisons any mean computed over the book without
+    excluding the trade from the count.
+
+    The realistic producer is an R-multiple over a zero realised risk.
+    """
+    path = tmp_path / "trades.jsonl"
+    with pytest.raises(ValueError):
+        append(record(r_multiple=bad), path)
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("field", ["opened_at", "closed_at"])
+def test_a_non_string_timestamp_raises_the_documented_error(
+    field: str, tmp_path: Path
+) -> None:
+    """`load` documents `ValueError`, and an `AttributeError` escapes the handler.
+
+    A caller reporting "open book not known" wraps this in ``except
+    ValueError``. Anything else crashes the run instead of degrading it.
+    """
+    path = tmp_path / "trades.jsonl"
+    append(record(closed_at=datetime(2026, 9, 22, 14, 30, tzinfo=UTC)), path)
+    payload = json.loads(lines(path)[0])
+    payload[field] = 0
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load(path=path)
+
+
+def test_a_naive_closed_at_on_disk_raises(tmp_path: Path) -> None:
+    """The awareness check covers every timestamp, not just the entry.
+
+    A naive `closed_at` reads back without complaint and then raises
+    `TypeError` inside the Phase 6 revenge rule, which compares it against the
+    next trade's `opened_at`. That is the failure the entry-time guard exists
+    to prevent, landing on the other field.
+    """
+    path = tmp_path / "trades.jsonl"
+    append(record(closed_at=datetime(2026, 9, 22, 14, 30, tzinfo=UTC)), path)
+    payload = json.loads(lines(path)[0])
+    payload["closed_at"] = "2026-09-22T14:30:00"
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="naive"):
+        load(path=path)
+
+
 def test_a_naive_since_raises_rather_than_assuming_a_zone() -> None:
     """There is no correct zone to assume, and guessing moves the cutoff silently.
 
