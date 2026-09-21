@@ -178,6 +178,14 @@ proposal rather than a defect, anything at `p0` or `p1`, force-pushing,
 closing an issue it did not fully resolve, and opening more than a few issues
 in one run.
 
+**The bar on closing stands, and it is deliberate rather than an oversight.** A
+close is the last moment anyone looks at whether the work matches what was asked,
+and the person who merged the pull request is the one who read the diff. The
+`Closes:` rule above removes almost all of the problem at source, because an
+issue closed on merge never accumulates, and what is left is the small tail of
+partial pull requests, which genuinely want a person deciding. Ruled on #96, and
+recorded here so the next run does not re-litigate it.
+
 **Always:** leave a comment saying what it did and what it chose not to do. An
 unattended run that leaves no trace is indistinguishable from one that did
 nothing, and the difference matters at review time.
@@ -186,13 +194,22 @@ nothing, and the difference matters at review time.
 
 - Branch from the default branch, named `feat/`, `fix/`, `chore/`, `docs/` or
   `test/` plus a short kebab-case description. No agent, model or tool names.
-- One issue per pull request. `Refs: #NN` or `Closes: #NN` in the body.
+- One issue per pull request, with a trailer in the body naming it. **`Closes:
+  #NN` when the pull request meets every acceptance criterion on the issue.
+  `Refs: #NN` when it is partial, or one of several.** The trailer is plain text
+  and outside backticks, or GitHub does not read it.
 - Conventional Commits, imperative subject of 72 characters or less, body
   explaining what changed and why.
 - The pull request body restates the acceptance criteria as a checklist, with
   each one ticked and a line saying how it was verified.
 - `ruff check`, `ruff format --check`, `mypy` and `pytest` clean before pushing.
   A push that turns CI red costs a cycle and the reviewers' trust.
+
+The choice is not a style preference. `Refs:` closes nothing, so a finished issue
+stays at `status:in-progress` with its work merged, and the next triage run reads
+it as a stranded claim and returns it to the pool. A lane then spends a slot
+proving that finished work is finished. That has happened twice, on #16 and #20,
+and the backlog it produced reached twelve issues before anything cleared it.
 
 ## Definition of done
 
