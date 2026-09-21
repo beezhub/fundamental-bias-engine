@@ -184,6 +184,7 @@ def test_an_inverted_band_raises_for_every_level_including_none() -> None:
         RiskConfig(risk_per_trade_max=0.015),
         RiskConfig(risk_per_trade_min=0.005, risk_per_trade_max=0.01),
         RiskConfig(risk_per_trade_min=0.02, risk_per_trade_max=0.02),
+        RiskConfig(risk_per_trade_min=0.02, risk_per_trade_max=0.03),
     ],
 )
 def test_every_tradeable_fraction_lands_inside_the_band(band: RiskConfig) -> None:
@@ -195,6 +196,24 @@ def test_every_tradeable_fraction_lands_inside_the_band(band: RiskConfig) -> Non
     for level in TRADEABLE:
         fraction = risk_fraction_for(level, band)
         assert band.risk_per_trade_min <= fraction <= band.risk_per_trade_max
+
+
+def test_a_band_above_the_validated_ceiling_is_interpolated_not_clamped() -> None:
+    """No literal ceiling inside the function, including one the validator enforces.
+
+    `Config.validate()` refuses a ``risk_per_trade_max`` above 2%, so a
+    hardcoded 0.02 clamp here never bites on a validated config and every other
+    test in this file passes with it in place. This function takes a bare
+    `RiskConfig` and validates nothing itself, and a literal 0.02 next to a
+    config field holding the ceiling is the precise defect this issue closes.
+
+    An in-band assertion cannot catch it, which is why this asserts exact
+    values: clamping 0.03 down to 0.02 still satisfies "inside [0.02, 0.03]".
+    """
+    wide = RiskConfig(risk_per_trade_min=0.02, risk_per_trade_max=0.03)
+    assert risk_fraction_for(Conviction.HIGH, wide) == pytest.approx(0.03)
+    assert risk_fraction_for(Conviction.MEDIUM, wide) == pytest.approx(0.025)
+    assert risk_fraction_for(Conviction.LOW, wide) == pytest.approx(0.02)
 
 
 def test_the_ladder_is_ordered_by_conviction(config: RiskConfig) -> None:
@@ -215,18 +234,24 @@ def test_the_ladder_is_ordered_by_conviction(config: RiskConfig) -> None:
     )
 
 
-def test_the_band_position_map_is_read_and_not_retyped(config: RiskConfig) -> None:
+def test_the_band_position_map_is_read_and_not_retyped(
+    config: RiskConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Move MEDIUM's position in the band and the fraction has to follow.
 
-    0.5 is the midpoint and the midpoint is also what a hardcoded average would
-    produce, so the default cannot tell the two apart.
+    The position is actually moved rather than merely asserted, because 0.5 is
+    the midpoint and the midpoint is also what a hardcoded average produces, so
+    the default cannot tell a read from a retype. At 0.75 of a 1-2% band the
+    answer is 1.75%, which no plausible hardcoding yields.
+
+    `CONVICTION_BAND_POSITION` is exported and is documented as the single
+    source of the ladder's shape, and `MIN_REWARD_TO_RISK` names it as
+    something to revisit once the journal has evidence. It will be edited, so
+    the function following it needs a test that fails when it stops.
     """
-    original = dict(CONVICTION_BAND_POSITION)
-    assert original[Conviction.MEDIUM] == 0.5
-    expected = config.risk_per_trade_min + 0.5 * (
-        config.risk_per_trade_max - config.risk_per_trade_min
-    )
-    assert risk_fraction_for(Conviction.MEDIUM, config) == pytest.approx(expected)
+    assert CONVICTION_BAND_POSITION[Conviction.MEDIUM] == 0.5
+    monkeypatch.setitem(CONVICTION_BAND_POSITION, Conviction.MEDIUM, 0.75)
+    assert risk_fraction_for(Conviction.MEDIUM, config) == pytest.approx(0.0175)
 
 
 # --------------------------------------------------------------------------
@@ -274,6 +299,35 @@ def test_an_entry_equal_to_the_stop_raises() -> None:
     """
     with pytest.raises(ValueError):
         reward_to_risk(1.0850, 1.0850, 1.0925)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("leg", ["entry", "stop", "target"])
+def test_a_non_finite_price_raises_rather_than_returning_a_ratio(
+    leg: str, bad: float
+) -> None:
+    """A NaN ratio is the one number that clears or fails every bar at once.
+
+    ``nan < 1.5`` is False and ``nan >= 1.5`` is also False, so whether a
+    nonsense setup is refused depends entirely on which way the caller spelled
+    its check. A caller writing ``if rr < min_acceptable_rr(conviction):
+    refuse`` lets it through. Refusing the input makes both spellings agree.
+    """
+    prices = {"entry": 100.0, "stop": 98.0, "target": 106.0}
+    prices[leg] = bad
+    with pytest.raises(ValueError):
+        reward_to_risk(**prices)
+
+
+def test_a_non_finite_ratio_would_have_cleared_the_bar_either_way() -> None:
+    """Why the guard above is a refusal rather than a warning, stated as arithmetic.
+
+    This asserts the property of NaN that makes it dangerous here, not the
+    behaviour of `reward_to_risk`, which now refuses to produce one.
+    """
+    nan = float("nan")
+    assert not nan < min_acceptable_rr(Conviction.HIGH)
+    assert not nan >= min_acceptable_rr(Conviction.HIGH)
 
 
 def test_a_target_on_the_wrong_side_still_returns_a_ratio() -> None:
@@ -462,6 +516,52 @@ def test_a_position_with_no_usable_entry_balance_raises(balance: float) -> None:
         correlated_exposure(book)
 
 
+@pytest.mark.parametrize("risk", [-20.0, float("nan"), float("inf")])
+def test_a_position_with_an_unusable_risk_amount_raises(risk: float) -> None:
+    """The balance guard's twin, and the one that hides rather than invents.
+
+    A negative ``risk_amount`` subtracts from a leg's total, so one corrupt row
+    conceals a real position behind a hedge that does not exist: a book of long
+    EURUSD at R20 and a bad row at minus R20 reports zero dollar exposure and
+    clears every cap. A NaN poisons the leg it touches and then compares False
+    against the cap it is checked against.
+
+    `OpenPosition` documents ``risk_amount`` as positive, but the protocol is
+    structural and a `fbe.journal.TradeRecord` satisfies it without that being
+    enforced anywhere, so the check belongs here.
+    """
+    with pytest.raises(ValueError):
+        correlated_exposure([PositionRisk("EURUSD", risk, 2000.0)])
+
+
+def test_one_corrupt_row_cannot_cancel_a_real_position() -> None:
+    """The concrete failure the guard above prevents, stated as a book.
+
+    Without the guard this returns 0.0 on both legs, which reads as a flat book
+    rather than as a corrupt one, and every cap is cleared by a position that
+    is genuinely on.
+    """
+    book = [
+        PositionRisk("EURUSD", 20.0, 2000.0),
+        PositionRisk("EURUSD", -20.0, 2000.0),
+    ]
+    with pytest.raises(ValueError):
+        correlated_exposure(book)
+
+
+def test_a_zero_risk_position_is_measured_rather_than_refused() -> None:
+    """Zero is a real answer here, unlike a zero balance.
+
+    A refused trade comes back from `position_size` with a realised risk of
+    0.0, and that is a position on the book with nothing at stake rather than
+    corrupt data. It contributes 0.0 to both legs and the currencies still
+    appear, because they were asked about.
+    """
+    exposure = correlated_exposure([PositionRisk("EURUSD", 0.0, 2000.0)])
+    assert exposure["EUR"] == 0.0
+    assert exposure["USD"] == 0.0
+
+
 def test_a_malformed_pair_raises_rather_than_being_attributed() -> None:
     """A five-character pair cannot be split into two legs.
 
@@ -473,7 +573,7 @@ def test_a_malformed_pair_raises_rather_than_being_attributed() -> None:
         correlated_exposure([PositionRisk("EURUS", 20.0, 2000.0)])
 
 
-def test_the_same_pair_twice_accumulates(config: RiskConfig) -> None:
+def test_the_same_pair_twice_accumulates() -> None:
     """Two tickets on one pair are two positions, not one.
 
     Deduplicating by pair would hide the most obviously correlated book there
@@ -505,9 +605,14 @@ def test_the_exposure_map_is_what_the_cap_is_compared_against(
     exposure = correlated_exposure(book)
     assert exposure["USD"] == pytest.approx(0.03)
     assert exposure["USD"] < config.max_correlated_exposure
+    # Four 1% tickets summing to exactly the 4% default is a coincidence of the
+    # defaults, so it is not asserted against the config value here. Whether
+    # the cap is read from `RiskConfig` or retyped is `check_limits`' wire to
+    # prove, and ``tests/test_limit_checks.py`` does prove it by overriding
+    # `max_correlated_exposure` to 0.07.
     assert correlated_exposure(book + [PositionRisk("NZDUSD", 20.0, 2000.0)])[
         "USD"
-    ] == pytest.approx(config.max_correlated_exposure)
+    ] == pytest.approx(0.04)
 
 
 def test_a_position_sized_at_a_nano_broker_reports_its_own_fraction(
@@ -534,16 +639,14 @@ def test_a_position_sized_at_a_nano_broker_reports_its_own_fraction(
     assert exposure["USD"] == pytest.approx(0.00925)
 
 
-def test_the_ladder_module_fetches_nothing() -> None:
-    """These four functions are arithmetic on their arguments.
+def test_a_lowercase_pair_is_normalised_to_the_codes_the_cap_is_keyed_by() -> None:
+    """`split_pair` slices positionally and does no case folding of its own.
 
-    Nothing here reads a file, a clock or a network, so there is no path by
-    which a limit could be computed against a rate or a balance the caller did
-    not supply. `fbe.risk` is asserted to import no HTTP client by
-    ``tests/test_position_size.py``; this states the same property for the book
-    functions, which take every figure they use from `OpenPosition`.
+    Without normalising, ``"eurusd"`` emits keys ``"eur"`` and ``"usd"``, which
+    no caller comparing against G10 codes will ever match. The exposure would
+    not be wrong, it would be invisible, and the cap would see nothing at all
+    for a position that is really on the book.
     """
-    book = [PositionRisk("EURUSD", 20.0, 2000.0)]
-    first = correlated_exposure(book)
-    second = correlated_exposure(book)
-    assert dict(first) == dict(second)
+    exposure = correlated_exposure([PositionRisk("eurusd", 20.0, 2000.0)])
+    assert set(exposure) == {"EUR", "USD"}
+    assert exposure["EUR"] == pytest.approx(0.01)
