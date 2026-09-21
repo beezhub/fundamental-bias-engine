@@ -262,19 +262,34 @@ def _encode(value: object) -> object:
         value: A `TradeRecord` field value.
 
     Returns:
-        The JSON-ready form: a datetime as ISO 8601 carrying its offset, an
-        enum as its value, a mapping keyed by its keys' string values, anything
-        else unchanged.
+        The JSON-ready form: a datetime as ISO 8601 in UTC with its offset
+        written out, an enum as its value, a mapping keyed by its keys' string
+        values, anything else unchanged.
+
+    Raises:
+        ValueError: If a datetime is naive. `TradeRecord` documents its
+            timestamps as timezone-aware and `load` refuses a naive one on
+            read, so writing one would produce a line this module cannot read
+            back: the trade would be recorded and then lost.
 
     Note:
-        The offset is written out rather than normalised to UTC and dropped,
-        because a naive timestamp cannot be compared against `load`'s ``since``
-        without guessing a zone, and the owner trades in SAST. What has to
-        survive is the instant, not the wall clock.
+        Converted to UTC before being written, which is what `TradeRecord`
+        means by "timezone-aware UTC" and what keeps every line in the file
+        directly comparable. The instant is preserved exactly: an entry at
+        09:00 in the owner's SAST is stored as 07:00+00:00 and reads back as
+        the same moment. The offset is written out rather than dropped, because
+        a naive timestamp cannot be compared against `load`'s ``since`` without
+        guessing a zone.
 
     """
     if isinstance(value, datetime):
-        return value.isoformat()
+        if value.tzinfo is None:
+            raise ValueError(
+                f"{value!r} is naive. Journal timestamps are instants, and a "
+                f"record written without an offset cannot be ordered against "
+                f"one written from another zone."
+            )
+        return value.astimezone(UTC).isoformat()
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, Mapping):
@@ -324,6 +339,9 @@ def append(record: TradeRecord, path: Path = JOURNAL_PATH) -> None:
             rather than being logged and swallowed, because a trade that was
             taken but not recorded is worse than a failed write the owner
             notices immediately.
+        ValueError: If a timestamp on the record is naive. Writing one would
+            produce a line `load` refuses, so the trade would be recorded and
+            then unreadable.
 
     """
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -483,11 +501,20 @@ def load(
         has no history.
 
     Raises:
-        ValueError: If a line is present but unparseable. A corrupt journal is
-            reported, not skipped: silently dropping records would understate
-            the trade count and flatter every statistic computed from it.
+        ValueError: If a line is present but unparseable, if a line carries a
+            naive ``opened_at``, or if ``since`` is a naive datetime. A corrupt
+            journal is reported, not skipped: silently dropping records would
+            understate the trade count and flatter every statistic computed
+            from it. ``since`` is checked before the file is opened, so the
+            same bad argument behaves the same way on a machine with no
+            journal as on one with a full history.
 
     """
+    # Resolved before the file is looked at, so that a malformed ``since`` is
+    # refused whether or not a journal exists. Validating it after the early
+    # return would mean the same call raises on a machine that has traded and
+    # is silently accepted on one that has not.
+    cutoff = _cutoff(since)
     if not path.exists():
         return ()
 
@@ -503,7 +530,6 @@ def load(
             # original's position, which the sort below then discards anyway.
             latest[entry.trade_id] = entry
 
-    cutoff = _cutoff(since)
     kept = [
         entry
         for entry in latest.values()

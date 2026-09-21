@@ -18,10 +18,13 @@ profit and loss, and which `CLAUDE.md` keeps out of git for that reason.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta, timezone
 from enum import Enum
+from inspect import signature
 from pathlib import Path
-from typing import get_args, get_type_hints
+from types import UnionType
+from typing import Union, get_args, get_origin, get_type_hints
 
 import pytest
 
@@ -171,13 +174,21 @@ def test_a_write_failure_propagates_rather_than_being_swallowed(
         append(record(), blocker / "trades.jsonl")
 
 
-def test_the_default_path_is_the_journal_constant() -> None:
-    """The signature's default is the canonical file, and no test may use it.
+@pytest.mark.parametrize("function", [append, load])
+def test_the_default_path_is_the_journal_constant(function: object) -> None:
+    """Both signatures default to the canonical file, and no test may use it.
 
     Asserted rather than assumed, because every other test in this file passes
-    an explicit `tmp_path`, so nothing else would notice if the default drifted.
+    an explicit `tmp_path`, so nothing else would notice if either default
+    drifted. `load`'s is the half that fails quietly: reading the wrong file
+    returns an empty book, which is indistinguishable from a period in which
+    the owner took no trades.
+
+    Read through `inspect.signature` rather than ``__defaults__`` so that
+    making ``path`` keyword-only, which is a refactor and not a defect, does
+    not fail this.
     """
-    assert append.__defaults__ == (JOURNAL_PATH,)
+    assert signature(function).parameters["path"].default is JOURNAL_PATH
 
 
 # --------------------------------------------------------------------------
@@ -208,6 +219,11 @@ def test_a_record_round_trips_field_by_field(tmp_path: Path) -> None:
         blackout_checked=True,
         broker="generic-retail-micro",
         notes="Retest held on the fourth touch.",
+        # Deliberately not the "ZAR" default. Left at it, this field round
+        # trips to an identical value even when it is never written at all, so
+        # this test alone would not notice it being dropped from the payload.
+        # It is also the denomination of every money figure on the record.
+        account_currency="USD",
     )
     append(original, path)
     (loaded,) = load(path=path)
@@ -254,20 +270,45 @@ def test_datetimes_carry_an_explicit_utc_offset(tmp_path: Path) -> None:
     assert loaded.opened_at.utcoffset() == timedelta(0)
 
 
-def test_a_non_utc_timestamp_survives_as_the_same_instant(tmp_path: Path) -> None:
-    """The owner is in SAST, so a naive write would be two hours out.
+def test_a_non_utc_timestamp_is_normalised_to_utc_and_stays_the_same_instant(
+    tmp_path: Path,
+) -> None:
+    """The owner is in SAST, and the file is written in UTC.
 
-    09:00 at +02:00 is 07:00 UTC. What has to survive is the instant, not the
-    wall clock, because `since` and every ordering downstream compare instants.
+    09:00 at +02:00 is 07:00 UTC. Both halves are asserted: the stored line is
+    in UTC, which is what `TradeRecord` means by "timezone-aware UTC" and what
+    keeps every line in the file directly comparable, and the instant is
+    unchanged, which is what `since` and every ordering downstream compare.
+
+    Equality alone would not show the normalisation, because two aware
+    datetimes in different zones compare equal when they name the same moment.
     """
     sast = timezone(timedelta(hours=2))
     opened = datetime(2026, 9, 21, 9, 0, tzinfo=sast)
     path = tmp_path / "trades.jsonl"
     append(record(opened_at=opened), path)
 
+    assert json.loads(lines(path)[0])["opened_at"] == "2026-09-21T07:00:00+00:00"
+
     (loaded,) = load(path=path)
     assert loaded.opened_at == opened
-    assert loaded.opened_at.astimezone(UTC).hour == 7
+    assert loaded.opened_at.utcoffset() == timedelta(0)
+    assert loaded.opened_at.hour == 7
+
+
+def test_writing_a_naive_timestamp_raises_rather_than_producing_an_unreadable_line(
+    tmp_path: Path,
+) -> None:
+    """`append` must not write a line `load` will refuse.
+
+    Without this, a naive `opened_at` is written happily and the trade is only
+    discovered to be unreadable the next time the journal is loaded, by which
+    point the fill details are gone. Refusing at the write keeps the failure
+    next to the trade it concerns.
+    """
+    path = tmp_path / "trades.jsonl"
+    with pytest.raises(ValueError, match="naive"):
+        append(record(opened_at=datetime(2026, 9, 21, 9, 0)), path)
 
 
 def test_pillar_maps_are_plain_objects_keyed_by_pillar_name(tmp_path: Path) -> None:
@@ -355,19 +396,40 @@ def test_every_field_needing_conversion_is_listed(tmp_path: Path) -> None:
     enum belongs, which filters to nothing.
 
     The annotations are strings under ``from __future__ import annotations``,
-    so they are resolved before being inspected.
+    so they are resolved before being inspected, and each rule looks inside a
+    union as well as at the bare type. An earlier version of this test checked
+    the enum rule against the bare type only, which meant an optional field
+    such as ``override_direction: Direction | None`` was invisible to it and to
+    every other test in the file.
     """
+
+    def unwrapped(hint: object) -> tuple[object, ...]:
+        """The hint itself plus a union's members, never a mapping's parameters.
+
+        ``Mapping[PillarName, float]`` carries an Enum in its args, so a rule
+        that looked at every arg would classify the pillar maps as enum fields
+        and demand that they appear in two tables at once.
+        """
+        if get_origin(hint) in (Union, UnionType):
+            return (hint, *get_args(hint))
+        return (hint,)
+
     hints = get_type_hints(TradeRecord)
     expected_datetimes = {
-        name for name, hint in hints.items() if datetime in (hint, *get_args(hint))
+        name for name, hint in hints.items() if datetime in unwrapped(hint)
     }
     expected_enums = {
         name
         for name, hint in hints.items()
-        if isinstance(hint, type) and issubclass(hint, Enum)
+        if any(
+            isinstance(candidate, type) and issubclass(candidate, Enum)
+            for candidate in unwrapped(hint)
+        )
     }
     expected_pillars = {
-        name for name, hint in hints.items() if PillarName in get_args(hint)
+        name
+        for name, hint in hints.items()
+        if get_origin(hint) is Mapping and PillarName in get_args(hint)
     }
 
     assert set(DATETIME_FIELDS) == expected_datetimes
@@ -607,6 +669,35 @@ def test_since_is_applied_after_the_correction_is_resolved(tmp_path: Path) -> No
     assert len(load(since=date(2026, 9, 24), path=path)) == 0
 
 
+def test_a_correction_that_moves_the_entry_time_earlier_uses_the_new_time(
+    tmp_path: Path,
+) -> None:
+    """The case that distinguishes filtering before and after the resolution.
+
+    The test above corrects `opened_at` forward, and filtering first happens to
+    give the right answer there for the wrong reason: the superseded line is
+    dropped by the filter and the correction survives it. Correcting backwards
+    separates them. The surviving record opens on the 20th, so a cutoff of the
+    22nd returns nothing; filtering first drops the correction and returns the
+    superseded line, which is a record the journal no longer says exists.
+    """
+    path = tmp_path / "trades.jsonl"
+    append(
+        record(trade_id="T1", opened_at=datetime(2026, 9, 23, 9, 0, tzinfo=UTC)),
+        path,
+    )
+    append(
+        record(
+            trade_id="T1",
+            opened_at=datetime(2026, 9, 20, 9, 0, tzinfo=UTC),
+            notes="entry time corrected earlier",
+        ),
+        path,
+    )
+    assert load(since=date(2026, 9, 22), path=path) == ()
+    assert len(load(since=date(2026, 9, 19), path=path)) == 1
+
+
 # --------------------------------------------------------------------------
 # A corrupt journal is reported, never skipped
 # --------------------------------------------------------------------------
@@ -658,16 +749,89 @@ def test_a_line_with_an_unknown_enum_value_raises(tmp_path: Path) -> None:
         load(path=path)
 
 
-def test_a_blank_line_is_not_a_corrupt_record(tmp_path: Path) -> None:
-    """A trailing newline is normal and must not raise.
+def test_a_naive_since_raises_rather_than_assuming_a_zone() -> None:
+    """There is no correct zone to assume, and guessing moves the cutoff silently.
 
-    Every append ends with one, so a strict reader that treats the empty string
-    after the final newline as a line would refuse every journal ever written.
+    The owner trades in SAST and the records are stored in UTC, so reading a
+    naive cutoff either way shifts it by two hours. A weekly review asking for
+    "since Monday" would then quietly include or exclude Monday's first trades.
+    """
+    with pytest.raises(ValueError, match="timezone-aware"):
+        load(since=datetime(2026, 9, 22, 9, 0), path=Path("unused.jsonl"))
+
+
+def test_a_naive_opened_at_on_disk_raises(tmp_path: Path) -> None:
+    """A record without an offset cannot be ordered against one written elsewhere.
+
+    `TradeRecord` documents `opened_at` as timezone-aware, but the file is
+    hand-editable and nothing upstream of `load` enforces it. Admitting the
+    line would raise `TypeError` later, on the comparison against `since`, far
+    from the row that caused it.
+    """
+    path = tmp_path / "trades.jsonl"
+    append(record(), path)
+    payload = json.loads(lines(path)[0])
+    payload["opened_at"] = "2026-09-21T09:00:00"
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="naive"):
+        load(path=path)
+
+
+def test_a_line_carrying_an_unknown_field_raises(tmp_path: Path) -> None:
+    """An unrecognised key is a record this version cannot honestly read.
+
+    It usually means the file was written by a later version carrying a field
+    this one would silently drop. Dropping it is the same harm as dropping a
+    line: the record loads, looks complete, and is missing something the writer
+    thought mattered enough to store.
+    """
+    path = tmp_path / "trades.jsonl"
+    append(record(), path)
+    payload = json.loads(lines(path)[0])
+    payload["slippage_pips"] = 0.4
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load(path=path)
+
+
+def test_two_trades_filled_in_the_same_minute_keep_file_order(
+    tmp_path: Path,
+) -> None:
+    """Ties are broken by the order they were written, which is entry order.
+
+    Unspecified until now, and two fills in the same minute is a realistic
+    book. Pinned so the sort cannot quietly become unstable.
+    """
+    same = datetime(2026, 9, 22, 9, 0, tzinfo=UTC)
+    path = tmp_path / "trades.jsonl"
+    append(record(trade_id="first", opened_at=same), path)
+    append(record(trade_id="second", opened_at=same), path)
+    assert [entry.trade_id for entry in load(path=path)] == ["first", "second"]
+
+
+def test_a_blank_line_inside_the_file_is_skipped_rather_than_reported(
+    tmp_path: Path,
+) -> None:
+    """An empty or whitespace-only line is absence, not corruption.
+
+    The realistic producer is a half-flushed write or a hand-edited file, and
+    the line carries no record to lose. Reporting it would refuse to read a
+    journal whose trades are all intact, which on a file the owner cannot
+    regenerate is the more expensive failure.
+
+    Whitespace-only is covered as well as empty, because the reader strips
+    before testing and the two must not diverge.
     """
     path = tmp_path / "trades.jsonl"
     append(record(trade_id="T1"), path)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("\n   \n")
     append(record(trade_id="T2"), path)
+
     assert len(load(path=path)) == 2
+    assert [entry.trade_id for entry in load(path=path)] == ["T1", "T2"]
 
 
 # --------------------------------------------------------------------------
