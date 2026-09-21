@@ -39,10 +39,14 @@ import pytest
 
 import fbe.scoring as scoring_module
 from fbe.config import ScoringConfig
-from fbe.datasources.registry import INDICATORS, series_for
+from fbe.datasources.registry import (
+    DEFAULT_PUBLICATION_LAG_DAYS,
+    INDICATORS,
+    publication_lag,
+    series_for,
+)
 from fbe.pillars import default_pillars
 from fbe.pillars.base import (
-    DEFAULT_PUBLICATION_LAG_DAYS,
     BasePillar,
     staleness_allowance,
 )
@@ -830,6 +834,14 @@ and both are indexed with a bare subscript, so a new member without an entry
 fails here while building the fixture rather than inside the test it breaks.
 """
 
+QUARTERLY_CPI = frozenset(
+    currency
+    for currency, ref in INDICATORS["cpi_yoy"].series.items()
+    if ref.frequency is Frequency.QUARTERLY
+)
+"""The currencies whose CPI leg is quarterly, AUD and NZD today, read off the
+registry rather than typed so the assertion follows a registry change."""
+
 HISTORY_POINTS = 24
 """Observations per series, enough to clear `MIN_TIME_SERIES_WINDOW` of 12.
 
@@ -843,27 +855,36 @@ this test asserts on would be measuring the fixture rather than the ramp.
 def _punctual_universe() -> list[Observation]:
     """Every registered indicator, published on time, with history behind it.
 
-    The newest observation of each series is aged at the assumed publication lag
-    for its own frequency, which is the youngest age at which the visibility rule
-    admits an unstamped print. That is the ordinary case: a monthly series is 45
-    days old the day it lands and a quarterly one is 120.
+    The newest observation of each series is aged at its leg's publication lag,
+    which is the youngest age at which the visibility rule admits an unstamped
+    print. That is the ordinary case: a monthly series is 45 days old the day
+    it lands and a quarterly one is 120, and a leg FRED mirrors from the OECD is
+    older still, by the measured lag the registry holds for it since #222. The
+    frequency is the leg's own where the registry has one, because a series
+    that is quarterly for one currency is not aged as monthly for it.
 
     Values fall with age so the series have a direction, and differ per currency
     so the cross-section has a spread to standardise against.
     """
+
+    def frequency_of(key: str, currency: str) -> Frequency:
+        ref = series_for(key, currency)
+        return ref.frequency if ref is not None else INDICATORS[key].frequency
+
     return [
         _obs(
             key,
             currency,
             _days_before(
-                DEFAULT_PUBLICATION_LAG_DAYS[spec.frequency]
-                + point * HISTORY_STEP_DAYS[spec.frequency]
+                publication_lag(series_for(key, currency), frequency)
+                + point * HISTORY_STEP_DAYS[frequency]
             ),
             value=10.0 + offset * 0.25 - point * 0.1,
-            frequency=spec.frequency,
+            frequency=frequency,
         )
-        for key, spec in INDICATORS.items()
+        for key in INDICATORS
         for offset, currency in enumerate([*G10, "GLOBAL"])
+        for frequency in (frequency_of(key, currency),)
         for point in range(HISTORY_POINTS)
     ]
 
@@ -906,16 +927,31 @@ def test_real_pillars_reach_a_usable_composite_on_ordinary_inputs() -> None:
         # were never broken.
         inflation = row.pillars[PillarName.INFLATION]
         assert inflation.z is not None
-        assert inflation.weight == pytest.approx(CONFIG.weights[PillarName.INFLATION])
-        # GROWTH is the only pillar here whose factor is not 1.0, so it is the
-        # one that catches a scorer applying a single factor to every pillar of
-        # a currency. Without this, a scorer that read the first pillar's factor
+        if row.currency in QUARTERLY_CPI:
+            # #126, visible here since #222 made this fixture age each leg at
+            # its own lag: a punctual quarterly CPI print is 120 days old and
+            # the ramp #126 replaces discounts it to 0.6 of the declared
+            # weight. Pinned as a strict inequality so that #126 flips it
+            # rather than a later change quietly passing either way.
+            assert inflation.weight < CONFIG.weights[PillarName.INFLATION]
+        else:
+            assert inflation.weight == pytest.approx(
+                CONFIG.weights[PillarName.INFLATION]
+            )
+        # GROWTH is a pillar whose factor is not 1.0, so it is the one that
+        # catches a scorer applying a single factor to every pillar of a
+        # currency. Without this, a scorer that read the first pillar's factor
         # and reused it passes the whole suite: the other ramp tests run one
         # pillar at a time and the coverage floor sits 0.20 below the truth.
-        # GROWTH's own discount does not move when a scaffolded pillar lands.
+        # The factor is not pinned: under the ramp #126 replaces, a punctual
+        # quarterly GDP print and the FRED-mirrored retail legs are discounted
+        # by amounts that differ per currency, and #126 is where the exact
+        # figure gets asserted. Here it is enough that it is below the
+        # configured weight and above zero while INFLATION's is exactly the
+        # configured weight.
         growth = row.pillars[PillarName.GROWTH]
         assert growth.z is not None
-        assert growth.weight == pytest.approx(CONFIG.weights[PillarName.GROWTH] * 0.95)
+        assert 0.0 < growth.weight < CONFIG.weights[PillarName.GROWTH]
 
 
 class _FactorDouble:

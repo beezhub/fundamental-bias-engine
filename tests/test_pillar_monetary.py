@@ -24,8 +24,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from fbe.datasources.registry import INDICATORS
-from fbe.pillars.base import DEFAULT_PUBLICATION_LAG_DAYS
+from fbe.datasources.registry import DEFAULT_PUBLICATION_LAG_DAYS, INDICATORS
 from fbe.pillars.monetary import MonetaryPillar
 from fbe.types import Frequency, Observation
 

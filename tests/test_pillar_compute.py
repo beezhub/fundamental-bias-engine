@@ -122,7 +122,7 @@ class _Pillar(BasePillar):
 
 def _visible(observation: Observation, asof: date) -> bool:
     """The rule from the `_extract` docstring, stated once for the double."""
-    from fbe.pillars.base import DEFAULT_PUBLICATION_LAG_DAYS
+    from fbe.datasources.registry import DEFAULT_PUBLICATION_LAG_DAYS
 
     if observation.released_at is not None:
         return observation.released_at.date() <= asof

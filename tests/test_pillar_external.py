@@ -33,9 +33,13 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from fbe.datasources.registry import INDICATORS, SOURCE_FRED, UNCONSUMED_INDICATORS
-from fbe.pillars.base import (
+from fbe.datasources.registry import (
     DEFAULT_PUBLICATION_LAG_DAYS,
+    INDICATORS,
+    SOURCE_FRED,
+    UNCONSUMED_INDICATORS,
+)
+from fbe.pillars.base import (
     MIN_COMPONENT_WEIGHT,
     BasePillar,
 )

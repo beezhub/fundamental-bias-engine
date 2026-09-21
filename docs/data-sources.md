@@ -115,6 +115,52 @@ every date a series was revised, which is what a backtest walks.
 Live scoring does not need this. Any backtest does. `Observation` carries
 `released_at` and `revision` for exactly this purpose.
 
+No fetching source sets `released_at` today, so a historical run decides what
+it could have seen from an assumed publication lag instead. That lag is per
+leg, and the next section says how it is measured.
+
+### Publication lag, per leg
+
+Without a `released_at`, `BasePillar._visible` admits an observation on
+`period + lag`, where `period` is the first day of the span the figure
+describes. The lag comes from `registry.publication_lag`: the leg's own
+`SeriesRef.publication_lag_days` where one has been measured, and otherwise
+`DEFAULT_PUBLICATION_LAG_DAYS` for the observation's frequency, 45 days
+monthly and 120 quarterly. Both live in `fbe.datasources.registry`, because
+the registry is where the release calendar is known and it cannot import from
+the pillars.
+
+One number per cadence was wrong for about a third of the registry. FRED's
+mirror of the OECD tables carries a monthly figure 75 to 165 days after its
+month starts, and irregularly: the same series arrives at 75 one month and 134
+the next. Under a 45-day assumption a backtest dated August scored a June
+trade balance that FRED did not hold until September, which flatters. #222
+measured the slow legs and keyed each one.
+
+**How a lag is measured.** FRED's archive answers `series/observations` with
+`output_type=4` (initial releases only) and a `realtime_start` on each
+observation, which is the day the figure first appeared on FRED. The lag is
+that date minus the period start, taken over the twelve newest observations,
+and the value keyed is the largest of the twelve. The largest rather than the
+median because a lag that is too short flatters a backtest and one that is
+too long only delays a figure the engine would have seen a little sooner. The
+measurement and its date go in the leg's `note`, so the next verification can
+tell a number that was measured from one that was typed.
+
+**The bound the registry walk enforces.** On `VERIFIED_ON`, every verified
+leg's newest print must be no older than its lag plus one cycle, where the
+cycle is `CYCLE_DAYS`: the longest calendar gap between consecutive periods
+of a punctual series, 31 days monthly, 92 quarterly, 366 annual, 7 weekly and
+4 daily (a Friday close is the newest print until Tuesday over a long
+weekend). A leg that cannot meet that with an honestly measured lag is not
+late, it is dead, and it loses `verified`. `tests/test_publication_lag.py`
+walks the registry. On 2026-09-21 it retired `current_account_gdp` for all
+eight currencies, `indpro_yoy` EUR and `retail_sales_yoy` AUD.
+
+The same two numbers, lag and cycle, are what the staleness ramp is built from
+once #126 lands (decision record 0014): full weight until the next print is
+due, zero one cycle after that.
+
 ### Rate limits
 
 The published terms state no number. They reserve the right to limit bandwidth
@@ -827,6 +873,11 @@ to `pmi_manufacturing` under first-day period stamping. Derive it from the
 cadence, as this section already says, and never from what a series happens to
 need.
 
+Interim, until #126 replaces this table with the lag and cycle above: an
+allowance must also sit above the leg's measured publication lag, or the ramp
+admits the print already at zero. `trade_balance` (300) and `retail_sales_yoy`
+(380) were raised for that reason in #222 and say so beside their specs.
+
 One consequence to check when adding an indicator: a pillar asks for a key by
 the name in its own `requires`, and a key this table does not carry under that
 name falls back to `ScoringConfig.max_staleness_days`, 45 days, which is too
@@ -848,12 +899,12 @@ keys currently in that position.
 | `unemployment_rate` | 8/8 | 8/8 | good |
 | `employment_chg` | 7/8 | 7/8 | EUR manual |
 | `employment_level` | 7/8 | 7/8 | EUR absent; derived from `employment_chg`'s refs |
-| `retail_sales_yoy` | 7/8 | 8/8 | AUD frozen at 2025Q2 |
-| `indpro_yoy` | 4/8 | 5/8 | worst of the growth inputs |
+| `retail_sales_yoy` | 7/8 | 7/8 | AUD frozen at 2025Q2, unverified since #222 |
+| `indpro_yoy` | 4/8 | 4/8 | worst of the growth inputs; EUR frozen at 2023-12, unverified since #222 |
 | `pmi_composite` | 0/8 | 0/8 | licensed, entirely manual |
 | `business_confidence_mfg` | 8/8 | 8/8 | free, **consumed by no pillar**; see below |
 | `trade_balance` | 8/8 | 8/8 | good |
-| `current_account_gdp` | 0/8 | 8/8 | all eight frozen at 2024Q4 |
+| `current_account_gdp` | 0/8 | 0/8 | all eight frozen at 2024Q4, unverified since #222 |
 | `gdp_nominal_usd` | 8/8 | 8/8 | annual; one year behind on every leg by design |
 | `cot_net_pct_oi` | 8/8 | 8/8 | good, 8-10 days stale by design |
 | `equity_index` | 8/8 | 8/8 | USD and JPY daily, rest monthly; **consumed by no pillar**, see below |

@@ -78,6 +78,8 @@ from fbe.types import Frequency, PillarName
 from fbe.universe import G10
 
 __all__ = [
+    "CYCLE_DAYS",
+    "DEFAULT_PUBLICATION_LAG_DAYS",
     "GLOBAL",
     "INDICATORS",
     "IndicatorSpec",
@@ -100,6 +102,7 @@ __all__ = [
     "coverage_report",
     "identifier_coverage",
     "indicators_for_pillar",
+    "publication_lag",
     "series_for",
     "stale_refs",
 ]
@@ -109,6 +112,62 @@ VERIFIED_ON = date(2026, 9, 9)
 """When every identifier below was last checked against its live source. The
 ``last_observed`` dates are as at this date, so freshness computed against a
 much later ``asof`` is measuring the age of this file as much as the data."""
+
+DEFAULT_PUBLICATION_LAG_DAYS: Mapping[Frequency, int] = {
+    Frequency.DAILY: 1,
+    Frequency.WEEKLY: 7,
+    Frequency.MONTHLY: 45,
+    Frequency.QUARTERLY: 120,
+    Frequency.ANNUAL: 552,
+    Frequency.IRREGULAR: 45,
+}
+"""Assumed gap between a period starting and its number being published, per
+cadence, for a leg that carries no measured lag of its own.
+
+Read through `publication_lag`, never directly, because a leg can override it:
+`SeriesRef.publication_lag_days` is where the data engineer records that one
+source is slower than its cadence. This table lives here rather than in
+``pillars/`` because the registry is the module that knows the release
+calendar, and it cannot import from the pillars. It moved from
+``fbe.pillars.base`` in #222; there is no re-export.
+
+The values are measured from ``period``, the first day of the span described
+per the `Observation` contract, so the monthly figure of 45 days covers a month
+elapsing plus the usual two-week statistical lag, and the quarterly figure of
+120 days covers a quarter elapsing plus a month.
+
+The annual figure of 552 days is measured rather than assumed. The World Bank
+nominal GDP family on FRED, the only annual series the registry carries, last
+published its 2025 reference year on 2026-07-07, and 2025-01-01 to 2026-07-07 is
+552 days. It is the binding case of the eight: the US series published a week
+earlier. Issue #158 carries the measurements and the ruling that set this entry.
+
+They are deliberately generous. An assumed lag that is too long costs a backtest
+a little realism at the margin; one that is too short manufactures profit out of
+numbers nobody had, and that error flatters rather than penalises, so it survives
+review. Where a source can supply a real ``released_at``, it should, and this
+table should never be reached.
+"""
+
+CYCLE_DAYS: Mapping[Frequency, int] = {
+    Frequency.DAILY: 4,
+    Frequency.WEEKLY: 7,
+    Frequency.MONTHLY: 31,
+    Frequency.QUARTERLY: 92,
+    Frequency.ANNUAL: 366,
+    Frequency.IRREGULAR: 31,
+}
+"""Longest calendar gap between consecutive periods of a punctual series.
+
+A punctual leg's newest print is never older than its publication lag plus
+one cycle: the day before the next print is due, it is exactly that old. That
+bound is what the registry walk in ``tests/test_publication_lag.py`` enforces
+on every verified leg as at `VERIFIED_ON`, and it is what the staleness ramp
+is built from once #126 lands (ADR 0014). Daily is four rather than one
+because a Friday close is the newest print until Tuesday over a long weekend,
+and a cycle of one would zero every yield on a Monday. Irregular takes the
+monthly figure, which is the cadence the irregular series here approximate.
+"""
 
 GLOBAL = "GLOBAL"
 """Pseudo-currency for cross-market series such as VIX. Matches the convention
@@ -211,6 +270,17 @@ class SeriesRef:
             `coverage_report` treats as not fresh. This is the field that stops
             a frozen series from counting as coverage.
         note: Free text: what the series actually measures, and any caveat.
+        publication_lag_days: Days from ``period``, the first day of the span
+            a figure describes, to the day this leg's source publishes it.
+            ``None``, the default, means the leg publishes about as fast as
+            its cadence assumes and `DEFAULT_PUBLICATION_LAG_DAYS` applies.
+            A value here records that this source is slower: FRED's mirror of
+            the OECD tables runs two to three months behind the statistics
+            offices, and reading the cadence table for those legs let a
+            historical run see a figure before FRED had it. Read through
+            `publication_lag` by `BasePillar._visible`, and by the staleness
+            ramp once #126 lands. Always measured, never typed to make the
+            registry walk pass, and the ``note`` says how and when.
 
     """
 
@@ -222,6 +292,7 @@ class SeriesRef:
     verified: bool = True
     last_observed: date | None = None
     note: str = ""
+    publication_lag_days: int | None = None
 
     @property
     def fetchable(self) -> bool:
@@ -303,8 +374,13 @@ def _ref(
     transform: str = "level",
     note: str = "",
     verified: bool = True,
+    lag: int | None = None,
 ) -> SeriesRef:
-    """Build a `SeriesRef`. Exists only to keep the tables below readable."""
+    """Build a `SeriesRef`. Exists only to keep the tables below readable.
+
+    ``lag`` is `SeriesRef.publication_lag_days`, shortened because it appears
+    on forty legs and the field name would push every one onto a second line.
+    """
     return SeriesRef(
         source=source,
         series_id=series_id,
@@ -314,6 +390,7 @@ def _ref(
         verified=verified,
         last_observed=last_observed,
         note=note,
+        publication_lag_days=lag,
     )
 
 
@@ -382,6 +459,16 @@ _PMI_LICENSED = (
     "PMIs are licensed by S&P Global and ISM and are on no free API; operator "
     "enters the headline print by hand"
 )
+_FRED_LAG = (
+    "the largest first-appearance lag on FRED over the twelve prints to 2026-09-21"
+)
+"""How every measured `SeriesRef.publication_lag_days` on a FRED leg was
+taken: each of the series' twelve newest observations' ``realtime_start`` on
+FRED's archive (``output_type=4``, initial releases only) minus its period
+start, and the largest of the twelve kept. The largest rather than the median
+because a lag that is too short flatters a backtest and a lag that is too long
+only delays a figure the engine would have seen a little sooner."""
+
 _OECD_FRESHER = (
     "taken from the OECD API rather than FRED's mirror of the same OECD "
     "material, which runs two months behind"
@@ -424,8 +511,12 @@ POLICY_RATE = IndicatorSpec(
             date(2026, 9, 1),
             note=(
                 "Bank Rate itself from the Bank of England database, which "
-                "replaces the earlier SONIA proxy"
+                "replaces the earlier SONIA proxy. lag: 8 days, the age of the "
+                "newest session on VERIFIED_ON; the database refused an "
+                "automated re-check on 2026-09-21 with HTTP 403, so this is "
+                "the one measurement held"
             ),
+            lag=8,
         ),
         "JPY": _ref(
             SOURCE_OECD,
@@ -562,8 +653,11 @@ YIELD_2Y = IndicatorSpec(
             date(2026, 9, 2),
             note=(
                 "Australian Government 2-year bond, interpolated, from RBA "
-                "statistical table F2"
+                "statistical table F2. lag: 7 days; the table is a daily series "
+                "updated in batches, and its newest session was 7 days old on "
+                "VERIFIED_ON and 5 days old on a live read on 2026-09-21"
             ),
+            lag=7,
         ),
         "NZD": _ref(
             SOURCE_RBNZ,
@@ -1028,7 +1122,9 @@ GDP_YOY = IndicatorSpec(
             note=(
                 "already published as a year-on-year growth rate, so no "
                 "transform; 2026Q1"
+                f". lag: 198 days, {_FRED_LAG}"
             ),
+            lag=198,
         ),
     },
 )
@@ -1063,7 +1159,9 @@ UNEMPLOYMENT_RATE = IndicatorSpec(
             note=(
                 f"German harmonised rate. {_EA_AGGREGATE_DEAD}: "
                 "LRHUTTTTEZM156S stopped at 2023-01."
+                f". lag: 103 days, {_FRED_LAG}"
             ),
+            lag=103,
         ),
         "GBP": _ref(
             SOURCE_FRED,
@@ -1071,7 +1169,8 @@ UNEMPLOYMENT_RATE = IndicatorSpec(
             "percent",
             Frequency.MONTHLY,
             date(2026, 4, 1),
-            note="",
+            note=(f"lag: 169 days, {_FRED_LAG}"),
+            lag=169,
         ),
         "JPY": _ref(
             SOURCE_FRED,
@@ -1079,7 +1178,8 @@ UNEMPLOYMENT_RATE = IndicatorSpec(
             "percent",
             Frequency.MONTHLY,
             date(2026, 6, 1),
-            note="",
+            note=(f"lag: 77 days, {_FRED_LAG}"),
+            lag=77,
         ),
         "CHF": _ref(
             SOURCE_FRED,
@@ -1090,7 +1190,9 @@ UNEMPLOYMENT_RATE = IndicatorSpec(
             note=(
                 "quarterly ILO rate, aged 15-64; Switzerland publishes no "
                 "monthly harmonised rate on FRED. 2026Q1."
+                f". lag: 226 days, {_FRED_LAG}"
             ),
+            lag=226,
         ),
         "CAD": _ref(
             SOURCE_FRED,
@@ -1106,7 +1208,8 @@ UNEMPLOYMENT_RATE = IndicatorSpec(
             "percent",
             Frequency.MONTHLY,
             date(2026, 6, 1),
-            note="",
+            note=(f"lag: 77 days, {_FRED_LAG}"),
+            lag=77,
         ),
         "NZD": _ref(
             SOURCE_FRED,
@@ -1157,7 +1260,8 @@ EMPLOYMENT_CHG = IndicatorSpec(
             Frequency.QUARTERLY,
             date(2026, 1, 1),
             transform="diff",
-            note="2026Q1",
+            note=(f"2026Q1. lag: 196 days, {_FRED_LAG}"),
+            lag=196,
         ),
         "JPY": _ref(
             SOURCE_FRED,
@@ -1166,7 +1270,8 @@ EMPLOYMENT_CHG = IndicatorSpec(
             Frequency.MONTHLY,
             date(2026, 6, 1),
             transform="diff",
-            note="",
+            note=(f"lag: 77 days, {_FRED_LAG}"),
+            lag=77,
         ),
         "CHF": _ref(
             SOURCE_FRED,
@@ -1175,7 +1280,8 @@ EMPLOYMENT_CHG = IndicatorSpec(
             Frequency.QUARTERLY,
             date(2026, 1, 1),
             transform="diff",
-            note="2026Q1",
+            note=(f"2026Q1. lag: 226 days, {_FRED_LAG}"),
+            lag=226,
         ),
         "CAD": _ref(
             SOURCE_FRED,
@@ -1193,7 +1299,8 @@ EMPLOYMENT_CHG = IndicatorSpec(
             Frequency.MONTHLY,
             date(2026, 6, 1),
             transform="diff",
-            note="",
+            note=(f"lag: 77 days, {_FRED_LAG}"),
+            lag=77,
         ),
         "NZD": _ref(
             SOURCE_FRED,
@@ -1311,7 +1418,7 @@ RETAIL_SALES_YOY = IndicatorSpec(
     pillar=PillarName.GROWTH,
     unit="percent",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=270,
+    max_staleness_days=380,
     description=(
         "Retail trade volume, year on year. The fastest read on household "
         "demand, and the growth pillar's main monthly input given that GDP "
@@ -1327,7 +1434,9 @@ RETAIL_SALES_YOY = IndicatorSpec(
             note=(
                 "OECD retail volume growth, chosen over the fresher US-only "
                 "RSAFS so the eight legs are measured the same way"
+                f". lag: 136 days, {_FRED_LAG}"
             ),
+            lag=136,
         ),
         "EUR": _ref(
             SOURCE_FRED,
@@ -1335,7 +1444,11 @@ RETAIL_SALES_YOY = IndicatorSpec(
             "percent",
             Frequency.MONTHLY,
             date(2026, 5, 1),
-            note=f"{_EA_AGGREGATE_DEAD}: EA19SLRTTO01GYSAM stopped at 2023-10.",
+            note=(
+                f"{_EA_AGGREGATE_DEAD}: EA19SLRTTO01GYSAM stopped at 2023-10. "
+                f"lag: 106 days, {_FRED_LAG}"
+            ),
+            lag=106,
         ),
         "GBP": _ref(
             SOURCE_FRED,
@@ -1343,7 +1456,8 @@ RETAIL_SALES_YOY = IndicatorSpec(
             "percent",
             Frequency.MONTHLY,
             date(2026, 6, 1),
-            note="",
+            note=(f"lag: 77 days, {_FRED_LAG}"),
+            lag=77,
         ),
         "JPY": _ref(
             SOURCE_FRED,
@@ -1351,7 +1465,8 @@ RETAIL_SALES_YOY = IndicatorSpec(
             "percent",
             Frequency.MONTHLY,
             date(2026, 5, 1),
-            note="",
+            note=(f"lag: 134 days, {_FRED_LAG}"),
+            lag=134,
         ),
         "CHF": _ref(
             SOURCE_FRED,
@@ -1359,7 +1474,8 @@ RETAIL_SALES_YOY = IndicatorSpec(
             "percent",
             Frequency.MONTHLY,
             date(2026, 5, 1),
-            note="",
+            note=(f"lag: 106 days, {_FRED_LAG}"),
+            lag=106,
         ),
         "CAD": _ref(
             SOURCE_FRED,
@@ -1367,7 +1483,8 @@ RETAIL_SALES_YOY = IndicatorSpec(
             "percent",
             Frequency.MONTHLY,
             date(2026, 4, 1),
-            note="",
+            note=(f"lag: 139 days, {_FRED_LAG}"),
+            lag=139,
         ),
         "AUD": _ref(
             SOURCE_FRED,
@@ -1377,8 +1494,11 @@ RETAIL_SALES_YOY = IndicatorSpec(
             date(2025, 4, 1),
             note=(
                 "DISCONTINUED at 2025Q2. Australia has no live retail series "
-                "on FRED and none was found on the OECD API either."
+                "on FRED and none was found on the OECD API either. Unverified "
+                "since #222: 526 days old on VERIFIED_ON against a measured "
+                "first-appearance lag of 192, so dead rather than late."
             ),
+            verified=False,
         ),
         "NZD": _ref(
             SOURCE_FRED,
@@ -1386,10 +1506,14 @@ RETAIL_SALES_YOY = IndicatorSpec(
             "percent",
             Frequency.QUARTERLY,
             date(2026, 1, 1),
-            note="2026Q1",
+            note=(f"2026Q1. lag: 284 days, {_FRED_LAG}"),
+            lag=284,
         ),
     },
 )
+"""The 380-day allowance is interim, for the same reason as `TRADE_BALANCE`'s:
+#222 measured the New Zealand quarterly leg arriving 284 days after the
+period starts, and 270 admitted it at zero weight. It goes with #126."""
 
 
 INDPRO_YOY = IndicatorSpec(
@@ -1414,7 +1538,9 @@ INDPRO_YOY = IndicatorSpec(
             note=(
                 "OECD basis for cross-country comparability; INDPRO is the "
                 "fresher US-only alternative"
+                f". lag: 106 days, {_FRED_LAG}"
             ),
+            lag=106,
         ),
         "EUR": _ref(
             SOURCE_FRED,
@@ -1424,8 +1550,11 @@ INDPRO_YOY = IndicatorSpec(
             date(2023, 12, 1),
             note=(
                 f"DISCONTINUED at 2023-12. {_EA_AGGREGATE_DEAD}, and the "
-                "German proxy has now stopped too."
+                "German proxy has now stopped too. Unverified since #222: the "
+                "newest print was first carried on 2024-04-10 and nothing has "
+                "followed, so dead rather than late."
             ),
+            verified=False,
         ),
         "GBP": _ref(
             SOURCE_FRED,
@@ -1433,7 +1562,8 @@ INDPRO_YOY = IndicatorSpec(
             "percent",
             Frequency.MONTHLY,
             date(2026, 5, 1),
-            note="",
+            note=(f"lag: 108 days, {_FRED_LAG}"),
+            lag=108,
         ),
         "JPY": _ref(
             SOURCE_FRED,
@@ -1441,7 +1571,8 @@ INDPRO_YOY = IndicatorSpec(
             "percent",
             Frequency.MONTHLY,
             date(2026, 5, 1),
-            note="",
+            note=(f"lag: 108 days, {_FRED_LAG}"),
+            lag=108,
         ),
         "CHF": _manual(
             "indpro_yoy",
@@ -1455,7 +1586,8 @@ INDPRO_YOY = IndicatorSpec(
             "percent",
             Frequency.MONTHLY,
             date(2026, 4, 1),
-            note="",
+            note=(f"lag: 139 days, {_FRED_LAG}"),
+            lag=139,
         ),
         "AUD": _manual(
             "indpro_yoy",
@@ -1523,7 +1655,7 @@ TRADE_BALANCE = IndicatorSpec(
     pillar=PillarName.EXTERNAL,
     unit="usd",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=150,
+    max_staleness_days=300,
     description=(
         "Merchandise trade balance in US dollars, seasonally adjusted. Already "
         "currency-converted by the source, so the eight legs are directly "
@@ -1539,7 +1671,9 @@ TRADE_BALANCE = IndicatorSpec(
             note=(
                 "OECD basis for comparability; BOPGSTB is the fresher US-only "
                 "goods and services balance"
+                f". lag: 165 days, {_FRED_LAG}"
             ),
+            lag=165,
         ),
         "EUR": _ref(
             SOURCE_FRED,
@@ -1551,7 +1685,9 @@ TRADE_BALANCE = IndicatorSpec(
                 f"{_EA_AGGREGATE_DEAD}: XTNTVA01EZM667S stopped at 2022-12. "
                 "Germany runs a structural surplus larger than the bloc's, so "
                 "this proxy flatters the euro."
+                f". lag: 138 days, {_FRED_LAG}"
             ),
+            lag=138,
         ),
         "GBP": _ref(
             SOURCE_FRED,
@@ -1559,7 +1695,8 @@ TRADE_BALANCE = IndicatorSpec(
             "usd",
             Frequency.MONTHLY,
             date(2026, 6, 1),
-            note="",
+            note=(f"lag: 134 days, {_FRED_LAG}"),
+            lag=134,
         ),
         "JPY": _ref(
             SOURCE_FRED,
@@ -1567,7 +1704,8 @@ TRADE_BALANCE = IndicatorSpec(
             "usd",
             Frequency.MONTHLY,
             date(2026, 6, 1),
-            note="",
+            note=(f"lag: 134 days, {_FRED_LAG}"),
+            lag=134,
         ),
         "CHF": _ref(
             SOURCE_FRED,
@@ -1575,7 +1713,8 @@ TRADE_BALANCE = IndicatorSpec(
             "usd",
             Frequency.MONTHLY,
             date(2026, 6, 1),
-            note="",
+            note=(f"lag: 258 days, {_FRED_LAG}"),
+            lag=258,
         ),
         "CAD": _ref(
             SOURCE_FRED,
@@ -1583,7 +1722,8 @@ TRADE_BALANCE = IndicatorSpec(
             "usd",
             Frequency.MONTHLY,
             date(2026, 6, 1),
-            note="",
+            note=(f"lag: 165 days, {_FRED_LAG}"),
+            lag=165,
         ),
         "AUD": _ref(
             SOURCE_FRED,
@@ -1591,7 +1731,8 @@ TRADE_BALANCE = IndicatorSpec(
             "usd",
             Frequency.MONTHLY,
             date(2026, 6, 1),
-            note="",
+            note=(f"lag: 108 days, {_FRED_LAG}"),
+            lag=108,
         ),
         "NZD": _ref(
             SOURCE_FRED,
@@ -1599,10 +1740,17 @@ TRADE_BALANCE = IndicatorSpec(
             "usd",
             Frequency.MONTHLY,
             date(2026, 6, 1),
-            note="",
+            note=(f"lag: 108 days, {_FRED_LAG}"),
+            lag=108,
         ),
     },
 )
+"""The 300-day allowance is interim. The cadence alone justifies about 150,
+but #222 measured FRED's mirror of these eight legs arriving up to 258 days
+after the period starts, and under the ramp in `fbe.scoring.freshness` an
+allowance below the lag admits a print already at zero weight. The number is
+the largest measured lag plus one cycle, rounded up, and it goes when #126
+replaces this table with the lag and cycle themselves."""
 
 
 GDP_NOMINAL_USD = IndicatorSpec(
@@ -1719,8 +1867,11 @@ CURRENT_ACCOUNT_GDP = IndicatorSpec(
                 "DISCONTINUED at 2024Q4, as is every leg of this family. No "
                 "free replacement was found: the OECD API's balance of "
                 "payments dataflows cover trade in services and merchandise, "
-                "not the quarterly current account balance."
+                "not the quarterly current account balance. Unverified since "
+                "#222: 708 days old on VERIFIED_ON against a measured "
+                "first-appearance lag under 300, so it is dead rather than late."
             ),
+            verified=False,
         )
         for code, series_id in (
             ("USD", "USAB6BLTT02STSAQ"),
@@ -2001,7 +2152,13 @@ COMMODITY_PRICE = IndicatorSpec(
             "usd_per_barrel",
             Frequency.DAILY,
             date(2026, 9, 1),
-            note="WTI spot, the standard Canadian dollar terms-of-trade proxy",
+            note=(
+                "WTI spot, the standard Canadian dollar terms-of-trade proxy. "
+                "lag: 8 days, the largest first-appearance lag on FRED over the "
+                "twelve sessions to 2026-09-21; the daily close skips holidays "
+                "and the mirror adds a day or two after a long weekend"
+            ),
+            lag=8,
         ),
         "AUD": _ref(
             SOURCE_FRED,
@@ -2250,6 +2407,40 @@ registered rather than being deleted so that re-adopting it, if it is ever
 licensed, is a one-line change, and so that its coverage figure stops reading as
 a live input while it is not one. See ADR 0005.
 """
+
+
+def publication_lag(ref: SeriesRef | None, frequency: Frequency) -> int:
+    """Return the days from a period's start to its publication for one leg.
+
+    Args:
+        ref: The leg's registry entry, or ``None`` when the registry carries
+            no entry for the indicator and currency, which is the case for an
+            observation typed into the manual source under a key the registry
+            has not routed.
+        frequency: The frequency stamped on the observation being judged. The
+            source copies it from `SeriesRef.frequency`, so it is the leg's
+            own cadence rather than the parent `IndicatorSpec`'s, which
+            differs from it on 36 legs.
+
+    Returns:
+        ``ref.publication_lag_days`` where the data engineer has measured one,
+        otherwise `DEFAULT_PUBLICATION_LAG_DAYS` for ``frequency``. Days.
+
+    Raises:
+        ValueError: If the override is zero or negative. A lag of zero admits
+            a figure on the first day of the span it describes, which is the
+            look-ahead this number exists to prevent, so it is a registry
+            error rather than a fast source.
+
+    """
+    if ref is not None and ref.publication_lag_days is not None:
+        if ref.publication_lag_days <= 0:
+            raise ValueError(
+                f"{ref.source} {ref.series_id} has publication_lag_days "
+                f"{ref.publication_lag_days}; a lag must be at least one day"
+            )
+        return ref.publication_lag_days
+    return DEFAULT_PUBLICATION_LAG_DAYS[frequency]
 
 
 def series_for(indicator: str, currency: str) -> SeriesRef | None:
