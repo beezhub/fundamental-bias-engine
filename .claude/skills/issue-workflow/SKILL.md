@@ -194,10 +194,11 @@ nothing, and the difference matters at review time.
 
 - Branch from the default branch, named `feat/`, `fix/`, `chore/`, `docs/` or
   `test/` plus a short kebab-case description. No agent, model or tool names.
-- One issue per pull request, with a trailer in the body naming it. **`Closes:
-  #NN` when the pull request meets every acceptance criterion on the issue.
-  `Refs: #NN` when it is partial, or one of several.** The trailer is plain text
-  and outside backticks, or GitHub does not read it.
+- One issue per pull request, with a trailer in the body naming it. **Closes:
+  #NN when the pull request meets every acceptance criterion on the issue.
+  Refs: #NN when it is partial, or one of several.** The trailer is plain text
+  and outside backticks, or GitHub does not read it. The two above are bare for
+  that reason: a trailer shown in backticks is what the next author copies.
 - Conventional Commits, imperative subject of 72 characters or less, body
   explaining what changed and why.
 - The pull request body restates the acceptance criteria as a checklist, with

@@ -111,12 +111,16 @@ tests nothing.
 ## 5. The pull request
 
 Against `main`, following `.github/pull_request_template.md`. Acceptance
-criteria as a ticked checklist, each with how it was verified. `Closes: #NN`
-when every criterion is met.
+criteria as a ticked checklist, each with how it was verified. Closes: #NN when
+every criterion is met.
 
-Use `Refs: #NN` only when you have deliberately left a criterion open, and then
-say which and why. Do not downgrade to `Refs:` merely because you noticed
+Use Refs: #NN only when you have deliberately left a criterion open, and then
+say which and why. Do not downgrade to a Refs trailer merely because you noticed
 something worth mentioning; put that in the body and still close the issue.
+
+Write the trailer as plain text on its own line, never inside backticks. A
+backticked trailer is a code span, so GitHub parses no keyword and the merge
+closes nothing. The two trailers above are bare for that reason.
 
 Comment the link on the issue. **Do not merge.** The owner merges.
 

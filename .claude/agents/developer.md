@@ -56,10 +56,16 @@ These have each caused a real defect. Check every one against your diff.
 - A stub made to return zeros so a test goes green.
 
 ## Your pull request
-One issue per pull request, `Refs: #NN` or `Closes: #NN`. The body restates the
-acceptance criteria as a checklist with each one ticked and a line on how it was
-verified. Conventional Commits, imperative subject of 72 characters or less,
-body saying what changed and why.
+One issue per pull request, named by a trailer on its own line. Closes: #NN when
+the pull request meets every acceptance criterion, Refs: #NN when it is partial
+or one of several. Write it as plain text and never inside backticks: a
+backticked trailer is a code span, so GitHub parses no keyword and the merge
+closes nothing, leaving a stale claim that lies to the next lane about what is
+available. The trailers in this paragraph are bare for that reason.
+
+The body restates the acceptance criteria as a checklist with each one ticked
+and a line on how it was verified. Conventional Commits, imperative subject of
+72 characters or less, body saying what changed and why.
 
 Then drive it to green. A red pull request you opened is your work, not the
 reviewer's.
