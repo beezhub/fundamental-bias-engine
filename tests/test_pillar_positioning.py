@@ -436,6 +436,79 @@ def test_a_history_under_the_window_floor_scores_none_rather_than_zero(
     assert "standard deviation" not in scores["USD"].notes
 
 
+def test_twelve_weekly_prints_score_at_full_weight_and_say_how_few(
+    pillar: PositioningPillar,
+) -> None:
+    """The other half of the floor, and the half that produces a number.
+
+    `MIN_TIME_SERIES_WINDOW` is a count with no notion of the series' frequency,
+    so on a weekly series it is about eleven weeks rather than the year its own
+    docstring reasons about. A contract with twelve prints therefore scores, at
+    the configured weight, with the freshness ramp satisfied because the newest
+    print is current. Over twelve readings with ``ddof=1`` the reachable ``|p|``
+    runs to 3.17, which is inside the contrarian branch.
+
+    That is issue #214 and it is not fixed here, because the floor is shared
+    with every other pillar and the frequency-aware replacement is a number
+    nobody has ruled on. What this asserts is that the case is visible: the note
+    names the print count, so a reader is told the mean is over twelve weeks
+    rather than over five years.
+    """
+    values = window(*FIXTURE["NZD"][:3], count=MIN_TIME_SERIES_WINDOW)
+    short = weekly("NZD", values)
+
+    scored = pillar.compute(short, ["NZD"], ASOF)["NZD"]
+
+    assert len(short) == MIN_TIME_SERIES_WINDOW
+    assert scored.z is not None, "twelve prints is the floor, not below it"
+    assert scored.weight == pytest.approx(0.10)
+    assert scored.freshness_factor == pytest.approx(1.0)
+    assert f"{MIN_TIME_SERIES_WINDOW} weekly reports" in scored.notes
+    assert "5-year" not in scored.notes
+
+
+def test_the_note_counts_the_window_rather_than_claiming_the_configured_years(
+    pillar: PositioningPillar,
+) -> None:
+    """The window is the history the contract has, not the years config asked for.
+
+    An earlier version of this note said "its own 5-year mean" whatever the
+    window held, which is the one part of it a reader could not check. The count
+    is checkable, and it is what tells a reader a twenty-week history from a
+    five-year one.
+    """
+    scored = pillar.compute(universe(), list(G10), ASOF)["USD"]
+
+    assert f"over {WEEKS} weekly reports" in scored.notes
+    assert str(ScoringConfig().lookback_years) + "-year" not in scored.notes
+
+
+def test_p_has_a_typed_home_and_not_only_prose(pillar: PositioningPillar) -> None:
+    """Nothing may parse `notes`, and this pillar's score is unreadable without ``p``.
+
+    A score of +0.60 is a crowded short being faded, and a score of +0.60 from
+    the confirming branch is a moderate long. Only ``p`` tells the two apart, so
+    `fbe.types.PillarScore.notes` requires it to have a field or a diagnostics
+    key of its own.
+    """
+    scores = pillar.compute(universe(), list(G10), ASOF)
+
+    for currency, (_, _, p, _) in FIXTURE.items():
+        assert scores[currency].diagnostics["positioning_z"] == pytest.approx(
+            p, abs=1e-9
+        ), currency
+
+
+def test_an_unscored_currency_carries_no_positioning_z(
+    pillar: PositioningPillar,
+) -> None:
+    """An absent key, not a placeholder. A zero here would read as a reading."""
+    scores = pillar.compute([], list(G10), ASOF)
+
+    assert "positioning_z" not in scores["USD"].diagnostics
+    assert "emit_sd" in scores["USD"].diagnostics, "the base measurements survive"
+
+
 def test_a_history_that_never_moved_scores_none(pillar: PositioningPillar) -> None:
     """A flat book is not a crowded one and is not an average one either.
 

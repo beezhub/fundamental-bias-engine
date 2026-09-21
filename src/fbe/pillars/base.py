@@ -889,9 +889,9 @@ class BasePillar(ABC):
         them from, so a blend reached through here weights every component at
         ``u_j`` with ``phi_j`` fixed at ``1.0``. See the note on #115 for why
         that is left rather than fixed here: `compute` is the method that holds
-        the factors, it is scaffolded pending #51, and widening this signature
-        would change a contract that `PositioningPillar` and `RiskPillar`
-        override.
+        the factors, and widening this signature would change a contract that
+        `PositioningPillar` and `RiskPillar` override. The note said `compute`
+        was scaffolded, which it no longer is.
 
         """
         weights = self.component_weights
