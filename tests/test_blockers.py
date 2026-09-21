@@ -13,11 +13,13 @@ different cause, which is what `event:unknown` exists to separate out
 (issue #43): a broken fetch and a genuinely quiet week must not look alike
 either.
 
-The templates are rendered here directly, with a hand-built context and a Jinja
-`Environment` pointed at the real template directory. `report.render_report` and
-`dashboard.build.render_dashboard` are both still scaffolded, so going through
-them would assert nothing. Rendering the template is what actually exercises the
-branch this issue is about, and these tests fail against the old templates.
+The report assertions go through `fbe.report.render_report`, which is the real
+path a morning run takes: the branch under test is in the template, and a test
+that reached it another way would stop proving the run reaches it. The
+dashboard has no such path yet, so `dashboard.build.render_dashboard` is still
+scaffolded and its assertions still render the template directly with a
+hand-built context. The guard at the foot of this file says so, and it is the
+signal to move them when that entry point lands.
 """
 
 from __future__ import annotations
@@ -34,7 +36,8 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 import fbe
 from fbe.bias import BLOCKERS, UNCHECKED_SUFFIX, UNKNOWN_SUFFIX
-from fbe.types import Conviction, Direction, PairBias
+from fbe.report import render_report
+from fbe.types import BiasReport, Conviction, Direction, PairBias
 
 PACKAGE_ROOT = Path(fbe.__file__).resolve().parent
 SPEC = Path(__file__).resolve().parents[1] / "docs" / "scoring-spec.md"
@@ -80,7 +83,7 @@ def _bias(
 
 
 def _report_context(pairs: tuple[PairBias, ...]) -> dict[str, Any]:
-    """The smallest context ``report.md.j2`` renders with.
+    """The smallest context the dashboard template renders with.
 
     Everything outside the pair table is emptied rather than populated: no
     currencies, no grid, no shortlist, no events, no warnings, no diff, and no
@@ -106,8 +109,22 @@ def _report_context(pairs: tuple[PairBias, ...]) -> dict[str, Any]:
 
 
 def _render_report(pairs: tuple[PairBias, ...]) -> str:
-    environment = _environment(PACKAGE_ROOT / "templates")
-    return environment.get_template("report.md.j2").render(**_report_context(pairs))
+    """Render the Markdown report the way ``fbe report`` renders it.
+
+    No currencies and no shortlist, so the pair table is the only populated
+    section. The grid is built from the same pairs by `fbe.report.build_context`
+    rather than emptied, because that is what a run does and a mirrored cell
+    carries its own copy of every marker under test.
+    """
+    return render_report(
+        BiasReport(
+            asof=ASOF,
+            generated_at=GENERATED_AT,
+            currencies=(),
+            pairs=pairs,
+            config_digest="abc123",
+        )
+    )
 
 
 def _tradeable_cell(rendered: str, pair: str) -> str:
@@ -375,26 +392,27 @@ def test_the_dashboard_says_an_unknown_marker_was_not_checked_too() -> None:
     assert f"<li>{reason}</li>" in rendered
 
 
-# --- the renderers are still stubs, and this pull request left them that way -
+# --- the dashboard renderer is still a stub ----------------------------------
 
 
 @pytest.mark.parametrize(
     "module_name, attribute",
-    [
-        ("fbe.report", "render_report"),
-        ("fbe.report", "build_context"),
-        ("fbe.dashboard.build", "render_dashboard"),
-    ],
+    [("fbe.dashboard.build", "render_dashboard")],
 )
 def test_the_render_entry_points_are_still_scaffolded(
     module_name: str, attribute: str
 ) -> None:
     """Guard against fixing the test by implementing the layer under it.
 
-    These tests reach the templates directly, which is the only way to assert
-    anything today. That is a workaround for the render path not existing, and
-    when it does exist these assertions should move onto it. This test failing
-    is the signal to do that, not a reason to delete it.
+    The dashboard assertions reach its template directly, which is the only
+    way to assert anything about it today. That is a workaround for its render
+    path not existing, and when it does exist those assertions should move
+    onto it. This test failing is the signal to do that, not a reason to
+    delete it.
+
+    `fbe.report.render_report` and `fbe.report.build_context` were in this list
+    and have landed, so the report assertions above now go through them. The
+    dashboard is the only entry left.
 
     Read from the source rather than called, because these take arguments a
     caller would have to invent, and inventing them is how a test starts
@@ -407,3 +425,13 @@ def test_the_render_entry_points_are_still_scaffolded(
         f"{module_name}.{attribute} has landed. Move the blocker assertions in "
         "this file onto the real render path."
     )
+
+
+def test_the_report_assertions_go_through_the_real_render_path() -> None:
+    """The move above, pinned so it cannot quietly go back.
+
+    A later change that reverted `_render_report` to rendering the template
+    with a hand-built context would keep every assertion in this file green
+    while proving nothing about what ``fbe report`` writes.
+    """
+    assert "render_report(" in inspect.getsource(_render_report)

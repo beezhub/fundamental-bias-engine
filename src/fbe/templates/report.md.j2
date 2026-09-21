@@ -32,7 +32,11 @@ should be cut. Coverage is the fraction of pillar weight that had usable data.
 | # | CCY | Composite | Dispersion | Coverage |{% for pillar in pillar_order %} {{ pillar.value[:4] }} |{% endfor %}
 |---:|---|---:|---:|---:|{% for pillar in pillar_order %}---:|{% endfor %}
 {% for score in currencies -%}
-| {{ score.rank }} | {{ score.currency }} | {{ '%+.2f' | format(score.composite) }} | {{ '%.2f' | format(score.dispersion) }} | {{ '%.0f%%' | format(score.coverage * 100) }} |
+{# Coverage and agreement are floored, not rounded, matching
+   fbe.cli._share_percent. Both flatter the run when rounded up: 0.796
+   coverage printed as 80% claims a completeness the run did not have, and
+   the same figure would read 79% in the terminal. #}
+| {{ score.rank }} | {{ score.currency }} | {{ '%+.2f' | format(score.composite) }} | {{ '%.2f' | format(score.dispersion) }} | {{ (score.coverage * 100) | int }}% |
 {%- for pillar in pillar_order %} {{ '%+.2f' | format(score.pillars[pillar].score) if pillar in score.pillars else '.' }} |{% endfor %}
 {% endfor %}
 
@@ -63,7 +67,7 @@ Ranked by conviction then by the width of the spread:
 | Pair | Dir | Conviction | Spread | Base | Quote | Agreement | Tradeable |
 |---|---|---|---:|---:|---:|---:|---|
 {% for bias in pairs -%}
-| {{ bias.pair }} | {{ bias.direction.value }} | {{ bias.conviction.value }} | {{ '%+.2f' | format(bias.spread) }} | {{ '%+.2f' | format(bias.base_score) }} | {{ '%+.2f' | format(bias.quote_score) }} | {{ '%.0f%%' | format(bias.agreement * 100) }} | {% if bias.tradeable %}yes{% if bias.blockers %} ({{ bias.blockers | join(', ') }}){% endif %}{% else %}{{ bias.blockers | join(', ') }}{% endif %} |
+| {{ bias.pair }} | {{ bias.direction.value }} | {{ bias.conviction.value }} | {{ '%+.2f' | format(bias.spread) }} | {{ '%+.2f' | format(bias.base_score) }} | {{ '%+.2f' | format(bias.quote_score) }} | {{ (bias.agreement * 100) | int }}% | {% if bias.tradeable %}yes{% if bias.blockers %} ({{ bias.blockers | join(', ') }}){% endif %}{% else %}{{ bias.blockers | join(', ') }}{% endif %} |
 {% endfor %}
 
 A marker in brackets beside `yes` is a check that did not run, not a reason the
@@ -89,9 +93,11 @@ measured.
 Spread {{ '%+.2f' | format(idea.bias.spread) }}
 ({{ idea.bias.base }} {{ '%+.2f' | format(idea.bias.base_score) }} against
 {{ idea.bias.quote }} {{ '%+.2f' | format(idea.bias.quote_score) }}),
-{{ '%.0f%%' | format(idea.bias.agreement * 100) }} of pillar weight agrees.
+{{ (idea.bias.agreement * 100) | int }}% of pillar weight agrees.
 
-{{ idea.rationale }}
+{% if idea.rationale %}{{ idea.rationale }}{% else %}No written reasoning:
+the engine has no layer that produces one yet, so this entry is the score and
+the pillars behind it and nothing more.{% endif %}
 
 {% if idea.size -%}
 Sizing at {{ '%.1f%%' | format(idea.size.risk_fraction * 100) }} intended risk:
@@ -163,16 +169,22 @@ call as a low-conviction call regardless of the spread it produces.
 {% if not diff %}
 No baseline report to compare against. This is the first run, or `--compare
 none` was passed.
-{% elif diff.config_changed %}
-The config digest changed since {{ diff.previous_asof.strftime('%Y-%m-%d') }}.
-Score movements below are not comparable: re-weighting the pillars moves every
-currency at once, and reading that as a market move is the fastest way to talk
-yourself into a trade that is not there. Re-run the previous date on the current
-config for a like-for-like comparison.
 {% else %}
 Against {{ diff.previous_asof.strftime('%Y-%m-%d') }}:
 
-{% if diff.currencies %}
+{% if diff.config_changed %}
+The config digest changed since {{ diff.previous_asof.strftime('%Y-%m-%d') }},
+so the score table is withheld: re-weighting the pillars moves every currency
+at once, and reading that as a market move is the fastest way to talk yourself
+into a trade that is not there. Re-run the previous date on the current config
+for a like-for-like comparison.
+
+{# The direction and conviction moves below are kept. A flip is a change in
+   the story rather than a score movement, and it is the loudest thing this
+   engine can say, so a re-weighting must not be able to silence it. The
+   score deltas are the only part a digest change makes incomparable. #}
+{% endif %}
+{% if diff.currencies and not diff.config_changed %}
 | CCY | Then | Now | Delta | Rank |
 |---|---:|---:|---:|---|
 {% for change in diff.currencies -%}
@@ -184,7 +196,11 @@ Against {{ diff.previous_asof.strftime('%Y-%m-%d') }}:
 Direction and conviction moves:
 
 {% for change in diff.pairs -%}
-- {{ change.pair }}: {{ change.previous_direction.value if change.previous_direction else 'n/a' }} to {{ change.current_direction.value if change.current_direction else 'n/a' }}, {{ change.previous_conviction.value if change.previous_conviction else 'n/a' }} to {{ change.current_conviction.value if change.current_conviction else 'n/a' }}{{ ' (flip)' if change.flipped }}
+{# The spreads are withheld on a digest change for the same reason the
+   currency table is: a spread is composite(base) - composite(quote), so it
+   is a score delta in another shape, and printing one beside a withheld
+   table invites exactly the comparison the table was withheld to prevent. #}
+- {{ change.pair }}: {{ change.previous_direction.value if change.previous_direction else 'n/a' }} to {{ change.current_direction.value if change.current_direction else 'n/a' }}, {{ change.previous_conviction.value if change.previous_conviction else 'n/a' }} to {{ change.current_conviction.value if change.current_conviction else 'n/a' }}{% if diff.config_changed %}, spreads not comparable{% else %}, spread {{ '%+.2f' | format(change.previous_spread) if change.previous_spread is not none else 'n/a' }} to {{ '%+.2f' | format(change.current_spread) if change.current_spread is not none else 'n/a' }}{% endif %}{{ ' (flip)' if change.flipped }}
 {% endfor %}
 {% endif %}
 
