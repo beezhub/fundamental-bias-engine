@@ -1036,7 +1036,7 @@ a free machine-readable source, not the operator's typing.
 | `trade_balance` | external | `usd` | monthly | 150d | 100% | 100% |
 | `current_account_gdp` | external | `percent_of_gdp` | quarterly | 210d | 0% | 100% |
 | `gdp_nominal_usd` | external | `usd` | annual | 916d | 100% | 100% |
-| `cot_net_pct_oi` | positioning | `contracts` | weekly | 21d | 100% | 100% |
+| `cot_net_pct_oi` | positioning | `percent_of_open_interest` | weekly | 21d | 100% | 100% |
 | `equity_index` | risk (unconsumed) | `index` | daily | 75d | 100% | 100% |
 | `world_equity_index` | risk | `index` | daily | 7d | 100% | 100% |
 | `vol_index` | risk | `index` | daily | 7d | 100% | 100% |
