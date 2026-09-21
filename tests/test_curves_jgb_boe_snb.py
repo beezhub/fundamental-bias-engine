@@ -32,16 +32,22 @@ import pytest
 import respx
 
 from fbe.config import DataConfig
+from fbe.datasources import registry
 from fbe.datasources.base import SourceError
 from fbe.datasources.curves import (
+    BOC_BASE_URL,
     BOE_GLC_DATE_EPOCH,
     BOE_GLC_MEMBER,
     BOE_GLC_SHEET,
     BOE_IADB_HEADER_START,
     BOE_IADB_URL,
     BOE_YIELD_CURVE_ZIP,
+    ECB_BASE_URL,
     MOF_JP_CURRENT_URL,
     MOF_JP_HISTORY_URL,
+    RBA_F2_URL,
+    RBNZ_B2_URL,
+    SERVED_TRANSFORMS,
     SNB_BOND_CUBE,
     SNB_CUBE_URL,
     SNB_TENOR_2Y,
@@ -548,3 +554,150 @@ def test_the_fixture_provenance_is_recorded() -> None:
         "snb_rendoblid.csv",
     ):
         assert name in readme
+
+
+# ---------------------------------------------------------------------------
+# dispatch: the seam between a registry series_id and each fetcher's arguments
+# ---------------------------------------------------------------------------
+
+
+def _serve_every_provider() -> None:
+    """Mock all seven institutions from the committed fixtures.
+
+    The direct tests above call each fetcher with hand-typed arguments of the
+    right type. Only a request that starts from the registry and goes through
+    `fetch` exercises the dispatch, which is where #212 lived: the BoE
+    fetchers were handed a series id they do not take, and nothing here or
+    in ``tests/test_curves.py`` went through that seam for GBP.
+    """
+    respx.get(url__startswith=ECB_BASE_URL).mock(
+        return_value=httpx.Response(
+            200, text=(FIXTURES / "ecb_2y_spot.csv").read_text()
+        )
+    )
+    respx.get(url__startswith=BOC_BASE_URL).mock(
+        return_value=httpx.Response(
+            200, text=(FIXTURES / "boc_2y_yield.json").read_text()
+        )
+    )
+    respx.get(RBA_F2_URL).mock(
+        return_value=httpx.Response(
+            200, text=(FIXTURES / "rba_f2_2y.csv").read_text(encoding="utf-8-sig")
+        )
+    )
+    respx.get(MOF_JP_CURRENT_URL).mock(
+        return_value=httpx.Response(200, content=JGB_CURRENT)
+    )
+    respx.get(MOF_JP_HISTORY_URL).mock(
+        return_value=httpx.Response(200, content=JGB_HISTORY)
+    )
+    respx.get(BOE_YIELD_CURVE_ZIP).mock(
+        return_value=httpx.Response(200, content=YIELD_CURVE_ZIP)
+    )
+    respx.get(url__startswith=BOE_IADB_URL).mock(
+        return_value=httpx.Response(200, text=IADB_BODY)
+    )
+    respx.get(RBNZ_B2_URL).mock(
+        return_value=httpx.Response(
+            200, content=(FIXTURES / "rbnz_hb2_daily_close.xlsx").read_bytes()
+        )
+    )
+
+
+@respx.mock
+def test_fetch_routes_the_gbp_two_year_to_the_curve_workbook(
+    source: CurvesSource,
+) -> None:
+    """Through `fetch`, not `fetch_boe_curve`: the registry's series id is
+    ``GLC_NOMINAL_SPOT_SHORT/2.0`` and the maturity has to come out of it."""
+    _serve_every_provider()
+
+    emitted = source.fetch(["yield_2y"], ["GBP"], START, END)
+
+    by_period = {o.period: o for o in emitted}
+    assert by_period[CURVE_FIRST[0]].value == pytest.approx(CURVE_FIRST[1])
+    assert {o.source for o in emitted} == {"boe"}
+    assert {o.series_id for o in emitted} == {"GLC_NOMINAL_SPOT_SHORT/2.0"}
+
+
+@respx.mock
+def test_fetch_routes_the_gbp_policy_rate_to_the_iadb(
+    source: CurvesSource,
+) -> None:
+    """Bank Rate and the two-year share a provider key and nothing else. Before
+    #212 both went to the workbook reader, so the Bank Rate request failed on a
+    maturity that does not exist."""
+    _serve_every_provider()
+
+    emitted = source.fetch(["policy_rate"], ["GBP"], START, END)
+
+    by_period = {o.period: o for o in emitted}
+    assert by_period[IADB_LAST[0]].value == IADB_LAST[1]
+    assert {o.series_id for o in emitted} == {"IUDBEDR"}
+
+
+@respx.mock
+def test_every_registry_curve_ref_round_trips_through_fetch(
+    source: CurvesSource,
+) -> None:
+    """A ref whose series id does not fit its fetcher must fail here, in the
+    suite, rather than in the morning refresh where it costs every yield."""
+    _serve_every_provider()
+
+    for (indicator, currency), ref in sorted(source.refs().items()):
+        emitted = source.fetch([indicator], [currency], WIDE_START, END)
+        if ref.transform in SERVED_TRANSFORMS:
+            assert emitted, f"{indicator} {currency} via {ref.source} returned nothing"
+            assert {o.source for o in emitted} == {ref.source}
+        else:
+            assert emitted == [], f"{indicator} {currency} is not served yet"
+
+
+@respx.mock
+def test_an_snb_ref_names_cube_and_tenor_in_its_series_id(
+    source: CurvesSource,
+) -> None:
+    """Nothing routes to the SNB today, so the rule is tested on a hand-built
+    ref: the dispatcher splits ``cube/tenor`` the way it splits the BoE's
+    ``prefix/maturity``, and a ref that does not fit is refused by name."""
+    respx.get(SNB_URL).mock(return_value=httpx.Response(200, content=SNB_BODY))
+    ref = registry.SeriesRef(
+        source="snb",
+        series_id=f"{SNB_BOND_CUBE}/{SNB_TENOR_2Y}",
+        unit="percent",
+        frequency=registry.Frequency.DAILY,
+    )
+
+    returned = dict(
+        source._from_provider(ref, "CHF", date(2025, 1, 1), date(2025, 12, 31))
+    )
+    assert returned[SNB_LAST[0]] == SNB_LAST[1]
+
+    with pytest.raises(SourceError, match="snb"):
+        source._from_provider(
+            registry.SeriesRef(
+                source="snb",
+                series_id=SNB_BOND_CUBE,
+                unit="percent",
+                frequency=registry.Frequency.DAILY,
+            ),
+            "CHF",
+            date(2025, 1, 1),
+            date(2025, 12, 31),
+        )
+
+
+def test_a_boe_curve_id_without_a_numeric_maturity_is_refused_by_name(
+    source: CurvesSource,
+) -> None:
+    """A maturity guessed off a malformed id would select a different tenor
+    and present it as the two-year, so the dispatcher raises instead."""
+    ref = registry.SeriesRef(
+        source="boe",
+        series_id="GLC_NOMINAL_SPOT_SHORT/two",
+        unit="percent",
+        frequency=registry.Frequency.DAILY,
+    )
+
+    with pytest.raises(SourceError, match="GLC_NOMINAL_SPOT_SHORT/two"):
+        source._from_provider(ref, "GBP", START, END)
