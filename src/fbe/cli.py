@@ -79,7 +79,7 @@ import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -89,7 +89,13 @@ import typer
 
 from fbe import config as config_module
 from fbe import report as report_module
-from fbe.bias import apply_filters, at_least, blocking, build_pair_biases
+from fbe.bias import (
+    apply_filters,
+    at_least,
+    blocking,
+    build_pair_biases,
+    shortlist,
+)
 from fbe.datasources import ALL_SOURCES
 from fbe.datasources.base import ProbeRequest, SourceError
 from fbe.datasources.cache import DiskCache
@@ -102,7 +108,15 @@ from fbe.datasources.collect import (
 )
 from fbe.pillars import default_pillars
 from fbe.scoring import score_currencies
-from fbe.types import Conviction, CurrencyScore, Direction, PairBias, PillarName
+from fbe.types import (
+    BiasReport,
+    Conviction,
+    CurrencyScore,
+    Direction,
+    PairBias,
+    PillarName,
+    TradeIdea,
+)
 from fbe.universe import G10, MAJORS
 
 if TYPE_CHECKING:
@@ -2721,6 +2735,11 @@ def report(
     reasoning, the calendar, the data coverage and every warning, plus a diff
     against the previous run.
 
+    Two files are written, sharing a stem: the Markdown for a reader and the
+    JSON sidecar `fbe.report.load_report` reads back. Both or neither, because
+    a Markdown without its sidecar leaves ``--compare last`` with nothing to
+    read and nothing raising to say why.
+
     Args:
         ctx: Typer context carrying the effective config.
         asof: Point-in-time cutoff for observations.
@@ -2728,13 +2747,183 @@ def report(
         compare: Diff baseline, ``last``, ``none`` or a path.
         stdout: Print instead of writing.
 
+    Like `score` and `bias`, this reads the cache and never the network, and
+    computes nothing a renderer could compute: every number on the page is a
+    field on the `fbe.types.BiasReport` written beside it.
+
+    Two sections of the report are thin today and say so rather than reading
+    as empty. ``events`` is always empty because `fbe.calendar_guard` is
+    scaffolded, and `_bias_notes` puts that in the warnings on every run. Each
+    shortlist entry carries no size, because a size needs an entry and a stop
+    from the chart, and the template points at ``fbe size`` where one would go.
+
     Raises:
-        NotImplementedError: Always, until `fbe.report` lands.
+        typer.BadParameter: With exit code 2 when ``--asof`` is in the future,
+            when ``scoring.lookback_years`` cannot produce a window, or when
+            ``--compare`` names a path that does not exist. A missing baseline
+            silently treated as no baseline would print a report whose
+            what-changed section said "first run" on the hundredth.
+        typer.Exit: With `EXIT_UNUSABLE` when the cache held nothing for the
+            window, so an empty report cannot read as a working engine with no
+            opinions.
 
     """
-    raise NotImplementedError(
-        "fbe.cli.report is scaffolded; see docs/roadmap.md Phase 5"
+    config = _effective_config(ctx)
+    run_date = asof.date() if asof is not None else date.today()
+    if run_date > date.today():
+        raise typer.BadParameter(
+            f"--asof {run_date} is in the future, so every series would be "
+            "past its allowance and the report would record a run on no data",
+            param_hint="--asof",
+        )
+
+    try:
+        start = lookback_start(run_date, config.scoring.lookback_years)
+    except ValueError as error:
+        raise typer.BadParameter(
+            f"scoring.lookback_years is unusable: {error}",
+            param_hint="--asof",
+        ) from error
+
+    out_dir = out if out is not None else config.data.reports_dir
+    baseline_path = _baseline_path(compare, out_dir, run_date)
+
+    # Cache only, for the reason `score` gives at the same call: a rolled-over
+    # TTL refetching mid-session would let two runs at the same --asof and the
+    # same digest write two different reports with nothing in either to
+    # explain it. That matters more here, because these files are the record.
+    result = collect(
+        replace(config.data, offline=True),
+        start=start,
+        end=run_date,
+        sources=ALL_SOURCES,
     )
+    if not result.usable:
+        typer.echo(
+            "No observations in the cache for this window, so there is nothing "
+            "to report. Run fbe refresh to fill it, or fbe doctor to find out "
+            "why it is empty."
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
+
+    scores = score_currencies(
+        result.observations,
+        default_pillars(config.scoring),
+        config.scoring,
+        run_date,
+    )
+    by_currency = {score.currency: score for score in scores}
+    pairs = tuple(
+        apply_filters(bias_row, by_currency, config, run_date)
+        for bias_row in build_pair_biases(scores, config, run_date)
+    )
+    run = BiasReport(
+        asof=run_date,
+        generated_at=datetime.now(UTC),
+        currencies=tuple(scores),
+        pairs=pairs,
+        events=(),
+        # The cap lives in RiskConfig and nowhere else: there is no purpose in
+        # shortlisting more trades than the risk rules permit to be open.
+        shortlist=tuple(
+            TradeIdea(bias=row)
+            for row in shortlist(pairs, config.risk.max_concurrent_positions)
+        ),
+        warnings=(*_score_notes(scores), *_bias_notes()),
+        config_digest=config.digest(),
+    )
+
+    baseline = (
+        report_module.load_report(baseline_path) if baseline_path is not None else None
+    )
+    diff = report_module.diff_reports(baseline, run) if baseline is not None else None
+
+    if stdout:
+        typer.echo(report_module.render_report(run, diff=diff, config=config), nl=False)
+        return
+
+    markdown = report_module.write_report(run, out_dir, diff=diff, config=config)
+    typer.echo(f"Wrote {markdown} ({markdown.stat().st_size / 1024:.1f} KB)")
+    typer.echo(_compare_line(diff, baseline_path))
+
+
+def _baseline_path(compare: str | None, out_dir: Path, run_date: date) -> Path | None:
+    """Resolve ``--compare`` to the sidecar the diff reads, or to nothing.
+
+    Args:
+        compare: The option as given: ``last``, ``none``, or a path.
+        out_dir: Where this run's reports are written, which is also where
+            ``last`` looks.
+        run_date: This run's as-of date.
+
+    Returns:
+        The baseline's path, or ``None`` for ``none`` and for ``last`` when the
+        directory holds no earlier report.
+
+        ``last`` excludes a report carrying this run's own date. A second run
+        on one day would otherwise diff against its own earlier output and
+        report the intraday change as the day's move.
+
+    Raises:
+        typer.BadParameter: When a path is given and does not exist. Falling
+            back to no baseline would print "no baseline report to compare
+            against" on a run that asked for a specific one, which reads as a
+            first run rather than as a typo.
+
+    """
+    wanted = (compare or "last").strip()
+    if wanted.lower() == "none":
+        return None
+    if wanted.lower() == "last":
+        return report_module.latest_report(out_dir, before=run_date)
+    given = Path(wanted)
+    if not given.exists():
+        raise typer.BadParameter(
+            f"{given} does not exist, so there is nothing to compare against. "
+            "Pass 'last' for the most recent report, or 'none' to skip the "
+            "what-changed section.",
+            param_hint="--compare",
+        )
+    return given
+
+
+def _compare_line(diff: report_module.ReportDiff | None, baseline: Path | None) -> str:
+    """One line saying what the what-changed section came out of.
+
+    Args:
+        diff: The diff that was rendered, or ``None``.
+        baseline: The file it was computed against, or ``None``.
+
+    Returns:
+        A sentence naming the baseline and counting what moved, or a sentence
+        saying there was none. Counted from `fbe.report.ReportDiff` rather than
+        recomputed, so the line and the section under it cannot disagree.
+
+        A changed config digest is said on this line too. It is the one case
+        where the section's numbers are there to be read and must not be, and
+        a reader who stopped at the console would not have seen it.
+
+    """
+    if diff is None or baseline is None:
+        return "No baseline report to compare against, so nothing is diffed."
+    flips = sum(1 for change in diff.pairs if change.flipped)
+    moves = len(diff.shortlist_added) + len(diff.shortlist_removed)
+    line = (
+        f"Compared against {baseline.name}: "
+        f"{flips} direction {_plural('flip', flips)}, "
+        f"{moves} shortlist {_plural('change', moves)}."
+    )
+    if diff.config_changed:
+        line += (
+            " The config digest changed, so the score deltas in that section "
+            "are not comparable."
+        )
+    return line
+
+
+def _plural(noun: str, count: int) -> str:
+    """Return ``noun`` pluralised for ``count``, for a counted summary line."""
+    return noun if count == 1 else f"{noun}s"
 
 
 @app.command(

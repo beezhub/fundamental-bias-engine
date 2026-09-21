@@ -46,23 +46,30 @@ Report sections, in order:
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
-from datetime import date
+from dataclasses import dataclass, field, fields, is_dataclass, replace
+from datetime import date, datetime
+from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from types import UnionType
+from typing import TYPE_CHECKING, Any, Union, get_args, get_origin, get_type_hints
 
-from fbe.types import Direction
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
+from fbe.bias import blocking
+from fbe.types import (
+    BiasReport,
+    Conviction,
+    Direction,
+    PairBias,
+    PillarName,
+)
 from fbe.universe import G10
 
 if TYPE_CHECKING:
     from fbe.config import Config
-    from fbe.types import (
-        BiasReport,
-        Conviction,
-        PairBias,
-        PillarName,
-    )
 
 __all__ = [
     "TEMPLATE_NAME",
@@ -82,6 +89,11 @@ __all__ = [
 TEMPLATE_NAME = "report.md.j2"
 """Template file inside ``fbe/templates``. Shipped with the package so the
 report renders the same from a checkout and from an installed wheel."""
+
+_TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
+"""Where `TEMPLATE_NAME` lives. Resolved from this module's own location
+rather than from the working directory, so ``fbe report`` renders the same
+from anywhere."""
 
 FILENAME_FORMAT = "bias-{asof:%Y-%m-%d}.md"
 """Dated filename. Sorting the directory by name sorts it by date, which is
@@ -213,15 +225,42 @@ def build_context(
         config: Optional effective config, used for the weights table.
 
     Returns:
-        A mapping suitable for ``jinja2.Template.render``.
+        A mapping suitable for ``jinja2.Template.render``, carrying exactly the
+        keys listed above and no others.
+
+        Ordering is the only decision made here, and it is made once for both
+        templates. ``currencies`` is sorted by composite descending with the
+        ISO code breaking ties, which reproduces the order and the tie-break
+        `fbe.scoring.score_currencies` already applied, so the rank column
+        never prints out of order against the list beside it. ``pairs`` is
+        sorted by absolute spread: on the signed spread every short pair falls
+        below every long one and the widest disagreement in the run ends up in
+        the middle of the table.
+
+        Nothing here computes a number. Every value on the page is a field on
+        the objects passed in, which is what lets a report be checked against
+        the `BiasReport` it came from.
 
     Raises:
-        NotImplementedError: Always, until rendering lands.
+        ValueError: From `_grid`, when a pair has a leg outside
+            `fbe.universe.G10` or the run holds one pair twice.
+        KeyError: From `_pillar_order`, when ``config`` carries no weight for
+            a pillar.
 
     """
-    raise NotImplementedError(
-        "fbe.report.build_context is scaffolded; see docs/roadmap.md Phase 5"
-    )
+    return {
+        "report": report,
+        "diff": diff,
+        "config": config,
+        "grid": _grid(report.pairs),
+        "pillar_order": _pillar_order(config),
+        "currencies": tuple(
+            sorted(report.currencies, key=lambda row: (-row.composite, row.currency))
+        ),
+        "pairs": tuple(
+            sorted(report.pairs, key=lambda row: (-abs(row.spread), row.pair))
+        ),
+    }
 
 
 def render_report(
@@ -246,11 +285,27 @@ def render_report(
         The rendered Markdown document.
 
     Raises:
-        NotImplementedError: Always, until rendering lands.
+        jinja2.UndefinedError: When the template reads a context key
+            `build_context` does not supply. The environment uses
+            ``StrictUndefined`` on purpose: Jinja's default renders an unknown
+            name as an empty string, so a renamed key would empty a column and
+            the page would still look like a report.
+        jinja2.TemplateNotFound: When ``template_dir`` holds no
+            `TEMPLATE_NAME`.
+
+    Autoescaping is off because the output is Markdown, not HTML. The dashboard
+    renders the same context into HTML and turns it on there.
 
     """
-    raise NotImplementedError(
-        "fbe.report.render_report is scaffolded; see docs/roadmap.md Phase 5"
+    directory = template_dir if template_dir is not None else _TEMPLATE_DIR
+    environment = Environment(
+        loader=FileSystemLoader(directory),
+        undefined=StrictUndefined,
+        keep_trailing_newline=True,
+        autoescape=False,
+    )
+    return environment.get_template(TEMPLATE_NAME).render(
+        **build_context(report, diff=diff, config=config)
     )
 
 
@@ -290,12 +345,56 @@ def write_report(
         stem and a ``.json`` suffix; `load_report` accepts either path.
 
     Raises:
-        NotImplementedError: Always, until rendering lands.
+        FileExistsError: When ``overwrite`` is false and either file already
+            exists for this as-of date. Both are named in the message, because
+            the one that exists is the one that says which half of an earlier
+            run survived.
+        OSError: When either file cannot be written. Nothing is left behind:
+            both are written to temporary names first, and if the sidecar
+            cannot be put in place the Markdown just written is removed, so
+            the pair is never half replaced.
+        ValueError: When the report holds a value JSON cannot carry, such as a
+            NaN produced by a division by zero upstream. A NaN written out
+            reads back as a number and poisons any average computed over it.
 
     """
-    raise NotImplementedError(
-        "fbe.report.write_report is scaffolded; see docs/roadmap.md Phase 5"
-    )
+    markdown_path = out_dir / FILENAME_FORMAT.format(asof=report.asof)
+    sidecar_path = out_dir / SIDECAR_FORMAT.format(asof=report.asof)
+    if not overwrite:
+        present = [path.name for path in (markdown_path, sidecar_path) if path.exists()]
+        if present:
+            raise FileExistsError(
+                f"{', '.join(present)} already exists and overwrite is off. A "
+                "second run on the same day normally should overwrite, because "
+                "the later run saw more data."
+            )
+
+    # Both payloads are built before anything is opened, so a rendering or
+    # serialisation failure cannot leave a half-written file on disk.
+    rendered = render_report(report, diff=diff, config=config)
+    payload = json.dumps(_encoded(report), indent=2, sort_keys=True, allow_nan=False)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    markdown_temp = out_dir / f".{markdown_path.name}.writing"
+    sidecar_temp = out_dir / f".{sidecar_path.name}.writing"
+    markdown_replaced = False
+    try:
+        markdown_temp.write_text(rendered, encoding="utf-8")
+        sidecar_temp.write_text(payload, encoding="utf-8")
+        # Markdown first. It is the destination most likely to refuse, and
+        # putting the sidecar in place ahead of it is exactly the half-written
+        # run this function exists to prevent.
+        os.replace(markdown_temp, markdown_path)
+        markdown_replaced = True
+        os.replace(sidecar_temp, sidecar_path)
+    except OSError:
+        if markdown_replaced:
+            markdown_path.unlink(missing_ok=True)
+        raise
+    finally:
+        markdown_temp.unlink(missing_ok=True)
+        sidecar_temp.unlink(missing_ok=True)
+    return markdown_path
 
 
 def load_report(path: Path) -> BiasReport:
@@ -310,15 +409,33 @@ def load_report(path: Path) -> BiasReport:
         path: Path to the Markdown report or its JSON sidecar.
 
     Returns:
-        The reconstructed report.
+        The reconstructed report. Every sequence comes back as a tuple and
+        every mapping as a dict, which is what the producers in this package
+        emit, so a report written and read back compares equal to itself.
 
     Raises:
-        NotImplementedError: Always, until serialisation lands.
+        FileNotFoundError: When the sidecar is absent. A report whose numbers
+            cannot be read back is not a report, and an empty one returned
+            here would be a run with no opinions.
+        ValueError: When the sidecar is not JSON, is not an object, carries a
+            field this version does not know, is missing one, or holds a value
+            of the wrong shape for the field it sits in. Every message names
+            the file and the field. Nothing is defaulted: a field absent from
+            the sidecar is a report from a different version, and filling it
+            in from the dataclass default would silently invent a number.
 
     """
-    raise NotImplementedError(
-        "fbe.report.load_report is scaffolded; see docs/roadmap.md Phase 5"
-    )
+    sidecar = path if path.suffix == ".json" else path.with_suffix(".json")
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{sidecar.name} is not readable JSON: {error}") from error
+    try:
+        decoded = _decoded(payload, BiasReport, "report")
+    except ValueError as error:
+        raise ValueError(f"{sidecar.name}: {error}") from error
+    assert isinstance(decoded, BiasReport)
+    return decoded
 
 
 def latest_report(reports_dir: Path, *, before: date | None = None) -> Path | None:
@@ -330,16 +447,70 @@ def latest_report(reports_dir: Path, *, before: date | None = None) -> Path | No
             backfilled run compares against the run that actually preceded it.
 
     Returns:
-        Path to the newest matching report, or ``None`` when the directory holds
-        no reports yet.
+        Path to the newest matching sidecar, or ``None`` when the directory
+        holds no reports yet. A directory that does not exist gives ``None``
+        too: on a fresh clone, and under a ``--out`` pointed somewhere new,
+        "no reports yet" is the same answer either way.
+
+        The sidecar rather than the Markdown, because the sidecar is the only
+        one ``--compare`` can read. `load_report` accepts either.
+
+        Chosen by the date in the name rather than by the name itself. The two
+        agree for every name `SIDECAR_FORMAT` produces and stop agreeing for
+        anything else the glob picks up, and the newest report is not a
+        question a directory listing should be able to get wrong.
 
     Raises:
-        NotImplementedError: Always, until report discovery lands.
+        ValueError: When a file matching `SIDECAR_GLOB` carries no parseable
+            as-of date. ``bias-backup.json`` sorts after every dated name, so
+            a newest-by-name rule hands it to ``--compare``; skipping it
+            quietly makes the newest report depend on what else is in the
+            directory. Both are silent, so this is loud.
 
     """
-    raise NotImplementedError(
-        "fbe.report.latest_report is scaffolded; see docs/roadmap.md Phase 5"
-    )
+    if not reports_dir.is_dir():
+        return None
+    dated: list[tuple[date, Path]] = []
+    for candidate in sorted(reports_dir.glob(SIDECAR_GLOB)):
+        stamp = _asof_in(candidate)
+        if before is None or stamp < before:
+            dated.append((stamp, candidate))
+    if not dated:
+        return None
+    return max(dated, key=lambda item: (item[0], item[1].name))[1]
+
+
+_SIDECAR_PREFIX = SIDECAR_FORMAT.split("{", 1)[0]
+"""The literal head of `SIDECAR_FORMAT`, before its date placeholder.
+
+Taken from the format rather than written out again, so renaming the files
+moves the parser with them. This is the safe half of the derivation
+`SIDECAR_GLOB` refuses: a wrong prefix makes every name unparseable and raises,
+where a wrong glob matches nothing and returns an empty directory instead."""
+
+
+def _asof_in(sidecar: Path) -> date:
+    """Read the as-of date out of a sidecar's filename.
+
+    Args:
+        sidecar: A path matching `SIDECAR_GLOB`.
+
+    Returns:
+        The date `SIDECAR_FORMAT` wrote into the name.
+
+    Raises:
+        ValueError: When the name carries no ISO 8601 date, naming the file so
+            the operator knows which one to move out of the directory.
+
+    """
+    stem = sidecar.stem
+    try:
+        return date.fromisoformat(stem.removeprefix(_SIDECAR_PREFIX))
+    except ValueError as error:
+        raise ValueError(
+            f"{sidecar.name} matches {SIDECAR_GLOB} but carries no as-of date, "
+            f"so it cannot be placed against the other reports: {error}"
+        ) from error
 
 
 def diff_reports(previous: BiasReport, current: BiasReport) -> ReportDiff:
@@ -363,13 +534,479 @@ def diff_reports(previous: BiasReport, current: BiasReport) -> ReportDiff:
     Returns:
         The populated `ReportDiff`.
 
+        ``currencies`` holds every currency either run scored, ordered by the
+        size of the move, largest first, with the ones that have no move to
+        measure after them and the ISO code breaking ties. ``pairs`` holds only
+        the pairs whose direction or conviction changed, flips first: twenty-
+        eight unchanged rows under "what changed" is a section nobody reads,
+        and the flip in the middle of it is what the section exists to show.
+
     Raises:
-        NotImplementedError: Always, until the diff lands.
+        ValueError: From `fbe.bias.blocking`, when a pair that left the
+            shortlist carries a blocker string `fbe.bias.BLOCKERS` does not
+            declare. An unrecognised marker is a defect in whatever produced
+            it, and a departure reason that quietly dropped it would name the
+            wrong cause.
 
     """
-    raise NotImplementedError(
-        "fbe.report.diff_reports is scaffolded; see docs/roadmap.md Phase 5"
+    return ReportDiff(
+        previous_asof=previous.asof,
+        current_asof=current.asof,
+        currencies=_currency_changes(previous, current),
+        pairs=_pair_changes(previous, current),
+        shortlist_added=_shortlist_arrivals(previous, current),
+        shortlist_removed=_shortlist_departures(previous, current),
+        new_warnings=tuple(
+            line for line in current.warnings if line not in set(previous.warnings)
+        ),
+        resolved_warnings=tuple(
+            line for line in previous.warnings if line not in set(current.warnings)
+        ),
+        config_changed=previous.config_digest != current.config_digest,
     )
+
+
+def _currency_changes(
+    previous: BiasReport, current: BiasReport
+) -> tuple[CurrencyChange, ...]:
+    """Pair up the two runs' currency scores, one row per currency seen.
+
+    A currency present in only one run has ``None`` on the other side and no
+    delta. It did not move from zero, it appeared or it dropped out, and those
+    are different facts: a currency that scored nothing yesterday and +1.20
+    today reported as a delta of +1.20 is a fundamental move nobody can find in
+    the data.
+    """
+    before = {row.currency: row for row in previous.currencies}
+    after = {row.currency: row for row in current.currencies}
+    changes = [
+        CurrencyChange(
+            currency=code,
+            previous_composite=None if code not in before else before[code].composite,
+            current_composite=None if code not in after else after[code].composite,
+            previous_rank=None if code not in before else before[code].rank,
+            current_rank=None if code not in after else after[code].rank,
+            delta=(
+                after[code].composite - before[code].composite
+                if code in before and code in after
+                else None
+            ),
+        )
+        for code in before | after
+    ]
+    # An absent delta sorts last rather than as a move of zero. It is not a
+    # small move, it is an appearance, and it should not compete with the
+    # measured ones for the top of the list.
+    return tuple(
+        sorted(
+            changes,
+            key=lambda change: (
+                change.delta is None,
+                -abs(change.delta) if change.delta is not None else 0.0,
+                change.currency,
+            ),
+        )
+    )
+
+
+def _pair_changes(previous: BiasReport, current: BiasReport) -> tuple[PairChange, ...]:
+    """Report the pairs whose story changed, not the pairs whose number moved.
+
+    Direction and conviction are the story. A spread that drifted from -1.40 to
+    -1.31 without moving either is the model holding the same view slightly
+    less far, which the ranked table already shows.
+    """
+    before = {row.pair: row for row in previous.pairs}
+    after = {row.pair: row for row in current.pairs}
+    changes: list[PairChange] = []
+    for pair in before | after:
+        was, now = before.get(pair), after.get(pair)
+        previous_direction = was.direction if was else None
+        current_direction = now.direction if now else None
+        previous_conviction = was.conviction if was else None
+        current_conviction = now.conviction if now else None
+        if (
+            previous_direction is current_direction
+            and previous_conviction is current_conviction
+        ):
+            continue
+        changes.append(
+            PairChange(
+                pair=pair,
+                previous_direction=previous_direction,
+                current_direction=current_direction,
+                previous_conviction=previous_conviction,
+                current_conviction=current_conviction,
+                previous_spread=was.spread if was else None,
+                current_spread=now.spread if now else None,
+                flipped=_flipped(previous_direction, current_direction),
+            )
+        )
+    return tuple(sorted(changes, key=_change_order))
+
+
+def _flipped(previous: Direction | None, current: Direction | None) -> bool:
+    """Whether the model reversed its side on this pair.
+
+    Neutral is not a side, so neutral to long is the model forming a view
+    rather than reversing one, and counting it would put those two in the same
+    sentence. A pair missing from either run has no side either: it did not
+    reverse, it arrived or it left.
+    """
+    sides = (Direction.LONG, Direction.SHORT)
+    return previous in sides and current in sides and previous is not current
+
+
+def _change_order(change: PairChange) -> tuple[bool, float, str]:
+    """Sort key placing flips first, then the widest spread moves."""
+    moved = (
+        abs(change.current_spread - change.previous_spread)
+        if change.current_spread is not None and change.previous_spread is not None
+        else 0.0
+    )
+    return (not change.flipped, -moved, change.pair)
+
+
+def _shortlist_arrivals(previous: BiasReport, current: BiasReport) -> tuple[str, ...]:
+    """Pairs on today's shortlist that were not on the last one, in today's order."""
+    before = {idea.bias.pair for idea in previous.shortlist}
+    return tuple(
+        idea.bias.pair for idea in current.shortlist if idea.bias.pair not in before
+    )
+
+
+def _shortlist_departures(
+    previous: BiasReport, current: BiasReport
+) -> tuple[tuple[str, str], ...]:
+    """Pairs that left the shortlist, each with why, in the last run's order."""
+    after = {idea.bias.pair for idea in current.shortlist}
+    rows = {row.pair: row for row in current.pairs}
+    return tuple(
+        (idea.bias.pair, _departure_reason(idea.bias.pair, rows))
+        for idea in previous.shortlist
+        if idea.bias.pair not in after
+    )
+
+
+def _departure_reason(pair: str, rows: Mapping[str, PairBias]) -> str:
+    """Say why a pair is no longer shortlisted, from the current run alone.
+
+    Read off the current run's own row, which is data both reports carry.
+    Anything else would be a reason the renderer invented, and a wrong reason
+    is worse here than no reason: GBPJPY leaving for a data reason and GBPJPY
+    leaving because the model changed its mind mean opposite things about
+    whether to look at the chart.
+
+    Args:
+        pair: The pair that left.
+        rows: The current run's pair biases, keyed by pair.
+
+    Returns:
+        One clause. ``fbe.bias.shortlist`` drops a pair for one of three
+        reasons it records, plus one it does not: a pair can be tradeable,
+        backed and simply beaten by a wider one, or beaten by a pair sharing a
+        leg with it. That last case has nothing on the row to read, and it is
+        named as the absence it is rather than guessed at.
+
+    """
+    row = rows.get(pair)
+    if row is None:
+        return "not in the current run"
+    stoppers = blocking(row.blockers)
+    if stoppers:
+        return f"blocked: {', '.join(stoppers)}"
+    if row.conviction is Conviction.NONE:
+        return "conviction fell to none"
+    if not row.tradeable:
+        return "not tradeable, with no blocker recorded"
+    return "still tradeable, not among this run's best"
+
+
+# --- the sidecar codec -------------------------------------------------------
+#
+# The sidecar is the serialised `fbe.types.BiasReport` and nothing else: a JSON
+# object keyed by field name, nested the way the dataclasses nest. There is no
+# schema version and no envelope, because the only reader is this module and
+# the only writer is `write_report`.
+#
+# Encoding walks the values and decoding walks the annotations. That asymmetry
+# is deliberate. JSON cannot tell a date from a string, a `Direction` from the
+# word "short", or an absent number from one that happens to be zero, and every
+# one of those distinctions is load-bearing here. The annotation is the only
+# place the right answer is written down, so the decoder reads it rather than
+# guessing from the value in front of it.
+
+
+def _encoded(value: Any) -> Any:
+    """Turn a report and everything inside it into JSON-safe values.
+
+    Args:
+        value: Any value reachable from a `fbe.types.BiasReport`.
+
+    Returns:
+        The same information as dicts, lists, strings, numbers, booleans and
+        ``None``. Enums become their values, dates and instants become ISO
+        8601 strings, dataclasses become objects keyed by field name, and
+        every other sequence becomes a list.
+
+        An instant keeps whatever offset it carries and a naive one is written
+        without an offset, so it reads back exactly as it was written. Every
+        producer in this package stamps UTC; nothing here invents an offset
+        for one that does not, because that would move the timestamp.
+
+    Raises:
+        TypeError: When a mapping key is neither a string nor an enum, which no
+            producer here emits, or when a value is of a type JSON cannot
+            carry. Refused rather than coerced with ``str``: a key silently
+            stringified comes back as a string and stops matching the key the
+            writer used.
+
+    """
+    if isinstance(value, Enum):
+        return value.value
+    # datetime before date: datetime subclasses date, and the other order
+    # writes an instant as a bare day and loses the time.
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            item.name: _encoded(getattr(value, item.name)) for item in fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {_encoded_key(key): _encoded(item) for key, item in value.items()}
+    if isinstance(value, str | bool | int | float) or value is None:
+        return value
+    if isinstance(value, Sequence):
+        return [_encoded(item) for item in value]
+    raise TypeError(
+        f"{type(value).__name__} has no JSON form, so it cannot be written to "
+        "a report sidecar"
+    )
+
+
+def _encoded_key(key: Any) -> str:
+    """Return a mapping key as the string JSON will hold."""
+    if isinstance(key, Enum):
+        encoded = key.value
+        if not isinstance(encoded, str):
+            raise TypeError(f"{key!r} has a non-string value and cannot key an object")
+        return encoded
+    if isinstance(key, str):
+        return key
+    raise TypeError(
+        f"{key!r} is a {type(key).__name__} and cannot key a JSON object. Only "
+        "strings and string-valued enums reach a sidecar."
+    )
+
+
+def _decoded(payload: Any, hint: Any, where: str) -> Any:
+    """Rebuild one value from the sidecar, guided by its annotation.
+
+    Args:
+        payload: The value as JSON produced it.
+        hint: The annotation the value has to satisfy, resolved to real types.
+        where: Dotted path to this value inside the report, for the message.
+
+    Returns:
+        The value as its annotation says it should be: an enum member, a date,
+        an instant, a dataclass, a tuple, a dict or a scalar.
+
+    Raises:
+        ValueError: When the value does not fit its annotation. Naming the path
+            matters more than it looks: a report holds 28 pairs and eight
+            currencies of seven pillars each, and "not a number" without a path
+            is a message nobody can act on.
+
+    """
+    origin = get_origin(hint)
+    if origin in (Union, UnionType):
+        return _decoded_union(payload, hint, where)
+    if origin is not None:
+        return _decoded_container(payload, hint, origin, where)
+    if hint is Any:
+        return payload
+    if isinstance(hint, type):
+        if issubclass(hint, Enum):
+            return _decoded_enum(payload, hint, where)
+        if is_dataclass(hint):
+            return _decoded_dataclass(payload, hint, where)
+        if issubclass(hint, datetime):
+            return _decoded_stamp(payload, datetime, where)
+        if issubclass(hint, date):
+            return _decoded_stamp(payload, date, where)
+        return _decoded_scalar(payload, hint, where)
+    raise ValueError(f"{where} is annotated {hint!r}, which a sidecar cannot carry")
+
+
+def _decoded_union(payload: Any, hint: Any, where: str) -> Any:
+    """Decode an optional value, keeping ``None`` as an absence."""
+    members = get_args(hint)
+    if payload is None:
+        if type(None) in members:
+            return None
+        raise ValueError(f"{where} is null but is not optional")
+    present = [member for member in members if member is not type(None)]
+    if len(present) != 1:
+        raise ValueError(f"{where} is annotated {hint!r}, which is ambiguous to decode")
+    return _decoded(payload, present[0], where)
+
+
+def _decoded_container(payload: Any, hint: Any, origin: Any, where: str) -> Any:
+    """Decode a mapping or a sequence, one element at a time."""
+    arguments = get_args(hint)
+    if isinstance(origin, type) and issubclass(origin, Mapping):
+        if not isinstance(payload, dict):
+            raise ValueError(f"{where} should be an object, found {_shape(payload)}")
+        key_hint, value_hint = arguments
+        return {
+            _decoded_key(key, key_hint, where): _decoded(
+                item, value_hint, f"{where}[{key!r}]"
+            )
+            for key, item in payload.items()
+        }
+    if isinstance(origin, type) and issubclass(origin, Sequence):
+        if not isinstance(payload, list):
+            raise ValueError(f"{where} should be a list, found {_shape(payload)}")
+        # A tuple, because every producer in this package emits one and the
+        # dataclasses default to one. A list here would compare unequal to the
+        # report it was written from, on a field that had not changed.
+        return tuple(
+            _decoded(item, arguments[0], f"{where}[{index}]")
+            for index, item in enumerate(payload)
+        )
+    raise ValueError(f"{where} is annotated {hint!r}, which a sidecar cannot carry")
+
+
+def _decoded_key(key: str, hint: Any, where: str) -> Any:
+    """Decode a mapping key, which JSON always hands over as a string."""
+    if isinstance(hint, type) and issubclass(hint, Enum):
+        return _decoded_enum(key, hint, f"{where} key")
+    if hint is str:
+        return key
+    raise ValueError(f"{where} is keyed by {hint!r}, which a sidecar cannot carry")
+
+
+def _decoded_enum(payload: Any, hint: type[Enum], where: str) -> Enum:
+    """Rebuild an enum member, refusing a value the vocabulary does not hold."""
+    try:
+        return hint(payload)
+    except ValueError as error:
+        raise ValueError(
+            f"{where} is {payload!r}, which is not one of "
+            f"{', '.join(repr(member.value) for member in hint)}: {error}"
+        ) from error
+
+
+def _decoded_stamp(payload: Any, hint: type[date], where: str) -> date:
+    """Rebuild a day or an instant from its ISO 8601 form.
+
+    ``date.fromisoformat`` refuses a string carrying a time, which is the check
+    that keeps an instant out of a field meaning a day. A day that secretly
+    carries a time sorts against a real date in ways that look right until two
+    runs on one date stop comparing equal.
+    """
+    if not isinstance(payload, str):
+        raise ValueError(
+            f"{where} should be an ISO 8601 string, found {_shape(payload)}"
+        )
+    try:
+        return hint.fromisoformat(payload)
+    except ValueError as error:
+        raise ValueError(
+            f"{where} is {payload!r}, which is not an ISO 8601 {hint.__name__}: {error}"
+        ) from error
+
+
+def _decoded_scalar(payload: Any, hint: type, where: str) -> Any:
+    """Check a string, boolean or number against the field that holds it.
+
+    ``bool`` is handled before ``int`` and excluded from both ``int`` and
+    ``float``, because it is a subclass of ``int`` in Python and ``True``
+    arriving in a risk figure would pass an ``isinstance`` check and then be
+    arithmetic.
+    """
+    if hint is bool:
+        if isinstance(payload, bool):
+            return payload
+    elif hint is int:
+        if isinstance(payload, int) and not isinstance(payload, bool):
+            return payload
+    elif hint is float:
+        if isinstance(payload, int | float) and not isinstance(payload, bool):
+            return float(payload)
+    elif hint is str:
+        if isinstance(payload, str):
+            return payload
+    else:
+        raise ValueError(f"{where} is annotated {hint!r}, which a sidecar cannot carry")
+    raise ValueError(
+        f"{where} should be a {hint.__name__}, found {_shape(payload)}: {payload!r}"
+    )
+
+
+def _decoded_dataclass(payload: Any, hint: type, where: str) -> Any:
+    """Rebuild one dataclass, requiring exactly the fields it declares.
+
+    A missing field is not filled from the dataclass default. The writer emits
+    every field, so an absent one means a sidecar from a different version of
+    this package, and a default substituted here would invent a number that
+    looks like the run's own.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError(f"{where} should be an object, found {_shape(payload)}")
+    declared = {item.name for item in fields(hint)}
+    unknown = sorted(set(payload) - declared)
+    if unknown:
+        raise ValueError(
+            f"{where} carries {', '.join(unknown)}, which "
+            f"{hint.__name__} does not declare"
+        )
+    missing = sorted(declared - set(payload))
+    if missing:
+        raise ValueError(
+            f"{where} is missing {', '.join(missing)}, which {hint.__name__} declares"
+        )
+    hints = _annotations(hint)
+    return hint(
+        **{
+            name: _decoded(payload[name], hints[name], f"{where}.{name}")
+            for name in declared
+        }
+    )
+
+
+_ANNOTATIONS: dict[type, Mapping[str, Any]] = {}
+
+
+def _annotations(hint: type) -> Mapping[str, Any]:
+    """Resolve one dataclass's annotations to real types, once per class.
+
+    `fbe.types` uses ``from __future__ import annotations``, so every hint on
+    it is a string until something resolves it. Cached because a report holds
+    eight currencies of seven pillars, and resolving the same six classes on
+    every one of them is the whole cost of loading a report.
+    """
+    resolved = _ANNOTATIONS.get(hint)
+    if resolved is None:
+        resolved = get_type_hints(hint)
+        _ANNOTATIONS[hint] = resolved
+    return resolved
+
+
+def _shape(payload: Any) -> str:
+    """Name what JSON actually produced, for a message about what it should be."""
+    if payload is None:
+        return "null"
+    return {
+        bool: "a boolean",
+        int: "a number",
+        float: "a number",
+        str: "a string",
+        list: "a list",
+        dict: "an object",
+    }.get(type(payload), f"a {type(payload).__name__}")
 
 
 def _grid(pairs: Sequence[PairBias]) -> Mapping[str, Mapping[str, PairBias | None]]:
@@ -487,12 +1124,29 @@ def _pillar_order(config: Config | None) -> Sequence[PillarName]:
             `fbe.types.PillarName`.
 
     Returns:
-        The display order for pillar columns.
+        Every pillar, heaviest configured weight first. Ties keep
+        `fbe.types.PillarName`'s own declaration order, which runs from the
+        fastest and heaviest driver to the slowest, because `sorted` is stable
+        over a sequence already in that order.
+
+        ``None`` gives the declaration order unchanged. That is the honest
+        answer for a caller that supplied no weights: sorting a map nobody
+        passed would be a claim about weights this run does not hold.
 
     Raises:
-        NotImplementedError: Always, until rendering lands.
+        KeyError: When the config carries no weight for a pillar.
+            `fbe.scoring.score_currencies` raises on the same lookup, so a
+            quiet default here would only move where the operator meets it,
+            and move it to the one place that prints a table rather than
+            stopping.
+
+    `fbe.cli._pillar_order` holds the same rule for a `fbe.config.ScoringConfig`
+    and orders the ``--pillars`` columns with it. The two must agree, or the
+    terminal table and the morning Markdown print the same seven numbers under
+    different headings; ``tests/test_report.py`` asserts they do.
 
     """
-    raise NotImplementedError(
-        "fbe.report._pillar_order is scaffolded; see docs/roadmap.md Phase 5"
-    )
+    if config is None:
+        return tuple(PillarName)
+    weights = config.scoring.weights
+    return tuple(sorted(PillarName, key=lambda name: -weights[name]))

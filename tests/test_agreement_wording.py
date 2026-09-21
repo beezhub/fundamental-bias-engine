@@ -18,9 +18,10 @@ by changing the arithmetic to a headcount, which would discard the fact the
 weighting exists to carry, that a heavy pillar dissenting is worse than a light
 one dissenting.
 
-The templates are rendered directly against the real template directory, the
-same approach and for the same reason as `tests/test_blockers.py`: the render
-entry points are still scaffolded, so going through them would assert nothing.
+The report assertions go through `fbe.report.render_report`, which is the path
+a morning run takes. The dashboard has no such entry point yet, so its template
+is rendered directly against the real template directory with a hand-built
+context, the same approach and for the same reason as `tests/test_blockers.py`.
 
 Nothing here reaches the network.
 """
@@ -38,7 +39,8 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 import fbe
 from fbe.config import ScoringConfig
-from fbe.types import Conviction, Direction, PairBias
+from fbe.report import render_report
+from fbe.types import BiasReport, Conviction, Direction, PairBias, TradeIdea
 
 PACKAGE_ROOT = Path(fbe.__file__).resolve().parent
 ASOF = date(2026, 3, 2)
@@ -124,8 +126,17 @@ def _base_context() -> dict[str, Any]:
 
 
 def _render_report() -> str:
-    environment = _environment(PACKAGE_ROOT / "templates")
-    return environment.get_template("report.md.j2").render(**_base_context())
+    """Render the Markdown report the way ``fbe report`` renders it."""
+    return render_report(
+        BiasReport(
+            asof=ASOF,
+            generated_at=GENERATED_AT,
+            currencies=(),
+            pairs=(_bias(),),
+            shortlist=(TradeIdea(bias=_bias(), rationale="Rates gap is wide."),),
+            config_digest="abc123",
+        )
+    )
 
 
 def _render_dashboard() -> str:

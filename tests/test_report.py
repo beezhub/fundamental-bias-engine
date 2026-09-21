@@ -1,0 +1,1349 @@
+"""The dated report on disk: writing it, reading it back, and diffing two runs.
+
+A report that exists only in a terminal is not a record. Phase 6 joins the
+journal to these files, so everything here is about the two ways that join can
+silently produce a wrong answer:
+
+- A sidecar that round-trips *almost*. An enum returning as a bare string, a
+  ``None`` returning as ``0.0``, a date returning as a string: each leaves a
+  `fbe.types.BiasReport` that reads fine and compares wrong. Comparing two
+  serialised blobs would pass on every one of them, so the round-trip test
+  walks the dataclass field by field.
+- A pair of files that disagree. The Markdown is for a reader and the sidecar
+  is what ``--compare`` reads, so a run that writes one and not the other
+  leaves a what-changed section that is empty forever with nothing raising to
+  say why.
+- A diff that treats an absent score as zero. A currency that dropped out of
+  the universe and a currency that scored zero mean opposite things, and the
+  first printed as a delta is a fundamental move that never happened.
+
+Nothing here reaches the network. Every test writes under ``tmp_path``.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import fields, replace
+from datetime import UTC, date, datetime
+from pathlib import Path
+from typing import Any
+
+import pytest
+from jinja2 import UndefinedError
+
+from fbe.cli import _pillar_order as cli_pillar_order
+from fbe.config import Config, DataConfig, RiskConfig, ScoringConfig
+from fbe.report import (
+    SIDECAR_FORMAT,
+    CurrencyChange,
+    ReportDiff,
+    _grid,
+    _pillar_order,
+    build_context,
+    diff_reports,
+    latest_report,
+    load_report,
+    render_report,
+    write_report,
+)
+from fbe.types import (
+    BiasReport,
+    Conviction,
+    CurrencyScore,
+    Direction,
+    Frequency,
+    Observation,
+    PairBias,
+    PillarName,
+    PillarScore,
+    PositionSize,
+    TradeIdea,
+)
+
+ASOF = date(2026, 6, 30)
+YESTERDAY = date(2026, 6, 29)
+GENERATED_AT = datetime(2026, 6, 30, 17, 0, tzinfo=UTC)
+RELEASED_AT = datetime(2026, 6, 29, 12, 30, tzinfo=UTC)
+
+CONTEXT_KEYS = {
+    "report",
+    "diff",
+    "config",
+    "grid",
+    "pillar_order",
+    "currencies",
+    "pairs",
+}
+"""The keys `fbe.report.build_context` documents. Both templates read these and
+nothing else, so a key added without a docstring line is a key the dashboard
+will not know to render."""
+
+
+# --- fixtures ----------------------------------------------------------------
+
+
+def observation(
+    indicator: str = "yield_2y",
+    currency: str = "USD",
+    value: float = 4.25,
+    released_at: datetime | None = RELEASED_AT,
+    meta: dict[str, Any] | None = None,
+) -> Observation:
+    return Observation(
+        indicator=indicator,
+        currency=currency,
+        value=value,
+        period=date(2026, 6, 1),
+        source="fixture",
+        series_id="FIXTURE",
+        unit="percent",
+        frequency=Frequency.DAILY,
+        released_at=released_at,
+        revision=0,
+        meta=meta if meta is not None else {},
+    )
+
+
+def pillar_score(
+    pillar: PillarName = PillarName.MONETARY,
+    currency: str = "USD",
+    score: float = 1.5,
+    raw: float | None = 0.8,
+    z: float | None = 1.1,
+    weight: float = 0.30,
+) -> PillarScore:
+    return PillarScore(
+        pillar=pillar,
+        currency=currency,
+        raw=raw,
+        z=z,
+        score=score,
+        weight=weight,
+        asof=ASOF,
+        staleness_days=2,
+        inputs=(observation(currency=currency),),
+        notes=f"{pillar.value} working for {currency}",
+        diagnostics={"emit_sd": 0.91, "contamination": 0.87},
+        blend_divisor_path="rolling",
+        freshness_factor=0.95,
+    )
+
+
+def currency_score(
+    currency: str = "USD",
+    composite: float = 1.20,
+    rank: int | None = 1,
+    pillars: dict[PillarName, PillarScore] | None = None,
+) -> CurrencyScore:
+    return CurrencyScore(
+        currency=currency,
+        composite=composite,
+        pillars=(
+            pillars
+            if pillars is not None
+            else {
+                # Deliberately not the composite: a renderer that recomputed
+                # the headline from the pillars would then print the right
+                # number for the wrong reason, and the perturbation test below
+                # could not tell.
+                name: pillar_score(name, currency, score=1.5 - 0.1 * index)
+                for index, name in enumerate(PillarName)
+            }
+        ),
+        asof=ASOF,
+        rank=rank,
+        dispersion=0.44,
+        coverage=0.86,
+    )
+
+
+def pair_bias(
+    pair: str = "EURUSD",
+    spread: float = -1.42,
+    direction: Direction = Direction.SHORT,
+    conviction: Conviction = Conviction.MEDIUM,
+    tradeable: bool = True,
+    blockers: tuple[str, ...] = ("cost:unchecked", "event:unchecked"),
+    base_score: float = -0.22,
+    quote_score: float = 1.20,
+) -> PairBias:
+    return PairBias(
+        pair=pair,
+        base=pair[:3],
+        quote=pair[3:],
+        spread=spread,
+        direction=direction,
+        conviction=conviction,
+        asof=ASOF,
+        base_score=base_score,
+        quote_score=quote_score,
+        agreement=0.70,
+        tradeable=tradeable,
+        blockers=blockers,
+    )
+
+
+def position_size(pair: str = "EURUSD") -> PositionSize:
+    return PositionSize(
+        pair=pair,
+        account_currency="ZAR",
+        account_balance=2000.0,
+        risk_fraction=0.015,
+        risk_amount=30.0,
+        realised_risk_amount=28.4,
+        entry=1.0850,
+        stop=1.0900,
+        stop_distance_pips=50.0,
+        units=1200.0,
+        lots=0.01,
+        notional=22500.0,
+        warnings=("lot step rounded the size down",),
+    )
+
+
+def bias_report(
+    asof: date = ASOF,
+    currencies: tuple[CurrencyScore, ...] | None = None,
+    pairs: tuple[PairBias, ...] | None = None,
+    shortlist: tuple[TradeIdea, ...] | None = None,
+    warnings: tuple[str, ...] = ("POSITIONING had no data for any currency",),
+    config_digest: str = "abc123",
+) -> BiasReport:
+    if currencies is None:
+        currencies = (
+            currency_score("USD", 1.20, rank=1),
+            currency_score("EUR", -0.22, rank=2),
+        )
+    if pairs is None:
+        pairs = (pair_bias(),)
+    if shortlist is None:
+        shortlist = (
+            TradeIdea(
+                bias=pairs[0],
+                size=position_size(pairs[0].pair),
+                blackout_until=None,
+                rationale="The rates gap is the widest in the universe.",
+            ),
+        )
+    return BiasReport(
+        asof=asof,
+        generated_at=GENERATED_AT,
+        currencies=currencies,
+        pairs=pairs,
+        events=(),
+        shortlist=shortlist,
+        warnings=warnings,
+        config_digest=config_digest,
+    )
+
+
+def config_with(**weights: float) -> Config:
+    """A config whose pillar weights are exactly the ones given."""
+    return Config(
+        risk=RiskConfig(),
+        scoring=ScoringConfig(
+            weights={PillarName(name): value for name, value in weights.items()}
+        ),
+        data=DataConfig(),
+    )
+
+
+def sidecar_of(markdown: Path) -> Path:
+    return markdown.with_suffix(".json")
+
+
+# --- _pillar_order -----------------------------------------------------------
+
+
+def test_pillars_come_back_heaviest_weight_first() -> None:
+    """The column order is the reading order, so it follows the weights.
+
+    Weights chosen so the answer is not `PillarName`'s declaration order and
+    not its reverse either. Either of those would pass against a function that
+    ignored the config entirely.
+    """
+    config = config_with(
+        monetary=0.05,
+        inflation=0.40,
+        growth=0.05,
+        employment=0.20,
+        external=0.05,
+        positioning=0.05,
+        risk=0.20,
+    )
+
+    assert tuple(_pillar_order(config)) == (
+        PillarName.INFLATION,
+        PillarName.EMPLOYMENT,
+        PillarName.RISK,
+        PillarName.MONETARY,
+        PillarName.GROWTH,
+        PillarName.EXTERNAL,
+        PillarName.POSITIONING,
+    )
+
+
+def test_no_config_gives_the_declaration_order() -> None:
+    """``None`` means no weights are known, which is not the same as flat.
+
+    The declaration order runs from the fastest and heaviest driver to the
+    slowest, so it is the honest fallback. Sorting a map that does not exist
+    would be a claim about weights nobody supplied.
+    """
+    assert tuple(_pillar_order(None)) == tuple(PillarName)
+
+
+def test_every_pillar_appears_exactly_once() -> None:
+    flat = config_with(**{name.value: 0.1 for name in PillarName})
+
+    assert sorted(_pillar_order(flat)) == sorted(PillarName)
+
+
+def test_the_report_and_the_cli_agree_on_the_order() -> None:
+    """Two copies of one rule, and the pair matters more than either copy.
+
+    `fbe.cli._pillar_order` orders the ``--pillars`` columns and this one
+    orders the report's. A reader comparing a terminal table with the morning
+    Markdown would see the same seven numbers under different headings, and
+    nothing on either page would say which was which.
+    """
+    config = config_with(
+        monetary=0.05,
+        inflation=0.40,
+        growth=0.05,
+        employment=0.20,
+        external=0.05,
+        positioning=0.05,
+        risk=0.20,
+    )
+
+    assert tuple(_pillar_order(config)) == cli_pillar_order(config.scoring)
+
+
+def test_a_weight_missing_from_the_config_raises() -> None:
+    """A pillar with no weight is a config mistake, not a pillar ranked last.
+
+    `fbe.scoring.score_currencies` raises on the same lookup, so a quiet
+    default here would only move where the operator meets it, and move it to
+    the one place that prints a table rather than stopping.
+    """
+    with pytest.raises(KeyError):
+        _pillar_order(config_with(monetary=0.3))
+
+
+# --- the sidecar round trip --------------------------------------------------
+
+
+def test_a_report_round_trips_field_by_field(tmp_path: Path) -> None:
+    """Field by field, not blob against blob.
+
+    Comparing two serialised dictionaries passes whenever the encoder and the
+    decoder share a mistake, which is exactly the mistake a single author
+    makes. Comparing the reconstructed dataclass against the original catches
+    it, and naming the field in the assertion says which one drifted.
+    """
+    original = bias_report()
+
+    loaded = load_report(write_report(original, tmp_path))
+
+    for item in fields(BiasReport):
+        assert getattr(loaded, item.name) == getattr(original, item.name), item.name
+    assert loaded == original
+
+
+def test_enums_return_as_enums_and_not_as_strings(tmp_path: Path) -> None:
+    """A `StrEnum` compares equal to its own value, which hides this entirely.
+
+    ``Direction.SHORT == "short"`` is true, so an equality assertion on the
+    field passes against a decoder that never rebuilt the enum. The next
+    consumer to call ``.value`` on it gets an ``AttributeError`` days later,
+    on a Phase 6 join nobody is watching.
+    """
+    loaded = load_report(write_report(bias_report(), tmp_path))
+
+    row = loaded.pairs[0]
+    assert isinstance(row.direction, Direction)
+    assert isinstance(row.conviction, Conviction)
+    assert all(isinstance(name, PillarName) for name in loaded.currencies[0].pillars)
+    assert isinstance(
+        loaded.currencies[0].pillars[PillarName.MONETARY].inputs[0].frequency,
+        Frequency,
+    )
+
+
+def test_dates_and_datetimes_return_as_dates_and_datetimes(tmp_path: Path) -> None:
+    """``asof`` is a date and ``generated_at`` is an instant, and they differ.
+
+    A date decoded as a datetime sorts and compares against a real date in
+    ways that look right until a report is compared with one written on the
+    same day by a different run.
+    """
+    loaded = load_report(write_report(bias_report(), tmp_path))
+
+    assert type(loaded.asof) is date
+    assert isinstance(loaded.generated_at, datetime)
+    assert loaded.generated_at.utcoffset() is not None
+    assert loaded.generated_at == GENERATED_AT
+
+
+def test_an_absent_number_does_not_return_as_zero(tmp_path: Path) -> None:
+    """The distinction the whole package is built on, checked on the wire.
+
+    ``raw`` and ``z`` are ``None`` when a pillar formed no opinion and a real
+    number when it formed one of zero. A codec that writes ``None`` and reads
+    back ``0.0`` turns "no evidence" into "evidence of neutral" on every
+    report ever written, and nothing downstream can tell.
+    """
+    absent = replace(pillar_score(), raw=None, z=None, freshness_factor=None, score=0.0)
+    original = bias_report(
+        currencies=(currency_score("USD", 0.0, pillars={PillarName.MONETARY: absent}),)
+    )
+
+    loaded = load_report(write_report(original, tmp_path))
+
+    restored = loaded.currencies[0].pillars[PillarName.MONETARY]
+    assert restored.raw is None
+    assert restored.z is None
+    assert restored.freshness_factor is None
+    assert restored.score == 0.0
+
+
+def test_a_zero_and_an_absence_do_not_collapse_into_each_other(tmp_path: Path) -> None:
+    """The other half of the same rule, from the side that reads zero."""
+    scored = replace(pillar_score(), raw=0.0, z=0.0, freshness_factor=0.0)
+    original = bias_report(
+        currencies=(currency_score("USD", 0.0, pillars={PillarName.MONETARY: scored}),)
+    )
+
+    restored = (
+        load_report(write_report(original, tmp_path))
+        .currencies[0]
+        .pillars[PillarName.MONETARY]
+    )
+
+    assert restored.raw == 0.0
+    assert restored.z == 0.0
+    assert restored.freshness_factor == 0.0
+
+
+def test_the_config_digest_survives(tmp_path: Path) -> None:
+    """Without it a report cannot be tied to the weights that produced it."""
+    loaded = load_report(write_report(bias_report(config_digest="d4f0c1"), tmp_path))
+
+    assert loaded.config_digest == "d4f0c1"
+
+
+def test_every_pair_survives_in_order(tmp_path: Path) -> None:
+    """Order is meaning here: `fbe.universe.ALL_PAIRS` fixes the convention."""
+    pairs = (
+        pair_bias("EURUSD", spread=-1.42, direction=Direction.SHORT),
+        pair_bias("GBPUSD", spread=0.35, direction=Direction.LONG),
+        pair_bias("AUDJPY", spread=2.10, direction=Direction.LONG),
+    )
+    original = bias_report(pairs=pairs, shortlist=())
+
+    loaded = load_report(write_report(original, tmp_path))
+
+    assert tuple(row.pair for row in loaded.pairs) == ("EURUSD", "GBPUSD", "AUDJPY")
+    assert tuple(loaded.pairs) == pairs
+
+
+def test_the_seven_pillars_survive_for_every_currency(tmp_path: Path) -> None:
+    original = bias_report()
+
+    loaded = load_report(write_report(original, tmp_path))
+
+    for score in loaded.currencies:
+        assert set(score.pillars) == set(PillarName)
+
+
+def test_an_observation_keeps_its_untyped_meta(tmp_path: Path) -> None:
+    """``Observation.meta`` is ``Mapping[str, Any]`` and carries source detail.
+
+    Dropping it loses the only record of how a number arrived, and the loss is
+    invisible: the score it produced is still on the page.
+    """
+    input_with_meta = observation(meta={"vintage": "2026-06-29", "revised": True})
+    scored = replace(pillar_score(), inputs=(input_with_meta,))
+    original = bias_report(
+        currencies=(currency_score("USD", 1.2, pillars={PillarName.MONETARY: scored}),)
+    )
+
+    restored = (
+        load_report(write_report(original, tmp_path))
+        .currencies[0]
+        .pillars[PillarName.MONETARY]
+    )
+
+    assert restored.inputs[0].meta == {"vintage": "2026-06-29", "revised": True}
+
+
+def test_an_observation_with_no_release_stamp_round_trips_as_absent(
+    tmp_path: Path,
+) -> None:
+    """``released_at`` is ``None`` for sources that publish no timestamp.
+
+    Decoded as anything else it would claim a release date the source never
+    gave, which is the look-ahead bug wearing a serialisation costume.
+    """
+    unstamped = observation(released_at=None)
+    scored = replace(pillar_score(), inputs=(unstamped,))
+    original = bias_report(
+        currencies=(currency_score("USD", 1.2, pillars={PillarName.MONETARY: scored}),)
+    )
+
+    restored = (
+        load_report(write_report(original, tmp_path))
+        .currencies[0]
+        .pillars[PillarName.MONETARY]
+    )
+
+    assert restored.inputs[0].released_at is None
+
+
+def test_the_shortlist_and_its_sizes_survive(tmp_path: Path) -> None:
+    """`TradeIdea` carries the realised risk Phase 6 measures an R against."""
+    loaded = load_report(write_report(bias_report(), tmp_path))
+
+    idea = loaded.shortlist[0]
+    assert isinstance(idea, TradeIdea)
+    assert idea.size is not None
+    assert idea.size.realised_risk_amount == 28.4
+    assert idea.rationale == "The rates gap is the widest in the universe."
+
+
+def test_load_report_accepts_the_markdown_path(tmp_path: Path) -> None:
+    """The caller holds the Markdown path, because that is what `write_report`
+    returns, and asking it to derive the sidecar name would put
+    `SIDECAR_FORMAT` in two places."""
+    markdown = write_report(bias_report(), tmp_path)
+
+    assert load_report(markdown) == load_report(sidecar_of(markdown))
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["not json at all", "[]", '"a string"', "17"],
+)
+def test_a_sidecar_that_is_not_a_report_object_raises(
+    tmp_path: Path, content: str
+) -> None:
+    """Every one of these would otherwise fail later, somewhere else."""
+    path = tmp_path / SIDECAR_FORMAT.format(asof=ASOF)
+    path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=str(path.name)):
+        load_report(path)
+
+
+def test_a_missing_field_in_the_sidecar_raises(tmp_path: Path) -> None:
+    markdown = write_report(bias_report(), tmp_path)
+    path = sidecar_of(markdown)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["config_digest"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="config_digest"):
+        load_report(path)
+
+
+def test_an_unknown_field_in_the_sidecar_raises(tmp_path: Path) -> None:
+    """A field this version does not know is a report from another version.
+
+    Ignored, it would load a report missing whatever that field carried, and
+    the diff against it would describe a change that was a version difference.
+    """
+    markdown = write_report(bias_report(), tmp_path)
+    path = sidecar_of(markdown)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["sharpe_ratio"] = 1.4
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="sharpe_ratio"):
+        load_report(path)
+
+
+def test_an_unknown_enum_value_raises_and_names_it(tmp_path: Path) -> None:
+    markdown = write_report(bias_report(), tmp_path)
+    path = sidecar_of(markdown)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["pairs"][0]["direction"] = "buy"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="buy"):
+        load_report(path)
+
+
+def test_a_timestamp_that_is_not_a_date_raises(tmp_path: Path) -> None:
+    markdown = write_report(bias_report(), tmp_path)
+    path = sidecar_of(markdown)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["asof"] = "the thirtieth"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="the thirtieth"):
+        load_report(path)
+
+
+def test_a_date_field_holding_an_instant_raises(tmp_path: Path) -> None:
+    """``asof`` is a day. A day that secretly carries a time sorts differently
+    from one that does not, and two runs on one date stop comparing equal."""
+    markdown = write_report(bias_report(), tmp_path)
+    path = sidecar_of(markdown)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["asof"] = "2026-06-30T17:00:00+00:00"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_report(path)
+
+
+def test_a_number_field_holding_text_raises(tmp_path: Path) -> None:
+    markdown = write_report(bias_report(), tmp_path)
+    path = sidecar_of(markdown)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["pairs"][0]["spread"] = "wide"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="spread"):
+        load_report(path)
+
+
+def test_a_pillar_map_keyed_by_something_that_is_not_a_pillar_raises(
+    tmp_path: Path,
+) -> None:
+    markdown = write_report(bias_report(), tmp_path)
+    path = sidecar_of(markdown)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    pillars = payload["currencies"][0]["pillars"]
+    pillars["sentiment"] = pillars.pop("monetary")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="sentiment"):
+        load_report(path)
+
+
+def test_the_sidecar_is_a_json_object_keyed_by_field_name(tmp_path: Path) -> None:
+    """Pinned because Phase 6 and any external reader parse this by hand."""
+    markdown = write_report(bias_report(), tmp_path)
+
+    payload = json.loads(sidecar_of(markdown).read_text(encoding="utf-8"))
+
+    assert set(payload) == {item.name for item in fields(BiasReport)}
+    assert payload["asof"] == "2026-06-30"
+    assert payload["pairs"][0]["direction"] == "short"
+    assert "monetary" in payload["currencies"][0]["pillars"]
+
+
+# --- write_report ------------------------------------------------------------
+
+
+def test_both_files_are_written_with_a_shared_stem(tmp_path: Path) -> None:
+    markdown = write_report(bias_report(), tmp_path)
+
+    assert markdown.name == "bias-2026-06-30.md"
+    assert sidecar_of(markdown).exists()
+    assert markdown.exists()
+
+
+def test_write_report_returns_the_markdown_path(tmp_path: Path) -> None:
+    assert write_report(bias_report(), tmp_path).suffix == ".md"
+
+
+def test_the_out_directory_is_created_when_absent(tmp_path: Path) -> None:
+    """The normal case on a routine host, which clones and has no reports dir."""
+    target = tmp_path / "nested" / "reports"
+
+    markdown = write_report(bias_report(), target)
+
+    assert markdown.parent == target
+    assert sidecar_of(markdown).exists()
+
+
+def test_the_markdown_failing_to_write_leaves_no_sidecar(tmp_path: Path) -> None:
+    """Both files or neither, and this is the half that fails silently.
+
+    A sidecar without its Markdown is invisible to a reader and perfectly
+    readable to ``--compare``, so the run looks complete and the audit trail
+    has a hole in it that only shows up when someone goes looking months
+    later.
+    """
+    (tmp_path / "bias-2026-06-30.md").mkdir()
+
+    with pytest.raises(OSError):
+        write_report(bias_report(), tmp_path)
+
+    assert not (tmp_path / "bias-2026-06-30.json").exists()
+
+
+def test_a_failure_leaves_no_temporary_files_behind(tmp_path: Path) -> None:
+    (tmp_path / "bias-2026-06-30.md").mkdir()
+
+    with pytest.raises(OSError):
+        write_report(bias_report(), tmp_path)
+
+    assert sorted(item.name for item in tmp_path.iterdir()) == ["bias-2026-06-30.md"]
+
+
+def test_overwrite_false_refuses_when_the_markdown_exists(tmp_path: Path) -> None:
+    write_report(bias_report(), tmp_path)
+
+    with pytest.raises(FileExistsError, match="bias-2026-06-30"):
+        write_report(bias_report(), tmp_path, overwrite=False)
+
+
+def test_overwrite_false_refuses_when_only_the_sidecar_exists(tmp_path: Path) -> None:
+    """Governed together, so a run can never pair this run's Markdown with the
+    last run's sidecar."""
+    (tmp_path / "bias-2026-06-30.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="bias-2026-06-30"):
+        write_report(bias_report(), tmp_path, overwrite=False)
+
+
+def test_overwrite_false_changes_neither_file(tmp_path: Path) -> None:
+    markdown = write_report(bias_report(config_digest="first"), tmp_path)
+    before = (
+        markdown.read_bytes(),
+        sidecar_of(markdown).read_bytes(),
+    )
+
+    with pytest.raises(FileExistsError):
+        write_report(bias_report(config_digest="second"), tmp_path, overwrite=False)
+
+    assert (markdown.read_bytes(), sidecar_of(markdown).read_bytes()) == before
+
+
+def test_overwrite_true_replaces_both(tmp_path: Path) -> None:
+    """The normal case: a later run saw more data than the earlier one."""
+    write_report(bias_report(config_digest="first"), tmp_path)
+
+    markdown = write_report(bias_report(config_digest="second"), tmp_path)
+
+    assert load_report(markdown).config_digest == "second"
+    assert "second" in markdown.read_text(encoding="utf-8")
+
+
+def test_the_diff_reaches_the_markdown_and_not_the_sidecar(tmp_path: Path) -> None:
+    """The sidecar is the run. A diff is a statement about two runs, and
+    storing it would make the second load of one file depend on which other
+    file it was compared against the first time."""
+    diff = diff_reports(bias_report(asof=YESTERDAY), bias_report())
+
+    markdown = write_report(bias_report(), tmp_path, diff=diff)
+
+    assert "Against 2026-06-29" in markdown.read_text(encoding="utf-8")
+    assert set(json.loads(sidecar_of(markdown).read_text(encoding="utf-8"))) == {
+        item.name for item in fields(BiasReport)
+    }
+
+
+# --- latest_report -----------------------------------------------------------
+
+
+def write_dated(directory: Path, *days: date) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for day in days:
+        write_report(bias_report(asof=day), directory)
+
+
+def test_the_newest_report_is_returned(tmp_path: Path) -> None:
+    write_dated(tmp_path, date(2026, 6, 26), date(2026, 6, 30), date(2026, 6, 29))
+
+    found = latest_report(tmp_path)
+
+    assert found is not None
+    assert found.name == "bias-2026-06-30.json"
+
+
+def test_an_empty_directory_holds_no_report(tmp_path: Path) -> None:
+    assert latest_report(tmp_path) is None
+
+
+def test_a_directory_that_does_not_exist_holds_no_report(tmp_path: Path) -> None:
+    """A fresh clone with ``--out`` pointed somewhere new. No reports yet is
+    the honest answer, and it is the same answer as an empty directory."""
+    assert latest_report(tmp_path / "never-created") is None
+
+
+def test_a_markdown_file_on_its_own_is_not_a_report(tmp_path: Path) -> None:
+    """``--compare`` reads the sidecar, so a Markdown with no sidecar is a
+    report nothing can read back."""
+    (tmp_path / "bias-2026-06-30.md").write_text("# not a sidecar", encoding="utf-8")
+
+    assert latest_report(tmp_path) is None
+
+
+def test_before_excludes_a_report_on_its_own_date(tmp_path: Path) -> None:
+    """A backfilled run compares against the run that actually preceded it,
+    which is never itself."""
+    write_dated(tmp_path, date(2026, 6, 26), date(2026, 6, 29), date(2026, 6, 30))
+
+    found = latest_report(tmp_path, before=date(2026, 6, 29))
+
+    assert found is not None
+    assert found.name == "bias-2026-06-26.json"
+
+
+def test_before_earlier_than_every_report_finds_nothing(tmp_path: Path) -> None:
+    write_dated(tmp_path, date(2026, 6, 30))
+
+    assert latest_report(tmp_path, before=date(2026, 1, 1)) is None
+
+
+def test_a_sidecar_name_carrying_no_date_raises_and_names_the_file(
+    tmp_path: Path,
+) -> None:
+    """``bias-*.json`` matches more than the dated files.
+
+    ``bias-backup.json`` sorts after every dated name, so a newest-by-name
+    rule hands it back and ``--compare`` reads a file that is not a report.
+    Skipping it quietly is the other half of the same problem: the newest
+    report is then whatever the glob happened to leave behind.
+    """
+    write_dated(tmp_path, date(2026, 6, 30))
+    (tmp_path / "bias-backup.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="bias-backup.json"):
+        latest_report(tmp_path)
+
+
+# --- diff_reports ------------------------------------------------------------
+
+
+def two_runs(
+    previous_currencies: tuple[CurrencyScore, ...],
+    current_currencies: tuple[CurrencyScore, ...],
+    previous_pairs: tuple[PairBias, ...] = (),
+    current_pairs: tuple[PairBias, ...] = (),
+    previous_digest: str = "abc123",
+    current_digest: str = "abc123",
+    previous_warnings: tuple[str, ...] = (),
+    current_warnings: tuple[str, ...] = (),
+    previous_shortlist: tuple[TradeIdea, ...] = (),
+    current_shortlist: tuple[TradeIdea, ...] = (),
+) -> ReportDiff:
+    return diff_reports(
+        bias_report(
+            asof=YESTERDAY,
+            currencies=previous_currencies,
+            pairs=previous_pairs,
+            shortlist=previous_shortlist,
+            warnings=previous_warnings,
+            config_digest=previous_digest,
+        ),
+        bias_report(
+            asof=ASOF,
+            currencies=current_currencies,
+            pairs=current_pairs,
+            shortlist=current_shortlist,
+            warnings=current_warnings,
+            config_digest=current_digest,
+        ),
+    )
+
+
+def test_the_two_asof_dates_are_carried(tmp_path: Path) -> None:
+    diff = two_runs((currency_score("USD", 1.0),), (currency_score("USD", 1.0),))
+
+    assert diff.previous_asof == YESTERDAY
+    assert diff.current_asof == ASOF
+
+
+def test_a_currency_that_moved_carries_its_delta() -> None:
+    diff = two_runs(
+        (currency_score("USD", 1.00, rank=2),),
+        (currency_score("USD", 1.75, rank=1),),
+    )
+
+    change = diff.currencies[0]
+    assert change == CurrencyChange(
+        currency="USD",
+        previous_composite=1.00,
+        current_composite=1.75,
+        previous_rank=2,
+        current_rank=1,
+        delta=0.75,
+    )
+
+
+def test_a_currency_absent_from_the_baseline_has_no_delta() -> None:
+    """A currency that scored nothing yesterday and +1.2 today did not move
+    +1.2. It appeared. Reported as a delta it is a fundamental move nobody
+    can find in the data."""
+    diff = two_runs((), (currency_score("USD", 1.20),))
+
+    change = diff.currencies[0]
+    assert change.previous_composite is None
+    assert change.delta is None
+    assert change.current_composite == 1.20
+
+
+def test_a_currency_absent_from_the_current_run_has_no_delta() -> None:
+    diff = two_runs((currency_score("USD", 1.20),), ())
+
+    change = diff.currencies[0]
+    assert change.current_composite is None
+    assert change.delta is None
+    assert change.previous_composite == 1.20
+
+
+def test_currencies_are_ordered_by_the_size_of_the_move() -> None:
+    """The biggest move is the one worth checking against the input."""
+    diff = two_runs(
+        (
+            currency_score("USD", 1.00),
+            currency_score("EUR", 0.00),
+            currency_score("JPY", -1.00),
+        ),
+        (
+            currency_score("USD", 1.10),
+            currency_score("EUR", -0.90),
+            currency_score("JPY", -1.40),
+        ),
+    )
+
+    assert [change.currency for change in diff.currencies] == ["EUR", "JPY", "USD"]
+
+
+def test_a_currency_with_no_delta_sorts_after_every_measured_move() -> None:
+    """An appearance is not a move of unknown size, so it does not compete
+    with the measured ones for the top of the list."""
+    diff = two_runs(
+        (currency_score("USD", 1.00),),
+        (currency_score("USD", 1.05), currency_score("CHF", 2.00)),
+    )
+
+    assert [change.currency for change in diff.currencies] == ["USD", "CHF"]
+
+
+def test_a_pair_that_changed_direction_is_reported() -> None:
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        previous_pairs=(pair_bias("AUDJPY", 0.05, Direction.LONG),),
+        current_pairs=(pair_bias("AUDJPY", -0.04, Direction.SHORT),),
+    )
+
+    change = diff.pairs[0]
+    assert change.pair == "AUDJPY"
+    assert change.previous_direction is Direction.LONG
+    assert change.current_direction is Direction.SHORT
+    assert change.flipped is True
+
+
+def test_a_flip_is_recorded_even_when_both_spreads_are_tiny() -> None:
+    """A flip is a change in the story, not only in the number. Gating it on
+    the size of the move would silence exactly the case where the model has
+    changed its mind on thin evidence, which is the one worth seeing."""
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        previous_pairs=(pair_bias("EURUSD", 0.001, Direction.LONG),),
+        current_pairs=(pair_bias("EURUSD", -0.001, Direction.SHORT),),
+    )
+
+    assert diff.pairs[0].flipped is True
+
+
+def test_neutral_to_long_is_a_change_but_not_a_flip() -> None:
+    """Neutral has no side, so there is nothing for it to have flipped from.
+    Counting it would put a run that simply formed an opinion in the same
+    sentence as one that reversed."""
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        previous_pairs=(pair_bias("EURUSD", 0.0, Direction.NEUTRAL),),
+        current_pairs=(pair_bias("EURUSD", 0.9, Direction.LONG),),
+    )
+
+    change = diff.pairs[0]
+    assert change.flipped is False
+    assert change.current_direction is Direction.LONG
+
+
+def test_a_conviction_change_alone_is_reported() -> None:
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        previous_pairs=(pair_bias("EURUSD", -1.4, Direction.SHORT, Conviction.LOW),),
+        current_pairs=(pair_bias("EURUSD", -1.4, Direction.SHORT, Conviction.HIGH),),
+    )
+
+    change = diff.pairs[0]
+    assert change.previous_conviction is Conviction.LOW
+    assert change.current_conviction is Conviction.HIGH
+    assert change.flipped is False
+
+
+def test_a_pair_whose_story_did_not_change_is_not_listed() -> None:
+    """Twenty-eight unchanged rows under "what changed" is a section nobody
+    reads, and the flip in the middle of it is the thing it exists to show."""
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        previous_pairs=(pair_bias("EURUSD", -1.40),),
+        current_pairs=(pair_bias("EURUSD", -1.31),),
+    )
+
+    assert diff.pairs == ()
+
+
+def test_a_reported_pair_carries_both_spreads() -> None:
+    """So the reader can see how far the number moved to produce the flip."""
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        previous_pairs=(pair_bias("EURUSD", 0.40, Direction.LONG),),
+        current_pairs=(pair_bias("EURUSD", -0.60, Direction.SHORT),),
+    )
+
+    change = diff.pairs[0]
+    assert change.previous_spread == 0.40
+    assert change.current_spread == -0.60
+
+
+def test_a_pair_the_current_run_does_not_hold_is_reported_as_absent() -> None:
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        previous_pairs=(pair_bias("EURUSD", -1.4, Direction.SHORT),),
+        current_pairs=(),
+    )
+
+    change = diff.pairs[0]
+    assert change.current_direction is None
+    assert change.current_spread is None
+    assert change.previous_direction is Direction.SHORT
+
+
+def test_flips_are_listed_before_other_changes() -> None:
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        previous_pairs=(
+            pair_bias("EURUSD", -2.0, Direction.SHORT, Conviction.LOW),
+            pair_bias("AUDJPY", 0.05, Direction.LONG, Conviction.LOW),
+        ),
+        current_pairs=(
+            pair_bias("EURUSD", -2.0, Direction.SHORT, Conviction.HIGH),
+            pair_bias("AUDJPY", -0.04, Direction.SHORT, Conviction.LOW),
+        ),
+    )
+
+    assert [change.pair for change in diff.pairs] == ["AUDJPY", "EURUSD"]
+
+
+def test_a_changed_digest_is_reported_as_a_changed_config() -> None:
+    """Re-weighting moves every currency at once. Read as a market move it is
+    the fastest way to talk yourself into a trade that is not there."""
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.4),),
+        previous_digest="abc123",
+        current_digest="ff0099",
+    )
+
+    assert diff.config_changed is True
+
+
+def test_an_unchanged_digest_leaves_config_changed_false() -> None:
+    diff = two_runs((currency_score("USD", 1.0),), (currency_score("USD", 1.4),))
+
+    assert diff.config_changed is False
+
+
+def test_shortlist_arrivals_and_departures_are_named() -> None:
+    before = TradeIdea(bias=pair_bias("EURUSD"))
+    after = TradeIdea(bias=pair_bias("GBPJPY"))
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        previous_shortlist=(before,),
+        current_shortlist=(after,),
+    )
+
+    assert diff.shortlist_added == ("GBPJPY",)
+    assert [pair for pair, _ in diff.shortlist_removed] == ["EURUSD"]
+
+
+def test_a_pair_that_left_the_shortlist_says_why_from_the_current_run() -> None:
+    """The reason is read off the current run's own row, which is data both
+    reports carry. Anything else would be a reason invented by the renderer."""
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        current_pairs=(
+            pair_bias(
+                "EURUSD",
+                tradeable=False,
+                blockers=("cost", "event:unchecked"),
+            ),
+        ),
+        previous_shortlist=(TradeIdea(bias=pair_bias("EURUSD")),),
+    )
+
+    _, reason = diff.shortlist_removed[0]
+    assert "cost" in reason
+    assert "event:unchecked" not in reason
+
+
+def test_a_pair_that_left_with_the_run_says_so() -> None:
+    """A pair the current run does not hold at all has no row to read a
+    reason from, and saying nothing would read as a pair that was simply
+    passed over."""
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        current_pairs=(),
+        previous_shortlist=(TradeIdea(bias=pair_bias("EURUSD")),),
+    )
+
+    _, reason = diff.shortlist_removed[0]
+    assert reason
+    assert "current run" in reason
+
+
+def test_a_shortlist_that_did_not_change_produces_no_entries() -> None:
+    idea = TradeIdea(bias=pair_bias("EURUSD"))
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        previous_shortlist=(idea,),
+        current_shortlist=(idea,),
+    )
+
+    assert diff.shortlist_added == ()
+    assert diff.shortlist_removed == ()
+
+
+def test_new_and_resolved_warnings_are_separated() -> None:
+    diff = two_runs(
+        (currency_score("USD", 1.0),),
+        (currency_score("USD", 1.0),),
+        previous_warnings=("cftc unreachable", "POSITIONING had no data"),
+        current_warnings=("POSITIONING had no data", "fred returned 503"),
+    )
+
+    assert diff.new_warnings == ("fred returned 503",)
+    assert diff.resolved_warnings == ("cftc unreachable",)
+
+
+# --- build_context -----------------------------------------------------------
+
+
+def test_the_context_carries_exactly_the_documented_keys() -> None:
+    """The dashboard renders the same mapping. A key added here and not
+    documented is a key one template reads and the other does not know about,
+    which is how two views of one run start telling different stories."""
+    context = build_context(
+        bias_report(), config=config_with(**{name.value: 0.1 for name in PillarName})
+    )
+
+    assert set(context) == CONTEXT_KEYS
+
+
+def test_the_context_hands_the_template_the_report_itself() -> None:
+    """Not a copy and not a summary: the template reads fields off it, and a
+    reshaped object here would be a second place for the layout to be decided."""
+    report = bias_report()
+
+    assert build_context(report)["report"] is report
+
+
+def test_currencies_come_back_strongest_first() -> None:
+    report = bias_report(
+        currencies=(
+            currency_score("EUR", -0.22, rank=3),
+            currency_score("USD", 1.20, rank=1),
+            currency_score("JPY", 0.40, rank=2),
+        ),
+        pairs=(),
+        shortlist=(),
+    )
+
+    order = [score.currency for score in build_context(report)["currencies"]]
+
+    assert order == ["USD", "JPY", "EUR"]
+
+
+def test_currencies_with_equal_composites_keep_a_stable_order() -> None:
+    """`fbe.scoring.score_currencies` breaks ties by ISO code so that two runs
+    on the same data produce the same table. The renderer has to agree, or the
+    rank column prints out of order against a list it did not sort the same
+    way."""
+    report = bias_report(
+        currencies=(
+            currency_score("JPY", 1.00, rank=2),
+            currency_score("CHF", 1.00, rank=1),
+        ),
+        pairs=(),
+        shortlist=(),
+    )
+
+    order = [score.currency for score in build_context(report)["currencies"]]
+
+    assert order == ["CHF", "JPY"]
+
+
+def test_pairs_come_back_widest_disagreement_first() -> None:
+    """By absolute spread. Sorting on the signed spread puts every short pair
+    below every long one and buries the widest disagreement in the run."""
+    report = bias_report(
+        pairs=(
+            pair_bias("EURUSD", -0.30, Direction.SHORT),
+            pair_bias("GBPUSD", 1.80, Direction.LONG),
+            pair_bias("AUDJPY", -2.40, Direction.SHORT),
+        ),
+        shortlist=(),
+    )
+
+    order = [row.pair for row in build_context(report)["pairs"]]
+
+    assert order == ["AUDJPY", "GBPUSD", "EURUSD"]
+
+
+def test_the_grid_is_the_one_the_grid_helper_builds() -> None:
+    """`_grid` is the single place mirrored cells are produced. A second
+    orientation rule here would invert the lower triangle of the matrix while
+    every number on screen stayed plausible."""
+    report = bias_report(pairs=(pair_bias("EURUSD", -1.42, Direction.SHORT),))
+
+    assert build_context(report)["grid"] == _grid(report.pairs)
+
+
+def test_the_pillar_columns_follow_the_configured_weights() -> None:
+    config = config_with(
+        monetary=0.05,
+        inflation=0.40,
+        growth=0.05,
+        employment=0.20,
+        external=0.05,
+        positioning=0.05,
+        risk=0.20,
+    )
+
+    context = build_context(bias_report(), config=config)
+
+    assert tuple(context["pillar_order"]) == tuple(_pillar_order(config))
+
+
+def test_no_config_leaves_the_weights_block_with_nothing_to_render() -> None:
+    context = build_context(bias_report())
+
+    assert context["config"] is None
+    assert tuple(context["pillar_order"]) == tuple(PillarName)
+
+
+def test_the_diff_is_passed_through_untouched() -> None:
+    diff = diff_reports(bias_report(asof=YESTERDAY), bias_report())
+
+    assert build_context(bias_report(), diff=diff)["diff"] is diff
+
+
+# --- render_report -----------------------------------------------------------
+
+
+def test_the_rendered_report_carries_the_config_digest() -> None:
+    """The one line that ties a call to the weights that produced it."""
+    rendered = render_report(bias_report(config_digest="d4f0c1"))
+
+    assert "d4f0c1" in rendered
+
+
+def test_the_rendered_report_carries_the_asof_date() -> None:
+    assert "2026-06-30" in render_report(bias_report())
+
+
+def test_a_composite_on_the_page_moves_only_when_the_field_moves() -> None:
+    """The perturbation test, and the reason the renderer is allowed no
+    arithmetic of its own. A renderer that recomputed a composite from the
+    pillars would keep printing the old number after the field changed, and
+    the page would disagree with the object every consumer downstream reads.
+    """
+    report = bias_report(
+        currencies=(currency_score("USD", 1.23, rank=1),), pairs=(), shortlist=()
+    )
+    before = render_report(report)
+
+    moved = replace(
+        report, currencies=(replace(report.currencies[0], composite=-0.35),)
+    )
+    after = render_report(moved)
+
+    assert "+1.23" in before
+    assert "+1.23" not in after
+    assert "-0.35" in after
+
+
+def test_a_pillar_with_no_score_prints_a_marker_rather_than_a_number() -> None:
+    """A pillar that formed no opinion and a pillar that formed one of zero
+    are different facts, and ``0.00`` in the column says the second."""
+    report = bias_report(
+        currencies=(
+            currency_score(
+                "USD",
+                1.20,
+                pillars={PillarName.MONETARY: pillar_score(PillarName.MONETARY)},
+            ),
+        ),
+        pairs=(),
+        shortlist=(),
+    )
+
+    rendered = render_report(
+        report, config=config_with(**{name.value: 0.1 for name in PillarName})
+    )
+
+    ranking = rendered.split("## 1.")[1].split("## 2.")[0]
+    assert "+0.00" not in ranking
+
+
+def test_the_report_claims_no_measured_edge() -> None:
+    """Nothing in this project has been validated out of sample yet, and the
+    standing instruction in ``CLAUDE.md`` forbids the claim anywhere, a
+    rendered page included."""
+    rendered = render_report(bias_report()).lower()
+
+    for forbidden in ("backtested", "win rate", "hit rate", "proven", "profitable"):
+        assert forbidden not in rendered
+
+
+def test_no_baseline_renders_the_first_run_line() -> None:
+    rendered = render_report(bias_report())
+
+    assert "No baseline report" in rendered
+
+
+def test_a_changed_config_renders_the_not_comparable_warning() -> None:
+    diff = diff_reports(
+        bias_report(asof=YESTERDAY, config_digest="abc123"),
+        bias_report(config_digest="ff0099"),
+    )
+
+    rendered = render_report(bias_report(config_digest="ff0099"), diff=diff)
+
+    assert "not comparable" in rendered
+
+
+def test_a_template_directory_override_is_used(tmp_path: Path) -> None:
+    """So a template change can be tested without touching the installed
+    package."""
+    (tmp_path / "report.md.j2").write_text(
+        "digest {{ report.config_digest }}", encoding="utf-8"
+    )
+
+    rendered = render_report(bias_report(config_digest="d4f0c1"), template_dir=tmp_path)
+
+    assert rendered == "digest d4f0c1"
+
+
+def test_a_template_reading_a_key_the_context_lacks_raises(tmp_path: Path) -> None:
+    """``StrictUndefined``, pinned. Jinja's default renders an unknown name as
+    an empty string, so a renamed context key would empty a table rather than
+    fail, and the report would still look like a report.
+    """
+    (tmp_path / "report.md.j2").write_text("{{ nothing_supplies_this }}", "utf-8")
+
+    with pytest.raises(UndefinedError):
+        render_report(bias_report(), template_dir=tmp_path)

@@ -501,15 +501,32 @@ Re-run after 15:30, or pass --force if you are deliberately trading the event.
 | Option | Default | Meaning |
 |---|---|---|
 | `--asof` | today | Point-in-time cutoff. |
-| `--out`, `-o` | `data/reports` | Output directory for the dated file. |
+| `--out`, `-o` | the configured `reports_dir` | Output directory for both files. Created if absent. |
 | `--compare` | `last` | Diff baseline: `last`, `none`, or a path. |
 | `--stdout` | off | Print the Markdown instead of writing a file. |
 
 ```console
 $ fbe report
 Wrote data/reports/bias-2026-09-09.md (14.2 KB)
-Compared against bias-2026-09-08.md: 1 direction flip, 2 shortlist changes.
+Compared against bias-2026-09-08.json: 1 direction flip, 2 shortlist changes.
 ```
+
+The baseline is named by its sidecar, because the sidecar is what was read.
+`--compare last` takes the newest report carrying an earlier as-of date than
+this run's, so a second run on one morning diffs against yesterday rather than
+against its own first output. A path that does not exist is refused rather than
+treated as no baseline: a run that asked for a specific baseline and printed
+"no baseline report" would read as a first run rather than as a typo.
+
+`--out` defaults to the configured reports directory rather than to a literal
+path, so moving the data tree moves the reports with it.
+
+Two sections are thin until the layers behind them land, and each says so on the
+page rather than rendering empty. The calendar is always empty because
+`fbe.calendar_guard` is scaffolded, and the warnings carry one line per run
+saying the blackout filter and the 24-hour conviction cap did not run. Shortlist
+entries carry no size, because a size needs an entry and a stop from the chart,
+and each entry names the `fbe size` call that would attach one.
 
 ### `fbe dashboard`
 
