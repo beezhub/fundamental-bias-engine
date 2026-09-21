@@ -35,11 +35,16 @@ from fbe.calendar_guard import (
 from fbe.config import DataConfig
 from fbe.types import CalendarEvent
 
-SCAFFOLDED: frozenset[str] = frozenset({"coverage_gap", "is_blacked_out"})
+SCAFFOLDED: frozenset[str] = frozenset()
 """Remove a name once its function stops raising ``NotImplementedError``.
 
 Forces this file to start asserting real values the day Phase 4 lands, rather
 than continuing to pass on the strength of a guarded branch nobody revisits.
+
+Empty since #198 implemented both, so every assertion below is now real. The
+guard machinery stays rather than being deleted with the set: `next_clear_time`
+and `action_for_open_position` are the second half of this module and are still
+scaffolded, so the next issue to land here has the pattern to hand.
 """
 
 CONFIG = DataConfig()
