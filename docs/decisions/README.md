@@ -31,3 +31,5 @@ gap shows on the first record that strands rather than the fifth.
 | [0009](0009-model-names-stay-out-of-docs.md) | A model name in docs is limited to the product dependency, and process configuration is stated by reference | Accepted |
 | [0010](0010-the-registry-supplies-the-denominator.md) | The registry supplies a scaled quantity's denominator, and a key never mixes global and per-currency refs | Accepted |
 | [0011](0011-positioning-reads-leveraged-funds.md) | POSITIONING reads leveraged funds, as a percent of open interest | Accepted |
+| [0012](0012-available-answers-about-configuration.md) | `available()` answers about configuration, never about reachability | Accepted |
+| [0013](0013-a-provider-inside-a-fan-out-source-is-a-named-gap.md) | A provider inside a fan-out source is a named gap, not the end of the source | Accepted |
