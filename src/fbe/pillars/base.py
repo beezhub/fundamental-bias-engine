@@ -791,11 +791,17 @@ class BasePillar(ABC):
         names. Sharing the leaves and duplicating the composition would leave
         #121's fix landing in one file and being missed in the others.
 
-        Override it where a pillar reads something else. POSITIONING needs full
-        history rather than the newest vintage per period, and RISK reads a
-        ``GLOBAL``-keyed series that belongs to no currency, so neither is
-        served by the loop below. An override should call this through
-        ``super()`` for the part it does share rather than restating the rule.
+        Override it where a pillar reads something else. RISK reads a
+        ``GLOBAL``-keyed series that belongs to no currency, so the loop below
+        does not serve it. An override should call this through ``super()`` for
+        the part it does share rather than restating the rule.
+
+        POSITIONING was named here as a second case, on the grounds that it
+        needs the full history rather than the newest vintage per period. It
+        does need the full history, and the loop below already returns it: the
+        vintage reduction is within each period, not across them, so the result
+        is every visible period with its newest vintage, ascending. That is
+        what a time-series z-score reads, so POSITIONING inherits this.
 
         """
         wanted = set(self.requires)

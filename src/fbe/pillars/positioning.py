@@ -15,6 +15,7 @@ from fbe.pillars.base import BasePillar
 from fbe.types import Observation, PillarName
 
 __all__ = [
+    "INDICATOR",
     "PositioningPillar",
     "MOMENTUM_PEAK_Z",
     "SIGN_FLIP_Z",
@@ -22,6 +23,14 @@ __all__ = [
     "CONTRARIAN_CAP",
 ]
 
+
+INDICATOR = "cot_net_pct_oi"
+"""The one series this pillar reads, named once rather than at four call sites.
+
+Section 3.6 gives POSITIONING a single sub-indicator at sub-weight 1.00, so the
+key appears in `requires`, in `component_indicators`, in `_transform` and in
+`_notes`, and a typo in any one of them would read as a currency with no
+contract rather than as an error."""
 
 MOMENTUM_PEAK_Z: float = 1.0
 """Positioning z-score at which the momentum-confirming reading is strongest."""
@@ -152,11 +161,11 @@ class PositioningPillar(BasePillar):
     """
 
     name = PillarName.POSITIONING
-    requires: Sequence[str] = ("cot_net_pct_oi",)
+    requires: Sequence[str] = (INDICATOR,)
     headline_component = "net_percent"
 
     component_indicators: Mapping[str, tuple[str, ...]] = {
-        "positioning_response": ("cot_net_pct_oi",),
+        "positioning_response": (INDICATOR,),
     }
     """One component, one weekly series. The COT report is published on Friday
     for the Tuesday, so this is one of the two pillars whose inputs were never
@@ -200,33 +209,14 @@ class PositioningPillar(BasePillar):
         excess = CONTRARIAN_SLOPE * (magnitude - SIGN_FLIP_Z)
         return -sign * min(excess, CONTRARIAN_CAP)
 
-    def _extract(
-        self,
-        observations: Sequence[Observation],
-        currencies: Sequence[str],
-        asof: date,
-    ) -> Mapping[str, Mapping[str, Sequence[Observation]]]:
-        """Pull the percent-of-open-interest history per currency.
-
-        Args:
-            observations: Full observation set for the run.
-            currencies: Universe to score.
-            asof: Run date; later report dates are dropped.
-
-        Returns:
-            ``{currency: {"cot_net_pct_oi": observations}}`` covering at least
-            ``ScoringConfig.lookback_years`` of weekly reports, since the
-            time-series z-score needs the history and not just the latest print.
-
-        The key carries its own normalisation: ``cot_net_pct_oi`` arrives already
-        divided by open interest, in percent, so this pillar never sees a raw
-        contract count and never has to guess which form it was handed.
-
-        """
-        raise NotImplementedError(
-            "fbe.pillars.positioning.PositioningPillar._extract is scaffolded; "
-            "see docs/roadmap.md Phase 3"
-        )
+    # No `_extract` override. `BasePillar._extract` returns one row per period
+    # over the whole visible history, sorted by period ascending, which is
+    # exactly what a time-series z-score reads: the base class reduces vintages
+    # within each period and does not reduce the history to its newest period.
+    # A copy here would carry the visibility and vintage rules a second time and
+    # miss the next correction to either, which is the defect #122 exists to
+    # prevent. The key carries its own normalisation, so what arrives is already
+    # a percent of open interest and this pillar never sees a raw contract count.
 
     def _transform(
         self,
@@ -257,10 +247,25 @@ class PositioningPillar(BasePillar):
         negatively while holding a large net long.
 
         """
-        raise NotImplementedError(
-            "fbe.pillars.positioning.PositioningPillar._transform is scaffolded; "
-            "see docs/roadmap.md Phase 3"
-        )
+        transformed: dict[str, dict[str, float | None]] = {}
+        for currency, series in extracted.items():
+            # Indexed, not fetched with a default: `BasePillar._extract`
+            # guarantees a key for every entry in `requires`, carrying an empty
+            # sequence where the currency has nothing. A `.get` here would read
+            # a mapping built some other way as a currency with no contract.
+            history = series[INDICATOR]
+            p = self.time_series_z(history, self.config.lookback_years, asof)
+            transformed[currency] = {
+                "positioning_response": self.response(p),
+                # Both report-only, and neither is a scoring component:
+                # `component_indicators` names only ``positioning_response``
+                # and `_normalise` reads only that. ``net_percent`` fills
+                # ``PillarScore.raw`` and ``positioning_z`` lets `_notes` show
+                # its working.
+                "net_percent": history[-1].value if history else None,
+                "positioning_z": p,
+            }
+        return transformed
 
     def _normalise(
         self,
@@ -276,8 +281,63 @@ class PositioningPillar(BasePillar):
             See the class docstring for why standardising across the universe
             would undo what the shape function is for.
 
+        Raises:
+            KeyError: If any currency's mapping has no
+                ``"positioning_response"``. `_transform` always emits the key,
+                carrying ``None`` where the history was too short to z-score, so
+                a missing key means a caller built the mapping some other way.
+                A ``.get`` here would turn that into an absent reading for all
+                eight, which reads exactly like a dead feed.
+
         """
-        raise NotImplementedError(
-            "fbe.pillars.positioning.PositioningPillar._normalise is scaffolded; "
-            "see docs/roadmap.md Phase 3"
+        return {
+            currency: values["positioning_response"]
+            for currency, values in components.items()
+        }
+
+    def _notes(
+        self,
+        currency: str,
+        components: Mapping[str, float | None],
+        extracted: Mapping[str, Sequence[Observation]],
+    ) -> str:
+        """Show the working behind a score whose sign may surprise the reader.
+
+        Args:
+            currency: The currency being scored.
+            components: That currency's values from `_transform`.
+            extracted: That currency's slice of `_extract`'s output, for the
+                period of the print being described.
+
+        Returns:
+            One line naming the net position as a percent of open interest, the
+            Tuesday it was snapped, how many standard deviations that sits from
+            the currency's own mean, and which branch of the response function
+            it landed on. Empty when any of the three is absent, which is the
+            unscored case `compute` does not call this for.
+
+        The branch is the part a reader cannot recover from the two numbers.
+        A currency holding a large net long and scoring negatively is this
+        pillar working as specified, and the word "fading" or "contrarian" is
+        what says so on the page. Nothing may parse this: ``p`` is a component
+        and the response is on ``PillarScore.z``.
+
+        """
+        p = components.get("positioning_z")
+        net = components.get("net_percent")
+        history = extracted.get(INDICATOR, ())
+        if p is None or net is None or not history:
+            return ""
+        magnitude = abs(p)
+        if magnitude <= MOMENTUM_PEAK_Z:
+            branch = "momentum"
+        elif magnitude <= SIGN_FLIP_Z:
+            branch = "fading"
+        else:
+            branch = "contrarian"
+        return (
+            f"{currency} net leveraged funds {net:+.1f}% of open interest on "
+            f"{history[-1].period.isoformat()}, {p:+.2f} standard deviations "
+            f"from its own {self.config.lookback_years}-year mean, "
+            f"{branch} branch"
         )
