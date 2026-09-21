@@ -27,7 +27,7 @@
 - { name: "p2", color: "fbca04", description: "Real but bounded" }
 - { name: "p3", color: "0e8a16", description: "Minor" }
 
-- { name: "roadmap", color: "5319e7", description: "Delivers a roadmap phase. The build desks claim this pool, the maintenance desk never does" }
+- { name: "roadmap", color: "5319e7", description: "The implementation lanes' pool. Roadmap phases and approved requirements, never routine-safe" }
 
 - { name: "phase:0", color: "e4e0f7", description: "docs/roadmap.md Phase 0: contracts and documentation" }
 - { name: "phase:1", color: "d9d2f5", description: "docs/roadmap.md Phase 1: the data layer" }
