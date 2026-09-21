@@ -1,4 +1,4 @@
-# 0012. The staleness ramp is derived from the leg's own publication lag and cycle, and the hand-keyed allowance goes
+# 0014. The staleness ramp is derived from the leg's own publication lag and cycle, and the hand-keyed allowance goes
 
 Status: Accepted
 
