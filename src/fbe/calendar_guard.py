@@ -31,11 +31,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from fbe.config import DataConfig
 from fbe.types import CalendarEvent
+from fbe.universe import G10, split_pair
 
 __all__ = [
     "HIGH_IMPACT_KEYWORDS",
@@ -193,6 +194,64 @@ class OpenPositionAction(StrEnum):
     FLATTEN = "flatten"
 
 
+def _require_aware(moment: datetime, label: str) -> None:
+    """Refuse a naive datetime rather than assuming a timezone for it.
+
+    Args:
+        moment: The datetime to check.
+        label: What it is, for the message. The event's currency and title, or
+            the name of the argument.
+
+    Raises:
+        ValueError: If ``moment`` carries no timezone.
+
+    Assuming UTC and assuming local time are both wrong and neither is
+    detectable afterwards. Reading 14:30 South African time as 14:30 UTC misses
+    the payrolls window by two hours, which is the entire window plus change,
+    and the comparison that got it wrong still returns a bool.
+
+    """
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise ValueError(
+            f"{label} carries a naive datetime ({moment.isoformat()}); the guard "
+            "compares moments and will not assume a timezone for one"
+        )
+
+
+def _merge(
+    windows: Sequence[tuple[datetime, datetime]],
+) -> tuple[tuple[datetime, datetime], ...]:
+    """Collapse overlapping or touching intervals into the fewest that cover them.
+
+    Args:
+        windows: ``(start, end)`` pairs in any order, already in UTC.
+
+    Returns:
+        The same coverage as the fewest ordered, disjoint intervals. Touching
+        intervals merge as well as overlapping ones: a window ending exactly
+        when the next begins leaves no tradeable instant between them, so
+        reporting two would invite a caller to find a gap that is not there.
+
+    `fbe.datasources.calendar` holds the same algorithm for its own per-currency
+    mapping. The duplication is deliberate: what is duplicated is interval
+    arithmetic rather than a fact about the model, and `docs/data-sources.md`
+    rules on this exact edge, that "`CalendarCoverage` lives in the guard, which
+    is downstream, and the import edge between the two stays absent in both
+    directions". Not `CLAUDE.md`, which rules only that data flows one way, and
+    which this package already crosses in the other direction: two pillars
+    import `fbe.datasources.registry`.
+
+    """
+    merged: list[tuple[datetime, datetime]] = []
+    for opens, closes in sorted(windows):
+        if merged and opens <= merged[-1][1]:
+            previous_open, previous_close = merged[-1]
+            merged[-1] = (previous_open, max(previous_close, closes))
+        else:
+            merged.append((opens, closes))
+    return tuple(merged)
+
+
 def is_high_impact(event: CalendarEvent) -> bool:
     """Decide whether an event should be treated as high impact.
 
@@ -208,8 +267,19 @@ def is_high_impact(event: CalendarEvent) -> bool:
         True when the event should generate a blackout window.
 
     """
-    raise NotImplementedError(
-        "fbe.calendar_guard.is_high_impact is scaffolded; see docs/roadmap.md Phase 4"
+    # Folded, not compared. The feed publishes ``"High"`` capitalised, which
+    # `fbe.datasources.calendar.IMPACT_LEVELS` records along with the warning
+    # that a consumer comparing against the lower-case spelling in
+    # `fbe.types.CalendarEvent` "would match nothing and report every week as
+    # clear". That failure is silent, so the fold is the load-bearing part of
+    # this line rather than tidiness.
+    if event.impact.strip().casefold() == "high":
+        return True
+    folded = event.title.casefold()
+    return any(
+        keyword in folded
+        for keywords in HIGH_IMPACT_KEYWORDS.values()
+        for keyword in keywords
     )
 
 
@@ -238,6 +308,15 @@ def blackout_windows(
     Windows are not per-currency here. Filtering to the pair being traded is
     `is_blacked_out`'s job; this function reports the calendar's shape.
 
+    `CalendarSource.blackout_windows` carries the same name and the same
+    interval arithmetic and differs on what goes into it: it windows every
+    event it is handed, while this one windows only the events passing
+    `is_high_impact`. That is right for each. The source reads a feed and has
+    no standing to decide which releases the plan avoids; the guard is where
+    that decision lives. The consequence is the part worth writing down: the
+    source's mapping holds windows around minor releases too, so a caller
+    reading it instead of this function inherits no filter and owes one.
+
     Args:
         events: Calendar events, in any order, from any source. Events with
             naive ``scheduled_for`` values are rejected.
@@ -250,9 +329,57 @@ def blackout_windows(
         ValueError: If any event carries a naive ``scheduled_for``.
 
     """
-    raise NotImplementedError(
-        "fbe.calendar_guard.blackout_windows is scaffolded; see docs/roadmap.md Phase 4"
-    )
+    # Materialised once, because this reads ``events`` twice. The annotation
+    # says `Sequence`, so a typed caller cannot pass a generator, and an
+    # untyped one would have the second pass see an exhausted iterator: every
+    # window silently absent from a calendar full of releases.
+    events = tuple(events)
+
+    # Every event, before any is filtered out. A feed sending naive times is
+    # broken in a way that reaches a qualifying event on the next run, so the
+    # refusal is not conditional on this run's events happening to be quiet.
+    for event in events:
+        _require_aware(event.scheduled_for, f"{event.currency} {event.title}")
+
+    # Refused here rather than in `Config.validate`, which covers no
+    # `DataConfig` field, because this is the consumer that cannot tell. A
+    # negative count inverts the window, so ``opens <= when <= closes`` is
+    # false at every instant and the guard reports every moment clear,
+    # payrolls included, on a sign typo in one config line. Zero on both
+    # collapses it to a single instant, which is the same answer reached a
+    # different way.
+    if (
+        config.calendar_blackout_before_min < 0
+        or config.calendar_blackout_after_min < 0
+    ):
+        raise ValueError(
+            "blackout minutes must not be negative; got "
+            f"{config.calendar_blackout_before_min} before and "
+            f"{config.calendar_blackout_after_min} after, which inverts every "
+            "window and would report every moment as clear"
+        )
+    if (
+        config.calendar_blackout_before_min == 0
+        and config.calendar_blackout_after_min == 0
+    ):
+        raise ValueError(
+            "both blackout minute counts are zero, so every window is a "
+            "single instant and the guard can only block an entry timed to "
+            "the release's exact second. Widen one, or take the guard out of "
+            "the run deliberately rather than by configuring it to nothing."
+        )
+
+    before = timedelta(minutes=config.calendar_blackout_before_min)
+    after = timedelta(minutes=config.calendar_blackout_after_min)
+    spans = [
+        (
+            event.scheduled_for.astimezone(UTC) - before,
+            event.scheduled_for.astimezone(UTC) + after,
+        )
+        for event in events
+        if is_high_impact(event)
+    ]
+    return _merge(spans)
 
 
 class CoverageGap(StrEnum):
@@ -275,6 +402,13 @@ class CoverageGap(StrEnum):
             (`docs/data-sources.md`) publishes one week at a time by design, so
             every Friday run is beyond horizon for the following Monday until
             it is refetched. No amount of retrying helps; only time does.
+
+            One state lands here that the sentence above does not describe: a
+            fetch reporting success with no horizon at all, which nothing
+            should build. `coverage_gap` files it here rather than inventing a
+            fourth category or treating an absent horizon as one that reaches
+            every moment. Retrying does help in that case, so the reason says
+            so instead of naming a time.
 
     """
 
@@ -339,11 +473,21 @@ def coverage_gap(
         when: The moment being checked, timezone-aware UTC.
 
     Returns:
-        `None` when `calendar.covers_through` is at or after `when`, the only
-        condition under which BLOCKED or CLEAR is an honest answer for it.
-        Otherwise a `(CoverageGap, reason)` pair. The reason names a concrete
-        time or error, not just the category, so it can be shown on the report
-        rather than the trader having to look the category up:
+        `None` when `calendar.fetch_ok` is `True` **and**
+        `calendar.covers_through` is at or after `when`, which together are the
+        only condition under which BLOCKED or CLEAR is an honest answer for it.
+        The ``fetch_ok`` half was missing from this sentence while the bullets
+        below carried it, so the two disagreed about a failed fetch whose cache
+        still reaches ``when``. The bullets are right, and
+        `CalendarCoverage.events` says why: its events are meaningful only when
+        the fetch succeeded, so a clear answer read off them is a failure
+        wearing a quiet week's clothes.
+
+        Otherwise a `(CoverageGap, reason)` pair. Every reason names a concrete
+        time or error rather than only the category, so it can be shown on the
+        report rather than the trader having to look the category up. The one
+        exception is the success-with-no-horizon state described on
+        `CoverageGap.BEYOND_HORIZON`, where there is no time to name:
 
             `CoverageGap.FETCH_FAILED`: `calendar.fetch_ok` is `False` and
             `calendar.covers_through` is `None`.
@@ -361,9 +505,46 @@ def coverage_gap(
         ValueError: If `when` is naive.
 
     """
-    raise NotImplementedError(
-        "fbe.calendar_guard.coverage_gap is scaffolded; see docs/roadmap.md Phase 4"
-    )
+    _require_aware(when, "when")
+
+    # The fetch is judged before the horizon, and that order is the point.
+    # `CalendarCoverage.events` is documented as meaningful only when
+    # ``fetch_ok`` is true, and a caller must read ``fetch_ok`` "before reading
+    # ``events``, not after, or a failure sitting on top of a stale cache reads
+    # as an empty week rather than as a fetch that failed". So a failed fetch is
+    # a gap whatever its cached horizon says, and the horizon only chooses which
+    # of the two failure categories it is.
+    if not calendar.fetch_ok:
+        if calendar.covers_through is None:
+            return (
+                CoverageGap.FETCH_FAILED,
+                calendar.fetch_error or "the calendar fetch failed and gave no reason",
+            )
+        return (
+            CoverageGap.STALE_CACHE,
+            f"cached through {calendar.covers_through.isoformat()}",
+        )
+
+    if calendar.covers_through is not None:
+        _require_aware(calendar.covers_through, "covers_through")
+
+    if calendar.covers_through is None:
+        # A fetch that reports success with no horizon at all. Nothing should
+        # build this, and it is a gap rather than a crash: the alternative is
+        # treating an absent horizon as one that reaches every moment, which is
+        # the quiet answer this function exists to refuse.
+        return (
+            CoverageGap.BEYOND_HORIZON,
+            "the fetch reported success with no coverage at all, so there is "
+            "no horizon to compare against; a refetch is worth trying",
+        )
+
+    if calendar.covers_through < when:
+        return (
+            CoverageGap.BEYOND_HORIZON,
+            f"covers through {calendar.covers_through.isoformat()}",
+        )
+    return None
 
 
 def is_blacked_out(
@@ -417,12 +598,111 @@ def is_blacked_out(
         as clear.
 
     Raises:
-        ValueError: If ``when`` is naive or ``pair`` is malformed.
+        ValueError: If ``pair`` is not six characters or carries a leg that is
+            not a G10 currency, if any event in ``calendar`` has a naive
+            ``scheduled_for``, or if ``when`` or ``calendar.covers_through`` is
+            naive. The last comes from the `coverage_gap` call this makes
+            before it reads a single event.
+
+    Three limits of the answer, stated because a caller cannot see them.
+
+    **A window opens before its event.** It opens
+    ``calendar_blackout_before_min`` ahead, so a release scheduled just past
+    ``calendar.covers_through`` has a window reaching back inside the covered
+    span. This function compares the coverage against ``when`` alone, so such a
+    release is invisible to it and the answer can be ``(False, None)`` for a
+    moment a wider payload would have shown as blocked. The exposure is narrow,
+    because `CalendarSource.horizon` is drawn from the events actually present
+    rather than from the calendar week, so the unseen releases are next week's.
+    Widening the comparison would mark the last half hour of every payload
+    unknown, including moments that are genuinely answerable, so the fix belongs
+    to the ``covers_through`` contract rather than to this function.
+
+    **A global event never blocks.** An event whose currency is ``GLOBAL``,
+    which is how `fbe.datasources.calendar` records the feed's "All" country,
+    matches neither leg. That makes `HIGH_IMPACT_KEYWORDS["geopolitical"]`
+    unreachable on real input, since a G20 summit arrives global rather than
+    attributed to a currency. Whether a global event should block every pair is
+    a decision rather than an oversight, and it is recorded as one rather than
+    taken here.
+
+    **The reason names the first blocking event, not the nearest.** First in
+    ``calendar.events`` order, base leg before quote. The string reaches
+    ``PairBias.blockers`` and the journal, so a row can name the euro release
+    when the payrolls print thirty minutes later is the one that kept the
+    window shut.
+
+    **Containment is inclusive at both ends.** ``opens <= when <= closes``, so
+    an entry timed to the exact instant a window closes is blocked. The
+    selection window in `CalendarSource.events` is half-open at the top,
+    ``start <= event.scheduled_for < end``, so the two conventions differ by one
+    instant. Both are right for their own job: a selection window that is asked
+    for repeatedly needs the open end so consecutive runs do not return one
+    event twice, while a no-trade window is safer closed than open. The
+    difference is recorded here because the two read alike and neither side
+    says so.
 
     """
-    raise NotImplementedError(
-        "fbe.calendar_guard.is_blacked_out is scaffolded; see docs/roadmap.md Phase 4"
-    )
+    base, quote = split_pair(pair.upper())
+    for leg in (base, quote):
+        if leg not in G10:
+            raise ValueError(
+                f"{pair!r} has a leg {leg!r} that is not a G10 currency. "
+                "`split_pair` checks length only, so one mistyped character "
+                "splits as cleanly as a real pair and then matches no event, "
+                "and this function would answer that the morning is clear. "
+                "`fbe.risk.currency_exposure` refuses the same input for the "
+                "same reason."
+            )
+
+    # Uppercased before splitting, as `fbe.risk.currency_exposure` does, so a
+    # hand-typed ``eurusd`` from the pre-trade check is answered rather than
+    # read as a pair with no G10 legs.
+
+    # Every event's shape, before the coverage question. A naive time is a
+    # broken feed rather than a fact about this pair, so the refusal is not
+    # conditional on the event happening to sit on a leg of it.
+    for event in calendar.events:
+        _require_aware(event.scheduled_for, f"{event.currency} {event.title}")
+
+    # No naive check of ``when`` here. `coverage_gap` makes it, and it is the
+    # first thing this function calls for every pair, so a second check would
+    # be a line no test could distinguish from its absence. The ordering that
+    # makes it reachable is itself pinned, by
+    # ``test_the_coverage_check_runs_before_any_event_is_inspected``.
+
+    # One call, before a single event is read. `coverage_gap` takes no
+    # currency, so it answers for the whole calendar rather than per leg, and
+    # the calendar handed over is one payload covering both. An earlier version
+    # of this ran the identical call once per leg to look like the per-leg check
+    # the criterion asks for, which is a loop whose second iteration cannot
+    # differ from its first. If coverage ever becomes per-currency its signature
+    # changes and this line changes with it.
+    gap = coverage_gap(calendar, when)
+    if gap is not None:
+        category, reason = gap
+        return None, f"{category.value}: {reason}"
+
+    for leg in (base, quote):
+        for event in calendar.events:
+            if event.currency != leg:
+                continue
+            # No `is_high_impact` filter here. `blackout_windows` applies it and
+            # returns nothing for an event that does not qualify, so the loop
+            # below simply does not run. A second filter would be a line no test
+            # could distinguish from its absence, and two places deciding what
+            # qualifies is how the two drift apart.
+            # This event's own window rather than the merged set. Merging is for
+            # display: a merged window contains ``when`` exactly when one of the
+            # windows it was built from does, and only the individual event can
+            # say which release to name in the reason.
+            for opens, closes in blackout_windows([event], config):
+                if opens <= when <= closes:
+                    moment = event.scheduled_for.astimezone(UTC)
+                    return True, (
+                        f"{event.currency} {event.title} at {moment:%Y-%m-%d %H:%M} UTC"
+                    )
+    return False, None
 
 
 def next_clear_time(

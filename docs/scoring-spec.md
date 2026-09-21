@@ -1078,9 +1078,9 @@ a blocker cannot be added to one and not the other.
 
 Kinds, not literal strings, because of two rows. Six of the eight are emitted
 as the name given here. `event` is emitted as `"event: <reason>"`, where the
-reason is the one `CalendarGuard` returns, naming the event, its currency and
-its scheduled time, so that a reader sees "event: EUR CPI at 09:00 UTC" rather
-than a bare flag. `event:unknown` is emitted the same way, as
+reason is the one the guard returns, naming the event, its currency and its
+scheduled time, so that a reader sees "event: EUR CPI y/y at 2026-09-14 09:00
+UTC" rather than a bare flag. `event:unknown` is emitted the same way, as
 `"event:unknown: <reason>"`, where the reason names why the guard could not
 check: a failed calendar fetch, a cached week that ends before the run's date,
 or a date beyond the horizon of the data supplied.
@@ -1094,8 +1094,23 @@ and `event:unchecked`, `event:unknown: ...` and `event: ...` all start with
 and refuses every pair in an offline run.
 
 The two prefixes above are fixed and `tests/test_pair_filters.py` holds
-`apply_filters` to them. The reason text after the colon is not settled, since
-the guard that supplies it is still scaffolded.
+`apply_filters` to them. The reason text after the colon is settled as of #198,
+which built `fbe.calendar_guard.is_blacked_out`, and
+`tests/test_blackout_windows.py` holds the guard to it.
+
+A blocked reason is `"<currency> <title> at <date> <time> UTC"`, and it carries
+the calendar date as well as the clock time. The earlier example here showed a
+bare `09:00`, which is ambiguous in the one rendering that outlives the
+terminal: the guard is asked about an instant while the run carries an `asof`
+date, and a release can fall outside it. The pair and the word "blocked" are
+not in the reason. `apply_filters` supplies the `event:` prefix, `fbe.cli`
+supplies "blocked:", and the pair is the row it is printed on, so including
+either would print it twice.
+
+An unknown reason is `"<category>: <detail>"`, where the category is one of
+`fbe.calendar_guard.CoverageGap`'s three values, because each calls for a
+different act: check the calendar by hand, refresh the cache when convenient,
+or wait for the feed to publish the week.
 
 | Blocker | Blocks | Test | Rationale |
 | --- | --- | --- | --- |

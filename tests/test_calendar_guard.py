@@ -7,16 +7,16 @@ cache return, because an empty sequence cannot say which of the three
 happened. ``CalendarCoverage`` and `coverage_gap` exist to make that
 difference visible, and this file pins the shape of the fix.
 
-``is_blacked_out`` and `coverage_gap` are both still scaffolded (Phase 4 in
-``docs/roadmap.md``), so most assertions here are guarded: while a function
-raises ``NotImplementedError``, the test asserts exactly that, the same
-pattern ``tests/test_datasource_base.py`` uses for ``available()``. Removing a
-name from `SCAFFOLDED` is what turns the guard into a real assertion, and
-forgetting to would leave the guard silently asserting nothing, which a bare
-``except NotImplementedError: pass`` would do by accident. What is checked
-unconditionally, because it needs no arithmetic to be true today: the contract
-shape itself, so a regression in the signature is caught even while the body
-is still a stub.
+``is_blacked_out`` and `coverage_gap` both landed with #198, so `SCAFFOLDED`
+is empty and every assertion here is real. The guard machinery stays: while a
+function raises ``NotImplementedError``, the test asserts exactly that, the
+same pattern ``tests/test_datasource_base.py`` uses for ``available()``, and
+`next_clear_time` and `action_for_open_position` are the second half of this
+module and are still scaffolded. Removing a name from `SCAFFOLDED` is what
+turns a guard into a real assertion, and forgetting to would leave it silently
+asserting nothing, which a bare ``except NotImplementedError: pass`` would do
+by accident. The contract shape is checked unconditionally either way, so a
+regression in a signature is caught even while a body is still a stub.
 """
 
 from __future__ import annotations
@@ -35,11 +35,16 @@ from fbe.calendar_guard import (
 from fbe.config import DataConfig
 from fbe.types import CalendarEvent
 
-SCAFFOLDED: frozenset[str] = frozenset({"coverage_gap", "is_blacked_out"})
+SCAFFOLDED: frozenset[str] = frozenset()
 """Remove a name once its function stops raising ``NotImplementedError``.
 
 Forces this file to start asserting real values the day Phase 4 lands, rather
 than continuing to pass on the strength of a guarded branch nobody revisits.
+
+Empty since #198 implemented both, so every assertion below is now real. The
+guard machinery stays rather than being deleted with the set: `next_clear_time`
+and `action_for_open_position` are the second half of this module and are still
+scaffolded, so the next issue to land here has the pattern to hand.
 """
 
 CONFIG = DataConfig()
