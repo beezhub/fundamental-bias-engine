@@ -962,9 +962,21 @@ def risk_fraction_for(conviction: Conviction, config: RiskConfig) -> float:
             backwards and quietly return a fraction outside the band.
 
     """
-    raise NotImplementedError(
-        "fbe.risk.risk_fraction_for is scaffolded; see docs/roadmap.md Phase 4"
-    )
+    # Checked before the NONE early return, so that one entry point cannot
+    # accept a band every other entry point refuses.
+    if config.risk_per_trade_min > config.risk_per_trade_max:
+        raise ValueError(
+            f"risk_per_trade_min {config.risk_per_trade_min:g} exceeds "
+            f"risk_per_trade_max {config.risk_per_trade_max:g}. Interpolating "
+            f"across an inverted band returns the ceiling for LOW and the "
+            f"floor for HIGH, so the engine's strongest calls become its "
+            f"smallest positions and nothing in the result says so."
+        )
+    position = CONVICTION_BAND_POSITION[conviction]
+    if position is None:
+        return 0.0
+    span = config.risk_per_trade_max - config.risk_per_trade_min
+    return config.risk_per_trade_min + position * span
 
 
 def reward_to_risk(entry: float, stop: float, target: float) -> float:
@@ -985,7 +997,12 @@ def reward_to_risk(entry: float, stop: float, target: float) -> float:
         stop.
 
     Raises:
-        ValueError: If ``entry`` equals ``stop``, which has no defined ratio.
+        ValueError: If ``entry`` equals ``stop``, which has no defined ratio,
+            or if any of the three prices is not finite. A NaN ratio compares
+            False against every minimum in `MIN_REWARD_TO_RISK`, so whether a
+            nonsense setup is refused depends on whether the caller wrote its
+            check as ``rr >= minimum`` or ``rr < minimum``. Refusing the input
+            makes both spellings behave the same.
 
     Note:
         This measures geometry, not probability. A 5R target is only better than
@@ -998,9 +1015,22 @@ def reward_to_risk(entry: float, stop: float, target: float) -> float:
         wherever rounding moved the size.
 
     """
-    raise NotImplementedError(
-        "fbe.risk.reward_to_risk is scaffolded; see docs/roadmap.md Phase 4"
-    )
+    for label, price in (("entry", entry), ("stop", stop), ("target", target)):
+        if not isfinite(price):
+            raise ValueError(
+                f"{label} must be a finite price, got {price!r}. A NaN ratio "
+                f"compares False against every minimum in MIN_REWARD_TO_RISK, "
+                f"so a caller spelling its check `if rr < minimum` lets the "
+                f"setup through."
+            )
+    risk = abs(entry - stop)
+    if risk == 0.0:
+        raise ValueError(
+            f"entry {entry:g} equals stop {stop:g}, so the reward-to-risk "
+            f"ratio has no defined value. Returning infinity here would read "
+            f"as the best setup ever seen and clear every minimum."
+        )
+    return abs(target - entry) / risk
 
 
 def min_acceptable_rr(conviction: Conviction) -> float:
@@ -1018,9 +1048,7 @@ def min_acceptable_rr(conviction: Conviction) -> float:
         The minimum acceptable ratio. Infinite for `Conviction.NONE`.
 
     """
-    raise NotImplementedError(
-        "fbe.risk.min_acceptable_rr is scaffolded; see docs/roadmap.md Phase 4"
-    )
+    return MIN_REWARD_TO_RISK[conviction]
 
 
 LIMIT_CONCURRENT: str = "max_concurrent_positions"
@@ -1320,14 +1348,45 @@ def correlated_exposure(
 
     Raises:
         ValueError: If any position's ``account_balance_at_entry`` is not
-            strictly positive. A zero balance has no risk fraction, and
-            returning one anyway would put a fabricated number in front of the
-            exposure cap.
+            strictly positive and finite, or if its ``risk_amount`` is not a
+            finite, non-negative figure. A zero balance has no risk fraction,
+            and returning one anyway would put a fabricated number in front of
+            the exposure cap. A negative ``risk_amount`` is the same failure
+            wearing the other sign: it subtracts from a leg's total, so one
+            corrupt row hides a real position behind a hedge that does not
+            exist. Neither is reported as a warning, because this function
+            returns a mapping with nowhere to carry one and the caller compares
+            what it returns against a cap.
+        ValueError: If a pair is not six characters, propagated from
+            `fbe.universe.split_pair`. A pair that cannot be split into two
+            legs would otherwise be attributed to a currency that does not
+            exist, leaving the real leg's exposure unmeasured.
 
     """
-    raise NotImplementedError(
-        "fbe.risk.correlated_exposure is scaffolded; see docs/roadmap.md Phase 4"
-    )
+    exposure: dict[str, float] = {}
+    for position in open_positions:
+        balance = position.account_balance_at_entry
+        if not isfinite(balance) or balance <= 0.0:
+            raise ValueError(
+                f"{position.pair} carries account_balance_at_entry "
+                f"{balance!r}, which yields no risk fraction. A zero divides, "
+                f"a negative flips the sign so the exposure compares below "
+                f"every cap, and a NaN compares False against every cap it is "
+                f"checked against."
+            )
+        risk = position.risk_amount
+        if not isfinite(risk) or risk < 0.0:
+            raise ValueError(
+                f"{position.pair} carries risk_amount {risk!r}. Money at risk "
+                f"is a non-negative figure in the account currency; a negative "
+                f"one would subtract from a leg's exposure and hide a real "
+                f"position behind a fabricated hedge."
+            )
+        base, quote = split_pair(position.pair.upper())
+        fraction = risk / balance
+        for leg in (base, quote):
+            exposure[leg] = exposure.get(leg, 0.0) + fraction
+    return exposure
 
 
 def check_limits(
