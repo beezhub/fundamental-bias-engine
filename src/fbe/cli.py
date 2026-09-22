@@ -2686,12 +2686,14 @@ def size(
     Exit 1 means the result should not be traded on, and a usable size carrying
     a caveat the reader can act on is not that.
 
-    The fail-closed half of that ruling covers central bank rate decisions and
-    is not reachable today, because there is no rate-decision calendar to check
-    against. The pair carries its unknown marker regardless, so the absence
-    reads as an absence rather than as an all-clear. `docs/risk-and-execution.md`
-    section 5 carries the policy and the interim rule, and issue #45 the
-    reasoning.
+    The fail-closed half of that ruling covers unknown coverage over a central
+    bank rate decision, and it is not reachable today: deciding whether a gap
+    hides a rate decision needs the scheduled-meeting calendars that reach past
+    the weekly feed, and those do not exist. A rate decision the feed does show
+    inside the fetched week is a plain ``event`` blocker and already refuses.
+    What is unmarked is the gap past the horizon, and the daily routine's own
+    calendar review is the backstop for it. `docs/risk-and-execution.md` section
+    5 carries the policy and the interim rule, and issue #45 the reasoning.
 
     A trade entered on an unknown answer is recorded as one:
     `fbe.journal.BlackoutCheck.UNKNOWN` on the record, distinct from ``CLEAR``

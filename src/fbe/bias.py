@@ -390,10 +390,14 @@ def _worst_horizon_answer(first: bool | None, second: bool | None) -> bool | Non
     The order matters and ``or`` cannot express it. ``None or False`` is
     ``False``, so a pair whose base leg the guard could not see and whose quote
     leg was quiet would read as a fully checked quiet pair, which is the same
-    defect one level up from the one the third state fixes. A found event
-    outranks an unknown because it is the more specific fact, and both cap at
-    `Conviction.LOW` anyway, so the ordering changes what a reader is told
-    rather than what the engine does.
+    defect one level up from the one the third state fixes.
+
+    Between ``True`` and ``None`` the order decides nothing today, because both
+    cap at `Conviction.LOW` and `build_pair_biases` discards this value after
+    the cap. ``True`` is returned first because it is the more specific fact,
+    so that the day something records which answer demoted a pair, it records
+    the release rather than the uncertainty around it. Until then no reader is
+    told either, which `docs/risk-and-execution.md` section 5 names as a gap.
 
     """
     if first is True or second is True:

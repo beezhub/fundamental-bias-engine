@@ -36,11 +36,14 @@ script without parsing output:
 
 **Unknown calendar coverage does not exit 3 today.** The owner's ruling on #24
 splits the fail direction by event category: fail closed for a rate decision,
-fail open with the marker visible for a statistical release. Since there is no
-rate-decision calendar, the rate-decision category cannot be evaluated, so
-`size` prints which of the three coverage reasons applies and when the coverage
-ends, and exits 0. That is the warning path, not a refusal: the answer is usable
-and it carries a caveat the reader has to act on themselves.
+fail open with the marker visible for a statistical release. The fail-closed
+half needs the scheduled-meeting calendars that reach past the weekly feed's
+horizon, and those do not exist, so nothing can decide whether a gap in
+coverage is hiding a rate decision. `size` therefore prints which of the three
+coverage reasons applies and when the coverage ends, and exits 0. That is the
+warning path, not a refusal: the answer is usable and it carries a caveat the
+reader has to act on themselves. A rate decision the feed does show inside the
+fetched week is a plain `event` blocker and already blocks the pair.
 
 Exit 1 would be wrong for either half. It means the command ran and the result
 should not be traded on, and neither an entitled refusal nor a usable answer

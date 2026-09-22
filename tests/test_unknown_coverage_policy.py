@@ -592,7 +592,7 @@ def labels_of(markdown: str) -> list[str]:
     assertions are membership against exact strings rather than a count.
     """
     return [
-        line.split(":", 1)[0].strip()
+        line.split(":", 1)[0].removeprefix("*").strip()
         for line in section(markdown, "## 3.", "## 4.").splitlines()
         if ":" in line and not line.startswith("|")
     ]

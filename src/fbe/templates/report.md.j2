@@ -70,9 +70,13 @@ Ranked by conviction then by the width of the spread:
 | {{ bias.pair }} | {{ bias.direction.value }} | {{ bias.conviction.value }} | {{ '%+.2f' | format(bias.spread) }} | {{ '%+.2f' | format(bias.base_score) }} | {{ '%+.2f' | format(bias.quote_score) }} | {{ (bias.agreement * 100) | int }}% | {% if bias.tradeable %}yes{% if bias.blockers %} ({{ bias.blockers | join(', ') }}){% endif %}{% else %}{{ bias.blockers | join(', ') }}{% endif %} |
 {% endfor %}
 
-A marker in brackets beside `yes` is a check that did not run, not a reason the
-pair was rejected. `event:unchecked` on every row means the run had no calendar:
-the pairs are tradeable on fundamentals and nobody has looked at the news.
+A marker in brackets beside `yes` is a check that did not run or one that ran
+and could not finish, not a reason the pair was rejected. `event:unchecked` on
+every row means the run had no calendar: the pairs are tradeable on
+fundamentals and nobody has looked at the news. `event:unknown` means a
+calendar was consulted and could not answer, which is the one that asks the
+reader to look at a calendar themselves within the hour. This column runs them
+together; the shortlist below labels them apart.
 
 `Agreement` is the share of pillar *weight* pointing the same way as the spread,
 not the share of pillars. One heavy pillar dissenting moves it further than one
@@ -142,10 +146,10 @@ Blockers: {{ idea.bias.blockers | join('; ') }}
 {%- set _ = (blind if marker.startswith(unknown_prefix) else quiet).append(marker) -%}
 {%- endfor -%}
 {%- if blind -%}
-Calendar unknown: {{ blind | join('; ') }}
+* Calendar unknown: {{ blind | join('; ') }}
 {% endif -%}
 {%- if quiet -%}
-Not checked: {{ quiet | join('; ') }}
+* Not checked: {{ quiet | join('; ') }}
 {%- endif -%}
 {%- endif -%}
 {%- endif %}
