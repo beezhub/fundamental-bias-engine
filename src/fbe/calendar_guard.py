@@ -33,6 +33,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from math import isfinite
 
 from fbe.config import DataConfig
 from fbe.types import CalendarEvent
@@ -250,6 +251,78 @@ def _merge(
         else:
             merged.append((opens, closes))
     return tuple(merged)
+
+
+def _describe(event: CalendarEvent) -> str:
+    """Name an event the way every reason in this module names one.
+
+    Args:
+        event: The release being reported.
+
+    Returns:
+        ``"<CCY> <title> at <YYYY-MM-DD HH:MM> UTC"``, converted to UTC
+        whatever zone the feed carried. That string reaches
+        `fbe.types.PairBias.blockers`, the report and the journal, where it
+        later explains why an obvious setup was skipped or a working position
+        was closed early.
+
+    Raises:
+        ValueError: If ``scheduled_for`` is naive. Both callers already check
+            every event's shape before they reach here, so this never fires
+            today. It is checked anyway because ``astimezone`` on a naive value
+            assumes the *system* zone: a naive 09:00 read on the owner's
+            machine would print as "07:00 UTC", which is plausible, wrong by
+            two hours, and permanent once it is in the journal. Extracting this
+            raised the number of sites that can reach it, and a precondition
+            that lives only in a caller is one a third caller will not read.
+
+    One function rather than one format string per caller. `is_blacked_out`
+    and `action_for_open_position` write the same sentence into the same two
+    places, and two copies of it drift: the journal would then hold two shapes
+    of the same fact and a later reader could not group them.
+
+    """
+    _require_aware(event.scheduled_for, f"{event.currency} {event.title}")
+    moment = event.scheduled_for.astimezone(UTC)
+    return f"{event.currency} {event.title} at {moment:%Y-%m-%d %H:%M} UTC"
+
+
+def _checked_legs(pair: str) -> tuple[str, str]:
+    """Split a pair into legs, refusing one whose legs are not both G10.
+
+    Args:
+        pair: The pair as the caller wrote it, in any case. Uppercased before
+            splitting, as `fbe.risk.currency_exposure` does, so a hand-typed
+            ``eurusd`` from the pre-trade check is answered rather than read as
+            a pair with no G10 legs.
+
+    Returns:
+        ``(base, quote)``, uppercased. Returned rather than discarded so a
+        caller cannot validate one split and then use a second one that was
+        derived differently.
+
+    Raises:
+        ValueError: If it is not six characters, or either leg is outside
+            `fbe.universe.G10`.
+
+    `split_pair` checks length only, so one mistyped character splits as
+    cleanly as a real pair and then matches no event. The guard would answer
+    that the morning is clear, or that a position may be held, which are both
+    the quiet wrong answer this module exists to avoid.
+
+    """
+    base, quote = split_pair(pair.upper())
+    for leg in (base, quote):
+        if leg not in G10:
+            raise ValueError(
+                f"{pair!r} has a leg {leg!r} that is not a G10 currency. "
+                "`split_pair` checks length only, so one mistyped character "
+                "splits as cleanly as a real pair and then matches no event, "
+                "and this function would answer that the morning is clear. "
+                "`fbe.risk.currency_exposure` refuses the same input for the "
+                "same reason."
+            )
+    return base, quote
 
 
 def is_high_impact(event: CalendarEvent) -> bool:
@@ -643,21 +716,7 @@ def is_blacked_out(
     says so.
 
     """
-    base, quote = split_pair(pair.upper())
-    for leg in (base, quote):
-        if leg not in G10:
-            raise ValueError(
-                f"{pair!r} has a leg {leg!r} that is not a G10 currency. "
-                "`split_pair` checks length only, so one mistyped character "
-                "splits as cleanly as a real pair and then matches no event, "
-                "and this function would answer that the morning is clear. "
-                "`fbe.risk.currency_exposure` refuses the same input for the "
-                "same reason."
-            )
-
-    # Uppercased before splitting, as `fbe.risk.currency_exposure` does, so a
-    # hand-typed ``eurusd`` from the pre-trade check is answered rather than
-    # read as a pair with no G10 legs.
+    base, quote = _checked_legs(pair)
 
     # Every event's shape, before the coverage question. A naive time is a
     # broken feed rather than a fact about this pair, so the refusal is not
@@ -698,10 +757,7 @@ def is_blacked_out(
             # say which release to name in the reason.
             for opens, closes in blackout_windows([event], config):
                 if opens <= when <= closes:
-                    moment = event.scheduled_for.astimezone(UTC)
-                    return True, (
-                        f"{event.currency} {event.title} at {moment:%Y-%m-%d %H:%M} UTC"
-                    )
+                    return True, _describe(event)
     return False, None
 
 
@@ -790,6 +846,31 @@ def action_for_open_position(
     event are the same signal, and the plan already says to close a stalled
     trade before its time expires.
 
+    Three limits come with the signature, stated here because a reader holding
+    ``(HOLD, None)`` cannot see any of them in the value.
+
+    **A bare sequence cannot say whether it was ever fetched.** Unlike
+    `is_blacked_out` this takes a ``Sequence[CalendarEvent]`` rather than a
+    `CalendarCoverage`, so an empty sequence from a failed scrape and a
+    genuinely quiet morning both return ``(HOLD, None)``. That is a fail-open
+    policy, and `docs/decisions/0002-representing-not-known.md` declines to
+    choose the direction while requiring the two cases to be tellable apart.
+    Here they are not. A caller holding a `CalendarCoverage` must read
+    `coverage_gap` itself before acting on HOLD. Whether the signature should
+    change is on issue #199 beside the `next_clear_time` question rather than
+    decided here.
+
+    **A global event never acts.** An event whose currency is ``GLOBAL``,
+    which is how `fbe.datasources.calendar` records the feed's "All" country,
+    matches neither leg, exactly as in `is_blacked_out`. A G20 summit inside
+    the window leaves a position up 0.1R on HOLD.
+
+    **The reason names the first event in range, not the nearest.** Base leg
+    before quote, and within a leg first in ``events`` order. The action is the
+    same whichever of them is named, so this decides only which release the
+    journal shows, and it is fixed rather than left to the order the caller
+    happened to pass.
+
     Args:
         pair: Six-character pair the position is in.
         when: Time of the decision, timezone-aware UTC. Normally now, or the
@@ -798,17 +879,35 @@ def action_for_open_position(
         config: Supplies the blackout minutes.
         unrealised_r: Open profit in R multiples, positive for profit, measured
             against the position's ``realised_risk_amount`` so it matches what
-            the journal will later record. Defaults to 0.0, which is breakeven
-            and falls below `TIGHTEN_BUFFER_R`, so a caller that does not track
-            open profit gets the conservative answer.
+            the journal will later record. Defaults to 0.0, which falls below
+            `TIGHTEN_BUFFER_R`, so a caller that does not track open profit is
+            answered FLATTEN. Pass the figure rather than relying on that: the
+            default is conservative in one direction only, and a position
+            actually up 2.0R whose caller omitted the argument is told to
+            close, which is the cost the paragraphs above say this function
+            exists to avoid. 0.0 is also a reading a live position genuinely
+            holds, so it cannot double as a marker for "not tracked" under
+            `docs/decisions/0002-representing-not-known.md` rule 1.
 
     Returns:
-        ``(action, reason)``. The reason is ``None`` only for
-        `OpenPositionAction.HOLD` when no event is in range, and otherwise names
-        the event, so the journal records what prompted an early exit.
+        ``(action, reason)``. The reason names the event whenever one is in
+        range, in the shape `is_blacked_out` uses, so an early exit can be
+        explained later from the same string. It is ``None`` for
+        `OpenPositionAction.HOLD`, which, per the first limit above, covers
+        both a clear calendar and one that was never fetched.
+        `fbe.journal.TradeRecord.exit_reason` has no value for a news flatten
+        today, so the reason currently reaches the journal as free-text
+        ``notes`` and the grouping `TIGHTEN_BUFFER_R` asks for is not yet
+        available.
 
     Raises:
-        ValueError: If ``when`` is naive or ``pair`` is malformed.
+        ValueError: If ``when`` is naive, ``pair`` is malformed, an event
+            carries a naive ``scheduled_for``, or ``unrealised_r`` is not
+            finite. The last of those is not a fact about the trade either: a
+            NaN fails every comparison, so it would fall past the buffer test
+            into FLATTEN and read as a decision to close a live position when
+            it is the absence of one. `fbe.risk.position_size` refuses a
+            non-finite ``risk_fraction`` for the same reason.
 
     Note:
         This is advisory. It never sends an order. The owner executes, which
@@ -816,7 +915,46 @@ def action_for_open_position(
         about being a filter rather than a trading system.
 
     """
-    raise NotImplementedError(
-        "fbe.calendar_guard.action_for_open_position is scaffolded; "
-        "see docs/roadmap.md Phase 4"
-    )
+    base, quote = _checked_legs(pair)
+    _require_aware(when, "when")
+    if not isfinite(unrealised_r):
+        raise ValueError(
+            f"unrealised_r must be finite, got {unrealised_r!r}. A NaN fails "
+            "every comparison, so it would fall through to FLATTEN and read as "
+            "an instruction to close a live position that the guard reached by "
+            "refusing to answer rather than by deciding."
+        )
+
+    # Materialised before it is read, as `blackout_windows` does and for the
+    # same reason: this function walks ``events`` once per leg after walking it
+    # once for shape, and a generator would leave the later passes empty. The
+    # answer would be HOLD on a morning holding two high-impact releases.
+    events = tuple(events)
+
+    # Every event's shape, before any of them is matched against a leg. A naive
+    # time is a broken feed rather than a fact about this pair, the same
+    # ordering `is_blacked_out` uses and for the same reason.
+    for event in events:
+        _require_aware(event.scheduled_for, f"{event.currency} {event.title}")
+
+    for leg in (base, quote):
+        for event in events:
+            if event.currency != leg:
+                continue
+            # This event's own window rather than the merged set, as
+            # `is_blacked_out` does: a merged window contains ``when`` exactly
+            # when one of its parts does, and only the individual event can say
+            # which release to name.
+            for opens, closes in blackout_windows([event], config):
+                if opens <= when <= closes:
+                    reason = _describe(event)
+                    # Read from the module global at call time rather than
+                    # captured, so moving the threshold moves this decision.
+                    if unrealised_r >= TIGHTEN_BUFFER_R:
+                        return OpenPositionAction.TIGHTEN, reason
+                    return OpenPositionAction.FLATTEN, reason
+
+    # Nothing in range. Not "the calendar said nothing", which is
+    # `coverage_gap`'s question and `is_blacked_out`'s to ask: flattening on an
+    # empty sequence would close every position the first time a fetch failed.
+    return OpenPositionAction.HOLD, None
