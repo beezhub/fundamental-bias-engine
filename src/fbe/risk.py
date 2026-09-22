@@ -1562,12 +1562,254 @@ def check_limits(
 
     Raises:
         ValueError: If ``proposed.account_balance`` is not strictly positive, or
-            if ``equity_peak`` is supplied and is not strictly positive. Both
-            would make a percentage of the account meaningless, and a
-            meaningless percentage compared against a limit is worse than no
-            comparison because it produces an answer.
+            if ``equity_peak`` or ``realised_pnl_today`` is supplied and is not
+            a finite figure. The first two would make a percentage of the
+            account meaningless, and a meaningless percentage compared against a
+            limit is worse than no comparison because it produces an answer. The
+            third is the same failure in the other direction: a NaN profit and
+            loss compares False against the threshold, so the daily-loss limit
+            would report clear on a figure nobody can read. Absence is
+            ``None`` and is answered with a not-performed outcome; a value that
+            is not a number is answered with a refusal, and the two must not
+            collapse.
 
     """
-    raise NotImplementedError(
-        "fbe.risk.check_limits is scaffolded; see docs/roadmap.md Phase 4"
+    balance = _checked_balance(proposed)
+    peak = _checked_money("equity_peak", equity_peak, positive=True)
+    pnl = _checked_money("realised_pnl_today", realised_pnl_today, positive=False)
+    return LimitReport(
+        checks=(
+            _concurrent_check(open_positions, config),
+            _correlated_check(open_positions, proposed, config),
+            _daily_loss_check(pnl, proposed, balance, config),
+            _drawdown_check(peak, proposed, balance, config),
+        )
+    )
+
+
+def _checked_balance(proposed: PositionSize) -> float:
+    """Return the balance every money limit is a share of, or refuse it.
+
+    Args:
+        proposed: The position being considered.
+
+    Returns:
+        ``proposed.account_balance``, in the account currency.
+
+    Raises:
+        ValueError: If it is not finite and strictly positive.
+
+    """
+    balance = proposed.account_balance
+    if not isfinite(balance) or balance <= 0.0:
+        raise ValueError(
+            f"account_balance must be a finite, strictly positive amount, got "
+            f"{balance!r}. Both money limits are a percentage of it: a zero has "
+            f"no percentage, a negative one inverts the comparison, and a NaN "
+            f"clears every limit by failing every comparison."
+        )
+    return balance
+
+
+def _checked_money(name: str, value: float | None, *, positive: bool) -> float | None:
+    """Pass absence through, refuse nonsense. They are not the same input.
+
+    ``None`` is the vocabulary for not tracked and is answered upstream with a
+    not-performed outcome. A figure that is not a number is a different failure
+    and is refused here, because a NaN does not fail its limit, it fails every
+    comparison and so reports clear.
+
+    Args:
+        name: The parameter's name, for the message. The caller reads the
+            message before the traceback.
+        value: The figure in the account currency, or ``None`` for not tracked.
+        positive: True where zero is not a reading either. An equity peak of
+            0.0 would put the drawdown threshold at 0.0 and clear every balance
+            forever; a realised profit and loss of 0.0 is a flat day, which is a
+            reading and has to survive.
+
+    Returns:
+        The value unchanged, ``None`` included.
+
+    Raises:
+        ValueError: If a value is supplied and is not finite, or is not strictly
+            positive where ``positive`` requires it.
+
+    """
+    if value is None:
+        return None
+    if not isfinite(value) or (positive and value <= 0.0):
+        wanted = "a finite, strictly positive amount" if positive else "a finite amount"
+        raise ValueError(
+            f"{name} must be {wanted} or None, got {value!r}. None means not "
+            f"tracked and is answered with a not-performed outcome; a figure "
+            f"that is not money is answered with a refusal, because the two "
+            f"must not collapse."
+        )
+    return value
+
+
+def _concurrent_check(
+    open_positions: Sequence[OpenPosition] | None,
+    config: RiskConfig,
+) -> LimitCheck:
+    """Report whether there is room for one more ticket.
+
+    Breached at the ceiling rather than past it: the question is whether one
+    more fits, so three open against a limit of three leaves no room.
+
+    Args:
+        open_positions: Positions already live, or ``None`` for an open book
+            that is not known. An empty sequence is a reading and clears.
+        config: Supplies ``max_concurrent_positions``, a count.
+
+    Returns:
+        The outcome, with the count and the ceiling on the detail line.
+
+    """
+    ceiling = config.max_concurrent_positions
+    if open_positions is None:
+        return LimitCheck(
+            LIMIT_CONCURRENT,
+            LimitStatus.NOT_PERFORMED,
+            f"the open book is not known, so nothing was counted against the "
+            f"limit of {ceiling}",
+        )
+    count = len(open_positions)
+    status = LimitStatus.BREACHED if count >= ceiling else LimitStatus.CLEAR
+    return LimitCheck(LIMIT_CONCURRENT, status, f"{count} open, limit {ceiling}")
+
+
+def _correlated_check(
+    open_positions: Sequence[OpenPosition] | None,
+    proposed: PositionSize,
+    config: RiskConfig,
+) -> LimitCheck:
+    """Report the heaviest currency leg once the proposed ticket is added.
+
+    Strictly above the ceiling breaches. Landing exactly on the configured
+    maximum is holding it, not exceeding it, and refusing there would refuse a
+    trade the plan allows every time the book is full and legal.
+
+    Args:
+        open_positions: Positions already live, or ``None`` for an open book
+            that is not known. An empty sequence leaves the proposed position's
+            own two legs, which is a reading.
+        proposed: The position being considered. Converted on
+            ``realised_risk_amount``, the money actually on the book.
+        config: Supplies ``max_correlated_exposure``, a fraction of balance per
+            currency.
+
+    Returns:
+        The outcome, naming the heaviest leg and its share as a percentage of
+        balance. The heaviest rather than the offending one, because on a clear
+        check there is no offender and the heaviest is what the reader wants.
+
+    """
+    ceiling = config.max_correlated_exposure
+    if open_positions is None:
+        return LimitCheck(
+            LIMIT_CORRELATED,
+            LimitStatus.NOT_PERFORMED,
+            f"the open book is not known, so the only exposure that could be "
+            f"totalled is the proposed position's own two legs, which is not "
+            f"an exposure figure; limit {ceiling:.1%} per currency",
+        )
+    exposure = correlated_exposure(
+        [*open_positions, PositionRisk.from_position_size(proposed)]
+    )
+    leg, share = max(exposure.items(), key=lambda item: (item[1], item[0]))
+    status = LimitStatus.BREACHED if share > ceiling else LimitStatus.CLEAR
+    return LimitCheck(
+        LIMIT_CORRELATED,
+        status,
+        f"{leg} {share:.1%}, limit {ceiling:.1%}",
+    )
+
+
+def _daily_loss_check(
+    realised_pnl_today: float | None,
+    proposed: PositionSize,
+    balance: float,
+    config: RiskConfig,
+) -> LimitCheck:
+    """Report the stop for the session, at or beyond the threshold.
+
+    At or beyond rather than past, because the threshold is a point to stop at
+    rather than a ceiling to sit on.
+
+    Args:
+        realised_pnl_today: Closed profit and loss for the session in the
+            account currency, negative for a loss, already checked for
+            finiteness. ``None`` means not tracked.
+        proposed: The position being considered, for its account currency.
+        balance: The balance the proposed size was derived from, in the account
+            currency, strictly positive.
+        config: Supplies ``max_daily_loss``, a fraction of that balance.
+
+    Returns:
+        The outcome, with the figure and the threshold in the account currency
+        on the detail line.
+
+    """
+    currency = proposed.account_currency
+    floor = -config.max_daily_loss * balance
+    if realised_pnl_today is None:
+        return LimitCheck(
+            LIMIT_DAILY_LOSS,
+            LimitStatus.NOT_PERFORMED,
+            f"realised_pnl_today was not supplied, so nothing was compared "
+            f"against the limit of {currency} {floor:.2f}; 0.0 would have been "
+            f"a reading and None is the absence of one",
+        )
+    status = LimitStatus.BREACHED if realised_pnl_today <= floor else LimitStatus.CLEAR
+    return LimitCheck(
+        LIMIT_DAILY_LOSS,
+        status,
+        f"{currency} {realised_pnl_today:.2f} realised today, limit "
+        f"{currency} {floor:.2f}",
+    )
+
+
+def _drawdown_check(
+    equity_peak: float | None,
+    proposed: PositionSize,
+    balance: float,
+    config: RiskConfig,
+) -> LimitCheck:
+    """Report how far the balance has fallen from its highest point.
+
+    Not performed on every run in this repository today, because nothing here
+    records a balance history: `fbe.journal.TradeRecord` holds a balance at an
+    entry time, which is wrong across a withdrawal.
+
+    Args:
+        equity_peak: Highest balance reached, in the account currency, strictly
+            positive and already checked. ``None`` means not tracked.
+        proposed: The position being considered, for its account currency.
+        balance: The balance the proposed size was derived from, in the account
+            currency. This is the current side of the comparison.
+        config: Supplies ``max_drawdown_pause``, a fraction below the peak.
+
+    Returns:
+        The outcome, with the balance, the peak and the pause level in the
+        account currency on the detail line.
+
+    """
+    currency = proposed.account_currency
+    if equity_peak is None:
+        return LimitCheck(
+            LIMIT_DRAWDOWN,
+            LimitStatus.NOT_PERFORMED,
+            f"equity_peak was not supplied and nothing in this repository "
+            f"records a balance history, so the {config.max_drawdown_pause:.1%} "
+            f"pause was not compared against anything",
+        )
+    floor = equity_peak * (1.0 - config.max_drawdown_pause)
+    status = LimitStatus.BREACHED if balance <= floor else LimitStatus.CLEAR
+    return LimitCheck(
+        LIMIT_DRAWDOWN,
+        status,
+        f"{currency} {balance:.2f} against a peak of {currency} "
+        f"{equity_peak:.2f}, pause at {currency} {floor:.2f}",
     )

@@ -13,12 +13,12 @@ its content: the signature, the enumeration of limits, the fact that a report
 holding a not-performed outcome cannot report itself all clear, and the fact
 that a `fbe.types.PositionSize` cannot be mistaken for an open position.
 
-The behaviour tests are guarded with a strict expected failure on
-``NotImplementedError``, because `fbe.risk.check_limits` and `fbe.cli.size` are
-still scaffolded for Phase 4. Strict is the point: the guard removes itself. The
-moment either function lands, the expected failure becomes an unexpected pass,
-the suite goes red, and whoever implemented it has to delete the marker and meet
-the assertions underneath. A plain skip would let the behaviour land unchecked.
+The behaviour tests were guarded with a strict expected failure on
+``NotImplementedError``. Strict was the point: the guard removes itself. The
+guard on `fbe.risk.check_limits` has now done its job and is gone, and the
+assertions underneath run against the real function. The three ticket tests keep
+theirs, because `fbe.cli.size` is still scaffolded for Phase 4 and its contract
+is in flight on #45.
 
 Money figures are ZAR throughout, on the plan's R2,000 balance, so the
 percentages in the assertions are the ones the trading plan quotes.
@@ -74,12 +74,6 @@ Midday so that a machine running several hours either side of UTC still renders
 the same calendar date, and the assertion does not depend on the developer's
 timezone.
 """
-
-scaffolded_risk = pytest.mark.xfail(
-    raises=NotImplementedError,
-    strict=True,
-    reason="fbe.risk.check_limits is scaffolded; see docs/roadmap.md Phase 4",
-)
 
 scaffolded_cli = pytest.mark.xfail(
     raises=NotImplementedError,
@@ -325,10 +319,9 @@ def test_the_docstring_says_what_none_means() -> None:
     assert "a reading" in docstring
 
 
-# --- behaviour, guarded until Phase 4 ---------------------------------------
+# --- behaviour ---------------------------------------------------------------
 
 
-@scaffolded_risk
 def test_unknown_open_positions_do_not_clear_the_position_limits() -> None:
     """Criterion 4. Nothing to check against is not the same as nothing to find."""
     report = check_limits(None, _proposed(), RiskConfig())
@@ -338,7 +331,6 @@ def test_unknown_open_positions_do_not_clear_the_position_limits() -> None:
     assert report.all_clear is False
 
 
-@scaffolded_risk
 def test_known_empty_open_positions_clear_the_position_limits() -> None:
     """The other half of criterion 4. A read journal with no open trades passes."""
     report = check_limits((), _proposed(), RiskConfig())
@@ -347,7 +339,6 @@ def test_known_empty_open_positions_clear_the_position_limits() -> None:
     assert _status(report, LIMIT_CORRELATED) is LimitStatus.CLEAR
 
 
-@scaffolded_risk
 def test_the_concurrent_limit_breaches_at_the_configured_count() -> None:
     """Tests the wire: the count comes from config, not from a literal 3."""
     opens = [_open_record(pair) for pair in ("EURUSD", "GBPUSD")]
@@ -363,7 +354,6 @@ def test_the_concurrent_limit_breaches_at_the_configured_count() -> None:
     )
 
 
-@scaffolded_risk
 def test_two_longs_against_the_dollar_are_one_short_dollar_bet() -> None:
     """Section 4's worked example, in rand.
 
@@ -372,10 +362,17 @@ def test_two_longs_against_the_dollar_are_one_short_dollar_bet() -> None:
     already at the 4% cap. A third USD ticket at R40.00 takes USD to
     R120.00 / R2,000 = 6.0%, and the reason has to name the currency and the
     figure or the owner cannot tell which ticket to drop.
+
+    The proposed ticket is passed at ``MAX_RISK`` rather than taking the
+    helper's default, which is example B's realised R35.81 and would make the
+    sum R115.81 / R2,000 = 5.8%. The document's worked example is the one this
+    test claims to reproduce, so it has to be given the document's numbers.
     """
     opens = [_open_record("EURUSD"), _open_record("GBPUSD")]
 
-    report = check_limits(opens, _proposed("AUDUSD"), RiskConfig())
+    report = check_limits(
+        opens, _proposed("AUDUSD", realised_risk_amount=MAX_RISK), RiskConfig()
+    )
 
     assert _status(report, LIMIT_CORRELATED) is LimitStatus.BREACHED
     detail = _detail(report, LIMIT_CORRELATED)
@@ -383,7 +380,6 @@ def test_two_longs_against_the_dollar_are_one_short_dollar_bet() -> None:
     assert re.search(r"6(\.\d+)?\s*%|0\.06", detail), detail
 
 
-@scaffolded_risk
 def test_the_correlated_limit_reads_the_configured_ceiling() -> None:
     """Tests the wire. Same book, a wider ceiling, a different answer."""
     opens = [_open_record("EURUSD"), _open_record("GBPUSD")]
@@ -395,14 +391,12 @@ def test_the_correlated_limit_reads_the_configured_ceiling() -> None:
     assert _status(report, LIMIT_CORRELATED) is LimitStatus.CLEAR
 
 
-@scaffolded_risk
 def test_an_untracked_daily_loss_is_not_performed() -> None:
     report = check_limits((), _proposed(), RiskConfig())
 
     assert _status(report, LIMIT_DAILY_LOSS) is LimitStatus.NOT_PERFORMED
 
 
-@scaffolded_risk
 def test_a_flat_day_is_a_reading_and_clears_the_daily_loss_limit() -> None:
     """``0.0`` means flat, which is a fact about the account, not a silence."""
     report = check_limits((), _proposed(), RiskConfig(), realised_pnl_today=0.0)
@@ -410,7 +404,6 @@ def test_a_flat_day_is_a_reading_and_clears_the_daily_loss_limit() -> None:
     assert _status(report, LIMIT_DAILY_LOSS) is LimitStatus.CLEAR
 
 
-@scaffolded_risk
 def test_the_daily_loss_limit_breaches_at_four_percent_of_balance() -> None:
     """R80.00 lost on R2,000 is the 4% default. Negative is a loss."""
     report = check_limits((), _proposed(), RiskConfig(), realised_pnl_today=-80.0)
@@ -425,7 +418,6 @@ def test_the_daily_loss_limit_breaches_at_four_percent_of_balance() -> None:
     )
 
 
-@scaffolded_risk
 def test_an_untracked_equity_peak_is_not_performed() -> None:
     """Nothing in this repository holds a peak, so this is every run today."""
     report = check_limits((), _proposed(), RiskConfig())
@@ -433,14 +425,12 @@ def test_an_untracked_equity_peak_is_not_performed() -> None:
     assert _status(report, LIMIT_DRAWDOWN) is LimitStatus.NOT_PERFORMED
 
 
-@scaffolded_risk
 def test_a_balance_at_its_peak_clears_the_drawdown_limit() -> None:
     report = check_limits((), _proposed(), RiskConfig(), equity_peak=BALANCE)
 
     assert _status(report, LIMIT_DRAWDOWN) is LimitStatus.CLEAR
 
 
-@scaffolded_risk
 def test_the_drawdown_limit_breaches_ten_percent_below_the_peak() -> None:
     """R2,000 against a R2,223 peak is 10.03% down. R2,223 x 0.9 = R2,000.70."""
     report = check_limits((), _proposed(), RiskConfig(), equity_peak=2223.0)
@@ -453,6 +443,364 @@ def test_the_drawdown_limit_breaches_ten_percent_below_the_peak() -> None:
         )
         is LimitStatus.CLEAR
     )
+
+
+# --- what a live sizing run can actually supply, per #46 ---------------------
+
+
+def test_a_caller_with_nothing_to_supply_gets_four_not_performed() -> None:
+    """The state of every live run today, and the answer this issue turns on.
+
+    The owner's answer to Q1 on #46: trades are not journalled by hand at entry,
+    they arrive as a broker statement once a day. So the journal describes
+    completed days and knows nothing about the book right now, and a caller with
+    an honest view of what it holds passes ``None`` three times. All four limits
+    come back not performed, and the report is not all clear.
+
+    This is the outcome the old ``list[str]`` contract could not express: it
+    returned an empty list, and empty meant take the trade.
+    """
+    report = check_limits(None, _proposed(), RiskConfig())
+
+    assert (
+        tuple(check.status for check in report.checks)
+        == (LimitStatus.NOT_PERFORMED,) * 4
+    )
+    assert report.all_clear is False
+    assert report.breached == ()
+    assert len(report.not_performed) == 4
+
+
+def test_every_not_performed_detail_names_the_input_it_wanted() -> None:
+    """A not-performed line that does not say what was missing cannot be acted on.
+
+    The owner's next step is to check that one limit by hand, and which
+    terminal screen to open differs per limit. A bare "not performed" sends
+    them to all four.
+    """
+    report = check_limits(None, _proposed(), RiskConfig())
+
+    assert "open" in _detail(report, LIMIT_CONCURRENT).lower()
+    assert "open" in _detail(report, LIMIT_CORRELATED).lower()
+    assert "realised_pnl_today" in _detail(report, LIMIT_DAILY_LOSS)
+    assert "equity_peak" in _detail(report, LIMIT_DRAWDOWN)
+
+
+def test_a_flat_day_and_an_untracked_day_are_different_answers() -> None:
+    """The pair of readings ADR 0002 rule 1 names, asserted side by side.
+
+    ``0.0`` is a fact about the account: nothing closed, the day is flat.
+    ``None`` is the absence of that fact. Collapsing them is the original
+    defect, and it is the one #46's second amended criterion asks to be pinned,
+    so the two calls are in one test rather than two files apart.
+    """
+    flat = check_limits((), _proposed(), RiskConfig(), realised_pnl_today=0.0)
+    untracked = check_limits((), _proposed(), RiskConfig(), realised_pnl_today=None)
+
+    assert _status(flat, LIMIT_DAILY_LOSS) is LimitStatus.CLEAR
+    assert _status(untracked, LIMIT_DAILY_LOSS) is LimitStatus.NOT_PERFORMED
+    assert tuple(check.limit for check in flat.not_performed) == (LIMIT_DRAWDOWN,)
+    assert tuple(check.limit for check in untracked.not_performed) == (
+        LIMIT_DAILY_LOSS,
+        LIMIT_DRAWDOWN,
+    )
+
+
+def test_no_check_comes_back_without_something_to_read() -> None:
+    """`LimitCheck.detail` is documented as never empty, on every path.
+
+    A check with nothing to say about itself is indistinguishable from one that
+    was never run, which is the distinction this whole report exists to make.
+    """
+    reports = (
+        check_limits(None, _proposed(), RiskConfig()),
+        check_limits((), _proposed(), RiskConfig(), 0.0, BALANCE),
+        check_limits(
+            [_open_record("EURUSD"), _open_record("GBPUSD")],
+            _proposed("AUDUSD", realised_risk_amount=MAX_RISK),
+            RiskConfig(),
+            -80.0,
+            2223.0,
+        ),
+    )
+
+    for report in reports:
+        assert tuple(check.limit for check in report.checks) == tuple(LIMITS)
+        for check in report.checks:
+            assert check.detail.strip(), check
+
+
+def test_landing_exactly_on_the_correlated_ceiling_is_not_a_breach() -> None:
+    """Strictly above, per the docstring. Holding the maximum is not exceeding it.
+
+    One open EURUSD at R40.00 puts 2% on USD. A proposed AUDUSD at R40.00 adds
+    2%, which lands USD on the configured 4% exactly. An off-by-one here refuses
+    a trade the plan allows, every time the book is full but legal.
+    """
+    report = check_limits(
+        [_open_record("EURUSD")],
+        _proposed("AUDUSD", realised_risk_amount=MAX_RISK),
+        RiskConfig(),
+    )
+
+    assert _status(report, LIMIT_CORRELATED) is LimitStatus.CLEAR
+    assert "4.0%" in _detail(report, LIMIT_CORRELATED)
+
+
+def test_the_concurrent_limit_breaches_on_the_count_that_leaves_no_room() -> None:
+    """At the ceiling, not past it: the question is whether one more fits."""
+    one_open = [_open_record("EURUSD")]
+
+    assert (
+        _status(
+            check_limits(one_open, _proposed(), RiskConfig(max_concurrent_positions=1)),
+            LIMIT_CONCURRENT,
+        )
+        is LimitStatus.BREACHED
+    )
+    assert (
+        _status(
+            check_limits(one_open, _proposed(), RiskConfig(max_concurrent_positions=2)),
+            LIMIT_CONCURRENT,
+        )
+        is LimitStatus.CLEAR
+    )
+
+
+def test_the_daily_loss_limit_reads_the_configured_fraction() -> None:
+    """Tests the wire. Same loss, a tighter limit, a different answer."""
+    at_fifty_down = -50.0
+
+    assert (
+        _status(
+            check_limits(
+                (), _proposed(), RiskConfig(max_daily_loss=0.01), at_fifty_down
+            ),
+            LIMIT_DAILY_LOSS,
+        )
+        is LimitStatus.BREACHED
+    )
+    assert (
+        _status(
+            check_limits((), _proposed(), RiskConfig(), at_fifty_down),
+            LIMIT_DAILY_LOSS,
+        )
+        is LimitStatus.CLEAR
+    )
+
+
+def test_the_drawdown_limit_reads_the_configured_fraction() -> None:
+    """Tests the wire. R2,000 against a R2,100 peak is 4.8% down."""
+    peak = 2100.0
+
+    assert (
+        _status(
+            check_limits(
+                (), _proposed(), RiskConfig(max_drawdown_pause=0.01), equity_peak=peak
+            ),
+            LIMIT_DRAWDOWN,
+        )
+        is LimitStatus.BREACHED
+    )
+    assert (
+        _status(
+            check_limits((), _proposed(), RiskConfig(), equity_peak=peak),
+            LIMIT_DRAWDOWN,
+        )
+        is LimitStatus.CLEAR
+    )
+
+
+def test_the_drawdown_limit_breaches_on_the_threshold_itself() -> None:
+    """At or beyond, not past. The boundary is chosen so it is exact in binary.
+
+    A 50% pause against a R4,000 peak puts the threshold on R2,000.00 exactly,
+    which is the balance. ``<`` instead of ``<=`` would clear it, and the
+    ordinary fixture cannot tell the two apart: R2,223 x 0.9 is R2,000.70, which
+    a strictly-less comparison breaches as well.
+    """
+    report = check_limits(
+        (),
+        _proposed(),
+        RiskConfig(max_drawdown_pause=0.5),
+        equity_peak=4000.0,
+    )
+
+    assert _status(report, LIMIT_DRAWDOWN) is LimitStatus.BREACHED
+
+
+def test_the_money_limits_use_the_balance_the_size_was_derived_from() -> None:
+    """Sizing against one balance and checking against another is a silent gap.
+
+    ``--balance`` on the command line overrides the configured figure for one
+    ticket. If the limits kept reading `RiskConfig.account_balance`, a R2,000
+    ticket on an account configured at R10,000 would be measured against R400 of
+    daily loss rather than R80, and the stop for the session would not fire
+    until five times the intended loss.
+    """
+    config = RiskConfig(account_balance=10_000.0)
+
+    report = check_limits((), _proposed(balance=BALANCE), config, -80.0, 2223.0)
+
+    assert _status(report, LIMIT_DAILY_LOSS) is LimitStatus.BREACHED
+    assert _status(report, LIMIT_DRAWDOWN) is LimitStatus.BREACHED
+
+
+def test_the_proposed_position_is_weighed_on_what_it_actually_risks() -> None:
+    """The intended figure is not the one on the book, and the gap decides this.
+
+    R40.00 intended rounds down to R20.00 realised on this ticket. Against a
+    5.5% ceiling with USD already carrying 4%, the realised figure clears at 5%
+    and the intended one would breach at 6%. Reading the wrong field here
+    refuses trades on exposure the account does not carry.
+    """
+    opens = [_open_record("EURUSD"), _open_record("GBPUSD")]
+    proposed = _proposed("AUDUSD", realised_risk_amount=20.0)
+
+    report = check_limits(opens, proposed, RiskConfig(max_correlated_exposure=0.055))
+
+    assert proposed.risk_amount == pytest.approx(40.0)
+    assert _status(report, LIMIT_CORRELATED) is LimitStatus.CLEAR
+    assert "5.0%" in _detail(report, LIMIT_CORRELATED)
+
+
+def test_the_correlated_breach_names_the_currency_and_both_figures() -> None:
+    """Which ticket to drop is the decision the line has to support."""
+    opens = [_open_record("EURUSD"), _open_record("GBPUSD")]
+
+    detail = _detail(
+        check_limits(
+            opens, _proposed("AUDUSD", realised_risk_amount=MAX_RISK), RiskConfig()
+        ),
+        LIMIT_CORRELATED,
+    )
+
+    assert "USD" in detail
+    assert "6.0%" in detail
+    assert "4.0%" in detail
+
+
+@pytest.mark.parametrize("balance", [0.0, -100.0, float("nan"), float("inf")])
+def test_a_balance_that_is_not_money_is_refused(balance: float) -> None:
+    """Every money comparison here is a share of the balance.
+
+    A zero has no fraction to report, a negative one inverts both money limits,
+    and a NaN passes every comparison by failing it. A refusal is the only
+    honest answer, and it is the same rule `position_size` already applies to
+    the configured balance.
+    """
+    with pytest.raises(ValueError, match="account_balance"):
+        check_limits((), _proposed(balance=balance), RiskConfig())
+
+
+@pytest.mark.parametrize("peak", [0.0, -1.0, float("nan")])
+def test_an_equity_peak_that_is_not_money_is_refused(peak: float) -> None:
+    """Absent is ``None`` and is answered with not performed; nonsense is refused.
+
+    The two must not collapse into each other. A peak of 0.0 would make the
+    drawdown threshold 0.0 and clear every balance forever, which is a limit
+    that reports clear on no evidence.
+    """
+    with pytest.raises(ValueError, match="equity_peak"):
+        check_limits((), _proposed(), RiskConfig(), equity_peak=peak)
+
+
+@pytest.mark.parametrize("pnl", [float("nan"), float("inf"), float("-inf")])
+def test_a_daily_loss_that_is_not_a_number_is_refused(pnl: float) -> None:
+    """Absence is ``None``. A NaN is a different failure and is not quieter.
+
+    A NaN compares False against the threshold, so the daily-loss limit would
+    report clear on a figure nobody can read, which is the one outcome that
+    authorises a trade. Reporting it as not performed would be honest about the
+    limit and silent about the caller, and the caller is the thing that is
+    broken.
+    """
+    with pytest.raises(ValueError, match="realised_pnl_today"):
+        check_limits((), _proposed(), RiskConfig(), realised_pnl_today=pnl)
+
+
+def test_a_flat_day_survives_the_refusal_that_a_peak_of_zero_gets() -> None:
+    """The asymmetry between the two money inputs, stated as a test.
+
+    Zero is a reading for a day's profit and loss and nonsense for an equity
+    peak, so one validation cannot serve both. A shared check that refused zero
+    everywhere would delete the flat-day reading, which is the case ADR 0002
+    rule 1 exists to preserve.
+    """
+    flat = check_limits((), _proposed(), RiskConfig(), realised_pnl_today=0.0)
+
+    assert _status(flat, LIMIT_DAILY_LOSS) is LimitStatus.CLEAR
+    with pytest.raises(ValueError, match="equity_peak"):
+        check_limits((), _proposed(), RiskConfig(), equity_peak=0.0)
+
+
+def test_a_supplied_input_is_never_reported_as_not_performed() -> None:
+    """The other direction of the same rule: what was checked says it was checked."""
+    report = check_limits(
+        [_open_record("EURUSD")],
+        _proposed(),
+        RiskConfig(),
+        realised_pnl_today=-10.0,
+        equity_peak=2100.0,
+    )
+
+    assert report.not_performed == ()
+    assert report.all_clear is True
+
+
+# --- what the documents have to say about all this ---------------------------
+
+
+def _risk_section(heading: str) -> str:
+    """One section of the risk document, by its heading, with runs of whitespace
+    collapsed to single spaces.
+
+    The document is hard-wrapped at 80 columns, so a phrase can fall either side
+    of a line break, and a test that asserted on the raw text would pass or fail
+    on where a sentence happened to wrap. Normalising here means the assertions
+    below are about what the section says rather than about its layout.
+    """
+    body = RISK_DOC.read_text()
+    assert heading in body, heading
+    section = body.split(heading)[1].split("\n## ")[0]
+    return " ".join(section.split())
+
+
+def test_section_four_says_the_journal_describes_completed_days() -> None:
+    """Criterion 3. The document may not claim a limit is automated when it is not.
+
+    Before #46 this section said `fbe size` counts the journal's open records
+    and that the concurrent and correlated limits are performed on that basis.
+    The owner's answer to Q1 makes that false: the journal arrives as a daily
+    broker statement, so it describes completed days and is blind to the book
+    the trade is being sized into.
+    """
+    section = _risk_section("## 4. Limits, and what each one is for").lower()
+
+    assert "completed days" in section
+    assert "all four" in section
+    assert "by hand" in section
+    assert "daily statement" in section
+
+
+def test_section_four_no_longer_claims_two_limits_are_performed() -> None:
+    """The specific sentence that was wrong, asserted gone rather than assumed."""
+    section = _risk_section("## 4. Limits, and what each one is for").lower()
+
+    assert "the concurrent and correlated limits are performed" not in section
+
+
+def test_section_eight_tells_the_owner_which_limits_are_theirs() -> None:
+    """Criterion 1. Q1's policy is stated where the box is ticked.
+
+    "Today that is the last two every time" was true when two limits had no
+    source. It is now all four, and a checklist that understates which boxes
+    the reader owns is worse than one that says nothing.
+    """
+    section = _risk_section("## 8. Pre-trade checklist").lower()
+
+    assert "all four" in section
+    assert "last two every time" not in section
 
 
 # --- the ticket, guarded until Phase 4 --------------------------------------
