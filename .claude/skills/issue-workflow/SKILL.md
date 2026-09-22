@@ -63,6 +63,28 @@ Area labels (`area:data`, `area:scoring`, `area:risk`, `area:execution`,
 `docs/team.md`. Priority is `p0` through `p3`, where `p0` means a wrong number
 is reaching the trader right now.
 
+Three labels keep an issue out of the maintenance pool, and triage never adds
+`routine-safe` to an issue carrying any of them: **`roadmap`**, which is the
+implementation lanes' pool; **`routine-hold`**, which only a person adds or
+removes; and **`desk-only`**, which a filing desk applies to work that needs two
+owners or a human in the loop.
+
+They are one list rather than three rules. `docs/routines.md` names the same
+three, and `tests/test_desk_only_label.py` fails if the two files ever disagree,
+because a rule that reaches one document and not the other is how `routine-hold`
+ended up documented here and absent from the prompt that has to honour it.
+
+`desk-only` exists because prose does not work: a lane matches on labels and
+does not read an issue's closing section. #71 argued in its own body that it was
+not `routine-safe`, carried the label anyway for nine weekday slots, and was
+caught by luck. Where an issue argues against the label and carries no
+`desk-only`, triage either applies it or adds `routine-safe` with a comment
+answering the argument, never silently.
+
+**Neither label has any effect until the routine prompts carry it.** The labels
+live in the repository; the behaviour lives in four routine definitions outside
+it. Until those are recreated, applying one marks the board and stops nothing.
+
 ## Which decisions are the owner's
 
 The owner is a working developer, not an economist and not a trading
@@ -172,11 +194,18 @@ mistake compounds before anyone sees it.
 issue at `p2` or `p3` whose diff is confined to one owner's files, updating a
 stale doc, adding a missing test, opening a defect it found, commenting.
 
-**Not allowed without a human in the loop:** anything touching `types.py`,
-anything changing a number in `ScoringConfig` or `RiskConfig`, anything a
-proposal rather than a defect, anything at `p0` or `p1`, force-pushing,
-closing an issue it did not fully resolve, and opening more than a few issues
-in one run.
+**Not allowed without a human in the loop:** changing a field, a type, an
+argument order or a default in `src/fbe/types.py`, changing a value in
+`ScoringConfig` or `RiskConfig`, anything a proposal rather than a defect,
+anything at `p0` or `p1`, force-pushing, closing an issue it did not fully
+resolve, and opening more than a few issues in one run.
+
+**Both of those bounds are on the change, not on the file.** A lane may correct
+a docstring in `src/fbe/types.py` or in a config type: a docstring cannot break
+a consumer and cannot re-price a score, so it is the description of the contract
+rather than the contract. Read as file bounds they cost the pool a class of work
+it is well suited to and protect against nothing, which left #11, #40 and #182
+unclaimable. Ruled on #154.
 
 **The bar on closing stands, and it is deliberate rather than an oversight.** A
 close is the last moment anyone looks at whether the work matches what was asked,
