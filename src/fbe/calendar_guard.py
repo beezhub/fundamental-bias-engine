@@ -33,6 +33,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from math import isfinite
 
 from fbe.config import DataConfig
 from fbe.types import CalendarEvent
@@ -250,6 +251,59 @@ def _merge(
         else:
             merged.append((opens, closes))
     return tuple(merged)
+
+
+def _describe(event: CalendarEvent) -> str:
+    """Name an event the way every reason in this module names one.
+
+    Args:
+        event: The release being reported. Its ``scheduled_for`` must be aware;
+            callers check that before they reach here.
+
+    Returns:
+        ``"<CCY> <title> at <YYYY-MM-DD HH:MM> UTC"``, converted to UTC
+        whatever zone the feed carried. That string reaches
+        `fbe.types.PairBias.blockers`, the report and the journal, where it
+        later explains why an obvious setup was skipped or a working position
+        was closed early.
+
+    One function rather than one format string per caller. `is_blacked_out`
+    and `action_for_open_position` write the same sentence into the same two
+    places, and two copies of it drift: the journal would then hold two shapes
+    of the same fact and a later reader could not group them.
+
+    """
+    moment = event.scheduled_for.astimezone(UTC)
+    return f"{event.currency} {event.title} at {moment:%Y-%m-%d %H:%M} UTC"
+
+
+def _require_pair(pair: str) -> None:
+    """Refuse a pair whose legs are not both G10.
+
+    Args:
+        pair: The pair as the caller wrote it, in any case.
+
+    Raises:
+        ValueError: If it is not six characters, or either leg is outside
+            `fbe.universe.G10`.
+
+    `split_pair` checks length only, so one mistyped character splits as
+    cleanly as a real pair and then matches no event. The guard would answer
+    that the morning is clear, or that a position may be held, which are both
+    the quiet wrong answer this module exists to avoid.
+
+    """
+    base, quote = split_pair(pair.upper())
+    for leg in (base, quote):
+        if leg not in G10:
+            raise ValueError(
+                f"{pair!r} has a leg {leg!r} that is not a G10 currency. "
+                "`split_pair` checks length only, so one mistyped character "
+                "splits as cleanly as a real pair and then matches no event, "
+                "and this function would answer that the morning is clear. "
+                "`fbe.risk.currency_exposure` refuses the same input for the "
+                "same reason."
+            )
 
 
 def is_high_impact(event: CalendarEvent) -> bool:
@@ -643,17 +697,8 @@ def is_blacked_out(
     says so.
 
     """
+    _require_pair(pair)
     base, quote = split_pair(pair.upper())
-    for leg in (base, quote):
-        if leg not in G10:
-            raise ValueError(
-                f"{pair!r} has a leg {leg!r} that is not a G10 currency. "
-                "`split_pair` checks length only, so one mistyped character "
-                "splits as cleanly as a real pair and then matches no event, "
-                "and this function would answer that the morning is clear. "
-                "`fbe.risk.currency_exposure` refuses the same input for the "
-                "same reason."
-            )
 
     # Uppercased before splitting, as `fbe.risk.currency_exposure` does, so a
     # hand-typed ``eurusd`` from the pre-trade check is answered rather than
@@ -698,10 +743,7 @@ def is_blacked_out(
             # say which release to name in the reason.
             for opens, closes in blackout_windows([event], config):
                 if opens <= when <= closes:
-                    moment = event.scheduled_for.astimezone(UTC)
-                    return True, (
-                        f"{event.currency} {event.title} at {moment:%Y-%m-%d %H:%M} UTC"
-                    )
+                    return True, _describe(event)
     return False, None
 
 
@@ -808,7 +850,13 @@ def action_for_open_position(
         the event, so the journal records what prompted an early exit.
 
     Raises:
-        ValueError: If ``when`` is naive or ``pair`` is malformed.
+        ValueError: If ``when`` is naive, ``pair`` is malformed, an event
+            carries a naive ``scheduled_for``, or ``unrealised_r`` is not
+            finite. The last of those is not a fact about the trade either: a
+            NaN fails every comparison, so it would fall past the buffer test
+            into FLATTEN and read as a decision to close a live position when
+            it is the absence of one. `fbe.risk.position_size` refuses a
+            non-finite ``risk_fraction`` for the same reason.
 
     Note:
         This is advisory. It never sends an order. The owner executes, which
@@ -816,7 +864,41 @@ def action_for_open_position(
         about being a filter rather than a trading system.
 
     """
-    raise NotImplementedError(
-        "fbe.calendar_guard.action_for_open_position is scaffolded; "
-        "see docs/roadmap.md Phase 4"
-    )
+    _require_pair(pair)
+    base, quote = split_pair(pair.upper())
+    _require_aware(when, "when")
+    if not isfinite(unrealised_r):
+        raise ValueError(
+            f"unrealised_r must be finite, got {unrealised_r!r}. A NaN fails "
+            "every comparison, so it would fall through to FLATTEN and read as "
+            "an instruction to close a live position that the guard reached by "
+            "refusing to answer rather than by deciding."
+        )
+
+    # Every event's shape, before any of them is matched against a leg. A naive
+    # time is a broken feed rather than a fact about this pair, the same
+    # ordering `is_blacked_out` uses and for the same reason.
+    for event in events:
+        _require_aware(event.scheduled_for, f"{event.currency} {event.title}")
+
+    for leg in (base, quote):
+        for event in events:
+            if event.currency != leg:
+                continue
+            # This event's own window rather than the merged set, as
+            # `is_blacked_out` does: a merged window contains ``when`` exactly
+            # when one of its parts does, and only the individual event can say
+            # which release to name.
+            for opens, closes in blackout_windows([event], config):
+                if opens <= when <= closes:
+                    reason = _describe(event)
+                    # Read from the module global at call time rather than
+                    # captured, so moving the threshold moves this decision.
+                    if unrealised_r >= TIGHTEN_BUFFER_R:
+                        return OpenPositionAction.TIGHTEN, reason
+                    return OpenPositionAction.FLATTEN, reason
+
+    # Nothing in range. Not "the calendar said nothing", which is
+    # `coverage_gap`'s question and `is_blacked_out`'s to ask: flattening on an
+    # empty sequence would close every position the first time a fetch failed.
+    return OpenPositionAction.HOLD, None
