@@ -27,10 +27,11 @@ import re
 from dataclasses import fields, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from jinja2 import UndefinedError
+from jinja2 import Environment, FileSystemLoader, StrictUndefined, UndefinedError
 
 import fbe
 from fbe.cli import _pillar_order as cli_pillar_order
@@ -637,6 +638,14 @@ def test_the_sidecar_is_a_json_object_keyed_by_field_name(tmp_path: Path) -> Non
     payload = json.loads(sidecar_of(markdown).read_text(encoding="utf-8"))
 
     assert set(payload) == {item.name for item in fields(BiasReport)}
+    # Nested too, and `PositionSize` specifically. It is the one type in the
+    # report carrying a derived accessor, and the sidecar is the committed
+    # record that cannot be regenerated: a derived value written into it
+    # could be read back out of step with the two numbers it came from.
+    assert set(payload["shortlist"][0]["size"]) == {
+        item.name for item in fields(PositionSize)
+    }
+    assert "realised_risk_fraction" not in payload["shortlist"][0]["size"]
     assert payload["asof"] == "2026-06-30"
     assert payload["pairs"][0]["direction"] == "short"
     assert "monetary" in payload["currencies"][0]["pillars"]
@@ -1669,6 +1678,35 @@ def test_a_renderer_derives_no_number_by_division(template: Path) -> None:
     assert dividing == []
 
 
+def test_the_expression_scan_reads_statements_and_not_only_expressions(
+    tmp_path: Path,
+) -> None:
+    """A division hidden in ``{% set %}`` is still a derivation.
+
+    Both templates happen to put every arithmetic expression in ``{{ }}``
+    today, so the statement arm of `jinja_expressions` is exercised by
+    nothing in the tree and a later simplification of the helper would narrow
+    criterion 6 to ``{{ }}`` without failing anything.
+
+    Also pins the two exclusions the helper's docstring claims, since both
+    are load-bearing rather than defensive: a comment carrying a slash, which
+    both real templates have in their header, and a slash inside a string
+    literal, which `report.md.j2` has nine of as ``'n/a'``.
+    """
+    template = tmp_path / "probe.md.j2"
+    template.write_text(
+        "{# heat-p1..p4 / n1..n4 #}\n"
+        "{{ 'n/a' if x is none else x }}\n"
+        "{% set share = a.realised_risk_amount / a.account_balance %}\n",
+        encoding="utf-8",
+    )
+
+    dividing = [body for body in jinja_expressions(template) if "/" in body]
+
+    assert len(dividing) == 1
+    assert "realised_risk_amount" in dividing[0]
+
+
 def test_the_report_prints_the_realised_fraction_it_was_handed() -> None:
     """Perturbation, so the page cannot be right for the wrong reason.
 
@@ -1684,6 +1722,65 @@ def test_the_report_prints_the_realised_fraction_it_was_handed() -> None:
 
     moved = replace(idea, size=replace(idea.size, realised_risk_amount=10.0))
     after = render_report(bias_report(shortlist=(moved,)))
+
+    assert "1.42%" not in after
+    assert "0.50%" in after
+
+
+def render_dashboard(idea: TradeIdea) -> str:
+    """Render the dashboard card for one idea, without going through `build`.
+
+    `fbe.dashboard.build.render_dashboard` is still scaffolded, so the
+    template is driven directly with the context `build_context` produces
+    plus the `view` namespace the dashboard layer adds. The same approach and
+    the same reason as ``tests/test_blockers.py``.
+
+    Only the members the template actually calls are supplied, so a template
+    that starts reading a new one fails here rather than rendering a blank.
+    """
+    environment = Environment(
+        loader=FileSystemLoader(PACKAGE_ROOT / "dashboard" / "templates"),
+        undefined=StrictUndefined,
+        autoescape=True,
+        keep_trailing_newline=True,
+    )
+    context = build_context(bias_report(shortlist=(idea,)))
+    context["view"] = SimpleNamespace(
+        title="FX bias",
+        bar_pct=lambda value: 50.0,
+        heat=lambda spread: "heat-p1",
+        at_pct=lambda when: 50.0,
+        span_pct=lambda a, b: 10.0,
+        legend=(),
+        hour_marks=(),
+        blackouts=(),
+    )
+    return environment.get_template("dashboard.html.j2").render(**context)
+
+
+def test_the_dashboard_prints_the_realised_fraction_it_was_handed() -> None:
+    """The same perturbation as the report, on the page read during a session.
+
+    Proving the dashboard does not divide is only half of criterion 2. A
+    dashboard reading `risk_fraction` instead passes the division test and
+    prints the intended share where the realised one belongs, on a card whose
+    own words are "of balance) against an intended", so the same figure
+    appears twice under two different labels.
+
+    That is this project's opening failure mode: a plausible number, no
+    exception, and the report correct while the phone is wrong.
+    """
+    idea = TradeIdea(bias=pair_bias(), size=position_size(), rationale="Wide gap.")
+
+    rendered = render_dashboard(idea)
+
+    assert "1.42%" in rendered
+    # The intended fraction is 1.5%. Asserted absent so a card reading
+    # `risk_fraction` fails here rather than printing a plausible figure.
+    assert "1.50%" not in rendered
+
+    moved = replace(idea, size=replace(idea.size, realised_risk_amount=10.0))
+    after = render_dashboard(moved)
 
     assert "1.42%" not in after
     assert "0.50%" in after

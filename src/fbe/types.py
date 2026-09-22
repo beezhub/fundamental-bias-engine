@@ -391,18 +391,29 @@ class PositionSize:
         it changed nothing that builds a `PositionSize`. It cannot drift from
         the two numbers it divides, where a stored value would have to be
         computed by every builder and a builder passing an inconsistent one
-        produces a ticket whose own figures disagree. And it is not written to
-        the report sidecar or the journal, both of which walk
-        ``dataclasses.fields``, so the record keeps the two measured numbers
-        and recomputes the ratio rather than storing a third that could be
-        restored out of step with them.
+        produces a ticket whose own figures disagree. And it stays out of the
+        report sidecar, which walks ``dataclasses.fields``, so the committed
+        record keeps the two measured numbers and recomputes the ratio rather
+        than carrying a third that could be read back out of step with them.
+
+        **The journal is the opposite case and the names collide.**
+        `fbe.journal.TradeRecord` does store a fraction, deliberately, so that
+        a breach of the band is visible without arithmetic, and it calls that
+        field ``risk_fraction`` while meaning the realised share. Here
+        ``risk_fraction`` means the intended one. So the value a
+        ``TradeRecord`` wants is this property rather than the field of the
+        same name: writing ``size.risk_fraction`` into ``record.risk_fraction``
+        overstates every R-multiple by the rounding ratio, which is routinely
+        10% or more and is the only evidence the conviction model is judged on.
 
         Returns:
             A fraction in ``[0.0, risk_fraction]``, carrying no unit and no
             sign: 0.0 means the size was refused and nothing is exposed, which
-            is a measurement rather than an absence. It never exceeds
+            is a measurement rather than an absence. It does not exceed
             ``risk_fraction``, because rounding the lot step down can only
-            reduce what is at risk.
+            reduce what is at risk, and where the step divides the size
+            exactly the two meet to within floating-point error rather than
+            being equal bit for bit.
 
         """
         return self.realised_risk_amount / self.account_balance
