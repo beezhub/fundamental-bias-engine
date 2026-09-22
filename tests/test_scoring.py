@@ -31,7 +31,6 @@ from fbe.scoring import (
     composite,
     coverage,
     dispersion,
-    freshness,
     score_currencies,
 )
 from fbe.types import CurrencyScore, Observation, PillarName, PillarScore
@@ -195,16 +194,19 @@ def test_a_pillar_still_inside_its_allowance_keeps_its_z(
     assert penalised.z == pytest.approx(1.5, abs=1e-12)
 
 
-def test_the_factor_falls_back_to_the_ramp_when_none_is_given(
+def test_a_score_with_no_measured_factor_is_refused(
     config: ScoringConfig,
 ) -> None:
-    """30 days on the shipped ramp is (45 - 30) / (45 - 15), which is 0.5."""
+    """There used to be a fallback here: no factor meant "apply the ramp to
+    the age". Since #126 the ramp is derived from the leg that produced each
+    observation, and this module does not know the leg, so the fallback could
+    only guess a shape. It guessed monthly, which is what gave every quarterly
+    series a factor of 0.0. Refusing is the honest answer.
+    """
     original = _score(PillarName.MONETARY, 1.5, 0.30, staleness_days=30)
 
-    penalised = apply_staleness_penalty(original, config)
-
-    assert freshness(30, config) == pytest.approx(0.5, abs=1e-12)
-    assert penalised.weight == pytest.approx(0.15, abs=1e-12)
+    with pytest.raises(ValueError, match="no freshness factor"):
+        apply_staleness_penalty(original, config)
 
 
 @pytest.mark.parametrize("factor", [1.5, -0.1, 2.0])
@@ -509,6 +511,7 @@ class _Double:
         absent: Sequence[str] = (),
         omit: Sequence[str] = (),
         staleness_days: int = 0,
+        freshness_factor: float | None = 1.0,
     ) -> None:
         self.name = name
         self.requires: Sequence[str] = ()
@@ -517,6 +520,12 @@ class _Double:
         self._absent = set(absent)
         self._omit = set(omit)
         self._staleness_days = staleness_days
+        # Since #126 a pillar measures its own freshness, because the ramp is
+        # derived from the leg that produced each observation and the scorer
+        # does not know which leg that was. 1.0 keeps the scores in these
+        # tests at their configured weights, which is what they are about;
+        # the tests that care about the discount pass their own.
+        self._freshness_factor = freshness_factor
 
     def compute(
         self,
@@ -540,6 +549,7 @@ class _Double:
                 weight=0.0,
                 asof=asof,
                 staleness_days=self._staleness_days,
+                freshness_factor=self._freshness_factor,
             )
         return built
 
@@ -953,55 +963,47 @@ def test_the_penalty_takes_no_date_parameter() -> None:
     assert "asof" not in parameters, sorted(parameters)
 
 
-def test_the_docstring_names_the_two_parameters_that_re_age_a_score() -> None:
+def test_the_docstring_names_the_one_route_that_re_ages_a_score() -> None:
     """The replacement for the removed promise has to be findable where it was.
 
     A reader who reached for `asof` reached for it because the Args entry named
-    it. Deleting that entry without saying what does work leaves them to guess,
-    and the two that do work are not obvious: one is a field on the score being
-    passed in, not a parameter at all.
+    it. There were two working routes and #126 removed one of them, so the
+    guidance has to say which survives rather than leaving a reader to find
+    out by passing ``None`` and reading the traceback.
     """
     doc = inspect.getdoc(apply_staleness_penalty) or ""
 
     assert "asof" not in doc
 
-    # Both names appear in the `freshness_factor` Args entry already, so
-    # asserting they are present anywhere in the docstring passes whether or not
-    # the replay guidance exists. A mutation that deleted the guidance survived
-    # exactly that assertion. Scope to the paragraph that answers the question.
+    # Asserting the name appears anywhere in the docstring passes whether or
+    # not the replay guidance exists, because the Args entry names it already.
+    # A mutation that deleted the guidance survived exactly that assertion, so
+    # scope it to the paragraph that answers the question.
     guidance = doc.partition("Re-ageing a stored score")[2]
 
     assert guidance, doc
-    assert "staleness_days" in guidance, guidance
-    assert "freshness_factor" in guidance, guidance
-    assert "takes no date" in guidance, guidance
+    assert "factor the replay wants" in guidance, guidance
+    assert "takes no date" in " ".join(guidance.split()), guidance
 
 
-def test_a_stored_score_is_re_aged_by_the_age_on_the_score(
+def test_the_age_on_the_score_no_longer_re_ages_it(
     config: ScoringConfig,
 ) -> None:
-    """The working control, pinned where the broken one used to be advertised.
+    """The second route, removed by #126, and pinned so it cannot come back.
 
-    20 days is inside the ramp: ``(45 - 20) / (45 - 15)`` is ``25 / 30``, so the
-    weight is ``0.30 * 0.8333...``. 100 days is past the 45-day allowance, so
-    the factor is 0.0 and the weight with it. Both figures computed by hand.
-
-    This is a regression guard rather than a demonstration of the defect. The
-    route always worked; it was simply not the one the documentation pointed
-    at, and the arithmetic is identical on both sides of the change. It cannot
-    literally be run against the old signature, which demanded a date, but the
-    same call with that date supplied returns 0.25 and 0.0, checked before the
-    parameter was removed.
+    Passing two scores that differ only in ``staleness_days`` used to give two
+    different weights, because the age was run through a global ramp here.
+    That ramp judged every series as if it published monthly, which is the
+    defect. Now the age reaches the expiry note and nothing else, so the same
+    measured factor gives the same weight whatever the age says.
     """
     fresh = _score(PillarName.MONETARY, 1.5, 0.30, staleness_days=20)
     stale = _score(PillarName.MONETARY, 1.5, 0.30, staleness_days=100)
 
-    fresh_weight = apply_staleness_penalty(fresh, config).weight
-    stale_weight = apply_staleness_penalty(stale, config).weight
+    fresh_weight = apply_staleness_penalty(fresh, config, freshness_factor=0.5).weight
+    stale_weight = apply_staleness_penalty(stale, config, freshness_factor=0.5).weight
 
-    assert fresh_weight == pytest.approx(0.30 * 25 / 30, abs=1e-12)
-    assert stale_weight == pytest.approx(0.0, abs=1e-12)
-    assert fresh_weight != stale_weight
+    assert fresh_weight == stale_weight == pytest.approx(0.15, abs=1e-12)
 
 
 def test_a_stored_score_is_re_aged_by_an_explicit_freshness_factor(

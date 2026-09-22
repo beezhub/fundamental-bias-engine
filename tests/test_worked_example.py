@@ -59,6 +59,7 @@ from fbe.pillars.growth import GrowthPillar
 from fbe.pillars.inflation import InflationPillar
 from fbe.pillars.monetary import MonetaryPillar
 from fbe.pillars.positioning import PositioningPillar
+from fbe.scoring import freshness
 from fbe.types import (
     Conviction,
     CurrencyScore,
@@ -325,10 +326,13 @@ CURRENCY_RESULTS: Mapping[str, tuple[float, float, float, int]] = {
     "NZD": (0.950, -0.9774, 0.7056, 8),
 }
 
-# 7.6, anchor "7.6 nzd staleness". New Zealand's external data is 30 days old, so
-# that pillar's effective weight is discounted and coverage falls below 1.0.
+# 7.6, anchor "7.6 nzd staleness". New Zealand's external data is half a
+# release cycle late, so that pillar's effective weight is discounted and
+# coverage falls below 1.0. The age is 258 days on a quarterly leg since #126
+# derived the ramp from the leg; the 0.500 it produces is the fixture and is
+# unchanged, which is why nothing below this moves.
 NZD_STALE_PILLAR = PillarName.EXTERNAL
-NZD_STALE_DAYS = 30
+NZD_STALE_DAYS = 258
 NZD_STALE_PHI = 0.500
 NZD_STALE_EFFECTIVE_WEIGHT = 0.050
 
@@ -806,13 +810,25 @@ def test_every_published_composite_follows_from_the_pillar_matrix() -> None:
 
 
 def test_the_nzd_staleness_discount_is_the_section_4_1_ramp() -> None:
-    """Section 7.6, anchor "7.6 nzd staleness", against the configured ramp."""
+    """Section 7.6, anchor "7.6 nzd staleness", against the derived ramp.
+
+    The spec states that the ages behind the 0.500 are not part of the fixture,
+    because they move whenever the registry is re-verified while the
+    aggregation arithmetic below them does not. What has to stay true is that
+    the figure is reachable: a real leg, at a real age, must produce it.
+
+    A quarterly leg on the default lag table is punctual to ``120 + 92 = 212``
+    days and worth nothing at ``120 + 184 = 304``. Exactly half a cycle late,
+    258 days, is the midpoint of that ramp and gives 0.500. Before #126 the
+    same figure came from a 30-day-old print against a global 15-to-45 ramp,
+    which is why `NZD_STALE_DAYS` was 30.
+    """
     config = ScoringConfig()
-    phi = (config.max_staleness_days - NZD_STALE_DAYS) / (
-        config.max_staleness_days - config.staleness_full_days
-    )
+    s0, allowance = 212, 304
+    phi = freshness(NZD_STALE_DAYS, s0, allowance)
 
     assert phi == pytest.approx(NZD_STALE_PHI)
+    assert s0 + (allowance - s0) // 2 == NZD_STALE_DAYS
     assert config.weights[NZD_STALE_PILLAR] * phi == pytest.approx(
         NZD_STALE_EFFECTIVE_WEIGHT
     )
