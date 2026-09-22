@@ -477,3 +477,5 @@ and it is the authority. In short: nothing touching `types.py` without an
 architect ruling naming every consumer, nothing changing a configured
 threshold, never more than a few issues in one run, never a proposal without a
 human, and never a merge.
+
+<!-- staleness probe, to be deleted -->
