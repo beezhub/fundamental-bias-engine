@@ -439,11 +439,17 @@ Lots             0.004       (400 units, rounded down to the 0.001 step)
 At risk          ZAR 26.75   =  1.34% of balance
 Notional         ZAR 7,638
 
-Limits           1 open position from data/journal/trades.jsonl, written 2026-09-09 18:42 UTC
-  max_concurrent_positions  clear          1 open, limit 3
-  max_correlated_exposure   clear          USD 2.84% with this trade, limit 4.00%
-  max_daily_loss            not performed  today's realised profit and loss was not supplied
-  max_drawdown_pause        not performed  no equity peak is recorded anywhere
+Limits           journal data/journal/trades.jsonl, written 2026-09-09 18:42 UTC
+                 1 open record in the file, which is a count for the days the
+                 statement covers and not a count of what is open now
+  max_concurrent_positions  not performed  the open book is not known, so nothing
+                                           was counted against the limit of 3
+  max_correlated_exposure   not performed  the open book is not known, so the only
+                                           exposure that could be totalled is this
+                                           trade's own two legs
+  max_daily_loss            not performed  realised_pnl_today was not supplied
+  max_drawdown_pause        not performed  equity_peak was not supplied and nothing
+                                           here records a balance history
 
 Warnings
   Lot rounding cuts the risk by 11%. Size and R-multiples are measured on
@@ -455,20 +461,30 @@ Warnings
 
 The limits block is read from the journal on every run. There is no flag to skip
 it: `check_limits` can only compare against a book it is given, and a limit check
-run with nothing to check against used to come back clear. The command reads
-`data/journal/trades.jsonl`, keeps the records whose `closed_at` is empty, and
-prints the count, the path and the file's last write time, because a clear
-concurrent limit means nothing without them. The plan's routine allows the
-journal entry to be written in the evening, so a position opened this morning and
-not yet written is invisible to the count, and the basis is printed so the reader
-can see what the check could see.
+run with nothing to check against used to come back clear.
+
+**All four limits read not performed, and that is the honest answer rather than a
+gap.** The journal is a record of completed days. Trades are not written into it
+by hand at entry; they arrive from the broker as a daily statement, so the file
+is complete up to the last statement and blind to the book this trade is being
+added to. Counting its open records would produce a number, and a number reads as
+knowledge of what is open now. So the command prints what the file holds, the
+path and the file's last write time, and passes not-tracked for the open book,
+for the day's realised profit and loss and for the equity peak. Ruled on issue
+#46. The write time is a fact about the file, not a coverage date: a file written
+this morning may hold a statement covering the day before yesterday.
 
 Each limit reads **clear**, **breached** or **not performed**, and not performed
-is never printed as clear. The last two limits read not performed on every run
-today, because nothing supplies the day's realised profit and loss and nothing
-records an equity peak. They are checked by hand, per section 4 of
-`docs/risk-and-execution.md`. A breach prints here as a warning and does not
-change the exit code; issue #46 decides whether it should.
+is never printed as clear. All four are checked by hand against the broker
+terminal today, per section 4 of `docs/risk-and-execution.md`. What would turn
+them on is something that reads the daily statement into the journal, which is
+not built.
+
+A breach exits 3, ruled on issue #46, and `--force` covers the concurrent and
+correlated limits but not the daily-loss and drawdown limits, which are the only
+rule protecting the account from a bad day. No breach is reachable until
+something supplies an input, and the exit-code table above has not been extended
+for it yet.
 
 An absent journal and an unreadable one are different facts and print
 differently. No file is a fresh install with no trades. A file that will not
@@ -477,11 +493,12 @@ parse means the book is not known, which is not the same as empty:
 ```console
 $ fbe size EURUSD --entry 1.0850 --stop 1.0888
 ...
-Limits           open positions not known: data/journal/trades.jsonl could not be parsed
-  max_concurrent_positions  not performed  the open book could not be read
-  max_correlated_exposure   not performed  the open book could not be read
-  max_daily_loss            not performed  today's realised profit and loss was not supplied
-  max_drawdown_pause        not performed  no equity peak is recorded anywhere
+Limits           journal data/journal/trades.jsonl could not be parsed, so even
+                 the count for the days it covers is not known
+  max_concurrent_positions  not performed  the open book is not known
+  max_correlated_exposure   not performed  the open book is not known
+  max_daily_loss            not performed  realised_pnl_today was not supplied
+  max_drawdown_pause        not performed  equity_peak was not supplied
 ```
 
 Two risk figures, and the second one is the real one. `risk_amount` is what the

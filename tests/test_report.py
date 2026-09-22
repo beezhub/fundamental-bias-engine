@@ -1795,7 +1795,7 @@ def test_a_zero_balance_cannot_reach_a_renderer() -> None:
     branch around the division is that the object carrying a zero denominator
     cannot be built by the only thing that builds one.
     """
-    from fbe.config import RiskConfig
+    from fbe.config import BrokerConfig, RiskConfig
     from fbe.risk import position_size as size_a_position
 
     with pytest.raises(ValueError, match="account_balance"):
@@ -1805,6 +1805,7 @@ def test_a_zero_balance_cannot_reach_a_renderer() -> None:
             1.0825,
             RiskConfig(account_balance=0.0),
             {"USDZAR": 18.50},
+            broker=BrokerConfig(),
             risk_fraction=0.01,
         )
 

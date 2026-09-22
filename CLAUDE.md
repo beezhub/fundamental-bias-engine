@@ -62,7 +62,8 @@ the repository root so the row can be checked against the file it names, which
 | `src/fbe/scoring.py`, `src/fbe/bias.py` | Implemented. Composite and pair rows. |
 | `src/fbe/datasources/*` | Implemented. Seven sources, the registry, the cache. |
 | `src/fbe/pillars/*` | Implemented. All seven, and the base class they share. |
-| `src/fbe/risk.py`, `src/fbe/calendar_guard.py`, `src/fbe/journal.py` | In progress |
+| `src/fbe/risk.py` | Implemented. Sizing, the conviction ladder, and the per-limit report. |
+| `src/fbe/calendar_guard.py`, `src/fbe/journal.py` | In progress |
 | `src/fbe/report.py` | Implemented. The dated Markdown, its JSON sidecar and the run-to-run diff. |
 | `src/fbe/cli.py`, `src/fbe/dashboard/*` | In progress |
 

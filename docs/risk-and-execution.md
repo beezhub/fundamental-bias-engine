@@ -290,8 +290,11 @@ What each outcome does to the ticket:
   trusted.
 * **Breached.** The limit was compared and there is not. It prints on the ticket
   with the figure, and for correlated exposure with the currency named, because
-  "too much exposure" does not tell you which ticket to drop. Whether a breach
-  also changes the exit code is open in issue #46.
+  "too much exposure" does not tell you which ticket to drop. A breach exits 3,
+  ruled on issue #46: exit 3 is a guard rule refusing rather than an error, and
+  `--force` covers the two attention limits and not the two that protect
+  capital. Nothing reaches that exit code yet, because no command calls
+  `check_limits`.
 * **Not performed.** Printed as not performed, never as clear. It does not block
   the ticket: two of these four limits have no automated source at all today, so
   refusing on absence would refuse every trade, and a gate that refuses
@@ -301,27 +304,57 @@ What each outcome does to the ticket:
 
 ### What is automated today, stated plainly
 
-`fbe size` reads the journal, counts the records that are still open, and prints
-the count, the journal path and the time the file was last written. On that
-basis the concurrent and correlated limits are performed. If the journal cannot
-be read or a line will not parse, the open book is **not known**, which is
-different from empty, and both position limits report not performed rather than
-clear.
+**All four limits are checked by hand.** Not one of them is performed on a live
+sizing run, and the reason is the same for all four: every input they need
+describes the book right now, and nothing in this repository can see the book
+right now.
 
-**The daily-loss and drawdown limits report not performed on every run.** Nothing
-supplies today's realised profit and loss, and nothing anywhere in this
-repository records an equity peak: `TradeRecord` holds
+**The journal is a record of completed days.** Trades are not written into it by
+hand at entry. They arrive from the broker as an email statement, once a day,
+with a weekly one behind it, which the owner stated on issue #46. So the file is
+complete up to the last statement and blind to today. A position opened this
+morning is not in it, and a position opened and closed today never appears as
+open at all. Counting its open records would produce a number, and a number
+reads as knowledge, which is worse than the silence it replaced.
+
+That is why the count is not the concurrent limit's input:
+
+| Limit | The input it needs | On a live run |
+|---|---|---|
+| Concurrent positions | the open book right now | not performed |
+| Correlated exposure | the open book right now | not performed |
+| Daily loss | profit and loss closed today | not performed |
+| Drawdown pause | an equity peak | not performed |
+
+The configured names and numbers are in the table at the top of this section and
+are not repeated here.
+
+The distinction that survives, and it is the one ADR 0002 rule 1 names: a figure
+of `0.0` for a day the journal covers is a **reading**, the day was flat. The
+absence of any figure for today is `None`, and `None` is what a live run has.
+`check_limits` answers the first with a performed check and the second with not
+performed, and `tests/test_limit_checks.py` pins both so they cannot collapse
+back into one argument.
+
+The equity peak has no source at all, on any day. `TradeRecord` holds
 `account_balance_at_entry`, which is a balance at an entry time, not a peak, and
-is wrong across a withdrawal. Until a source exists, those two limits are
-checked by hand. Issue #46 decides whether the journal is an honest enough source
-for the first and where the second could come from. No part of this document
-claims either limit is automated.
+is wrong across a withdrawal. Deriving one from it would produce a plausible
+wrong drawdown, so the drawdown pause is checked by hand and this document does
+not pretend otherwise. When a balance history exists the limit turns on with no
+further decision.
 
-The journal is also only as current as the last entry written. The plan's
-routine allows the journal entry to be written in the evening, and a position
-opened this morning and not yet journalled is invisible to the count. That is why
-the ticket prints the basis rather than only the verdict. Policy for a stale
-journal is issue #46's first question.
+**What the ticket prints instead.** The journal path, how many open records the
+file holds, and when that file was last written. The last of those is a fact
+about the file and not a coverage date: a file written this morning may hold a
+statement covering the day before yesterday. If the journal cannot be read or a
+line will not parse, the open book is **not known**, which is different from
+empty and different again from a file that does not exist yet.
+
+**What would turn these limits on.** Something that reads the broker's daily
+statement into the journal, at which point the two position limits and the daily
+loss become performed for the days it covers. It is not built, it is not asked
+for here, and until it exists no part of this document claims any limit is
+automated.
 
 ---
 
@@ -593,14 +626,21 @@ Run this before every ticket. It takes about two minutes.
 **Limits**
 
 - [ ] Every limit on the ticket reads **clear**. A limit reading **not
-      performed** is not a pass: check that one by hand against the terminal
-      before ticking its box below. Today that is the last two every time.
-- [ ] Fewer than 3 positions open. The ticket prints the count, the journal path
-      and when the journal was last written. If a position is open that you have
-      not journalled yet, the count is wrong and you are the one who knows it.
+      performed** is not a pass: check that one by hand against the broker
+      terminal before ticking its box below. **Today that is all four, every
+      time.** The journal is a record of completed days, so nothing in the
+      engine can see the book you are about to add to. The four boxes below are
+      yours, and the ticket's job is to say plainly that it did not check them.
+- [ ] Fewer than 3 positions open. Count them in the terminal, not from the
+      ticket. The ticket prints the journal path, how many open records the file
+      holds and when the file was last written, which is the basis for a count
+      of the days the statement covers and not of today.
 - [ ] No currency leg exceeds 4% total exposure once this trade is added.
-- [ ] Not down 4% or more on the day.
-- [ ] Not in a 10% drawdown from peak.
+- [ ] Not down 4% or more on the day. The engine cannot see today's closes, so
+      this is the broker's figure, not the journal's.
+- [ ] Not in a 10% drawdown from peak. Nothing here records a balance history,
+      so there is no automated version of this box and there is not going to be
+      one until something does.
 
 **Record**
 
