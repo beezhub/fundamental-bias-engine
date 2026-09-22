@@ -72,6 +72,16 @@ too large, turning a 1% trade into an 18% trade, on every trade, until someone
 noticed. A loud failure that refuses to size the trade is the only acceptable
 behaviour.
 
+`position_size` refuses four malformed inputs for the same reason, before it
+computes anything: an entry or a stop that is not a finite positive price, a
+lot step that is not positive, and a balance that is not a finite positive
+amount. None is a fact about the trade, so none comes back as a warning, which
+`docs/risk-and-execution.md` section 8 lets the owner read as a pass. The
+balance is the newest of the four and nothing else checks it:
+`Config.validate` does not, so `RiskConfig(account_balance=0.0)` is
+constructible, and unchecked it reaches `realised_risk_fraction` as a
+denominator.
+
 ---
 
 ## 2. Position sizing, worked with real numbers
@@ -146,6 +156,11 @@ a standard micro-lot broker and the EURUSD trade above was not.**
 
 6. **Realised risk.** 1,000 x 0.00119355 x 30 = **R35.81**, which is 1.79% of
    the account. Inside the band, against an intended R40.00.
+
+   That percentage is `PositionSize.realised_risk_fraction`. The plan states
+   its rule as 1-2% of balance rather than as R20 to R40, so the share is the
+   form the check is actually made in, and the engine holds it rather than
+   leaving a report to divide two money fields at render time.
 
    That gap is about 10.5%, and it is the reason `realised_risk_amount` exists as its
    own field. Journal this trade against R40.00 and a R71.61 win reads as

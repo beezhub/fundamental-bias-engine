@@ -813,9 +813,13 @@ def position_size(
             distance case below, so a row that is both unpriceable and badly
             formed raises rather than coming back as a warning: a warning would
             report a soft failure on a pair nothing here can size at all.
-        ValueError: If ``broker.lot_step`` is not strictly positive, or if
-            ``pair`` is not six characters. Both are malformed inputs rather
-            than facts about the trade, so neither is reported as a warning.
+        ValueError: If ``broker.lot_step`` is not strictly positive, if
+            ``pair`` is not six characters, if ``entry`` or ``stop`` is not a
+            finite positive price, or if ``config.account_balance`` is not a
+            finite positive amount. All are malformed inputs rather than facts
+            about the trade, so none is reported as a warning. The balance is
+            checked here because nothing else checks it and because
+            `fbe.types.PositionSize.realised_risk_fraction` divides by it.
 
     """
     normalised = pair.upper()
@@ -840,6 +844,20 @@ def position_size(
                 f"a NaN yields a size that passes every check by failing "
                 f"every comparison."
             )
+    # The balance is the same class of input and is checked in the same place.
+    # Nothing else validates it: `Config.validate` does not, so
+    # `RiskConfig(account_balance=0.0)` is constructible. Unchecked it reaches
+    # `PositionSize.realised_risk_fraction` as a denominator, where a zero
+    # raises out of whatever is rendering the ticket and a negative reports a
+    # position risking less than nothing. A balance is not a fact about the
+    # trade, so it raises here rather than arriving as a warning.
+    if not isfinite(config.account_balance) or config.account_balance <= 0.0:
+        raise ValueError(
+            f"account_balance must be a finite, strictly positive amount, got "
+            f"{config.account_balance!r}. Every money figure on the result is "
+            f"a share of it, so a zero has no fraction to report and a NaN "
+            f"comes back as a size whose warnings tuple is empty."
+        )
     if risk_fraction is not None and not isfinite(risk_fraction):
         raise ValueError(
             f"risk_fraction must be finite, got {risk_fraction!r}. Clamping a "

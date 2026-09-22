@@ -23,6 +23,7 @@ Nothing here reaches the network. Every test writes under ``tmp_path``.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import fields, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -1606,44 +1607,108 @@ def test_the_newest_report_is_chosen_by_date_and_not_by_name(tmp_path: Path) -> 
     assert found.name == "bias-2026-06-30.json"
 
 
-# --- criterion 6, which this branch does not meet ----------------------------
+# --- criterion 6: the renderers derive nothing --------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "report.md.j2 derives realised risk as a share of balance by dividing. "
-        "PositionSize carries no field for it, and adding one changes "
-        "src/fbe/types.py, which needs an architect ruling naming every "
-        "consumer in the same commit. Recorded on issue #210."
-    ),
+RENDERED_TEMPLATES = (
+    PACKAGE_ROOT / "templates" / TEMPLATE_NAME,
+    PACKAGE_ROOT / "dashboard" / "templates" / "dashboard.html.j2",
 )
-def test_the_report_template_derives_no_number_by_division() -> None:
-    """Acceptance criterion 6: every number in the Markdown is a field.
+"""Both views of one run. The dashboard is the page the owner reads on a phone
+during the session, so a criterion met in the report and broken here is met
+where nobody is looking and broken where they are."""
 
-    The live violation is one expression:
+
+def jinja_expressions(template: Path) -> list[str]:
+    """Return every ``{{ ... }}`` and ``{% ... %}`` body, string literals removed.
+
+    Only what Jinja evaluates. Prose around it is not a derivation, and the
+    dashboard's own header comment contains the words "heat-p1..p4 / n1..n4",
+    which a substring search over the whole file reads as arithmetic. Quoted
+    text inside an expression is dropped for the same reason: a format spec or
+    a ``join('/')`` separator is a string, not an operator.
+
+    ``{# ... #}`` comments are not matched at all, since neither opener begins
+    one.
+    """
+    bodies = re.findall(r"\{\{(.*?)\}\}|\{%(.*?)%\}", template.read_text("utf-8"), re.S)
+    return [
+        re.sub(r"'[^']*'|\"[^\"]*\"", "", expression or statement or "")
+        for expression, statement in bodies
+    ]
+
+
+@pytest.mark.parametrize("template", RENDERED_TEMPLATES, ids=lambda path: path.name)
+def test_a_renderer_derives_no_number_by_division(template: Path) -> None:
+    """Acceptance criterion 6: every number on the page is read off a field.
+
+    Both templates carried the same expression:
 
         {{ '%.2f%%' | format(idea.size.realised_risk_amount
                              / idea.size.account_balance * 100) }}
 
-    It predates this branch and the criterion is still not met while it
-    stands. Two things follow from it. The percentage exists nowhere but the
-    template, so nothing downstream can check the number the owner reads
-    against the 1-2% rule. And it is unguarded, so a zero balance makes the
-    whole morning report unwritable with a `ZeroDivisionError` out of a
-    template.
+    Two things followed. The percentage existed nowhere but the render, so
+    nothing downstream could check the figure the owner reads against the
+    plan's 1-2% rule, which is the rule the whole account is run on. And the
+    expression was unguarded, so a zero balance raised a `ZeroDivisionError`
+    out of a Jinja template with no line of Python in the traceback.
 
-    Multiplying a fraction by 100 elsewhere in the file is a unit conversion
-    rather than a derivation: the value is on a field and only its scale
-    changes, so it does not fail this.
+    Both now read `fbe.types.PositionSize.realised_risk_fraction`.
 
-    Strict, so that adding `realised_risk_fraction` to `PositionSize` and
-    reading it here turns this into an unexpected pass and fails the suite,
-    which is the signal to delete the marker rather than the test.
+    Multiplying a fraction by 100 is a unit conversion rather than a
+    derivation: the value is on the object and only its scale changes, so it
+    does not fail this.
+
+    This replaces the strict xfail that stood here while the change was
+    waiting on an architect ruling, and it covers both files rather than one,
+    because the xfail named only the Markdown template and the violation was
+    in two.
     """
-    template = (PACKAGE_ROOT / "templates" / TEMPLATE_NAME).read_text(encoding="utf-8")
+    dividing = [body for body in jinja_expressions(template) if "/" in body]
 
-    assert " / " not in template
+    assert dividing == []
+
+
+def test_the_report_prints_the_realised_fraction_it_was_handed() -> None:
+    """Perturbation, so the page cannot be right for the wrong reason.
+
+    A renderer that recomputed the share from the two money fields would
+    print the same number for a `PositionSize` whose realised amount had
+    moved, and the page would disagree with the object every consumer
+    downstream reads.
+    """
+    idea = TradeIdea(bias=pair_bias(), size=position_size(), rationale="Wide gap.")
+    rendered = render_report(bias_report(shortlist=(idea,)))
+
+    assert "1.42%" in rendered
+
+    moved = replace(idea, size=replace(idea.size, realised_risk_amount=10.0))
+    after = render_report(bias_report(shortlist=(moved,)))
+
+    assert "1.42%" not in after
+    assert "0.50%" in after
+
+
+def test_a_zero_balance_cannot_reach_a_renderer() -> None:
+    """The guard is in `fbe.risk.position_size`, not in the property.
+
+    Recorded here as well as in ``tests/test_position_size.py`` because this
+    is the file that names the criterion: the reason the renderers need no
+    branch around the division is that the object carrying a zero denominator
+    cannot be built by the only thing that builds one.
+    """
+    from fbe.config import RiskConfig
+    from fbe.risk import position_size as size_a_position
+
+    with pytest.raises(ValueError, match="account_balance"):
+        size_a_position(
+            "EURUSD",
+            1.0850,
+            1.0825,
+            RiskConfig(account_balance=0.0),
+            {"USDZAR": 18.50},
+            risk_fraction=0.01,
+        )
 
 
 # --- the write path under failure --------------------------------------------
