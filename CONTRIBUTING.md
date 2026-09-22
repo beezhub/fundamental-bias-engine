@@ -154,6 +154,38 @@ python3 -m pytest
 
 CI runs the same four on Python 3.11 and 3.12. A red build is not merged.
 
+## Before you merge
+
+**Take `main` into your branch first. A green branch is not a green merge.**
+
+The four checks, yours and CI's, run against your branch. Nothing about them
+sees what `main` becomes when your branch joins it, and that is a different
+tree. Two branches can each be correct and green and still produce a broken
+`main` between them, with no conflict for git to report, because the fault is
+in no line either one touched.
+
+`main` requires a branch to be up to date before it can merge, so GitHub asks
+for this rather than trusting anyone to remember. When it does:
+
+```bash
+git fetch origin
+git merge origin/main
+# run the four checks again, on the merged tree
+git push
+```
+
+The second run is the point. Merging `main` in and pushing without re-checking
+produces the same blind spot one commit later.
+
+This cost a working day on 2026-09-22. `position_size` gained a required
+argument in one branch while another branch added a call to it, fourteen
+seconds apart, and `main` was red for an hour. The one-line fix was then
+carried on four branches at once, in two different positions, and the merges
+between them broke `main` twice more: once by applying the line twice, so the
+file stopped parsing, and once by applying two deletions of it, so the argument
+disappeared again. Every one of those branches was green. Issue #236 has the
+history.
+
 New behaviour needs a test. A bug fix needs a test that fails before the fix.
 Tests must not hit the network: mock `httpx` with `respx`, or use
 `DataConfig(offline=True)`.
