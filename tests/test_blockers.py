@@ -105,6 +105,10 @@ def _report_context(pairs: tuple[PairBias, ...]) -> dict[str, Any]:
         "pillar_order": (),
         "currencies": (),
         "pairs": pairs,
+        # Read by the Markdown template to tell a failed fetch from an offline
+        # run. Taken from `fbe.bias` rather than written out, for the reason
+        # `build_context` supplies it at all: one copy of the string.
+        "unknown_prefix": "event" + UNKNOWN_SUFFIX,
     }
 
 

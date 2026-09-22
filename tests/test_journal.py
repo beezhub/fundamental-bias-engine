@@ -33,6 +33,7 @@ from fbe.journal import (
     ENUM_FIELDS,
     JOURNAL_PATH,
     PILLAR_FIELDS,
+    BlackoutCheck,
     TradeRecord,
     append,
     load,
@@ -216,7 +217,7 @@ def test_a_record_round_trips_field_by_field(tmp_path: Path) -> None:
         base_pillars=dict(SEVEN_PILLARS),
         quote_pillars={name: -value for name, value in SEVEN_PILLARS.items()},
         agreed_with_bias=False,
-        blackout_checked=True,
+        blackout_check=BlackoutCheck.CLEAR,
         broker="generic-retail-micro",
         notes="Retest held on the fourth touch.",
         # Deliberately not the "ZAR" default. Left at it, this field round

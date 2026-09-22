@@ -129,7 +129,25 @@ Stand aside until {{ idea.blackout_until.strftime('%Y-%m-%d %H:%M %Z') }}: a
 high-impact release touches one of the legs before then.
 {%- endif %}
 {% if idea.bias.blockers -%}
-{{ 'Not checked' if idea.bias.tradeable else 'Blockers' }}: {{ idea.bias.blockers | join('; ') }}
+{%- if not idea.bias.tradeable -%}
+Blockers: {{ idea.bias.blockers | join('; ') }}
+{%- else -%}
+{#- Three states, not two. "Not checked" is true of an offline run and false
+    of a failed fetch, and only the second asks the reader to open a calendar
+    now. The prefix comes from the context so the string lives in
+    `fbe.bias.UNKNOWN_SUFFIX` alone. -#}
+{%- set blind = [] -%}
+{%- set quiet = [] -%}
+{%- for marker in idea.bias.blockers -%}
+{%- set _ = (blind if marker.startswith(unknown_prefix) else quiet).append(marker) -%}
+{%- endfor -%}
+{%- if blind -%}
+Calendar unknown: {{ blind | join('; ') }}
+{% endif -%}
+{%- if quiet -%}
+Not checked: {{ quiet | join('; ') }}
+{%- endif -%}
+{%- endif -%}
 {%- endif %}
 {% endfor %}
 {% endif %}

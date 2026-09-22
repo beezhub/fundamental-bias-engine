@@ -79,6 +79,7 @@ CONTEXT_KEYS = {
     "pillar_order",
     "currencies",
     "pairs",
+    "unknown_prefix",
 }
 """The keys `fbe.report.build_context` documents. Both templates read these and
 nothing else, so a key added without a docstring line is a key the dashboard
@@ -1795,7 +1796,7 @@ def test_a_zero_balance_cannot_reach_a_renderer() -> None:
     branch around the division is that the object carrying a zero denominator
     cannot be built by the only thing that builds one.
     """
-    from fbe.config import RiskConfig
+    from fbe.config import BrokerConfig, RiskConfig
     from fbe.risk import position_size as size_a_position
 
     with pytest.raises(ValueError, match="account_balance"):
@@ -1806,6 +1807,7 @@ def test_a_zero_balance_cannot_reach_a_renderer() -> None:
             RiskConfig(account_balance=0.0),
             {"USDZAR": 18.50},
             risk_fraction=0.01,
+            broker=BrokerConfig(),
         )
 
 

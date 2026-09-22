@@ -59,7 +59,7 @@ from typing import TYPE_CHECKING, Any, Union, get_args, get_origin, get_type_hin
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from fbe.bias import blocking
+from fbe.bias import UNKNOWN_SUFFIX, blocking
 from fbe.types import (
     BiasReport,
     Conviction,
@@ -219,6 +219,14 @@ def build_context(
             weight first, so the columns that drive the score come first.
         currencies: Currency scores sorted strongest to weakest.
         pairs: Pair biases sorted by absolute spread, widest first.
+        unknown_prefix: The blocker prefix that means the calendar guard was
+            asked and could not answer, ``"event:unknown"``. Supplied rather
+            than written into the templates so the string lives in
+            `fbe.bias.UNKNOWN_SUFFIX` alone: a copy in a template is a copy
+            that drifts, and the drift is silent because the label still
+            renders. Both templates use it to tell a failed fetch from an
+            offline run, which ADR 0002 rule 4 requires them to and which one
+            label over both states cannot do.
 
     Args:
         report: The run to render.
@@ -261,6 +269,7 @@ def build_context(
         "pairs": tuple(
             sorted(report.pairs, key=lambda row: (-abs(row.spread), row.pair))
         ),
+        "unknown_prefix": "event" + UNKNOWN_SUFFIX,
     }
 
 

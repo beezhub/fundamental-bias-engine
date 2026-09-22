@@ -365,6 +365,53 @@ pre-trade checklist below only lets the news box be ticked on a real clear
 answer; on unknown, it says to check the calendar by hand and to write down
 that the guard could not.
 
+### What unknown coverage does to a trade
+
+The fail direction is not one direction. The owner ruled on #24 that it splits
+by event category, and the reason is that the two categories differ in how much
+a miss costs:
+
+* **Central bank rate decision: fail closed.** Unknown coverage over a rate
+  decision makes the pair not tradeable. A rate decision is the one release the
+  heaviest pillar in the model is directly about, and being long into an
+  unexpected one is the largest single loss the calendar can prevent.
+* **Statistical release: fail open, with the marker visible.** The pair stays
+  tradeable, carries `event:unknown` with the reason, and the trader reviews
+  the calendar themselves as the daily routine already asks. Refusing all 28
+  pairs on one failed fetch costs a full trading day over an outage that may
+  clear on the next run, and the routine's own calendar review is the backstop.
+
+**Until the eight central bank rate-decision calendars exist, the rate-decision
+category is not evaluated, and that fact is itself the unknown marker on the
+pair.** This is the interim rule and it is written here rather than left to
+fall out of the code, because a literal reading of "fail closed on rate
+decisions" with no rate-decision calendar behind it blocks every pair on every
+run: the engine can never confirm that no rate decision is due. It would take
+the account from trading to not trading on the day it shipped.
+
+What that must never become is the opposite error, treating "no rate-decision
+calendar" as "no rate decision". The pair carries `event:unknown` whenever the
+guard could not see, and that marker covers the rate-decision question as much
+as any other. Silence and an all-clear do not look the same, which is the whole
+of ADR 0002 rule 4 applied here.
+
+The fail-closed half lands when there is a calendar to fail closed against. It
+is the planning desk's to decompose, per the owner's ruling, and it is not in
+the code today in any form.
+
+**The same direction governs the conviction cap.** A run that blocked a pair on
+an outage while still awarding it HIGH conviction would be incoherent, and so
+would the mirror image: a horizon the guard could not see caps conviction at
+LOW exactly where a release it *did* see caps it. An unseen calendar is never
+worth more than a seen one. `docs/scoring-spec.md` section 5.4 carries the row.
+
+**The journal records which of the three happened.** `TradeRecord.blackout_check`
+holds `clear`, `unknown` or `not_run`, and `unknown` on a record means the trade
+was entered while the guard was blind. That is the count proposal #2 asks for:
+if the override is most of the runs on which the state fired, the guard has been
+converted into a prompt and this policy needs revisiting. A boolean could not
+produce that count, which is why it was replaced.
+
 ### Holding through an event is a different decision
 
 Entering into a window and holding through one are not the same choice, and the
@@ -450,7 +497,11 @@ weights may have changed since. A snapshot at entry is the only version that is
 true. Without it there is no way to ever answer whether the model said anything
 useful, and the weights stay wherever they were first guessed, forever.
 
-**Discipline:** `agreed_with_bias` and `blackout_checked`.
+**Discipline:** `agreed_with_bias` and `blackout_check`, which is one of
+`clear`, `unknown` or `not_run` rather than a yes or no. `unknown` is a trade
+entered while the calendar guard was blind, and counting those against the runs
+where the state fired is how the fail-open policy in section 5 gets checked
+rather than assumed.
 
 ### Weekly review routine
 
