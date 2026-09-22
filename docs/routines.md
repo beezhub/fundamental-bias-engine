@@ -148,13 +148,33 @@ finished work. That has happened, to #16 and #20, and it cost most of a
 maintenance slot. The check is one command:
 
 ```
-git log main --grep="#NN"
+git log main -E --grep="#NN\b"
 ```
+
+**The right-hand boundary is the whole of the command.** Without it, `--grep`
+takes `#2` as a prefix and matches every commit mentioning #20, #24 or #201. On
+`main` today that reports 54 commits of finished work behind #2, which has none,
+and the conclusion the paragraph draws from a hit is that the issue is finished.
+Every issue filed in the 200s adds another false match for #2 and #20. The `-E`
+pins the dialect rather than enabling the boundary: `\b` is a GNU extension and
+works here without it, verified on git 2.43.0 in the run container. If a git
+build ever rejects it, `-E --grep="#NN([^0-9]|$)"` is the POSIX form and gives
+the same answer.
 
 Nothing found means the claim really is stranded and triage releases it.
 Something found means the work landed and the issue is waiting to be closed, not
 to be reclaimed: triage reports it for closure and leaves the label alone. Only a
 person closes an issue, so the report is the whole of what triage does here.
+
+**A `type:proposal` is never released by this test.** A proposal at
+`status:in-progress` is a parent waiting on its children, and the workflow
+forbids implementing one directly, so it has no pull request of its own and
+never will. "Nothing found" therefore carries no information about it. Read
+literally, the paragraph above would move every approved proposal into the
+claimable pool, which is the one direction the `issue-workflow` skill says has
+no agent override: a lane matching on labels would find a `type:proposal`
+offered as work. Five sit in exactly that state today and only judgement has
+kept them there.
 
 The lanes within a pool take it from opposite ends so they do not race for the
 same issue: build lane 1 and the two implementation lanes each prefer one end

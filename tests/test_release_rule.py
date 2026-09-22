@@ -24,11 +24,21 @@ Nothing here reaches the network. Every assertion reads the repository.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 ROUTINES = REPO / "docs" / "routines.md"
 SKILL = REPO / ".claude" / "skills" / "issue-workflow" / "SKILL.md"
+
+
+GREP_ARGUMENT = re.compile(r'git log main[^\n]*--grep="([^"]+)"')
+"""The pattern out of the command the routines document.
+
+Read back rather than retyped. A test that retypes it checks a copy, and the
+copy is what went wrong: the first version of this module asserted the command
+as a fixed string, so it passed against a pattern that matched the wrong issue.
+"""
 
 
 def _flat(path: Path) -> str:
@@ -39,6 +49,18 @@ def _flat(path: Path) -> str:
     assertions below quote the sentence as a reader sees it.
     """
     return " ".join(path.read_text().split())
+
+
+def _documented_pattern(issue: int) -> re.Pattern[str]:
+    """The documented ``--grep`` pattern, with ``NN`` standing for `issue`.
+
+    The document writes the placeholder as ``NN`` so a reader substitutes their
+    own number. Doing the same here is what makes the assertions below a test of
+    the command rather than of a sentence describing it.
+    """
+    found = GREP_ARGUMENT.search(ROUTINES.read_text())
+    assert found is not None, "the routines no longer document a git log command"
+    return re.compile(found.group(1).replace("NN", str(issue)))
 
 
 # --- the release test, which is criterion 1 --------------------------------
@@ -96,8 +118,62 @@ def test_the_routines_give_the_command_that_separates_the_two_cases() -> None:
     """
     body = _flat(ROUTINES)
 
-    assert 'git log main --grep="#NN"' in body
+    assert "git log main" in body
     assert "Only a person closes an issue" in body
+
+
+def test_the_documented_pattern_ends_at_the_issue_number() -> None:
+    """Issue #207. The behaviour, because the string passed against the defect.
+
+    The first version of this module pinned the command as text, so it went
+    green on a pattern with no right-hand boundary. `--grep` takes a regular
+    expression, and `#2` as a prefix matches every commit mentioning #20, #24
+    or #201: on `main` that was 54 commits of finished work behind an issue
+    with none, read by the rule as "this issue is done".
+
+    So this compiles what the document actually says and asks it about the case
+    that failed. A pattern that matches #200 when asked about #2 fails here
+    whatever the surrounding prose claims.
+    """
+    pattern = _documented_pattern(2)
+
+    assert pattern.search("Refs: #2")
+    assert pattern.search("#2 and more besides")
+    assert pattern.search("closes #2.")
+    assert not pattern.search("Refs: #20")
+    assert not pattern.search("Refs: #200")
+
+
+def test_the_unbounded_command_is_gone_from_the_routines() -> None:
+    """Criterion 3's other half, so the first defect cannot return either.
+
+    Paired with the positive assertion above rather than standing alone. A
+    negative that passes because the whole paragraph was deleted proves nothing,
+    which is why `test_the_documented_pattern_ends_at_the_issue_number` reads
+    the command back out and exercises it.
+    """
+    assert 'git log main --grep="#NN"' not in _flat(ROUTINES)
+
+
+def test_the_routines_exempt_a_proposal_from_the_release_test() -> None:
+    """Issue #207's second defect, which costs the approval gate.
+
+    A `type:proposal` has no pull request of its own, because the workflow
+    forbids implementing one directly. So the corrected command returns nothing
+    for every approved proposal, correctly, and the paragraph's conclusion from
+    "nothing found" is that the claim is stranded and should be released. That
+    puts a proposal in the claimable pool, which is the one thing the
+    `issue-workflow` skill says has no agent override.
+
+    Asserted as the sentence that carries the exemption and the reason for it.
+    The reason is what stops a later edit trimming this to a bare exception that
+    reads as arbitrary.
+    """
+    body = _flat(ROUTINES)
+
+    assert "**A `type:proposal` is never released by this test.**" in body
+    assert "has no pull request of its own" in body
+    assert '"Nothing found" therefore carries no information about it' in body
 
 
 # --- the trailer rule, which is criteria 2 and 3 ---------------------------
