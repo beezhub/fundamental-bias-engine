@@ -32,6 +32,8 @@ __all__ = [
     "RiskConfig",
     "ScoringConfig",
     "DataConfig",
+    "BrokerConfig",
+    "DEFAULT_TYPICAL_SPREAD_PIPS",
     "Config",
     "load_config",
 ]
@@ -275,6 +277,111 @@ class DataConfig:
     default windows either side of a high-impact release."""
 
 
+DEFAULT_TYPICAL_SPREAD_PIPS: Mapping[str, float] = {
+    "EURUSD": 0.8,
+    "GBPUSD": 1.2,
+    "USDJPY": 0.9,
+    "USDCHF": 1.3,
+    "USDCAD": 1.4,
+    "AUDUSD": 1.0,
+    "NZDUSD": 1.6,
+    "EURGBP": 1.3,
+    "EURJPY": 1.5,
+    "GBPJPY": 2.4,
+    "EURCHF": 1.6,
+    "AUDJPY": 1.7,
+    "CADJPY": 2.0,
+    "CHFJPY": 2.2,
+    "NZDJPY": 2.3,
+    "EURAUD": 2.0,
+    "EURCAD": 2.2,
+    "EURNZD": 3.0,
+    "GBPAUD": 2.8,
+    "GBPCAD": 3.0,
+    "GBPCHF": 2.6,
+    "GBPNZD": 4.0,
+    "AUDCAD": 2.0,
+    "AUDCHF": 2.1,
+    "AUDNZD": 2.4,
+    "NZDCAD": 2.8,
+    "NZDCHF": 3.0,
+    "CADCHF": 2.4,
+}
+"""Indicative spreads in pips during the London and New York overlap.
+
+Typical retail figures for a spread-only account, not a quote from any broker.
+They are the default because a sizing run with no spread table at all reports
+``spread:unchecked`` on all 28 pairs, which is a marker on nothing. They are
+still unconfirmed: `BrokerConfig.confirmed` covers these as much as it covers
+``min_lot``, and the owner is expected to sample them from their own terminal
+during the hours they actually trade.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerConfig:
+    """Execution constraints the broker imposes, and whether anyone checked them.
+
+    These are not preferences, they are the boundaries of what can physically be
+    sent. On a R2,000 account the minimum lot is the binding constraint far more
+    often than the risk rule is: at ``min_lot`` 0.01 on EURUSD with USDZAR at
+    17.60 the smallest ticket risks R1.76 per pip, so a 1% cap of R20 fits a
+    stop of 11.4 pips and a 2% cap fits 22.7. The plan puts stops beyond the far
+    side of a 1h or 4h channel, which is rarely that close, so these numbers
+    decide which pairs the account can express a view on at all.
+
+    Every value here is owner-supplied and none of it can be verified from
+    inside this engine, which is why `confirmed` exists beside them rather than
+    the values being trusted because they look ordinary.
+
+    Attributes:
+        name: Broker identifier, printed on the ticket and recorded on journal
+            entries so a change of broker is visible in the trade history.
+        min_lot: Smallest lot the broker will accept, in lots. 0.01 is the
+            common retail "micro lot" floor. Some brokers offer 0.001 nano
+            lots, which on an account this size is the difference between
+            several G10 pairs being tradeable and being untradeable.
+        lot_step: Increment sizes must land on, in lots, always reached by
+            rounding down. Multiples are counted from zero, not from
+            ``min_lot``, so with a 0.01 minimum and a 0.02 step the valid sizes
+            are 0.02 and 0.04 rather than 0.01 and 0.03.
+        contract_size: Base-currency units in one standard lot. 100,000 across
+            G10 spot FX at essentially every retail broker.
+        max_lot: Largest single ticket, in lots. Irrelevant at this account
+            size, held for completeness and for when the account grows.
+            `fbe.risk.position_size` deliberately does not compare against it.
+        typical_spread_pips: Indicative spread per pair, in pips. Missing pairs
+            produce ``spread:unchecked`` on the ticket rather than a silent
+            pass.
+        commission_per_lot: Round-turn commission per standard lot in the
+            account currency, 0.0 on a spread-only account.
+        confirmed: Whether the owner has checked these values against their
+            broker's contract specification and placed one minimum-size trade
+            to confirm the fill, per `docs/risk-and-execution.md` section 7.
+            **Defaults to false**, which is the honest state of a profile
+            nobody has looked at: a config file that omits this section gets an
+            unconfirmed profile rather than an absent one or a silently
+            confirmed one. `fbe.risk.position_size` puts
+            `fbe.risk.BROKER_UNCONFIRMED` on every ticket sized from a profile
+            with this false, and `fbe doctor` reports it, because a position
+            sized on an unconfirmed ``min_lot`` is otherwise indistinguishable
+            from one sized on a verified one
+            (`docs/decisions/0002-representing-not-known.md`).
+
+    """
+
+    name: str = "generic-retail-micro"
+    min_lot: float = 0.01
+    lot_step: float = 0.01
+    contract_size: float = 100_000.0
+    max_lot: float = 50.0
+    typical_spread_pips: Mapping[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_TYPICAL_SPREAD_PIPS)
+    )
+    commission_per_lot: float = 0.0
+    confirmed: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class Config:
     """The full effective configuration for one run."""
@@ -282,6 +389,7 @@ class Config:
     risk: RiskConfig = field(default_factory=RiskConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     data: DataConfig = field(default_factory=DataConfig)
+    broker: BrokerConfig = field(default_factory=BrokerConfig)
 
     def digest(self) -> str:
         """Short hash of the settings that change what a run computes.
@@ -305,6 +413,15 @@ class Config:
         are. It also holds the FRED key and three paths derived from
         ``REPO_ROOT``, and a hash written into committed reports must not
         move with a secret or with the machine it ran on.
+
+        ``BrokerConfig`` is excluded for the same reason as
+        ``account_balance``: a broker profile changes what can be sized, not
+        what anything scores. In particular ``confirmed`` flips from false to
+        true the first time the owner does what section 7 of
+        ``docs/risk-and-execution.md`` tells them to, place one minimum-size
+        trade and confirm the fill, and nothing has been re-weighted by that.
+        Folding it in would make every comparison across that date report as
+        not comparable, which is the defect ``--compare`` exists to avoid.
 
         Returns:
             The first twelve hex characters of a SHA-256 over the covered
@@ -342,6 +459,7 @@ class Config:
         problems.extend(self._weight_problems())
         problems.extend(self._threshold_problems())
         problems.extend(self._risk_problems())
+        problems.extend(self._broker_problems())
         return problems
 
     def _weight_problems(self) -> list[str]:
@@ -458,6 +576,28 @@ class Config:
             problems.append("risk_per_trade_max above 2% contradicts the trading plan")
         if self.risk.risk_per_trade_min > self.risk.risk_per_trade_max:
             problems.append("risk_per_trade_min exceeds risk_per_trade_max")
+        return problems
+
+    def _broker_problems(self) -> list[str]:
+        """Check that the broker's lot geometry is positive.
+
+        A non-positive ``min_lot``, ``lot_step`` or ``contract_size`` is not a
+        preference the owner might hold, it is a value that makes the sizing
+        arithmetic meaningless: ``position_size`` divides raw units by
+        ``contract_size`` and rounds down to ``lot_step``, so a zero or negative
+        one either divides by zero or rounds every size to nothing while still
+        returning a ticket. ``confirmed`` is deliberately not checked: false is
+        a valid, expected state, not a problem, and it is reported at the ticket
+        and by ``fbe doctor`` rather than refused here.
+        """
+        problems: list[str] = []
+        for name, value in (
+            ("min_lot", self.broker.min_lot),
+            ("lot_step", self.broker.lot_step),
+            ("contract_size", self.broker.contract_size),
+        ):
+            if value <= 0.0:
+                problems.append(f"broker.{name} is {value}, expected above 0")
         return problems
 
 
@@ -697,11 +837,26 @@ def _file_overrides(path: Path) -> Mapping[str, Mapping[str, object]]:
                 )
             where = f"{path}: {section_name}.{key}"
             hint = hints[key]
-            collected[section_name][key] = (
-                _coerce_weights(value, where)
-                if _is_mapping_field(hint)
-                else _coerce(value, hint, where, key in SECRET_FIELDS)
-            )
+            if _is_mapping_field(hint):
+                # ``_coerce_weights`` reads a complete pillar-weight map and is
+                # specific to ``scoring.weights``. Any other mapping field, such
+                # as ``broker.typical_spread_pips``, would be misread through it
+                # as pillar weights and fail with a confusing "unknown pillar"
+                # error. Those are set from their code defaults, not from a
+                # file, so this refuses them by name rather than misrouting.
+                if section_name == "scoring" and key == "weights":
+                    collected[section_name][key] = _coerce_weights(value, where)
+                else:
+                    raise ConfigError(
+                        f"{where}: {section_name}.{key} is a mapping that cannot "
+                        "be set in a config file; it takes its value from the "
+                        "code default. Only scoring.weights is a file-settable "
+                        "mapping."
+                    )
+            else:
+                collected[section_name][key] = _coerce(
+                    value, hint, where, key in SECRET_FIELDS
+                )
     return collected
 
 

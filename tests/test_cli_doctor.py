@@ -890,7 +890,10 @@ def test_strict_does_not_turn_a_clean_run_into_a_failure(
 ) -> None:
     respx.get(PROBE_URL).mock(return_value=httpx.Response(200))
     monkeypatch.setattr("fbe.cli.ALL_SOURCES", (_Reachable,))
-    path = _config_file(tmp_path, with_key=True)
+    # A confirmed broker, or the profile's own warning turns this clean run into
+    # a strict failure, which is the broker check working rather than this test
+    # breaking.
+    path = _config_file(tmp_path, "broker:\n  confirmed: true\n", with_key=True)
     reports = tmp_path / "reports"
     reports.mkdir()
     (reports / "bias-2026-09-08.json").write_text(
@@ -1203,8 +1206,10 @@ def test_the_summary_counts_every_warning(
         for line in result.stdout.splitlines()
         if line[LABEL_WIDTH:].startswith("warn")
     )
-    assert warnings == 4
-    assert result.stdout.rstrip().endswith("4 warnings.")
+    # Five, not four: the default broker profile is unconfirmed, which is its
+    # own warning. The count and the summary have to agree whatever the mix.
+    assert warnings == 5
+    assert result.stdout.rstrip().endswith("5 warnings.")
 
 
 @respx.mock

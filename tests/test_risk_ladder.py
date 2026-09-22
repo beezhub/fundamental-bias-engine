@@ -20,12 +20,10 @@ import math
 
 import pytest
 
-from fbe.config import RiskConfig
+from fbe.config import DEFAULT_TYPICAL_SPREAD_PIPS, BrokerConfig, RiskConfig
 from fbe.risk import (
     CONVICTION_BAND_POSITION,
-    DEFAULT_BROKER,
     MIN_REWARD_TO_RISK,
-    Broker,
     PositionRisk,
     correlated_exposure,
     min_acceptable_rr,
@@ -40,13 +38,19 @@ TRADEABLE = (Conviction.HIGH, Conviction.MEDIUM, Conviction.LOW)
 0.0, which sits below the band's floor by design, and the stub docstring says so
 explicitly."""
 
-NANO_BROKER = Broker(
+CONFIRMED_BROKER = BrokerConfig(confirmed=True)
+"""The default profile, marked confirmed, so these ladder and exposure tests
+size without the `fbe.risk.BROKER_UNCONFIRMED` warning that would otherwise sit
+on every result and change what they assert."""
+
+NANO_BROKER = BrokerConfig(
     name="test-nano",
     min_lot=0.001,
     lot_step=0.001,
     contract_size=100_000.0,
     max_lot=50.0,
-    typical_spread_pips=dict(DEFAULT_BROKER.typical_spread_pips),
+    typical_spread_pips=dict(DEFAULT_TYPICAL_SPREAD_PIPS),
+    confirmed=True,
 )
 
 
@@ -526,7 +530,7 @@ def test_the_realised_risk_is_used_and_not_the_intended_one(
         config,
         rates,
         risk_fraction=0.02,
-        broker=DEFAULT_BROKER,
+        broker=CONFIRMED_BROKER,
     )
     assert sized.risk_amount == pytest.approx(40.00)
     assert sized.realised_risk_amount == pytest.approx(35.81, abs=0.005)
