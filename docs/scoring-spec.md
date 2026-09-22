@@ -1108,12 +1108,29 @@ and the field name is what an implementation reads.
 | `min(coverage_base, coverage_quote) < coverage_demotion` (0.80) | Demote one step | The view rests on partial data |
 | `max(dispersion_base, dispersion_quote) > max_dispersion` (1.20) | Demote one step | A leg's own pillars contradict each other |
 | A high-impact `CalendarEvent` for either leg within the next 24 hours | Cap at `LOW` | The rate path could be repriced before the trade matures |
+| The horizon guard was asked about either leg and could not answer | Cap at `LOW` | An unseen calendar is never worth more than a seen one |
 
-The 24-hour horizon in the last row is the one threshold in this section with no
-`ScoringConfig` field behind it. It is written into the design rather than
-configured, and `bias.conviction_for` takes it as the boolean
-``event_within_24h`` rather than reading a number. Changing it means changing
-code, not config.
+The 24-hour horizon in the last two rows is the one threshold in this section
+with no `ScoringConfig` field behind it. It is written into the design rather
+than configured, and `bias.conviction_for` takes it as ``event_within_24h``
+rather than reading a number. Changing it means changing code, not config.
+
+**That argument has three values, not two**, and the last row is the third.
+``True`` is an event found in the horizon, ``False`` is a horizon reached and
+quiet, and ``None`` is a guard that was asked and could not tell, most often a
+failed fetch or a cached week that does not reach the run date. ``None`` caps
+exactly as ``True`` does. It was a boolean until #45, and a boolean has only
+``False`` to return when it cannot see, which is the one answer that leaves the
+tier alone: a broken calendar bought the top tier and a working one did not.
+Only ``False`` now leaves the tier alone, and only a guard that reached the
+horizon returns it.
+
+No guard supplied at all is not the same as a guard that failed, and it applies
+no cap. A caller that passed nothing knows it passed nothing, which is the right
+default for a backtest and the wrong one for a live run, so a live caller passes
+the guard. `docs/decisions/0002-representing-not-known.md` rule 4 is the general
+form of the distinction, and `docs/risk-and-execution.md` section 5 carries the
+policy this row implements.
 
 Demotions compound. A pair with weak agreement, thin coverage and a central bank
 meeting due can fall from `HIGH` to `NONE`.

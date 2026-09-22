@@ -26,7 +26,7 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from datetime import UTC, date, datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from pathlib import Path
 
 from fbe.config import DATA_DIR
@@ -40,6 +40,7 @@ __all__ = [
     "DATETIME_FIELDS",
     "ENUM_FIELDS",
     "PILLAR_FIELDS",
+    "BlackoutCheck",
     "TradeRecord",
     "ConvictionStats",
     "DisciplineFlag",
@@ -89,6 +90,44 @@ fundamental bias filter and a news blackout on top, five qualifying setups in a
 week is already generous. Consistently exceeding it means the criteria have
 loosened, not that the market got better.
 """
+
+
+class BlackoutCheck(StrEnum):
+    """What the calendar guard managed to say before a trade was entered.
+
+    Three states rather than the boolean this replaced, because that boolean
+    collapsed the middle one into the other two and the middle one is the only
+    one worth counting. `docs/decisions/0002-representing-not-known.md` rule 1
+    is the general form: absence is a value in the contract, never a value
+    inside the normal range that a reader could mistake for a reading.
+
+    The states, and what each one asks of a later reader:
+
+        `CLEAR`: the guard ran, reached the moment, and found nothing in the
+        blackout window. The entry was clean on the calendar.
+
+        `UNKNOWN`: the guard ran and could not see, most often a failed fetch
+        or a cached week that does not reach the run date, and the trade was
+        taken anyway. This is the override proposal #2 asks to be counted: if
+        it is most of the runs on which the state fired, the guard has been
+        converted into a prompt and the fail-open policy on #24 needs revisiting.
+
+        `NOT_RUN`: no guard was consulted. An offline run, or an entry recorded
+        outside the engine. Not a judgement about the calendar at all, and the
+        default, because a record that says nothing about the calendar must not
+        read as one that says the calendar was clear.
+
+    A trade forced through a blackout the guard could *see* is a fourth fact
+    and is not here. `fbe.cli.size` is still scaffolded, so nothing can record
+    it yet, and inventing the value before the command that writes it exists
+    would put a member in this vocabulary that nothing ever sets. Issue #45
+    scopes the unknown case; the visible-blackout override belongs with the
+    command.
+    """
+
+    CLEAR = "clear"
+    UNKNOWN = "unknown"
+    NOT_RUN = "not_run"
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +204,11 @@ class TradeRecord:
             ``PairBias.direction``. False marks a discretionary override, which
             is legitimate but must be counted separately, otherwise the model's
             record includes trades the model did not ask for.
-        blackout_checked: Whether the calendar guard was consulted before entry.
+        blackout_check: What the calendar guard was able to say before entry,
+            as a `BlackoutCheck`. Three states rather than a boolean, because
+            "consulted and the window was clear" and "consulted and blind, and
+            the trade was taken anyway" are different facts and only the second
+            is an override worth counting.
         broker: Broker name, so a change of execution venue is visible in the
             record when spreads and fills change with it.
         notes: Free text from the post-market review. The plan asks for the
@@ -201,7 +244,7 @@ class TradeRecord:
     base_pillars: Mapping[PillarName, float] = field(default_factory=dict)
     quote_pillars: Mapping[PillarName, float] = field(default_factory=dict)
     agreed_with_bias: bool = True
-    blackout_checked: bool = False
+    blackout_check: BlackoutCheck = BlackoutCheck.NOT_RUN
     broker: str = ""
     notes: str = ""
 
@@ -468,6 +511,7 @@ DATETIME_FIELDS: tuple[str, ...] = ("opened_at", "closed_at")
 ENUM_FIELDS: Mapping[str, type[Enum]] = {
     "direction": Direction,
     "conviction": Conviction,
+    "blackout_check": BlackoutCheck,
 }
 """`TradeRecord` fields written as an enum value and read back as the member.
 
