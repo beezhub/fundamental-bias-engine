@@ -34,20 +34,19 @@ Units convention used throughout:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import ROUND_FLOOR, Decimal
 from enum import StrEnum
 from math import isfinite
 from typing import Protocol, runtime_checkable
 
 from fbe.bias import UNCHECKED_SUFFIX
-from fbe.config import RiskConfig
+from fbe.config import BrokerConfig, RiskConfig
 from fbe.types import Conviction, PositionSize
 from fbe.universe import G10, split_pair
 
 __all__ = [
-    "Broker",
-    "DEFAULT_BROKER",
+    "BROKER_UNCONFIRMED",
     "JPY_PIP_SIZE",
     "STANDARD_PIP_SIZE",
     "CONVERSION_PIVOT",
@@ -106,7 +105,7 @@ stop inside that width is inside the cost of the round turn and the broker
 takes the trade out before the market has had a view.
 
 Indicative only, like the spreads it is applied to. It warns and does not
-refuse, because `Broker.typical_spread_pips` is sampled at the London and New
+refuse, because `BrokerConfig.typical_spread_pips` is sampled at the London and New
 York overlap and the owner watching their own terminal knows better than the
 profile does.
 """
@@ -192,100 +191,26 @@ on the same untested claim.
 """
 
 
-@dataclass(frozen=True, slots=True)
-class Broker:
-    """Execution constraints imposed by the owner's broker.
+BROKER_UNCONFIRMED: str = "broker:unconfirmed"
+"""Warning marker for a ticket sized from a broker profile nobody has confirmed.
 
-    These are not preferences, they are the boundaries of what can physically
-    be sent. On a R2,000 account the minimum lot is the binding constraint far
-    more often than the risk rule is, which is why it lives in a real object
-    rather than being assumed.
+Appended to `PositionSize.warnings` by `position_size` whenever the
+`fbe.config.BrokerConfig` it was handed has ``confirmed`` false. A sized
+position built on an unconfirmed ``min_lot`` is otherwise indistinguishable
+from one built on a verified one, which is the case
+`docs/decisions/0002-representing-not-known.md` names against ``DEFAULT_BROKER``
+by name.
 
-    Attributes:
-        name: Broker identifier, recorded on journal entries so a change of
-            broker is visible in the trade history.
-        min_lot: Smallest lot the broker will accept. 0.01 is the common retail
-            "micro lot" floor. Some brokers offer 0.001 nano lots, which on an
-            account this size is the difference between several G10 pairs being
-            tradeable and being untradeable.
-        lot_step: Increment sizes must land on, always reached by rounding
-            down. Multiples are counted from zero, not from ``min_lot``, so
-            with a 0.01 minimum and a 0.02 step the valid sizes are 0.02 and
-            0.04 rather than 0.01 and 0.03. Every retail broker seen so far
-            has ``min_lot == lot_step``, under which the two readings are the
-            same, and the from-zero reading is what `position_size` implements
-            and what ``tests/test_position_size.py`` pins.
-        contract_size: Base-currency units in one standard lot. 100,000 across
-            G10 spot FX at essentially every retail broker.
-        max_lot: Largest single ticket. Irrelevant at this account size, held
-            for completeness and for when the account grows.
-        typical_spread_pips: Indicative spread per pair, in pips, during the
-            London and New York overlap. Used to flag pairs whose cost eats the
-            edge, per the plan's "low spreads and trading costs" rule. These are
-            indicative only: spreads widen at the Asia open, around releases,
-            and on Sunday reopen.
-        commission_per_lot: Round-turn commission per standard lot in the
-            account currency, 0.0 on a spread-only account.
+It follows the ``noun:state`` shape of `fbe.bias`'s blocker vocabulary, but it
+is not one of those blockers and carries no `UNCHECKED_SUFFIX`: the profile's
+values are used, so nothing was left unchecked, they are simply unconfirmed.
+It is enumerated here and referenced, never typed as a literal at the emit
+site, because a marker read by matching free text drifts in spelling and the
+drift is silent.
 
-    """
-
-    name: str
-    min_lot: float
-    lot_step: float
-    contract_size: float
-    max_lot: float = 100.0
-    typical_spread_pips: Mapping[str, float] = field(default_factory=dict)
-    commission_per_lot: float = 0.0
-
-
-DEFAULT_BROKER: Broker = Broker(
-    name="generic-retail-micro",
-    min_lot=0.01,
-    lot_step=0.01,
-    contract_size=100_000.0,
-    max_lot=50.0,
-    typical_spread_pips={
-        "EURUSD": 0.8,
-        "GBPUSD": 1.2,
-        "USDJPY": 0.9,
-        "USDCHF": 1.3,
-        "USDCAD": 1.4,
-        "AUDUSD": 1.0,
-        "NZDUSD": 1.6,
-        "EURGBP": 1.3,
-        "EURJPY": 1.5,
-        "GBPJPY": 2.4,
-        "EURCHF": 1.6,
-        "AUDJPY": 1.7,
-        "CADJPY": 2.0,
-        "CHFJPY": 2.2,
-        "NZDJPY": 2.3,
-        "EURAUD": 2.0,
-        "EURCAD": 2.2,
-        "EURNZD": 3.0,
-        "GBPAUD": 2.8,
-        "GBPCAD": 3.0,
-        "GBPCHF": 2.6,
-        "GBPNZD": 4.0,
-        "AUDCAD": 2.0,
-        "AUDCHF": 2.1,
-        "AUDNZD": 2.4,
-        "NZDCAD": 2.8,
-        "NZDCHF": 3.0,
-        "CADCHF": 2.4,
-    },
-    commission_per_lot=0.0,
-)
-"""Placeholder broker profile. THE OWNER MUST CONFIRM EVERY VALUE.
-
-These are typical retail figures for a spread-only account, not a quote from
-any specific broker. ``min_lot`` and ``lot_step`` in particular decide which
-pairs are tradeable at R2,000, so an assumed 0.01 where the broker actually
-offers 0.001 wrongly rules out most of the universe, and an assumed 0.01 where
-the broker requires 0.1 wrongly rules it in. Read them off the broker's
-contract specification, place one minimum-size trade to confirm, then replace
-this constant. Spreads should be sampled from the owner's own terminal during
-the hours they actually trade, not taken from a marketing page.
+`BrokerConfig.confirmed` is the single source of this fact. This marker is a
+rendering of it, derived from the profile handed to `position_size` and never
+from a second copy of the state.
 """
 
 
@@ -472,7 +397,7 @@ def _round_down_to_step(value: float, step: float) -> float:
 
     Args:
         value: Lots as the sizing solve produced them, always non-negative.
-        step: Broker lot step, strictly positive.
+        step: The broker lot step, strictly positive.
 
     Returns:
         The largest multiple of ``step`` at or below ``value``. Never above it,
@@ -679,8 +604,8 @@ def position_size(
     stop: float,
     config: RiskConfig,
     rates: Mapping[str, float],
+    broker: BrokerConfig,
     risk_fraction: float | None = None,
-    broker: Broker = DEFAULT_BROKER,
 ) -> PositionSize:
     """Size a position so the stop costs the planned fraction of the account.
 
@@ -745,6 +670,11 @@ def position_size(
     would make every time.
 
     Warnings populated on the result:
+        * `BROKER_UNCONFIRMED` when ``broker.confirmed`` is false, on every
+          result including a refusal. The profile's values are used, so this is
+          not a check that failed to run; it says the owner has not confirmed
+          them. `fbe doctor` reports the same fact from the config, and the two
+          read the one `BrokerConfig.confirmed`.
         * Computed lots below ``broker.min_lot``. The setup is valid and the
           engine has a view, but the account cannot express it at this stop
           distance without breaking the risk rule. This is not a defect to be
@@ -765,12 +695,12 @@ def position_size(
           entry for the pair, so the check above did not run. A check that
           could not run is not a check that passed, and the suffix is
           `fbe.bias.UNCHECKED_SUFFIX`, the convention the pair filters already
-          use for the same distinction. It matters more than it looks:
-          `DEFAULT_BROKER`'s docstring tells the owner to replace the
-          constant, the natural replacement leaves ``typical_spread_pips``
-          empty, and a consumer reading "any warning blocks" would then refuse
-          all 28 pairs. Consumers should treat a line carrying this suffix as
-          non-blocking, as `fbe.bias.apply_filters` does.
+          use for the same distinction. It matters more than it looks: a
+          broker profile confirmed with a sparser spread table than the default
+          leaves ``typical_spread_pips`` short of some pairs, and a consumer
+          reading "any warning blocks" would then refuse them. Consumers should
+          treat a line carrying this suffix as non-blocking, as
+          `fbe.bias.apply_filters` does.
         * The ``risk_fraction`` clamp described at step 1, which is the only
           warning here that reports an adjustment rather than an observation.
         * ``entry`` equal to ``stop``, which would divide by zero. Return a
@@ -797,8 +727,12 @@ def position_size(
             See `convert_rate`.
         risk_fraction: Explicit fraction of balance to risk, normally from
             `risk_fraction_for`. Defaults to ``config.risk_per_trade_min``.
-        broker: Execution constraints. Defaults to `DEFAULT_BROKER`, whose
-            values the owner is expected to replace.
+        broker: The resolved `fbe.config.BrokerConfig` for this run, supplying
+            the lot geometry and the typical spreads. It has no default: a
+            caller that forgot to pass it would otherwise size against a module
+            constant, which is the second-home defect this issue removed, so the
+            profile is always the one the run resolved. When its ``confirmed``
+            is false, every result carries `BROKER_UNCONFIRMED` in ``warnings``.
 
     Returns:
         A `PositionSize` with every field populated, including ``warnings``. A
@@ -827,6 +761,21 @@ def position_size(
     _, quote = split_pair(normalised)
     account_currency = config.account_currency.upper()
     warnings: list[str] = []
+
+    # Emitted once, before any size is computed, so it rides every result this
+    # returns, including the zero-size refusals: a refused ticket sized on an
+    # unconfirmed profile is still sized on an unconfirmed profile. Derived from
+    # the profile handed in and never from a second copy of the state, so the
+    # config is the only place the fact lives.
+    if not broker.confirmed:
+        warnings.append(
+            f"{BROKER_UNCONFIRMED}: {broker.name} is an unconfirmed profile. Its "
+            f"min_lot {broker.min_lot:g}, lot_step {broker.lot_step:g} and "
+            f"contract_size {broker.contract_size:g} decide which pairs are "
+            f"tradeable and have not been checked against a broker contract "
+            f"specification; confirm them per docs/risk-and-execution.md "
+            f"section 7."
+        )
 
     # Checked before anything is computed, because every guard further down is
     # a `<` or an `==` and all of those are False for a NaN. Without this, a

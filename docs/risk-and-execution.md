@@ -504,11 +504,28 @@ The response that is not available is taking the minimum lot anyway. That
 silently converts a 1% trade into a 2-4% trade, and at that point the plan has
 stopped being a plan.
 
-**Broker values must be confirmed.** `DEFAULT_BROKER` in `src/fbe/risk.py` holds
-typical retail figures, not a quote from any specific broker. Read `min_lot`,
-`lot_step` and `contract_size` off your broker's contract specification, place
-one minimum-size trade to confirm, then replace the constant. Sample the spreads
-from your own terminal during the hours you actually trade.
+**Broker values must be confirmed.** The broker profile lives in the config as
+its own section, `broker`, and carries `name`, `min_lot`, `lot_step`,
+`contract_size`, `typical_spread_pips`, `commission_per_lot` and `confirmed`.
+Its defaults are typical retail figures, not a quote from any specific broker,
+and `confirmed` defaults to `false`. Read `min_lot`, `lot_step` and
+`contract_size` off your broker's contract specification, place one minimum-size
+trade to confirm the fill, then set the values in your config and set
+`confirmed: true`. Sample the spreads from your own terminal during the hours
+you actually trade.
+
+Until you do, the profile is unconfirmed, and that fact is legible in three
+places rather than assumed away. `fbe doctor` reports the profile as unconfirmed
+and prints the three lot values it is using, and `fbe doctor --strict` exits 1
+on it. Every ticket `fbe size` produces from an unconfirmed profile carries a
+`broker:unconfirmed` warning naming those values. Nothing refuses to run: the
+defaults are usable and a size is still produced. The point is that a ticket
+sized on numbers nobody has checked never reads the same as one sized on
+confirmed numbers, which is the rule in
+`docs/decisions/0002-representing-not-known.md`. The confirmation state is not
+part of the config digest, so setting `confirmed: true` does not make the run
+across that date read as not comparable in `--compare`: a broker profile
+changes what can be sized, not what anything scores.
 
 ---
 

@@ -25,10 +25,8 @@ from pathlib import Path
 import pytest
 
 from fbe.bias import UNCHECKED_SUFFIX
-from fbe.config import RiskConfig
+from fbe.config import DEFAULT_TYPICAL_SPREAD_PIPS, BrokerConfig, RiskConfig
 from fbe.risk import (
-    DEFAULT_BROKER,
-    Broker,
     MissingRateError,
     _round_down_to_step,
     convert_rate,
@@ -48,30 +46,32 @@ RATES: dict[str, float] = {"USDZAR": USDZAR, "USDJPY": USDJPY, "GBPUSD": GBPUSD}
 JPY_ZAR = USDZAR / USDJPY  # 0.119355
 GBP_ZAR = GBPUSD * USDZAR  # 23.125
 
-MICRO_BROKER = Broker(
+MICRO_BROKER = BrokerConfig(
     name="test-micro",
     min_lot=0.01,
     lot_step=0.01,
     contract_size=100_000.0,
     max_lot=50.0,
-    typical_spread_pips=dict(DEFAULT_BROKER.typical_spread_pips),
+    typical_spread_pips=dict(DEFAULT_TYPICAL_SPREAD_PIPS),
+    confirmed=True,
 )
 """0.01 minimum and 0.01 step, the common retail floor.
 
-Declared here rather than aliased to `DEFAULT_BROKER`. That constant's own
-docstring tells the owner to replace every value in it, and if they do and
-their broker turns out to offer nano lots, five tests below stop asserting what
-their names say: the two refusals become sizeable trades and both example B
-figures move. The fixtures a test reasons about have to be fixed by the test.
+Confirmed, because these fixtures exist to test sizing arithmetic and an
+unconfirmed profile would put `fbe.risk.BROKER_UNCONFIRMED` on every result,
+turning the empty-warnings assertions below into assertions about a different
+thing. Its values are declared here rather than read from a config default so
+that a change to the default cannot move what these tests reason about.
 """
 
-NANO_BROKER = Broker(
+NANO_BROKER = BrokerConfig(
     name="test-nano",
     min_lot=0.001,
     lot_step=0.001,
     contract_size=100_000.0,
     max_lot=50.0,
-    typical_spread_pips=dict(DEFAULT_BROKER.typical_spread_pips),
+    typical_spread_pips=dict(DEFAULT_TYPICAL_SPREAD_PIPS),
+    confirmed=True,
 )
 """0.001 minimum and 0.001 step. Section 2 sizes both examples at this broker
 as well, and on a R2,000 account it is the difference between several G10
@@ -546,13 +546,14 @@ def test_rounding_is_down_and_not_to_nearest(config: RiskConfig) -> None:
     outside the plan's ceiling, reached by a rounding rule rather than by any
     decision anyone made.
     """
-    broker = Broker(
+    broker = BrokerConfig(
         name="test-coarse",
         min_lot=0.007,
         lot_step=0.007,
         contract_size=100_000.0,
         max_lot=50.0,
-        typical_spread_pips=dict(DEFAULT_BROKER.typical_spread_pips),
+        typical_spread_pips=dict(DEFAULT_TYPICAL_SPREAD_PIPS),
+        confirmed=True,
     )
     size = position_size(
         "USDJPY", 155.00, 155.30, config, RATES, risk_fraction=0.02, broker=broker
@@ -648,13 +649,14 @@ def test_a_minimum_that_is_not_a_multiple_of_the_step_still_refuses(
     condition the two readings agree exactly, so this is the only fixture that
     can tell them apart.
     """
-    odd = Broker(
+    odd = BrokerConfig(
         name="test-coarse-step",
         min_lot=0.01,
         lot_step=0.02,
         contract_size=100_000.0,
         max_lot=50.0,
-        typical_spread_pips=dict(DEFAULT_BROKER.typical_spread_pips),
+        typical_spread_pips=dict(DEFAULT_TYPICAL_SPREAD_PIPS),
+        confirmed=True,
     )
     size = position_size(
         "USDJPY", 155.00, 155.30, config, RATES, risk_fraction=0.02, broker=odd
@@ -978,12 +980,14 @@ def test_an_unknown_spread_is_reported_rather_than_passing_the_check(
     unperformed, and saying nothing makes that indistinguishable from a stop
     that cleared it.
     """
-    blind = Broker(
+    blind = BrokerConfig(
         name="test-no-spreads",
         min_lot=0.001,
         lot_step=0.001,
         contract_size=100_000.0,
         max_lot=50.0,
+        typical_spread_pips={},
+        confirmed=True,
     )
     size = position_size(
         "EURUSD", 1.0850, 1.0825, config, RATES, risk_fraction=0.01, broker=blind
@@ -1001,13 +1005,14 @@ def test_a_materially_smaller_trade_than_the_ladder_asked_for_is_warned(
     of the intended risk, so the trade is materially smaller than 2% of the
     account while still being a trade.
     """
-    broker = Broker(
+    broker = BrokerConfig(
         name="test-coarse",
         min_lot=0.008,
         lot_step=0.008,
         contract_size=100_000.0,
         max_lot=50.0,
-        typical_spread_pips=dict(DEFAULT_BROKER.typical_spread_pips),
+        typical_spread_pips=dict(DEFAULT_TYPICAL_SPREAD_PIPS),
+        confirmed=True,
     )
     size = position_size(
         "USDJPY", 155.00, 155.30, config, RATES, risk_fraction=0.02, broker=broker
@@ -1127,8 +1132,8 @@ def test_an_unperformed_check_is_marked_so_a_consumer_can_skip_it(
 ) -> None:
     """The unchecked warning carries the suffix the pair filters already use.
 
-    `DEFAULT_BROKER`'s docstring tells the owner to replace the constant, and
-    the natural replacement leaves ``typical_spread_pips`` empty. Every
+    A confirmed profile with a spread table sparser than the default leaves
+    ``typical_spread_pips`` empty for some pairs. Every
     correctly sized ticket then carries a warning, ``warnings`` is never
     empty, and a consumer reading "any warning blocks" refuses all 28 pairs.
     That is the failure where a gate that refuses everything gets switched off
@@ -1138,12 +1143,14 @@ def test_an_unperformed_check_is_marked_so_a_consumer_can_skip_it(
     "this trade has a problem", which is the distinction ADR 0002 rule 4
     requires and `fbe.bias.apply_filters` already implements.
     """
-    blind = Broker(
+    blind = BrokerConfig(
         name="test-no-spreads",
         min_lot=0.001,
         lot_step=0.001,
         contract_size=100_000.0,
         max_lot=50.0,
+        typical_spread_pips={},
+        confirmed=True,
     )
     size = position_size(
         "EURUSD", 1.0850, 1.0825, config, RATES, risk_fraction=0.01, broker=blind
@@ -1259,13 +1266,14 @@ def test_the_broker_contract_size_is_read_and_not_assumed(
     lots were arrived at. A solve that divided by a hardcoded 100,000 returns
     110 units here, a position ten times too small, and passes the identity.
     """
-    ten_k = Broker(
+    ten_k = BrokerConfig(
         name="test-ten-thousand",
         min_lot=0.001,
         lot_step=0.001,
         contract_size=10_000.0,
         max_lot=50.0,
-        typical_spread_pips=dict(DEFAULT_BROKER.typical_spread_pips),
+        typical_spread_pips=dict(DEFAULT_TYPICAL_SPREAD_PIPS),
+        confirmed=True,
     )
     size = position_size(
         "USDJPY", 155.00, 155.30, config, RATES, risk_fraction=0.02, broker=ten_k

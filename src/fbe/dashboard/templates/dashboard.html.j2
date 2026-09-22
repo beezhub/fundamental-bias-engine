@@ -324,6 +324,16 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
         {{ idea.size.account_currency }}
         {{ '%.2f' | format(idea.size.risk_amount) }}
       </p>
+      {#- Size warnings on the card, not only in the dataclass. The Markdown
+          report prints these under each ticket; leaving them off here is the
+          #17-class defect on this surface, where the broker:unconfirmed marker
+          and spread:unchecked would reach the dataclass and stop before the
+          reader. -#}
+      {% if idea.size.warnings %}
+      <p class="meta">
+        {% for warning in idea.size.warnings %}{{ warning }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+      </p>
+      {% endif %}
       {% endif %}
       {% if idea.blackout_until %}
       <p class="meta">

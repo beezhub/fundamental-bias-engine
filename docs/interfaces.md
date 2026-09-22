@@ -113,7 +113,9 @@ validated against out-of-sample returns yet.
 ### `fbe doctor`
 
 Checks, in order: `Config.validate` problems such as pillar weights that do not
-sum to 1.0 or a risk cap above the plan's 2%; presence of each credential;
+sum to 1.0 or a risk cap above the plan's 2%; the broker profile's confirmation
+state and its `min_lot`, `lot_step` and `contract_size`, an unconfirmed profile
+warning so `--strict` exits 1 on it; presence of each credential;
 cache writability, entry count and age against `cache_ttl_hours`;
 `DataSource.available` plus a live probe for every source unless `--offline`;
 and whether a previous report exists to diff against. Each check prints its own
@@ -141,12 +143,13 @@ operator.
 ```console
 $ fbe doctor
 config          ok        weights sum to 1.000, risk cap 2.0%
+broker          warn      generic-retail-micro unconfirmed: min_lot 0.01, lot_step 0.01, contract_size 100000; confirm against the broker contract and place one minimum-size trade (docs/risk-and-execution.md section 7)
 credentials     ok        FRED_API_KEY present
 cache           warn      37 entries, oldest 19h (ttl 12h): run fbe refresh
 sources         ok        fred 240ms, stooq 310ms, cftc 890ms
                 warn      forexfactory unreachable (timeout after 5.0s)
 reports         ok        last report 2026-09-08, config digest matches
-2 warnings.
+3 warnings.
 ```
 
 ### `fbe refresh`

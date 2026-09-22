@@ -507,6 +507,45 @@ def _check_config(config: Config) -> list[CheckLine]:
     ]
 
 
+def _check_broker(config: Config) -> list[CheckLine]:
+    """Report the broker profile's confirmation state and its lot geometry.
+
+    Prints ``min_lot``, ``lot_step`` and ``contract_size`` either way, so a
+    reader can compare them against a broker contract specification without
+    opening the config. An unconfirmed profile is a ``warn`` rather than a
+    ``fail``: the values are usable defaults and the run can proceed, but they
+    have not been checked, and under ``--strict`` that warning is what exits 1.
+    A profile whose geometry is non-positive is caught earlier by
+    `_check_config`, since `Config.validate` refuses it, so this check assumes
+    the geometry is at least well formed and speaks only to confirmation.
+
+    Args:
+        config: The effective config.
+
+    Returns:
+        One line. ``warn`` and unconfirmed, or ``ok`` and confirmed.
+
+    """
+    broker = config.broker
+    geometry = (
+        f"min_lot {broker.min_lot:g}, lot_step {broker.lot_step:g}, "
+        f"contract_size {broker.contract_size:g}"
+    )
+    if broker.confirmed:
+        return [
+            CheckLine("broker", CheckStatus.OK, f"{broker.name} confirmed: {geometry}")
+        ]
+    return [
+        CheckLine(
+            "broker",
+            CheckStatus.WARN,
+            f"{broker.name} unconfirmed: {geometry}; confirm against the "
+            "broker contract and place one minimum-size trade "
+            "(docs/risk-and-execution.md section 7)",
+        )
+    ]
+
+
 def _check_credentials(config: Config, show_keys: bool) -> list[CheckLine]:
     """Say which credentials are configured, without printing one.
 
@@ -906,6 +945,10 @@ def doctor(
     Checks performed:
         * `fbe.config.Config.validate` problems, for example pillar weights that
           do not sum to 1.0 or a risk cap above the plan's 2%.
+        * The broker profile's confirmation state and its lot geometry. An
+          unconfirmed profile warns, so ``--strict`` exits 1 on it, because a
+          size built on lot values nobody has checked reads exactly like one
+          built on verified values.
         * Presence of ``FRED_API_KEY`` and any other configured credential.
         * Cache directory writability, entry count, and the age of the oldest
           entry against ``cache_ttl_hours``.
@@ -972,6 +1015,7 @@ def doctor(
         raise typer.Exit(EXIT_UNUSABLE) from error
 
     emit(_check_config(config))
+    emit(_check_broker(config))
     emit(_check_credentials(config, show_keys))
     emit(_check_cache(config))
     emit(_check_sources(config, timeout))
