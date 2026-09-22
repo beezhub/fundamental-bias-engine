@@ -318,7 +318,7 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
         {{ '%.1f' | format(idea.size.stop_distance_pips) }} pip stop,
         risking {{ idea.size.account_currency }}
         {{ '%.2f' | format(idea.size.realised_risk_amount) }}
-        ({{ '%.2f%%' | format(idea.size.realised_risk_amount / idea.size.account_balance * 100) }}
+        ({{ '%.2f%%' | format(idea.size.realised_risk_fraction * 100) }}
         of balance) against an intended
         {{ '%.1f%%' | format(idea.size.risk_fraction * 100) }} or
         {{ idea.size.account_currency }}

@@ -5,9 +5,16 @@ Data sources produce `Observation`s. Pillars turn `Observation`s into
 `PillarScore`s. The scorer aggregates `PillarScore`s into `CurrencyScore`s.
 The bias layer differences `CurrencyScore`s into `PairBias` rows.
 
-Nothing here performs I/O or computation. Keep it that way: this module is
-imported by everything, so it must stay dependency-free apart from the
-standard library.
+Nothing here performs I/O. Keep it that way: this module is imported by
+everything, so it must stay dependency-free apart from the standard library.
+
+Nothing here computes either, with one stated exception. A dataclass may carry
+a property deriving a value from its own fields, where the alternative is a
+renderer deriving it instead. `PositionSize.realised_risk_fraction` is the only
+one and its docstring says why. The rule that matters is not that arithmetic is
+forbidden here, it is that a number the engine reports must exist on the object
+that reports it: a figure computed in a template exists nowhere a consumer can
+read it, and nothing can check it.
 """
 
 from __future__ import annotations
@@ -334,6 +341,37 @@ class PositionSize:
             the rounding ratio, which on a small account is routinely 10% or
             more, and that number is the sole input to the conviction
             calibration the whole model is meant to be judged on.
+        realised_risk_fraction: ``realised_risk_amount / account_balance``,
+            the share of the account actually exposed once ``lots`` has been
+            rounded down. Derived rather than stored, so it cannot disagree
+            with the two numbers it divides.
+
+            ``docs/trading-plan.md`` states the per-trade rule in both
+            forms at once, "1% - 2% of the account balance (R20 - R40)", and
+            the engine held only one of each pair: the money realised and the
+            fraction intended. This is the missing cell. ``risk_fraction``
+            beside it is what was asked for rather than what was obtained.
+
+            Read by the report and the dashboard, which printed it by dividing
+            until the engine held it. `fbe.risk.check_limits` is specified to
+            read ``realised_risk_amount`` instead, because a cap stated in
+            money stays in money, and the pre-trade checklist in
+            ``docs/risk-and-execution.md`` section 8 is ticked in money for
+            the same reason.
+
+            The denominator is guaranteed on every path that computes a size:
+            `fbe.risk.position_size` is the only thing in the package that
+            builds a `PositionSize`, and it refuses a balance that is not
+            finite and strictly positive in the same guard as a malformed
+            price. A `PositionSize` rebuilt from a report sidecar by
+            `fbe.report.load_report` is trusted rather than rechecked, so a
+            hand-edited sidecar can still carry a zero here.
+
+            There is deliberately no branch and no fallback. A zero or absent
+            balance is a refused input rather than a position risking an
+            unknown share, and
+            ``docs/decisions/0002-representing-not-known.md`` rules out
+            putting a plausible number in its place.
         notional: Face value of the position in ``account_currency``.
         warnings: Soft failures. The module never silently adjusts anything; it
             sizes what was asked for and says what is wrong with it.
@@ -353,6 +391,50 @@ class PositionSize:
     lots: float
     notional: float
     warnings: Sequence[str] = field(default_factory=tuple)
+
+    @property
+    def realised_risk_fraction(self) -> float:
+        """Return the share of the account this position actually risks.
+
+        A property rather than a field, on three counts. It costs no slot on a
+        ``slots=True`` dataclass and takes no constructor argument, so adding
+        it changed nothing that builds a `PositionSize`. It cannot drift from
+        the two numbers it divides, where a stored value would have to be
+        computed by every builder and a builder passing an inconsistent one
+        produces a ticket whose own figures disagree. And it stays out of the
+        report sidecar, which walks ``dataclasses.fields``, so the committed
+        record keeps the two measured numbers and recomputes the ratio rather
+        than carrying a third that could be read back out of step with them.
+
+        **The journal is the opposite case and the names collide.**
+        `fbe.journal.TradeRecord` does store a fraction, deliberately, so that
+        a breach of the band is visible without arithmetic, and it calls that
+        field ``risk_fraction`` while meaning the realised share. Here
+        ``risk_fraction`` means the intended one. So the value a
+        ``TradeRecord`` wants is this property rather than the field of the
+        same name.
+
+        What writing ``size.risk_fraction`` into ``record.risk_fraction``
+        costs, precisely, because a warning naming the wrong consequence gets
+        read past: it records 2.00% where 1.79% was on the book, so the one
+        field whose stated job is to make a breach of the band visible without
+        arithmetic reports a breach that did not happen, or hides one that
+        did. It does not touch the R-multiple. ``TradeRecord.r_multiple`` is
+        ``outcome_zar / risk_amount`` and that ``risk_amount`` is the realised
+        money, so the measure `fbe.journal.evaluate` sums is protected by a
+        different field and a different rule.
+
+        Returns:
+            A fraction in ``[0.0, risk_fraction]``, carrying no unit and no
+            sign: 0.0 means the size was refused and nothing is exposed, which
+            is a measurement rather than an absence. It does not exceed
+            ``risk_fraction``, because rounding the lot step down can only
+            reduce what is at risk, and where the step divides the size
+            exactly the two meet to within floating-point error rather than
+            being equal bit for bit.
+
+        """
+        return self.realised_risk_amount / self.account_balance
 
 
 @dataclass(frozen=True, slots=True)

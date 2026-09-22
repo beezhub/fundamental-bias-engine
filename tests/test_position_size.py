@@ -17,6 +17,9 @@ says so and quotes it.
 from __future__ import annotations
 
 import ast
+import inspect
+import sys
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
@@ -1324,3 +1327,296 @@ def test_the_sizing_module_fetches_nothing(config: RiskConfig) -> None:
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             imported.add(node.module.split(".")[0])
     assert not imported & {"httpx", "requests", "urllib", "socket", "http"}
+
+
+# --------------------------------------------------------------------------
+# realised_risk_fraction, and the balance guard it rests on
+# --------------------------------------------------------------------------
+
+
+def test_the_realised_fraction_is_the_realised_money_over_the_balance(
+    config: RiskConfig,
+) -> None:
+    """Section 2's worked example A, read as the plan states its own rule.
+
+    The document publishes R18.50 realised against R20.00 intended on a R2,000
+    account. It does not print the share for this example, so 0.925% is
+    derived here from two figures it does print. ``docs/trading-plan.md``
+    states the rule in both forms at once, "1% - 2% of the account balance
+    (R20 - R40)", and the engine held the money realised and the fraction
+    intended, so this is the missing cell rather than a replacement for the
+    money. Example B below is the case where the document prints the
+    percentage itself.
+    """
+    size = position_size(
+        "EURUSD",
+        1.0850,
+        1.0825,
+        config,
+        RATES,
+        risk_fraction=0.01,
+        broker=NANO_BROKER,
+    )
+
+    assert size.realised_risk_fraction == pytest.approx(0.00925)
+
+
+@pytest.mark.parametrize(
+    "risk_fraction, takes_a_bite",
+    [(0.01, True), (0.013875, False)],
+    ids=["floor-bites", "exact-multiple"],
+)
+def test_the_realised_fraction_is_at_or_below_the_intended_one(
+    config: RiskConfig, risk_fraction: float, takes_a_bite: bool
+) -> None:
+    """Rounding down the lot step can only reduce what is at risk.
+
+    Both sides of the boundary, because only one of them is interesting. At
+    1% the 25-pip stop gives 0.0043243 raw lots and the floor takes 7.5% of
+    it, so any inequality holds with room to spare. At 1.3875% it gives
+    0.006 exactly, the floor takes nothing, and the two numbers meet: the
+    property's docstring promises a fraction in ``[0.0, risk_fraction]`` and
+    that is the case where the promise is tight rather than comfortable.
+
+    The docstring elsewhere in this file for the flooring rule itself is not
+    restated here. ``test_rounding_is_down_and_not_to_nearest`` owns that,
+    and this assertion cannot tell floor from round-to-nearest on either
+    fixture; what it owns is the relationship between the two fractions.
+    """
+    size = position_size(
+        "EURUSD",
+        1.0850,
+        1.0825,
+        config,
+        RATES,
+        risk_fraction=risk_fraction,
+        broker=NANO_BROKER,
+    )
+
+    gap = size.risk_fraction - size.realised_risk_fraction
+
+    assert size.realised_risk_fraction <= size.risk_fraction
+    # Measured rather than compared with ``<``. At the exact multiple the two
+    # differ by about 3e-16, so a strict inequality there is asserting which
+    # way a rounding error happened to fall, not that the floor took a bite.
+    assert (gap > 1e-4) is takes_a_bite
+    if not takes_a_bite:
+        assert gap < 1e-9
+
+
+def test_a_refused_size_risks_none_of_the_balance(config: RiskConfig) -> None:
+    """Worked example A at a micro broker: zero units, so zero at risk.
+
+    Zero here is a real measurement rather than an absence. The trade was
+    sized, the answer was that it cannot be expressed, and nothing is exposed.
+    """
+    size = position_size(
+        "EURUSD",
+        1.0850,
+        1.0825,
+        config,
+        RATES,
+        risk_fraction=0.01,
+        broker=MICRO_BROKER,
+    )
+
+    assert size.realised_risk_amount == 0.0
+    assert size.realised_risk_fraction == 0.0
+
+
+def test_the_realised_fraction_cannot_drift_from_the_numbers_it_divides() -> None:
+    """A property rather than a stored field, and this is why.
+
+    A stored value would have to be computed by every builder, and a builder
+    that passed an inconsistent one would produce a ticket whose own two
+    numbers disagree with each other. Derived, that cannot happen: moving
+    either input moves the answer.
+    """
+    original = PositionSize(
+        pair="EURUSD",
+        account_currency="ZAR",
+        account_balance=2000.0,
+        risk_fraction=0.01,
+        risk_amount=20.0,
+        realised_risk_amount=18.50,
+        entry=1.0850,
+        stop=1.0825,
+        stop_distance_pips=25.0,
+        units=400.0,
+        lots=0.004,
+        notional=8029.0,
+    )
+
+    assert original.realised_risk_fraction == pytest.approx(0.00925)
+    assert replace(
+        original, realised_risk_amount=37.0
+    ).realised_risk_fraction == pytest.approx(0.0185)
+    assert replace(
+        original, account_balance=4000.0
+    ).realised_risk_fraction == pytest.approx(0.004625)
+
+
+def test_the_realised_fraction_is_not_a_constructor_argument() -> None:
+    """Additive by construction: nothing that builds a `PositionSize` changes.
+
+    A property is a class attribute, so it costs no slot on a ``slots=True``
+    dataclass and takes no argument. Passing one is a `TypeError` rather than
+    a silently accepted value that then disagrees with the two fields beside
+    it.
+    """
+    names = {item.name for item in fields(PositionSize)}
+
+    assert "realised_risk_fraction" not in names
+    assert isinstance(
+        inspect.getattr_static(PositionSize, "realised_risk_fraction"), property
+    )
+    with pytest.raises(TypeError):
+        PositionSize(  # type: ignore[call-arg]
+            pair="EURUSD",
+            account_currency="ZAR",
+            account_balance=2000.0,
+            risk_fraction=0.01,
+            risk_amount=20.0,
+            realised_risk_amount=18.50,
+            realised_risk_fraction=0.00925,
+            entry=1.0850,
+            stop=1.0825,
+            stop_distance_pips=25.0,
+            units=400.0,
+            lots=0.004,
+            notional=8029.0,
+        )
+
+
+@pytest.mark.parametrize("balance", [0.0, -2000.0, float("nan"), float("inf")])
+def test_a_balance_that_is_not_a_positive_number_is_refused(balance: float) -> None:
+    """The denominator is checked where every other malformed input is.
+
+    A zero balance would make the whole morning report unwritable, as a
+    `ZeroDivisionError` out of a Jinja template with no line of Python in the
+    traceback. Latent rather than an incident: `fbe report` attaches no sizes
+    yet, so the only way to reach it today is `write_report` with a
+    hand-built one. A negative balance yields a negative fraction that reads
+    as a position risking less than nothing, and a NaN passes every ``<`` and
+    ``==`` below it and comes back as a size whose warnings tuple is empty.
+
+    Refused here rather than defaulted in the property: a balance is not a
+    fact about the trade, so it is the same class of input as a negative
+    price, and `docs/decisions/0002-representing-not-known.md` rules out
+    putting a plausible value where a refused one belongs.
+    """
+    with pytest.raises(ValueError, match="account_balance"):
+        position_size(
+            "EURUSD",
+            1.0850,
+            1.0825,
+            RiskConfig(account_balance=balance),
+            RATES,
+            risk_fraction=0.01,
+            broker=NANO_BROKER,
+        )
+
+
+def test_the_balance_is_checked_before_anything_is_computed() -> None:
+    """Placement, asserted through the one thing that can observe it.
+
+    "In the same guard block as the price" is a statement about layout, and
+    the only behaviour that distinguishes it is which exception wins. With no
+    rates at all, a balance guard sitting further down raises
+    `MissingRateError` from the conversion first, and the operator is sent to
+    look at a rate set when the fault is in their config.
+
+    The entry and stop guard carries a comment saying it runs before anything
+    is computed. This is what that comment is worth as a test.
+    """
+    with pytest.raises(ValueError, match="account_balance"):
+        position_size(
+            "EURUSD",
+            1.0850,
+            1.0825,
+            RiskConfig(account_balance=0.0),
+            {},
+            risk_fraction=0.01,
+            broker=NANO_BROKER,
+        )
+
+
+def test_the_property_has_no_fallback_for_a_balance_it_cannot_divide_by() -> None:
+    """A zero denominator is a bug upstream, not something this papers over.
+
+    `position_size` refuses such a balance, so this object cannot arrive from
+    the engine. Constructed by hand it still must not answer: a property
+    returning 0.0 here would report a position risking none of the account,
+    which is exactly the plausible value
+    ``docs/decisions/0002-representing-not-known.md`` exists to keep out.
+
+    Written as a test rather than left to the docstring, because a later
+    reader meeting a `ZeroDivisionError` in a traceback will be tempted to
+    add the branch, and this says the branch was considered and refused.
+    """
+    impossible = PositionSize(
+        pair="EURUSD",
+        account_currency="ZAR",
+        account_balance=0.0,
+        risk_fraction=0.01,
+        risk_amount=0.0,
+        realised_risk_amount=0.0,
+        entry=1.0850,
+        stop=1.0825,
+        stop_distance_pips=25.0,
+        units=0.0,
+        lots=0.0,
+        notional=0.0,
+    )
+
+    with pytest.raises(ZeroDivisionError):
+        _ = impossible.realised_risk_fraction
+
+
+def test_types_still_imports_nothing_but_the_standard_library() -> None:
+    """The rule the property had to be written around.
+
+    `src/fbe/types.py` is imported by every module in the package, so a
+    dependency there is a dependency everywhere. A derived accessor over two
+    of the dataclass's own fields needs nothing outside the standard library,
+    which is what makes it a legal place to put this arithmetic.
+    """
+    source = Path(__file__).resolve().parents[1] / "src" / "fbe" / "types.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+
+    assert imported <= set(sys.stdlib_module_names), sorted(
+        imported - set(sys.stdlib_module_names)
+    )
+
+
+def test_worked_example_b_publishes_its_realised_share(config: RiskConfig) -> None:
+    """Section 2 step 6: R35.81 realised, "which is 1.79% of the account".
+
+    A worked example in the docs is a fixture. The document publishes the
+    share as well as the money, and the share is the form the plan states its
+    own 1-2% rule in, so it is the figure the owner checks before placing the
+    order.
+
+    Reproduced to the precision the document prints it at, two decimal places
+    as a percentage, rather than to the fraction's own precision: matching
+    tighter than the publication would pin a number nobody wrote down.
+    """
+    size = position_size(
+        "USDJPY",
+        155.00,
+        155.30,
+        config,
+        RATES,
+        risk_fraction=0.02,
+        broker=MICRO_BROKER,
+    )
+
+    assert size.realised_risk_amount == pytest.approx(35.81, abs=0.01)
+    assert round(size.realised_risk_fraction * 100, 2) == 1.79

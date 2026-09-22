@@ -23,13 +23,15 @@ Nothing here reaches the network. Every test writes under ``tmp_path``.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import fields, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from jinja2 import UndefinedError
+from jinja2 import Environment, FileSystemLoader, StrictUndefined, UndefinedError
 
 import fbe
 from fbe.cli import _pillar_order as cli_pillar_order
@@ -636,6 +638,13 @@ def test_the_sidecar_is_a_json_object_keyed_by_field_name(tmp_path: Path) -> Non
     payload = json.loads(sidecar_of(markdown).read_text(encoding="utf-8"))
 
     assert set(payload) == {item.name for item in fields(BiasReport)}
+    # Nested too, and `PositionSize` specifically. It is the one type in the
+    # report carrying a derived accessor, and the sidecar is the committed
+    # record that cannot be regenerated: a derived value written into it
+    # could be read back out of step with the two numbers it came from.
+    assert set(payload["shortlist"][0]["size"]) == {
+        item.name for item in fields(PositionSize)
+    }
     assert payload["asof"] == "2026-06-30"
     assert payload["pairs"][0]["direction"] == "short"
     assert "monetary" in payload["currencies"][0]["pillars"]
@@ -1606,44 +1615,198 @@ def test_the_newest_report_is_chosen_by_date_and_not_by_name(tmp_path: Path) -> 
     assert found.name == "bias-2026-06-30.json"
 
 
-# --- criterion 6, which this branch does not meet ----------------------------
+# --- criterion 6: the renderers derive nothing --------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "report.md.j2 derives realised risk as a share of balance by dividing. "
-        "PositionSize carries no field for it, and adding one changes "
-        "src/fbe/types.py, which needs an architect ruling naming every "
-        "consumer in the same commit. Recorded on issue #210."
-    ),
+RENDERED_TEMPLATES = (
+    PACKAGE_ROOT / "templates" / TEMPLATE_NAME,
+    PACKAGE_ROOT / "dashboard" / "templates" / "dashboard.html.j2",
 )
-def test_the_report_template_derives_no_number_by_division() -> None:
-    """Acceptance criterion 6: every number in the Markdown is a field.
+"""Both views of one run. The dashboard is the page the owner reads on a phone
+during the session, so a criterion met in the report and broken here is met
+where nobody is looking and broken where they are."""
 
-    The live violation is one expression:
+
+def jinja_expressions(template: Path) -> list[str]:
+    """Return every ``{{ ... }}`` and ``{% ... %}`` body, string literals removed.
+
+    Only what Jinja evaluates. Prose around it is not a derivation, and the
+    dashboard's own header comment contains the words "heat-p1..p4 / n1..n4",
+    which a substring search over the whole file reads as arithmetic. Quoted
+    text inside an expression is dropped for the same reason: a format spec or
+    a ``join('/')`` separator is a string, not an operator.
+
+    ``{# ... #}`` comments are not matched at all, since neither opener begins
+    one.
+    """
+    bodies = re.findall(r"\{\{(.*?)\}\}|\{%(.*?)%\}", template.read_text("utf-8"), re.S)
+    return [
+        re.sub(r"'[^']*'|\"[^\"]*\"", "", expression or statement or "")
+        for expression, statement in bodies
+    ]
+
+
+@pytest.mark.parametrize("template", RENDERED_TEMPLATES, ids=lambda path: path.name)
+def test_a_renderer_derives_no_number_by_division(template: Path) -> None:
+    """Acceptance criterion 6: every number on the page is read off a field.
+
+    Both templates carried the same expression:
 
         {{ '%.2f%%' | format(idea.size.realised_risk_amount
                              / idea.size.account_balance * 100) }}
 
-    It predates this branch and the criterion is still not met while it
-    stands. Two things follow from it. The percentage exists nowhere but the
-    template, so nothing downstream can check the number the owner reads
-    against the 1-2% rule. And it is unguarded, so a zero balance makes the
-    whole morning report unwritable with a `ZeroDivisionError` out of a
-    template.
+    Two things followed. The percentage existed nowhere but the render, so
+    nothing downstream could check the figure the owner reads against the
+    plan's rule, which the plan states in both money and percentage and the
+    engine held only in money. And the expression was unguarded, so a zero
+    balance would have raised a `ZeroDivisionError` out of a Jinja template
+    with no line of Python in the traceback. Latent rather than an incident:
+    `fbe report` attaches no sizes yet.
 
-    Multiplying a fraction by 100 elsewhere in the file is a unit conversion
-    rather than a derivation: the value is on a field and only its scale
-    changes, so it does not fail this.
+    Both now read `fbe.types.PositionSize.realised_risk_fraction`.
 
-    Strict, so that adding `realised_risk_fraction` to `PositionSize` and
-    reading it here turns this into an unexpected pass and fails the suite,
-    which is the signal to delete the marker rather than the test.
+    Multiplying a fraction by 100 is a unit conversion rather than a
+    derivation: the value is on the object and only its scale changes, so it
+    does not fail this.
+
+    This replaces the strict xfail that stood here while the change was
+    waiting on an architect ruling, and it covers both files rather than one,
+    because the xfail named only the Markdown template and the violation was
+    in two.
     """
-    template = (PACKAGE_ROOT / "templates" / TEMPLATE_NAME).read_text(encoding="utf-8")
+    dividing = [body for body in jinja_expressions(template) if "/" in body]
 
-    assert " / " not in template
+    assert dividing == []
+
+
+def test_the_expression_scan_reads_statements_and_not_only_expressions(
+    tmp_path: Path,
+) -> None:
+    """A division hidden in ``{% set %}`` is still a derivation.
+
+    Both templates happen to put every arithmetic expression in ``{{ }}``
+    today, so the statement arm of `jinja_expressions` is exercised by
+    nothing in the tree and a later simplification of the helper would narrow
+    criterion 6 to ``{{ }}`` without failing anything.
+
+    Also pins the two exclusions the helper's docstring claims, since both
+    are load-bearing rather than defensive: a comment carrying a slash, which
+    both real templates have in their header, and a slash inside a string
+    literal, which `report.md.j2` has nine of as ``'n/a'``.
+    """
+    template = tmp_path / "probe.md.j2"
+    template.write_text(
+        "{# heat-p1..p4 / n1..n4 #}\n"
+        "{{ 'n/a' if x is none else x }}\n"
+        "{% set share = a.realised_risk_amount / a.account_balance %}\n",
+        encoding="utf-8",
+    )
+
+    dividing = [body for body in jinja_expressions(template) if "/" in body]
+
+    assert len(dividing) == 1
+    assert "realised_risk_amount" in dividing[0]
+
+
+def test_the_report_prints_the_realised_fraction_it_was_handed() -> None:
+    """Perturbation, so the page cannot be right for the wrong reason.
+
+    A renderer that recomputed the share from the two money fields would
+    print the same number for a `PositionSize` whose realised amount had
+    moved, and the page would disagree with the object every consumer
+    downstream reads.
+    """
+    idea = TradeIdea(bias=pair_bias(), size=position_size(), rationale="Wide gap.")
+    rendered = render_report(bias_report(shortlist=(idea,)))
+
+    assert "1.42%" in rendered
+
+    moved = replace(idea, size=replace(idea.size, realised_risk_amount=10.0))
+    after = render_report(bias_report(shortlist=(moved,)))
+
+    assert "1.42%" not in after
+    assert "0.50%" in after
+
+
+def render_dashboard(idea: TradeIdea) -> str:
+    """Render the dashboard card for one idea, without going through `build`.
+
+    `fbe.dashboard.build.render_dashboard` is still scaffolded, so the
+    template is driven directly with the context `build_context` produces
+    plus the `view` namespace the dashboard layer adds. The same approach and
+    the same reason as ``tests/test_blockers.py``.
+
+    Only the members the template actually calls are supplied, so a template
+    that starts reading a new one fails here rather than rendering a blank.
+    """
+    environment = Environment(
+        loader=FileSystemLoader(PACKAGE_ROOT / "dashboard" / "templates"),
+        undefined=StrictUndefined,
+        autoescape=True,
+        keep_trailing_newline=True,
+    )
+    context = build_context(bias_report(shortlist=(idea,)))
+    context["view"] = SimpleNamespace(
+        title="FX bias",
+        bar_pct=lambda value: 50.0,
+        heat=lambda spread: "heat-p1",
+        at_pct=lambda when: 50.0,
+        span_pct=lambda a, b: 10.0,
+        legend=(),
+        hour_marks=(),
+        blackouts=(),
+    )
+    return environment.get_template("dashboard.html.j2").render(**context)
+
+
+def test_the_dashboard_prints_the_realised_fraction_it_was_handed() -> None:
+    """The same perturbation as the report, on the page read during a session.
+
+    Proving the dashboard does not divide is only half of criterion 2. A
+    dashboard reading `risk_fraction` instead passes the division test and
+    prints the intended share where the realised one belongs, on a card whose
+    own words are "of balance) against an intended", so the same figure
+    appears twice under two different labels.
+
+    That is this project's opening failure mode: a plausible number, no
+    exception, and the report correct while the phone is wrong.
+    """
+    idea = TradeIdea(bias=pair_bias(), size=position_size(), rationale="Wide gap.")
+
+    rendered = render_dashboard(idea)
+
+    assert "1.42%" in rendered
+    # The intended fraction is 1.5%. Asserted absent so a card reading
+    # `risk_fraction` fails here rather than printing a plausible figure.
+    assert "1.50%" not in rendered
+
+    moved = replace(idea, size=replace(idea.size, realised_risk_amount=10.0))
+    after = render_dashboard(moved)
+
+    assert "1.42%" not in after
+    assert "0.50%" in after
+
+
+def test_a_zero_balance_cannot_reach_a_renderer() -> None:
+    """The guard is in `fbe.risk.position_size`, not in the property.
+
+    Recorded here as well as in ``tests/test_position_size.py`` because this
+    is the file that names the criterion: the reason the renderers need no
+    branch around the division is that the object carrying a zero denominator
+    cannot be built by the only thing that builds one.
+    """
+    from fbe.config import RiskConfig
+    from fbe.risk import position_size as size_a_position
+
+    with pytest.raises(ValueError, match="account_balance"):
+        size_a_position(
+            "EURUSD",
+            1.0850,
+            1.0825,
+            RiskConfig(account_balance=0.0),
+            {"USDZAR": 18.50},
+            risk_fraction=0.01,
+        )
 
 
 # --- the write path under failure --------------------------------------------
