@@ -404,6 +404,12 @@ anything new:
   never push an empty commit to re-run.
 - **Review comments.** Address small local asks and push. Reply on anything the
   lane is not doing, saying why.
+- **Behind `main`.** `main` requires a branch to be up to date before it can
+  merge, so GitHub blocks the merge and the pull request says so. Merge
+  `origin/main` in, run all four checks **on the merged tree**, and push. The
+  second run is the point: a green branch is not a green merge, and re-pushing
+  without re-checking moves the blind spot one commit along rather than closing
+  it.
 - **Green and clean.** Leave it. Do not comment just to say so.
 
 **Fixing a conflict or a red check on a pull request the lane already opened is
@@ -414,6 +420,43 @@ so instead of claiming new work.
 A human merges. A lane opens the pull request, drives it to green, and stops.
 Nothing here merges on its own, because the one control that matters on a
 repository that sizes real positions is that a person reads the diff.
+
+## Why a branch is asked to take `main` in
+
+`main` is protected: a branch must be up to date with it before the merge
+button unlocks, and both CI jobs must be green. This is not bureaucracy and it
+is not about trusting the lanes. It is that the four checks answer a question
+nobody was asking.
+
+Every check, local or CI, runs against a branch. What lands is the merge of
+that branch into `main`, which is a tree nothing has ever run. Two branches can
+each be correct, each be green, and produce a broken `main` between them, with
+no conflict for git to report, because the fault is in no line either one
+touched.
+
+On 2026-09-22 that happened four times in one day, from one missed argument:
+
+1. #233 added a required argument to `position_size` while #232 added a call to
+   it, merged fourteen seconds apart. Both green. `main` red for an hour.
+2. The one-line fix then waited in #234 while four branches carried their own
+   copy of it so their own checks would mean something. #237 put it before
+   `risk_fraction` and #241 after. Both merged, no conflict, and the argument
+   was passed twice, so the file stopped parsing and **no test in the
+   repository could run**.
+3. #244 removed one copy. #242's branch had removed the other. Their merge
+   applied both deletions and the argument disappeared, bringing the original
+   defect back. Caught only because someone built the merge result by hand
+   before merging.
+
+Requiring a branch to be up to date makes the checks run against the merge
+result by construction, because after the update the branch **is** the merge
+result. Each of those three would have failed on the branch, where the lane
+that owned it could see it.
+
+The cost is real and is worth naming: with two or three pull requests open, the
+second to merge has to take `main` in and wait for CI again. A few minutes per
+merge, against an hour of red `main` and several lane slots that cannot tell
+their own failure from an inherited one.
 
 ## The model a run uses
 
