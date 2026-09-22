@@ -904,6 +904,76 @@ def test_strict_does_not_turn_a_clean_run_into_a_failure(
     assert _run(path, "--strict").exit_code == EXIT_OK
 
 
+def _otherwise_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str
+) -> Path:
+    """A run where the broker is the only thing that could warn.
+
+    Sources answer, the credential is present, the cache is fresh and a matching
+    report exists, so the only verdict that moves between confirmed and
+    unconfirmed is the broker line. That is what lets the exit-code assertions
+    below turn on the broker check and nothing else.
+    """
+    respx.get(PROBE_URL).mock(return_value=httpx.Response(200))
+    monkeypatch.setattr("fbe.cli.ALL_SOURCES", (_Reachable,))
+    path = _config_file(tmp_path, body, with_key=True)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "bias-2026-09-08.json").write_text(
+        json.dumps({"asof": "2026-09-08", "config_digest": load_config(path).digest()})
+    )
+    _fill_cache(tmp_path)
+    return path
+
+
+@respx.mock
+def test_doctor_reports_an_unconfirmed_profile_and_prints_its_geometry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unconfirmed profile is a warn line naming its three lot values, so a
+    reader can check them against a contract without opening the config."""
+    path = _otherwise_clean(tmp_path, monkeypatch, "")
+
+    line = _line(_run(path), "broker")
+
+    assert line[LABEL_WIDTH:].startswith("warn")
+    assert "unconfirmed" in line
+    assert "min_lot" in line and "lot_step" in line and "contract_size" in line
+
+
+@respx.mock
+def test_plain_doctor_exits_zero_on_an_unconfirmed_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unconfirmed is usable, so without --strict the run stands."""
+    path = _otherwise_clean(tmp_path, monkeypatch, "")
+
+    assert _run(path).exit_code == EXIT_OK
+
+
+@respx.mock
+def test_doctor_strict_exits_one_on_an_unconfirmed_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The broker warning is the only warning here, so --strict turning the run
+    to exit 1 is the broker check doing its job rather than any other line."""
+    path = _otherwise_clean(tmp_path, monkeypatch, "")
+
+    assert _run(path, "--strict").exit_code == EXIT_UNUSABLE
+
+
+@respx.mock
+def test_a_confirmed_profile_is_ok_and_survives_strict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _otherwise_clean(tmp_path, monkeypatch, "broker:\n  confirmed: true\n")
+
+    result = _run(path, "--strict")
+
+    assert result.exit_code == EXIT_OK
+    assert _line(result, "broker")[LABEL_WIDTH:].startswith("ok")
+
+
 # --- what doctor must never say ---------------------------------------------
 
 
