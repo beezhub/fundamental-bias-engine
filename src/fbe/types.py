@@ -346,20 +346,30 @@ class PositionSize:
             rounded down. Derived rather than stored, so it cannot disagree
             with the two numbers it divides.
 
-            This is the form the trading plan states its own rule in. The plan
-            says 1-2% of balance, not R20 to R40, so this is the number the
-            owner checks before placing the order, and ``risk_fraction`` is
-            what was asked for rather than what was obtained. Read by the
-            report and the dashboard, which printed it by dividing until the
-            engine held it; `fbe.risk.check_limits` reads
-            ``realised_risk_amount`` instead, because a cap stated in money
-            stays in money.
+            ``docs/trading-plan.md`` states the per-trade rule in both
+            forms at once, "1% - 2% of the account balance (R20 - R40)", and
+            the engine held only one of each pair: the money realised and the
+            fraction intended. This is the missing cell. ``risk_fraction``
+            beside it is what was asked for rather than what was obtained.
 
-            The denominator is guaranteed by `fbe.risk.position_size`, which
-            refuses a balance that is not finite and strictly positive in the
-            same guard as a malformed price. So there is no branch here and no
-            fallback: a zero or absent balance is a refused input rather than
-            a position risking an unknown share, and
+            Read by the report and the dashboard, which printed it by dividing
+            until the engine held it. `fbe.risk.check_limits` is specified to
+            read ``realised_risk_amount`` instead, because a cap stated in
+            money stays in money, and the pre-trade checklist in
+            ``docs/risk-and-execution.md`` section 8 is ticked in money for
+            the same reason.
+
+            The denominator is guaranteed on every path that computes a size:
+            `fbe.risk.position_size` is the only thing in the package that
+            builds a `PositionSize`, and it refuses a balance that is not
+            finite and strictly positive in the same guard as a malformed
+            price. A `PositionSize` rebuilt from a report sidecar by
+            `fbe.report.load_report` is trusted rather than rechecked, so a
+            hand-edited sidecar can still carry a zero here.
+
+            There is deliberately no branch and no fallback. A zero or absent
+            balance is a refused input rather than a position risking an
+            unknown share, and
             ``docs/decisions/0002-representing-not-known.md`` rules out
             putting a plausible number in its place.
         notional: Face value of the position in ``account_currency``.
@@ -402,9 +412,17 @@ class PositionSize:
         field ``risk_fraction`` while meaning the realised share. Here
         ``risk_fraction`` means the intended one. So the value a
         ``TradeRecord`` wants is this property rather than the field of the
-        same name: writing ``size.risk_fraction`` into ``record.risk_fraction``
-        overstates every R-multiple by the rounding ratio, which is routinely
-        10% or more and is the only evidence the conviction model is judged on.
+        same name.
+
+        What writing ``size.risk_fraction`` into ``record.risk_fraction``
+        costs, precisely, because a warning naming the wrong consequence gets
+        read past: it records 2.00% where 1.79% was on the book, so the one
+        field whose stated job is to make a breach of the band visible without
+        arithmetic reports a breach that did not happen, or hides one that
+        did. It does not touch the R-multiple. ``TradeRecord.r_multiple`` is
+        ``outcome_zar / risk_amount`` and that ``risk_amount`` is the realised
+        money, so the measure `fbe.journal.evaluate` sums is protected by a
+        different field and a different rule.
 
         Returns:
             A fraction in ``[0.0, risk_fraction]``, carrying no unit and no

@@ -813,11 +813,12 @@ def position_size(
             distance case below, so a row that is both unpriceable and badly
             formed raises rather than coming back as a warning: a warning would
             report a soft failure on a pair nothing here can size at all.
-        ValueError: If ``broker.lot_step`` is not strictly positive, if
-            ``pair`` is not six characters, if ``entry`` or ``stop`` is not a
-            finite positive price, or if ``config.account_balance`` is not a
-            finite positive amount. All are malformed inputs rather than facts
-            about the trade, so none is reported as a warning. The balance is
+        ValueError: On any of six malformed inputs: ``broker.lot_step`` not
+            strictly positive, ``pair`` not six characters, ``entry`` or
+            ``stop`` not a finite positive price, ``risk_fraction`` supplied
+            and not finite, and ``config.account_balance`` not a finite
+            positive amount. None is a fact about the trade, so none is
+            reported as a warning. The balance is the newest of the six and is
             checked here because nothing else checks it and because
             `fbe.types.PositionSize.realised_risk_fraction` divides by it.
 

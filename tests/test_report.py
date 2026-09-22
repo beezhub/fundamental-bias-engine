@@ -645,7 +645,6 @@ def test_the_sidecar_is_a_json_object_keyed_by_field_name(tmp_path: Path) -> Non
     assert set(payload["shortlist"][0]["size"]) == {
         item.name for item in fields(PositionSize)
     }
-    assert "realised_risk_fraction" not in payload["shortlist"][0]["size"]
     assert payload["asof"] == "2026-06-30"
     assert payload["pairs"][0]["direction"] == "short"
     assert "monetary" in payload["currencies"][0]["pillars"]
@@ -1658,9 +1657,11 @@ def test_a_renderer_derives_no_number_by_division(template: Path) -> None:
 
     Two things followed. The percentage existed nowhere but the render, so
     nothing downstream could check the figure the owner reads against the
-    plan's 1-2% rule, which is the rule the whole account is run on. And the
-    expression was unguarded, so a zero balance raised a `ZeroDivisionError`
-    out of a Jinja template with no line of Python in the traceback.
+    plan's rule, which the plan states in both money and percentage and the
+    engine held only in money. And the expression was unguarded, so a zero
+    balance would have raised a `ZeroDivisionError` out of a Jinja template
+    with no line of Python in the traceback. Latent rather than an incident:
+    `fbe report` attaches no sizes yet.
 
     Both now read `fbe.types.PositionSize.realised_risk_fraction`.
 

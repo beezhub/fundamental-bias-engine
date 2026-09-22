@@ -1341,11 +1341,11 @@ def test_the_realised_fraction_is_the_realised_money_over_the_balance(
 
     The document publishes R18.50 realised against R20.00 intended on a R2,000
     account. It does not print the share for this example, so 0.925% is
-    derived here from two figures it does print. The plan states its rule as
-    1-2% of balance rather than R20 to R40, so the share is the form the check
-    is made in, and it is the one the engine did not hold: the intended
-    fraction is a field and the realised one was computed in a template at
-    render time. Example B below is the case where the document prints the
+    derived here from two figures it does print. ``docs/trading-plan.md``
+    states the rule in both forms at once, "1% - 2% of the account balance
+    (R20 - R40)", and the engine held the money realised and the fraction
+    intended, so this is the missing cell rather than a replacement for the
+    money. Example B below is the case where the document prints the
     percentage itself.
     """
     size = position_size(
@@ -1492,10 +1492,12 @@ def test_the_realised_fraction_is_not_a_constructor_argument() -> None:
 def test_a_balance_that_is_not_a_positive_number_is_refused(balance: float) -> None:
     """The denominator is checked where every other malformed input is.
 
-    A zero balance made the whole morning report unwritable, as a
-    `ZeroDivisionError` raised out of a Jinja template with no line of Python
-    in the traceback. A negative one yields a negative fraction that reads as
-    a position risking less than nothing, and a NaN passes every ``<`` and
+    A zero balance would make the whole morning report unwritable, as a
+    `ZeroDivisionError` out of a Jinja template with no line of Python in the
+    traceback. Latent rather than an incident: `fbe report` attaches no sizes
+    yet, so the only way to reach it today is `write_report` with a
+    hand-built one. A negative balance yields a negative fraction that reads
+    as a position risking less than nothing, and a NaN passes every ``<`` and
     ``==`` below it and comes back as a size whose warnings tuple is empty.
 
     Refused here rather than defaulted in the property: a balance is not a
