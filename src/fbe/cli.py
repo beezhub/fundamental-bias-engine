@@ -2701,6 +2701,30 @@ def size(
     the rounding gap is routinely 10% or more, and the intended figure is the
     one that is never actually at risk.
 
+    **The calendar's three answers reach the ticket as three outcomes.** Blocked
+    without ``--force`` exits 3, which `docs/interfaces.md` defines as a guard
+    rule refusing rather than an error. Clear sizes the trade and says nothing.
+    Unknown coverage prints which of the three reasons applies, per
+    `fbe.calendar_guard.CoverageGap`, and when the coverage ends, and **exits
+    0**: the owner's ruling on #24 fails open for a statistical release, and
+    this is the warning path rather than a refusal. It is not exit 1 either.
+    Exit 1 means the result should not be traded on, and a usable size carrying
+    a caveat the reader can act on is not that.
+
+    The fail-closed half of that ruling covers unknown coverage over a central
+    bank rate decision, and it is not reachable today: deciding whether a gap
+    hides a rate decision needs the scheduled-meeting calendars that reach past
+    the weekly feed, and those do not exist. A rate decision the feed does show
+    inside the fetched week is a plain ``event`` blocker and already refuses.
+    What is unmarked is the gap past the horizon, and the daily routine's own
+    calendar review is the backstop for it. `docs/risk-and-execution.md` section
+    5 carries the policy and the interim rule, and issue #45 the reasoning.
+
+    A trade entered on an unknown answer is recorded as one:
+    `fbe.journal.BlackoutCheck.UNKNOWN` on the record, distinct from ``CLEAR``
+    and from ``NOT_RUN``. That is what makes the override countable, and
+    proposal #2's own falsification is that count.
+
     The portfolio limits are checked against the journal, with no flag and no way
     to skip the read. `fbe.risk.check_limits` can only compare against a book it
     is given, and for as long as nothing gave it one it reported four limits as
@@ -2741,7 +2765,9 @@ def size(
         direction: Optional direction override.
         balance: Optional account balance override.
         risk: Optional risk fraction override, clamped to the configured band.
-        force: Proceed despite an active blackout window.
+        force: Proceed despite an active blackout window. It applies to a
+            window the guard could see. Unknown coverage does not refuse, so
+            there is nothing for it to override there.
         output_format: table, json or csv.
 
     Raises:

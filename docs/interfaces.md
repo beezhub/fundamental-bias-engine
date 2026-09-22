@@ -32,7 +32,23 @@ script without parsing output:
 | 0 | The command did what it was asked. |
 | 1 | It ran, but the result should not be traded on: every source failed, coverage collapsed, `doctor --strict` found a warning, or the smallest size the broker accepts breaks the risk cap. |
 | 2 | Usage error, raised by the argument parser. |
-| 3 | A guard rule refused: `size` inside a blackout window without `--force`. Not an error, a decision. |
+| 3 | A guard rule refused: `size` inside a blackout window without `--force`, or unknown calendar coverage over a central bank rate decision once there is a rate-decision calendar to check. Not an error, a decision. |
+
+**Unknown calendar coverage does not exit 3 today.** The owner's ruling on #24
+splits the fail direction by event category: fail closed for a rate decision,
+fail open with the marker visible for a statistical release. The fail-closed
+half needs the scheduled-meeting calendars that reach past the weekly feed's
+horizon, and those do not exist, so nothing can decide whether a gap in
+coverage is hiding a rate decision. `size` therefore prints which of the three
+coverage reasons applies and when the coverage ends, and exits 0. That is the
+warning path, not a refusal: the answer is usable and it carries a caveat the
+reader has to act on themselves. A rate decision the feed does show inside the
+fetched week is a plain `event` blocker and already blocks the pair.
+
+Exit 1 would be wrong for either half. It means the command ran and the result
+should not be traded on, and neither an entitled refusal nor a usable answer
+with a caveat is that. `docs/risk-and-execution.md` section 5 carries the policy
+and the interim rule.
 
 ## Global options
 
