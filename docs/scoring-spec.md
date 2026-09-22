@@ -812,6 +812,69 @@ because an equity drawdown is a consequence of risk-off rather than a leading
 indicator of it. And a 6% drawdown that is a healthy correction and a 6%
 drawdown that is the start of a crisis produce the same reading.
 
+### 3.8 What a pillar cannot score, and why
+
+Phase 3's definition of done asks that all seven pillars produce a score for all
+eight currencies **or a documented reason they cannot**. This is that reason,
+grouped by pillar so it sits with the specifications above rather than in a
+separate document that would be read later or not at all.
+
+Every line here was read off `src/fbe/datasources/registry.py` rather than
+recalled, and `tests/test_pillar_audit.py::test_the_spec_documents_every_dead_series`
+fails if the registry gains a dead series this section does not name, or if one
+named here comes back to life. A documented gap that has quietly closed is as
+misleading as an undocumented one.
+
+**Nothing below is a gap in the code.** Each is a series no free source
+publishes any more, or does not publish for that country. The engine's response
+is the same in every case: the component is absent, the pillar's blend divides by
+the weight it actually had, and if too little weight survives the pillar returns
+an absence with `raw` and `z` both `None` rather than a score. Section 4.2
+carries that arithmetic and `fbe.pillar_audit` reports which currency lost which
+pillar on any given run.
+
+| Pillar | Series | Currencies | Why |
+| --- | --- | --- | --- |
+| GROWTH | `indpro_yoy` | EUR, CHF, AUD, NZD | The euro-area aggregate was discontinued at 2023-12. Switzerland, Australia and New Zealand publish no industrial production series FRED carries in any live form. |
+| GROWTH | `retail_sales_yoy` | AUD | Discontinued at 2025Q2, with no live Australian retail series on FRED. |
+| EMPLOYMENT | `employment_chg` | EUR | No live euro-area or German employment level on FRED. |
+| EXTERNAL | `current_account_gdp` | all eight | Discontinued at 2024Q4 across every leg of the family, with no free replacement found. This is the whole of EXTERNAL's 0.40 level component, for the entire universe. |
+| EXTERNAL | `commodity_price` | NZD | No dairy price index on FRED. The GlobalDairyTrade index is the right series and is not freely available, so New Zealand's terms-of-trade component is the one commodity link the pillar cannot follow. |
+
+The `current_account_gdp` row is the one worth reading twice. It is not one
+currency short of a component, it is every currency short of the component
+carrying the largest share of EXTERNAL, which means EXTERNAL scores on
+`trade_trend` and `terms_of_trade` alone until a replacement series is
+registered. Section 3.5's sub-weights describe the pillar as specified, not the
+pillar as fed.
+
+### The one duplicated pair on the fixture
+
+`fbe.pillar_audit` correlates every pair of pillar columns across the
+cross-section and names any pair at or above 0.9 in absolute value. On the
+section 7 fixture exactly one pair reaches it: **MONETARY and INFLATION at
++0.9175 across the eight currencies.**
+
+That is the same fact section 3.2 already records, arriving by a different
+route. MONETARY's `real_policy_rate` is `policy_rate - cpi_yoy`, so the pillar
+carries a coefficient of minus one on the series INFLATION is built from, and
+two columns that share an input that heavily are not two independent readings.
+`scoring.series_loading` measures it as a loading on one series; the correlation
+measures it as agreement between two columns.
+
+What the figure is: arithmetic over eight numbers from one fixture. What it is
+not: evidence about returns, or a measurement of whether either pillar works.
+The declared weights are 0.30 and 0.15, and a reader should know that the 0.45
+between them is not 0.45 of independent view. Folding the two, or reweighting
+either, changes `ScoringConfig` and is a decision for a person with its own
+issue. Nothing in the engine acts on this figure.
+
+Two families of series read as unverified in the registry without being gaps.
+`yield_2y_chg_1m` and `yield_2y_chg_3m` are derived from `yield_2y` rather than
+fetched, so they carry no source to verify. `pmi_composite` is the slot GROWTH
+moved off in #23, and `business_confidence_mfg` is what the pillar reads now.
+Neither costs any currency a score, which is why neither is in the table.
+
 ## 4. Aggregation to a currency composite
 
 ### 4.1 Staleness discount
