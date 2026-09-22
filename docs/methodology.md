@@ -398,7 +398,9 @@ directional quantity. Distinct from dealing spread.
 filter, compared against the expected move.
 
 **Staleness.** The age in days of the newest input behind a pillar. Old inputs
-lose weight and eventually stop counting, per `max_staleness_days`.
+lose weight and eventually stop counting. A print is not stale until the next
+one is due, so the two ages that decide it are derived from the leg's own
+publication lag and release cycle rather than from one figure for everything.
 
 **Surprise.** The gap between a published number and the consensus that preceded
 it. Backward looking only.

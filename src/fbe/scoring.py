@@ -541,8 +541,8 @@ def series_loading(
 
 def freshness(
     staleness_days: int,
-    config: ScoringConfig,
-    allowance_days: int | None = None,
+    full_days: int,
+    allowance_days: int,
 ) -> float:
     """Return the freshness factor a weight is multiplied by, in ``[0.0, 1.0]``.
 
@@ -550,65 +550,71 @@ def freshness(
         staleness_days: Age in days of the input being judged, measured from
             ``Observation.period``, which is the first day of the span the
             figure describes.
-        config: Scoring configuration supplying the ramp's shape,
-            ``staleness_full_days / max_staleness_days``.
-        allowance_days: How old this particular series may be and still count,
-            from ``IndicatorSpec.max_staleness_days``. ``None`` means the caller
-            has no per-series allowance and the ramp falls back to
-            ``ScoringConfig.max_staleness_days``, which is the right answer only
-            for a series that publishes about as often as the default assumes.
+        full_days: The oldest a punctual newest print of this leg gets, from
+            `fbe.datasources.registry.full_weight_age`. At or below this the
+            factor is 1.0, because the next print is not due yet.
+        allowance_days: How old this leg may be and still count, from
+            `fbe.datasources.registry.staleness_allowance`. One full release
+            cycle past ``full_days``.
 
     Returns:
-        The factor, where ``S`` is the allowance and ``s0 = S * (
-        staleness_full_days / max_staleness_days)``, one third of ``S`` on the
-        shipped defaults:
+        The factor, writing ``s0`` for ``full_days`` and ``S`` for
+        ``allowance_days``:
 
-            ``s <= s0``: ``1.0``. The series is inside its own schedule.
+            ``s <= s0``: ``1.0``. Nothing is late yet.
 
             ``s0 < s <= S``: ``(S - s) / (S - s0)``, falling linearly to zero as
             the release runs later and later.
 
-            ``s > S``: ``0.0``. Past the allowance the input stops counting
-            toward coverage.
+            ``s > S``: ``0.0``. A whole cycle missed, so the input stops
+            counting toward coverage.
 
     Raises:
-        ValueError: If ``allowance_days`` is not positive. A zero or negative
-            allowance is a configuration error, not a stale series, and
-            returning 0.0 for it would hide the difference.
+        ValueError: If ``allowance_days`` is not positive, or if ``full_days``
+            is not below it. A zero or negative allowance is a configuration
+            error rather than a stale series, and bounds out of order either
+            divide by zero or invert the ramp, which would hand an expired
+            series full weight. Neither is answered with a number.
 
-    Why the ramp is scaled to the series rather than measured in absolute days.
-    ``period`` is the first day of the span a figure describes, so a punctual
-    monthly print is 30 to 45 days old the day it publishes and a punctual
-    quarterly print is about 120 days old. One 45-day ramp for everything gave
-    thirteen of the seventeen registered indicators a factor of 0.0 at the age
-    their own frequency says they publish at, which is every monthly and
-    quarterly series in the model. Scaling by the allowance the registry already
-    derives from each series' release calendar means a series that has just been
-    published counts as fresh and a series that has missed its release does not.
+    Arithmetic only. Both bounds arrive as arguments, this function reads no
+    config and no registry, and the caller that knows which leg produced the
+    observation resolves them. That split is the fix for issue #126. The ramp
+    used to derive its full-weight age as a fixed fraction of the allowance,
+    one third on the shipped defaults. A punctual quarterly print is 120 days
+    old on the day it is first visible, while a third of its allowance was 60
+    to 90, so every quarterly leg began life on the falling part of the ramp
+    and never reached full weight. AUD and NZD carried 0.6 of their declared
+    inflation weight against 1.0 for the six monthly currencies, which ranked a
+    currency by its statistics office's calendar. ADR 0014 records the ruling
+    and ``tests/test_ramp_from_the_leg.py`` holds the arithmetic.
 
-    The allowance also keeps this function and `registry.coverage_report` from
-    giving two answers about the same series. ``SeriesRef.stale_on`` compares
-    ``age > allowance``, so the ramp reaches zero on the last day the registry
-    still counts a ref as usable: the scoring side is never the more permissive
-    of the two.
+    The bounds also keep this function and `registry.coverage_report` from
+    giving two answers about one series, because both now derive from the same
+    leg. ``SeriesRef.stale_on`` compares ``age > allowance``, so the ramp
+    reaches zero on the last day the registry still counts a ref as usable: the
+    scoring side is never the more permissive of the two.
 
     Why a ramp rather than a cliff. A hard cutoff would let a currency's
     composite jump on a day when no data changed and nothing happened except the
     calendar turning over.
 
     """
-    allowance = config.max_staleness_days if allowance_days is None else allowance_days
-    if allowance <= 0:
+    if allowance_days <= 0:
         raise ValueError(
-            f"allowance_days is {allowance}, expected above 0; "
+            f"allowance_days is {allowance_days}, expected above 0; "
             "an indicator with no usable allowance cannot be scored"
         )
-    full = allowance * (config.staleness_full_days / config.max_staleness_days)
-    if staleness_days <= full:
+    if not 0 <= full_days < allowance_days:
+        raise ValueError(
+            f"full_days is {full_days}, expected in [0, {allowance_days}); "
+            "a full-weight age at or past the allowance divides by zero or "
+            "inverts the ramp, which gives an expired series full weight"
+        )
+    if staleness_days <= full_days:
         return 1.0
-    if staleness_days > allowance:
+    if staleness_days > allowance_days:
         return 0.0
-    return (allowance - staleness_days) / (allowance - full)
+    return (allowance_days - staleness_days) / (allowance_days - full_days)
 
 
 def apply_staleness_penalty(
@@ -623,18 +629,22 @@ def apply_staleness_penalty(
             configured weight.
         config: Scoring configuration supplying the staleness thresholds.
         freshness_factor: The pillar's own freshness in ``[0.0, 1.0]``, from
-            `BasePillar.pillar_freshness`, which ages each component against its
-            own indicator allowance and averages over the sub-weights present.
+            `BasePillar.pillar_freshness`, which ages each component against
+            its own leg's bounds and averages over the sub-weights present.
             `score_currencies` reads it off `PillarScore.freshness_factor`.
-            ``None`` falls back to ``freshness(pillar_score.staleness_days,
-            config)``, which knows no allowance and therefore judges every
-            series as if it published monthly. That fallback is the conservative
-            answer, not the correct one: it is what produced a factor of 0.0 for
-            every quarterly series in the model, so a caller that can supply the
-            factor must.
+            Required: a score arriving with ``None`` raises.
+
+    Raises:
+        ValueError: If ``freshness_factor`` is ``None``, or outside
+            ``[0.0, 1.0]``. ``None`` used to mean "apply a ramp to the age
+            instead", but the ramp now needs to know which leg produced the
+            observation and this module does not. Applying a monthly-shaped one
+            was a guess, and it is the guess issue #126 was filed about. All
+            seven pillars are `BasePillar` and measure the factor, so nothing
+            in the tree reaches this.
 
     Returns:
-        A new `PillarScore` whose ``weight`` is ``weight * freshness(...)``.
+        A new `PillarScore` whose ``weight`` is ``weight * freshness_factor``.
         Nothing is mutated: `PillarScore` is frozen, and a report needs the
         original alongside the penalised version to explain itself.
 
@@ -657,22 +667,19 @@ def apply_staleness_penalty(
     happens on the pillar side where the indicator keys are known. This module
     stays free of the registry: it takes a factor and a ramp, and computes.
 
-    **Re-ageing a stored score**, which a replay needs, is done through the two
-    inputs that carry age rather than through a run date. ``staleness_days`` on
-    the score being passed in is what the fallback ramp reads, so a replay that
-    wants a different age passes a score carrying that age. ``freshness_factor``
-    overrides the ramp outright and is the better route, because the ramp here
-    knows no per-indicator allowance and judges every series as if it published
-    monthly. This function derives no age of its own and takes no date: both
-    quantities arrive from the caller, and a date would be a third route that
-    changed nothing.
+    **Re-ageing a stored score**, which a replay needs, is done by passing the
+    factor the replay wants. This function derives no age of its own and takes
+    no date. ``staleness_days`` on the score is carried into the expiry note
+    and read nowhere else.
 
     """
-    factor = (
-        freshness(pillar_score.staleness_days, config)
-        if freshness_factor is None
-        else freshness_factor
-    )
+    if freshness_factor is None:
+        raise ValueError(
+            f"{pillar_score.pillar.value} arrived with no freshness factor; "
+            "the ramp is derived from the leg that produced each observation "
+            "and this module does not know it, so the pillar must measure it"
+        )
+    factor = freshness_factor
     if not 0.0 <= factor <= 1.0:
         # Above 1.0 the pillar leaves with more weight than the configuration
         # gave it, so coverage can exceed 1.0 and the composite is divided by a

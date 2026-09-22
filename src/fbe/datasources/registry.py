@@ -101,8 +101,10 @@ __all__ = [
     "VERIFIED_ON",
     "coverage_report",
     "identifier_coverage",
+    "full_weight_age",
     "indicators_for_pillar",
     "publication_lag",
+    "staleness_allowance",
     "series_for",
     "stale_refs",
 ]
@@ -332,23 +334,6 @@ class IndicatorSpec:
             published.
         frequency: The indicator's typical release frequency across the
             universe. Per-currency reality lives on each `SeriesRef`.
-        max_staleness_days: How old this indicator's newest observation may be
-            and still count. Set per indicator rather than globally because the
-            release calendar differs by an order of magnitude across this
-            table: a 2-year yield stale by a week means the feed broke, while a
-            quarterly balance-of-payments figure is routinely five months old
-            on the day it is most current. This overrides
-            `ScoringConfig.max_staleness_days` for this indicator.
-
-            Each value is derived from the publication cadence, never from what
-            the data happens to need: it is the age of the newest print on the
-            day before the next one is due, which is the period length, plus
-            the statistics office's lag, plus one more period. A quarterly
-            series stamped at the start of its quarter therefore earns about
-            270 days and a lagging monthly series about 180. Setting an
-            allowance higher than the cadence justifies, so that a frozen
-            series passes, converts a visible gap into an invisible one and is
-            the single easiest way to make this whole registry lie.
         description: What the number means and why the pillar wants it.
         series: Per-currency refs. A currency absent from this mapping has no
             source at all for this indicator, which is different from having a
@@ -360,7 +345,6 @@ class IndicatorSpec:
     pillar: PillarName
     unit: str
     frequency: Frequency
-    max_staleness_days: int
     description: str
     series: Mapping[str, SeriesRef] = field(default_factory=dict)
 
@@ -480,7 +464,6 @@ POLICY_RATE = IndicatorSpec(
     pillar=PillarName.MONETARY,
     unit="percent",
     frequency=Frequency.DAILY,
-    max_staleness_days=75,
     description=(
         "The central bank's target rate, or the overnight rate that tracks it. "
         "The level matters less than where it sits relative to the rest of the "
@@ -573,7 +556,6 @@ YIELD_2Y = IndicatorSpec(
     pillar=PillarName.MONETARY,
     unit="percent",
     frequency=Frequency.DAILY,
-    max_staleness_days=10,
     description=(
         "Two-year government bond yield, the market's own forecast of where "
         "policy goes next. The 2y differential is the strongest single "
@@ -733,7 +715,6 @@ YIELD_2Y_CHG_1M = IndicatorSpec(
     pillar=PillarName.MONETARY,
     unit="basis_points",
     frequency=Frequency.DAILY,
-    max_staleness_days=10,
     description=(
         "One-month change in the two-year government bond yield, in basis "
         "points, resampled to month-end before differencing. Carries a fifth "
@@ -757,7 +738,6 @@ YIELD_2Y_CHG_3M = IndicatorSpec(
     pillar=PillarName.MONETARY,
     unit="basis_points",
     frequency=Frequency.DAILY,
-    max_staleness_days=10,
     description=(
         "Three-month change in the two-year government bond yield, in basis "
         "points, resampled to quarter-end before differencing. The single "
@@ -780,7 +760,6 @@ YIELD_10Y = IndicatorSpec(
     pillar=PillarName.MONETARY,
     unit="percent",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=75,
     description=(
         "Ten-year benchmark government bond yield. Registered and verified "
         "across all eight with clean current coverage, and consumed by no "
@@ -869,7 +848,6 @@ CPI_YOY = IndicatorSpec(
     pillar=PillarName.INFLATION,
     unit="percent",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=200,
     description=(
         "Headline consumer price inflation, year on year. The inflation pillar "
         "scores the gap to each central bank's target rather than the raw "
@@ -956,7 +934,6 @@ CORE_CPI_YOY = IndicatorSpec(
     pillar=PillarName.INFLATION,
     unit="percent",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=200,
     description=(
         "Consumer prices excluding food and energy, year on year. Central banks "
         "react to this more than to the headline, so it leads policy and "
@@ -1043,7 +1020,6 @@ GDP_YOY = IndicatorSpec(
     pillar=PillarName.GROWTH,
     unit="percent",
     frequency=Frequency.QUARTERLY,
-    max_staleness_days=270,
     description=(
         "Real GDP growth, year on year. Slow and heavily revised, so it anchors "
         "the growth pillar rather than driving it. Full G10 coverage, which is "
@@ -1135,7 +1111,6 @@ UNEMPLOYMENT_RATE = IndicatorSpec(
     pillar=PillarName.EMPLOYMENT,
     unit="percent",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=270,
     description=(
         "Harmonised unemployment rate. Compared cross-sectionally against the "
         "rest of the G10 and against its own recent trend, since the level that "
@@ -1228,7 +1203,6 @@ EMPLOYMENT_CHG = IndicatorSpec(
     pillar=PillarName.EMPLOYMENT,
     unit="persons",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=270,
     description=(
         "Change in the number of people employed. The flow, not the stock: a "
         "falling unemployment rate driven by people leaving the labour force is "
@@ -1379,7 +1353,6 @@ EMPLOYMENT_LEVEL = IndicatorSpec(
     pillar=PillarName.EMPLOYMENT,
     unit="persons",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=EMPLOYMENT_CHG.max_staleness_days,
     description=(
         "Number of people employed. The stock that `employment_chg` is the flow "
         "of, and it exists for one purpose: `employment_trend` is specified as "
@@ -1418,7 +1391,6 @@ RETAIL_SALES_YOY = IndicatorSpec(
     pillar=PillarName.GROWTH,
     unit="percent",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=380,
     description=(
         "Retail trade volume, year on year. The fastest read on household "
         "demand, and the growth pillar's main monthly input given that GDP "
@@ -1521,7 +1493,6 @@ INDPRO_YOY = IndicatorSpec(
     pillar=PillarName.GROWTH,
     unit="percent",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=180,
     description=(
         "Industrial production, year on year. Coverage here is the worst of the "
         "growth inputs: four of eight are live. Weight it accordingly, or the "
@@ -1610,7 +1581,6 @@ PMI_COMPOSITE = IndicatorSpec(
     pillar=PillarName.GROWTH,
     unit="index",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=75,
     description=(
         "Composite purchasing managers' index, manufacturing and services "
         "blended, 50 being the expansion line. "
@@ -1655,7 +1625,6 @@ TRADE_BALANCE = IndicatorSpec(
     pillar=PillarName.EXTERNAL,
     unit="usd",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=300,
     description=(
         "Merchandise trade balance in US dollars, seasonally adjusted. Already "
         "currency-converted by the source, so the eight legs are directly "
@@ -1758,7 +1727,6 @@ GDP_NOMINAL_USD = IndicatorSpec(
     pillar=PillarName.EXTERNAL,
     unit="usd",
     frequency=Frequency.ANNUAL,
-    max_staleness_days=916,
     description=(
         "Nominal gross domestic product at market prices, in actual US dollars, "
         "from the World Bank's national accounts through FRED. The denominator "
@@ -1851,7 +1819,6 @@ CURRENT_ACCOUNT_GDP = IndicatorSpec(
     pillar=PillarName.EXTERNAL,
     unit="percent_of_gdp",
     frequency=Frequency.QUARTERLY,
-    max_staleness_days=210,
     description=(
         "Current account balance as a share of GDP. A structural measure of "
         "whether a currency is financed by the world or financing it."
@@ -1901,7 +1868,6 @@ COT_NET_PCT_OI = IndicatorSpec(
     pillar=PillarName.POSITIONING,
     unit="percent_of_open_interest",
     frequency=Frequency.WEEKLY,
-    max_staleness_days=21,
     description=(
         "Net speculative position in CME currency futures from the CFTC "
         "Commitments of Traders report, as a percent of open interest. A "
@@ -1956,7 +1922,6 @@ EQUITY_INDEX = IndicatorSpec(
     pillar=PillarName.RISK,
     unit="index",
     frequency=Frequency.DAILY,
-    max_staleness_days=75,
     description=(
         "Benchmark equity index for each economy. Registered and verified "
         "across all eight with clean current coverage, and consumed by no "
@@ -2051,7 +2016,6 @@ WORLD_EQUITY_INDEX = IndicatorSpec(
     pillar=PillarName.RISK,
     unit="index",
     frequency=Frequency.DAILY,
-    max_staleness_days=7,
     description=(
         "A single global equity benchmark, currently the S&P 500. **A United "
         "States index is standing in for the world here, and the substitution "
@@ -2100,7 +2064,6 @@ VOL_INDEX = IndicatorSpec(
     pillar=PillarName.RISK,
     unit="index",
     frequency=Frequency.DAILY,
-    max_staleness_days=7,
     description=(
         "A global volatility benchmark, currently the CBOE's implied "
         "volatility on the S&P 500 (VIX). A single global number, not a "
@@ -2130,7 +2093,6 @@ COMMODITY_PRICE = IndicatorSpec(
     pillar=PillarName.EXTERNAL,
     unit="index",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=90,
     description=(
         "Terms-of-trade proxy for the commodity currencies, plus a global "
         "benchmark. Only the three currencies with a `commodity_link` in "
@@ -2181,12 +2143,30 @@ COMMODITY_PRICE = IndicatorSpec(
 )
 
 
+_BTS_LAG_DAYS: Mapping[Frequency, int] = {
+    Frequency.MONTHLY: DEFAULT_PUBLICATION_LAG_DAYS[Frequency.MONTHLY],
+    Frequency.QUARTERLY: 161,
+}
+"""Days from a survey period starting to the OECD publishing it, per cadence.
+
+The quarterly figure is measured and is longer than the 120 the cadence table
+assumes. The 2026-Q2 print, stamped 2026-04-01, was still the newest one on
+`VERIFIED_ON`, 2026-09-09, which is 161 days, so the lag is at least that. One
+observation is an upper bound on nothing, but it is a lower bound on the lag,
+and understating a lag is the error that costs a punctual print its weight:
+``tests/test_business_confidence_indicator.py`` derives the same 161 from the
+same print and asserts a current survey never reads stale on any day of its
+cycle. The monthly legs publish inside the cadence assumption and take it.
+
+Japan's is the Tankan and the other three follow their own national surveys,
+which is why the cadence differs per leg and the lag with it.
+"""
+
 BUSINESS_CONFIDENCE_MFG = IndicatorSpec(
     key="business_confidence_mfg",
     pillar=PillarName.GROWTH,
     unit="percentage_balance",
     frequency=Frequency.MONTHLY,
-    max_staleness_days=270,
     description=(
         "OECD composite business confidence for manufacturing, from the "
         "Business Tendency Surveys the OECD harmonises out of each country's "
@@ -2248,7 +2228,8 @@ BUSINESS_CONFIDENCE_MFG = IndicatorSpec(
             "percentage_balance",
             frequency,
             last_observed,
-            note=note,
+            note=f"{note} lag: {_BTS_LAG_DAYS[frequency]} days, see _BTS_LAG_DAYS.",
+            lag=_BTS_LAG_DAYS[frequency],
         )
         for currency, area, freq, frequency, last_observed, note in (
             (
@@ -2443,6 +2424,54 @@ def publication_lag(ref: SeriesRef | None, frequency: Frequency) -> int:
     return DEFAULT_PUBLICATION_LAG_DAYS[frequency]
 
 
+def full_weight_age(ref: SeriesRef | None, frequency: Frequency) -> int:
+    """Return the oldest a punctual newest print of this leg gets, in days.
+
+    ``lag + cycle``: the publication lag, plus the longest gap to the next
+    period. On the day before its successor is admitted, a punctual print is
+    exactly this old, so this is the last age at which nothing is late.
+
+    Args:
+        ref: The leg's registry entry, or ``None`` for a key or currency the
+            registry does not carry.
+        frequency: The observation's own frequency, which the source copies
+            from `SeriesRef.frequency`. Never `IndicatorSpec.frequency`: 36
+            legs differ from their spec's, and a rule keyed on the spec calls
+            a punctual quarterly print 44 days late (ADR 0014).
+
+    Returns:
+        Days. The point below which `fbe.scoring.freshness` returns 1.0.
+
+    """
+    return publication_lag(ref, frequency) + CYCLE_DAYS[frequency]
+
+
+def staleness_allowance(ref: SeriesRef | None, frequency: Frequency) -> int:
+    """Return how old this leg may be and still carry any weight, in days.
+
+    ``lag + 2 * cycle``: one full release cycle past the point where the next
+    print was due. A series that has missed a whole cycle is not late, it has
+    stopped, and it stops counting.
+
+    Args:
+        ref: The leg's registry entry, or ``None`` when the registry has none.
+        frequency: The observation's own frequency, as for `full_weight_age`.
+
+    Returns:
+        Days. `fbe.scoring.freshness` returns 0.0 at and above this age, and
+        `SeriesRef.stale_on` gives up one day earlier, so the registry and the
+        scorer cannot give two answers about one series.
+
+    Replaced ``IndicatorSpec.max_staleness_days``, which was hand-keyed per
+    indicator and therefore per universe rather than per leg. Nine indicators
+    carried an allowance below the oldest age their own punctual print
+    reaches, so they hit zero weight before their next print was due. See
+    issue #126 and ADR 0014.
+
+    """
+    return publication_lag(ref, frequency) + 2 * CYCLE_DAYS[frequency]
+
+
 def series_for(indicator: str, currency: str) -> SeriesRef | None:
     """Look up the source reference for one indicator and one currency.
 
@@ -2506,10 +2535,11 @@ def coverage_report(asof: date | None = None) -> Mapping[str, float]:
     when = asof or VERIFIED_ON
     report: dict[str, float] = {}
     for key, spec in INDICATORS.items():
-        limit = spec.max_staleness_days
         global_ref = spec.series.get(GLOBAL)
         if global_ref is not None:
-            usable = global_ref.fetchable and not global_ref.stale_on(when, limit)
+            usable = global_ref.fetchable and not global_ref.stale_on(
+                when, staleness_allowance(global_ref, global_ref.frequency)
+            )
             report[key] = 1.0 if usable else 0.0
             continue
         covered = sum(
@@ -2517,7 +2547,7 @@ def coverage_report(asof: date | None = None) -> Mapping[str, float]:
             for code in G10
             if (ref := spec.series.get(code)) is not None
             and ref.fetchable
-            and not ref.stale_on(when, limit)
+            and not ref.stale_on(when, staleness_allowance(ref, ref.frequency))
         )
         report[key] = covered / len(G10)
     return report
@@ -2588,10 +2618,11 @@ def stale_refs(asof: date | None = None) -> Mapping[str, tuple[str, ...]]:
     when = asof or VERIFIED_ON
     out: dict[str, tuple[str, ...]] = {}
     for key, spec in INDICATORS.items():
-        limit = spec.max_staleness_days
         global_ref = spec.series.get(GLOBAL)
         if global_ref is not None:
-            if not global_ref.fetchable or global_ref.stale_on(when, limit):
+            if not global_ref.fetchable or global_ref.stale_on(
+                when, staleness_allowance(global_ref, global_ref.frequency)
+            ):
                 out[key] = tuple(G10)
             continue
         bad = tuple(
@@ -2599,7 +2630,7 @@ def stale_refs(asof: date | None = None) -> Mapping[str, tuple[str, ...]]:
             for code in G10
             if (ref := spec.series.get(code)) is None
             or not ref.fetchable
-            or ref.stale_on(when, limit)
+            or ref.stale_on(when, staleness_allowance(ref, ref.frequency))
         )
         if bad:
             out[key] = bad

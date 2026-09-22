@@ -39,6 +39,8 @@ from fbe.datasources.registry import (
     UNCONSUMED_INDICATORS,
     VERIFIED_ON,
     IndicatorSpec,
+    full_weight_age,
+    staleness_allowance,
 )
 from fbe.pillars.growth import GrowthPillar
 from fbe.types import Frequency, PillarName
@@ -216,7 +218,10 @@ def test_the_allowance_covers_a_punctual_print_in_every_quarter(
     """
     worst = max(_worst_fresh_age(stamp) for stamp in QUARTER_STARTS)
     assert worst == 253
-    assert spec.max_staleness_days >= worst
+    for currency, ref in spec.series.items():
+        if ref.frequency is not Frequency.QUARTERLY:
+            continue
+        assert full_weight_age(ref, ref.frequency) >= worst, currency
 
 
 def test_the_allowance_still_expires_a_leg_that_missed_a_release(
@@ -225,30 +230,41 @@ def test_the_allowance_still_expires_a_leg_that_missed_a_release(
     """The other side, which is the side that lets a lie through.
 
     An allowance wide enough that a series which missed a whole release still
-    counts converts a visible gap into an invisible one, and
-    `IndicatorSpec.max_staleness_days` names that as the single easiest way to
-    make the registry lie.
+    counts converts a visible gap into an invisible one. The derivation bounds
+    it by construction: the allowance is the full-weight age plus exactly one
+    more cycle, so a leg that missed two releases can never still count.
     """
     worst = max(_worst_fresh_age(stamp) for stamp in QUARTER_STARTS)
-    assert spec.max_staleness_days < worst + 90
+    for currency, ref in spec.series.items():
+        if ref.frequency is not Frequency.QUARTERLY:
+            continue
+        assert staleness_allowance(ref, ref.frequency) < worst + 2 * 92, currency
 
 
 def test_the_allowance_is_the_value_the_description_derives(
     spec: IndicatorSpec,
 ) -> None:
-    """Pinned outright, in the style of `tests/test_manual.py`'s PMI assertion.
+    """Pinned outright, now that the value is derived rather than typed.
 
-    The two tests above leave a window, and 270 is one of several values in it.
-    The registry's description commits to a specific number and to a reason for
-    it, and both published coverage tables in ``docs/data-sources.md`` report
-    8/8 as a consequence. A literal here is what makes an edit to that number a
-    deliberate act rather than a silent one.
-
-    270 is also this table's own published figure for a quarterly series stamped
-    on its period's first day, and what ``gdp_yoy`` uses.
+    The two tests above leave a window. Since #126 there is no hand-keyed
+    number to edit inside it: the allowance is ``lag + 2 * cycle`` for the
+    leg. These four legs carry a measured lag of 161 days, longer than the
+    120 the quarterly cadence assumes, because the OECD publishes this survey
+    later than a statistics office publishes GDP. So ``161 + 184 = 345``,
+    against ``120 + 184 = 304`` for a quarterly leg on the default table,
+    which ``gdp_yoy`` is. Both literals are kept so that a change to either
+    table, or to the measured lag, is a deliberate act rather than a silent
+    one.
     """
-    assert spec.max_staleness_days == 270
-    assert spec.max_staleness_days == INDICATORS["gdp_yoy"].max_staleness_days
+    for currency, ref in spec.series.items():
+        if ref.frequency is not Frequency.QUARTERLY:
+            continue
+        assert ref.publication_lag_days == 161, currency
+        assert staleness_allowance(ref, ref.frequency) == 345, currency
+
+    gdp = INDICATORS["gdp_yoy"].series["USD"]
+    assert gdp.publication_lag_days is None
+    assert staleness_allowance(gdp, gdp.frequency) == 304
 
 
 def test_no_leg_is_already_stale_on_the_day_it_was_verified(
@@ -264,7 +280,7 @@ def test_no_leg_is_already_stale_on_the_day_it_was_verified(
     stale = [
         currency
         for currency, ref in spec.series.items()
-        if ref.stale_on(VERIFIED_ON, spec.max_staleness_days)
+        if ref.stale_on(VERIFIED_ON, staleness_allowance(ref, ref.frequency))
     ]
     assert not stale
     assert (VERIFIED_ON - date(2026, 4, 1)).days == 161

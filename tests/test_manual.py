@@ -28,7 +28,12 @@ import pytest
 from fbe.config import DataConfig
 from fbe.datasources.base import SourceError
 from fbe.datasources.manual import FILE_GLOB, ManualSource
-from fbe.datasources.registry import INDICATORS, SOURCE_MANUAL
+from fbe.datasources.registry import (
+    INDICATORS,
+    SOURCE_MANUAL,
+    series_for,
+    staleness_allowance,
+)
 from fbe.types import Frequency
 from fbe.universe import G10
 
@@ -981,11 +986,14 @@ def test_a_stale_entry_is_still_missing(source: ManualSource, manual_dir: Path) 
 def test_the_staleness_allowance_is_the_indicators_own(
     source: ManualSource, manual_dir: Path
 ) -> None:
-    """Read from the `IndicatorSpec`, not from one number for the whole
-    registry: the cadences here differ by an order of magnitude, and a
-    quarterly figure five months old is routinely the most current there is."""
-    allowance = INDICATORS[PMI].max_staleness_days
-    assert allowance == 75
+    """Read from the leg, not from one number for the whole registry: the
+    cadences here differ by an order of magnitude, and a quarterly figure five
+    months old is routinely the most current there is."""
+    ref = series_for(PMI, "USD")
+    assert ref is not None
+    allowance = staleness_allowance(ref, ref.frequency)
+    # Monthly and manual, so the cadence table answers: 45 + 2 * 31.
+    assert allowance == 107
     fresh = ASOF - timedelta(days=allowance)
     stale = ASOF - timedelta(days=allowance + 1)
 
@@ -1205,13 +1213,21 @@ def test_the_staleness_allowance_moves_with_the_indicator(
     """Two indicators whose allowances differ by an order of magnitude, aged to
     the same day, so no single hardcoded number can satisfy both.
 
-    The earlier version of this test used `pmi_composite` alone, whose
-    allowance is 75, and read that 75 out of the registry before asserting
-    against it. A literal 75 in the loader passed it.
+    The earlier version of this test used `pmi_composite` alone and read its
+    allowance out of the registry before asserting against it, so a literal in
+    the loader passed it.
     """
-    assert INDICATORS[PMI].max_staleness_days == 75
-    assert INDICATORS["employment_chg"].max_staleness_days == 270
-    aged = ASOF - timedelta(days=100)
+    pmi = series_for(PMI, "USD")
+    chg = series_for("employment_chg", "GBP")
+    assert pmi is not None and chg is not None
+    # Monthly against quarterly: 45 + 2 * 31 against 196 + 2 * 92, the second
+    # carrying the lag #222 measured on the FRED mirror.
+    assert staleness_allowance(pmi, pmi.frequency) == 107
+    assert staleness_allowance(chg, chg.frequency) == 380
+    euro_chg = series_for("employment_chg", "EUR")
+    assert euro_chg is not None
+    assert staleness_allowance(euro_chg, euro_chg.frequency) == 304
+    aged = ASOF - timedelta(days=150)
     _write(
         manual_dir,
         "entries.yaml",
@@ -1229,7 +1245,8 @@ def test_the_staleness_allowance_moves_with_the_indicator(
 
     reported = source.missing(ASOF)
 
-    # 100 days is past pmi_composite's 75 and inside employment_chg's 270.
+    # 150 days is past the euro PMI leg's 107 and inside the euro
+    # employment leg's 304, which is quarterly rather than monthly.
     assert "EUR" in reported[PMI]
     assert "employment_chg" not in reported
 

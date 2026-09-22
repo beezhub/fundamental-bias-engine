@@ -27,7 +27,11 @@ from statistics import median, pstdev
 
 from fbe.config import ScoringConfig
 from fbe.datasources import registry
-from fbe.datasources.registry import INDICATORS, publication_lag
+from fbe.datasources.registry import (
+    full_weight_age,
+    publication_lag,
+    staleness_allowance,
+)
 from fbe.scoring import freshness
 from fbe.types import Observation, PillarName, PillarScore
 
@@ -36,7 +40,6 @@ __all__ = [
     "MIN_CROSS_SECTION",
     "MIN_TIME_SERIES_WINDOW",
     "MIN_COMPONENT_WEIGHT",
-    "staleness_allowance",
 ]
 
 
@@ -96,43 +99,6 @@ components are being asked to speak for the absent ones, not a judgement about
 any one pillar's economics. Exempting a pillar would be a conditional wearing a
 disguise.
 """
-
-
-def staleness_allowance(indicator: str, config: ScoringConfig) -> int:
-    """Return how old this indicator may be, in days, and still carry weight.
-
-    Args:
-        indicator: Canonical indicator key, as it appears on
-            ``Observation.indicator`` and in a pillar's ``requires``.
-        config: Scoring configuration, read only for the fallback.
-
-    Returns:
-        ``IndicatorSpec.max_staleness_days`` when the registry knows the key,
-        otherwise ``ScoringConfig.max_staleness_days``.
-
-    The registry wins because it is the only module that knows the release
-    calendar, and it says so in its own docstring: a 2-year yield stale by a
-    week means the feed broke, while a quarterly balance-of-payments figure is
-    routinely five months old on the day it is most current. The global figure
-    is the default for a key the registry has no entry for, not a ceiling over
-    the registry's values.
-
-    The fallback is worth reading twice. An unregistered key silently gets the
-    45-day default, which is the behaviour this function exists to remove, so a
-    pillar asking for a key the registry does not carry under that name is a
-    quiet under-weighting rather than an error.
-    ``tests/test_staleness_ramp.py`` pins the current set of such keys so that
-    it shrinks deliberately rather than growing by accident.
-
-    Importing the registry here is the allowed direction: the registry knows
-    nothing about pillars beyond which pillar consumes each indicator, and the
-    scorer stays free of it because the pillar passes the resulting factor on.
-
-    """
-    spec = INDICATORS.get(indicator)
-    if spec is None:
-        return config.max_staleness_days
-    return spec.max_staleness_days
 
 
 _EARLIEST = datetime.min.replace(tzinfo=UTC)
@@ -1464,10 +1430,15 @@ class BasePillar(ABC):
             what `MIN_COMPONENT_WEIGHT` judges, while a component present at
             ``0.0`` is a series that exists and has run past its allowance.
 
-        Each indicator is aged with `staleness_days`, from ``period``, and judged
-        against its own `staleness_allowance`. A component built from more than
-        one indicator takes the lowest of their factors, because a component is
-        as stale as its stalest input.
+        Each indicator is aged with `staleness_days`, from ``period``, and
+        judged against its own leg's bounds: `registry.full_weight_age` and
+        `registry.staleness_allowance`, both resolved from the newest
+        observation's own currency and frequency rather than from the parent
+        `IndicatorSpec`. 36 legs in the registry carry a frequency their spec
+        does not, and a rule keyed on the spec calls a punctual quarterly print
+        44 days late, which is issue #126. A component built from more than one
+        indicator takes the lowest of their factors, because a component is as
+        stale as its stalest input.
 
         Sign and units do not enter here. This is an age in days turned into a
         weight multiplier, and it never touches the sign of a score.
@@ -1476,17 +1447,51 @@ class BasePillar(ABC):
         factors: dict[str, float] = {}
         for component, indicators in self.component_indicators.items():
             per_indicator = [
-                freshness(
-                    self.staleness_days(extracted[indicator], asof),
-                    self.config,
-                    staleness_allowance(indicator, self.config),
-                )
+                self._leg_freshness(extracted[indicator], indicator, asof)
                 for indicator in indicators
                 if extracted.get(indicator)
             ]
             if per_indicator:
                 factors[component] = min(per_indicator)
         return factors
+
+    def _leg_freshness(
+        self,
+        observations: Sequence[Observation],
+        indicator: str,
+        asof: date,
+    ) -> float:
+        """Age one indicator's newest print against its own leg's ramp.
+
+        Args:
+            observations: One currency's visible observations of one indicator,
+                non-empty. The caller has already skipped the empty case, which
+                is an absent component rather than a stale one.
+            indicator: Canonical indicator key, used to find the leg.
+            asof: Run date.
+
+        Returns:
+            The factor in ``[0.0, 1.0]`` for the newest observation's age.
+
+        The leg is the newest observation's own ``currency`` and ``frequency``,
+        not the parent `IndicatorSpec`'s, because the two disagree on 36 legs
+        and the observation is the one that says what was actually published.
+        A key the registry does not carry resolves to the frequency defaults,
+        which is the same answer `BasePillar._visible` gives it.
+
+        """
+        newest = max(observations, key=lambda observation: observation.period)
+        try:
+            ref = registry.series_for(indicator, newest.currency)
+        except KeyError:
+            # A key the registry has not routed, which the manual source
+            # permits. Its frequency is the only fact available.
+            ref = None
+        return freshness(
+            self.staleness_days(observations, asof),
+            full_weight_age(ref, newest.frequency),
+            staleness_allowance(ref, newest.frequency),
+        )
 
     def pillar_freshness(
         self,

@@ -844,45 +844,32 @@ unusable, per indicator.
 
 ### Staleness allowances
 
-`max_staleness_days` lives on each `IndicatorSpec` because the registry is
-where the release calendar is known. A 2-year yield stale by a week means the
-feed broke; a quarterly balance-of-payments figure is routinely five months old
-on the day it is most current.
+There is no allowance table any more. Since #126 both of the ramp's ages are
+derived from the leg, from the same two numbers the visibility rule reads:
 
-Every allowance is derived from the publication cadence, never from what the
-data happens to need. The rule: the age of the newest print on the day before
-the next one is due, which is the period length, plus the statistics office's
-lag, plus one more period. A quarterly series stamped at the start of its
-quarter therefore earns about 270 days, a lagging monthly series about 180, a
-daily market rate about 10.
+    s0 = lag + cycle     the oldest a punctual newest print gets, full weight
+    S  = lag + 2 * cycle one full cycle late, and worth nothing
 
-Setting an allowance higher than the cadence justifies, so a frozen series
-passes, converts a visible gap into an invisible one. It is the single easiest
-way to make this whole registry lie, and `current_account_gdp` below is the case
-where it would have been tempting.
+`registry.full_weight_age` and `registry.staleness_allowance` return them, and
+both the scorer and `coverage_report` read the second, so the registry and the
+scoring side cannot give two answers about one series.
 
-**The allowance is now read twice.** `coverage_report` uses it to decide whether
-a series is usable at all, and `scoring.freshness` uses it to scale the staleness
-ramp that sets how much weight the series carries, through
-`pillars.base.staleness_allowance`. The two agree by construction: the ramp
-reaches zero on the last day this table still counts a series as fresh. That
-makes an allowance more expensive to get wrong than it was. Too long and a frozen
-series both counts as covered and carries weight; too short and a punctual print
-is scored at zero on the day it publishes, which is what a 45-day allowance did
-to `pmi_manufacturing` under first-day period stamping. Derive it from the
-cadence, as this section already says, and never from what a series happens to
-need.
+`IndicatorSpec.max_staleness_days` used to hold `S`, hand-keyed per indicator.
+It was derived from the publication cadence, which was right, but it was one
+number for the whole universe while the cadence is per leg, and its companion
+`s0` came from a global ratio. A quarterly print was therefore 120 days old on
+the day it was first visible against an `s0` of 60 to 90, so it began life on
+the falling part of its own ramp and never reached full weight. Nine
+indicators reached zero weight before their next print was due. Decision
+record 0014 carries the ruling and the measurements.
 
-Interim, until #126 replaces this table with the lag and cycle above: an
-allowance must also sit above the leg's measured publication lag, or the ramp
-admits the print already at zero. `trade_balance` (300) and `retail_sales_yoy`
-(380) were raised for that reason in #222 and say so beside their specs.
-
-One consequence to check when adding an indicator: a pillar asks for a key by
-the name in its own `requires`, and a key this table does not carry under that
-name falls back to `ScoringConfig.max_staleness_days`, 45 days, which is too
-short for anything monthly or slower. `tests/test_staleness_ramp.py` pins the
-keys currently in that position.
+**What replaces "do not widen the allowance".** The old warning was that
+setting an allowance higher than the cadence justifies converts a visible gap
+into an invisible one. The equivalent mistake now is overstating a leg's
+`publication_lag_days`, which widens both bounds together. The protection is
+the registry walk in `tests/test_publication_lag.py`: on `VERIFIED_ON` every
+verified leg's newest print must sit inside `lag + cycle`, so a lag inflated to
+carry a dead series fails on the next verification rather than passing quietly.
 
 ### Position as at 2026-09-09
 
@@ -1093,7 +1080,7 @@ a free machine-readable source, not the operator's typing.
 | `vol_index` | risk | `index` | daily | 7d | 100% | 100% |
 | `commodity_price` | external | `index` | monthly | 90d | 100% | 100% |
 
-`Allowance` is `max_staleness_days`. `Fresh` is `coverage_report()`,
+`Allowance` is the derived `S`, `lag + 2 * cycle`. `Fresh` is `coverage_report()`,
 `Identifiers` is `identifier_coverage()`. Where the two differ, every
 identifier is right and the source has stopped publishing.
 
@@ -1391,7 +1378,7 @@ Nominal gross domestic product at market prices, in actual US dollars, from the 
 
 Annual rather than quarterly, and that was measured rather than preferred. The OECD quarterly family `*GDPNQDSMEI` resolves for all eight, is denominated in national currency, and stopped publishing at 2023-07-01. Converting it would buy an FX step, a date convention and a series three years stale, so there is nothing to convert.
 
-The allowance of 916 days follows `IndicatorSpec.max_staleness_days`' own rule from a measured lag rather than an assumed one: the 2025 reference year was published on 2026-07-07, 188 days after the year ended, so the newest print is 916 days old on the day before its successor is due. On a 2026-09 run that leaves `trade_trend` entering at about half of its declared 0.30. Whether ageing a scaling constant like a signal is right at all is argued on #126 and is not settled here.
+The allowance of 916 days followed the hand-keyed rule from a measured lag rather than an assumed one: the 2025 reference year was published on 2026-07-07, 188 days after the year ended, so the newest print is 916 days old on the day before its successor is due. On a 2026-09 run that leaves `trade_trend` entering at about half of its declared 0.30. Whether ageing a scaling constant like a signal is right at all is argued on #126 and is not settled here.
 
 Pillar: **external**. Canonical unit: `usd`. Staleness allowance: 916 days. Fresh coverage: 100%.
 
@@ -1543,7 +1530,7 @@ The signature failure of this whole project. Almost certainly one of the
 discontinued OECD mirrors. Check the `last_observed` on its `SeriesRef`, then
 confirm live with `FredSource.last_updated`. If the OECD publishes the same
 series itself, move the ref to `OecdSource`, which is what closed the inflation
-gap. Do not work around it by widening `max_staleness_days`: that converts a
+gap. Do not work around it by overstating the leg's publication lag: that converts a
 visible gap into an invisible one, which is worse than the original problem.
 
 **A series returns `.` for some periods**

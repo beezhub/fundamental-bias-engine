@@ -121,13 +121,16 @@ def _scoring_problems(**overrides: Any) -> list[str]:
     return Config(scoring=ScoringConfig(**overrides)).validate()
 
 
-def test_staleness_ramp_start_above_its_end_is_rejected() -> None:
-    """Scenario one: with s0 > S the ramp's denominator is negative."""
-    problems = _scoring_problems(max_staleness_days=10)
-    assert len(problems) == 1
-    assert "staleness_full_days" in problems[0]
-    assert "max_staleness_days" in problems[0]
-    assert "15" in problems[0] and "10" in problems[0]
+def test_the_ramp_has_no_configured_ordering_left_to_reject() -> None:
+    """Both of the ramp's ages are derived per leg since #126, so there is no
+    pair of configured numbers here that can be put the wrong way round.
+
+    This replaces a check that ``staleness_full_days`` sat below
+    ``max_staleness_days``. The ordering it guarded now lives in
+    `fbe.scoring.freshness`, which refuses a ``full_days`` at or past its
+    ``allowance_days`` on every call rather than once at startup.
+    """
+    assert _scoring_problems(max_staleness_days=10) == []
 
 
 def test_coverage_demotion_below_the_hard_floor_is_rejected() -> None:
@@ -180,11 +183,6 @@ def test_explicit_zero_weight_is_allowed() -> None:
 @pytest.mark.parametrize(
     ("overrides", "fields"),
     [
-        ({"staleness_full_days": 0}, ("staleness_full_days",)),
-        (
-            {"staleness_full_days": 45},
-            ("staleness_full_days", "max_staleness_days"),
-        ),
         ({"min_spread_low": 0.0}, ("min_spread_low",)),
         ({"min_spread_high": 1.0}, ("min_spread_medium", "min_spread_high")),
         ({"min_coverage": 0.0}, ("min_coverage",)),

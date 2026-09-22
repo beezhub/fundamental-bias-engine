@@ -1812,7 +1812,6 @@ def test_a_zero_balance_cannot_reach_a_renderer() -> None:
             RiskConfig(account_balance=0.0),
             {"USDZAR": 18.50},
             risk_fraction=0.01,
-            broker=BrokerConfig(),
         )
 
 

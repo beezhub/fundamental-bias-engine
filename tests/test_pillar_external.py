@@ -29,7 +29,7 @@ Nothing reaches the network. Every observation is built in this file.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -38,12 +38,15 @@ from fbe.datasources.registry import (
     INDICATORS,
     SOURCE_FRED,
     UNCONSUMED_INDICATORS,
+    full_weight_age,
+    staleness_allowance,
 )
 from fbe.pillars.base import (
     MIN_COMPONENT_WEIGHT,
     BasePillar,
 )
 from fbe.pillars.external import ExternalPillar
+from fbe.scoring import freshness
 from fbe.types import Frequency, Observation, PillarName
 from fbe.universe import G10, meta
 
@@ -257,13 +260,21 @@ def test_the_nominal_gdp_series_are_the_ones_that_were_measured() -> None:
     assert {c: ref.series_id for c, ref in spec.series.items()} == measured
 
 
-def test_the_allowance_follows_the_registrys_own_rule() -> None:
-    """Derived, not chosen. `IndicatorSpec.max_staleness_days` states the rule.
+def test_the_full_weight_age_follows_the_registrys_own_rule() -> None:
+    """Derived, not chosen, and now derived by the registry rather than typed.
 
     The rule is the age of the newest print on the day before the next one is
-    due. Both inputs were measured rather than assumed: the period is a calendar
-    year, and the publication lag is the gap from the period's end to the day
-    FRED last updated the series, 2025-12-31 to 2026-07-07.
+    due, which is what `registry.full_weight_age` returns. Both inputs were
+    measured rather than assumed: the period is a calendar year, and the
+    publication lag is the gap from the period's end to the day FRED last
+    updated the series, 2025-12-31 to 2026-07-07.
+
+    The hand-keyed field held 916 for this leg. The derivation gives 918, two
+    days more, because the cadence table puts the annual lag at 552 days from
+    the period's start where this measurement gives 553, and takes the cycle as
+    366 rather than 365 so a leap year cannot make a punctual print read late.
+    Both roundings err towards counting a current series, which is the safe
+    direction.
     """
     measured_lag_days = (date(2026, 7, 7) - date(2025, 12, 31)).days
     next_period_ends = date(2026, 12, 31)
@@ -272,21 +283,37 @@ def test_the_allowance_follows_the_registrys_own_rule() -> None:
 
     assert measured_lag_days == 188
     assert (day_before - GDP_PERIOD).days == 916
-    assert INDICATORS["gdp_nominal_usd"].max_staleness_days == 916
+
+    ref = INDICATORS["gdp_nominal_usd"].series["USD"]
+    assert full_weight_age(ref, ref.frequency) == 918
+    assert full_weight_age(ref, ref.frequency) >= (day_before - GDP_PERIOD).days
 
 
-def test_the_allowance_expires_the_day_after_the_next_print_is_due() -> None:
-    """The behaviour the derivation exists for, asserted rather than the arithmetic.
+def test_the_allowance_expires_one_whole_cycle_after_the_print_was_due() -> None:
+    """The behaviour the derivation exists for, asserted rather than arithmetic.
 
-    A current series must never read stale, and a series that has missed a whole
-    release must. An allowance chosen to make a run pass would fail one of these
-    two.
+    A current series must never read stale, and a series that has missed a
+    whole release must. Since #126 the allowance is the full-weight age plus
+    one more cycle rather than the full-weight age itself, so the boundary
+    moved out by a year. Between the two the print is on the ramp, losing
+    weight as the release runs later, rather than being either fully counted
+    or gone.
     """
     ref = INDICATORS["gdp_nominal_usd"].series["USD"]
-    allowance = INDICATORS["gdp_nominal_usd"].max_staleness_days
+    allowance = staleness_allowance(ref, ref.frequency)
+    full = full_weight_age(ref, ref.frequency)
 
-    assert not ref.stale_on(date(2027, 7, 6), allowance)
-    assert ref.stale_on(date(2027, 7, 7), allowance)
+    assert allowance == 1284
+
+    last_usable = GDP_PERIOD + timedelta(days=allowance)
+    assert not ref.stale_on(last_usable, allowance)
+    assert ref.stale_on(last_usable + timedelta(days=1), allowance)
+
+    # At 917 days the hand-keyed allowance of 916 had already given this print
+    # nothing. It is one day inside full weight now, and only starts losing
+    # weight once its successor is genuinely overdue.
+    assert freshness(917, full, allowance) == 1.0
+    assert 0.0 < freshness(full + 1, full, allowance) < 1.0
 
 
 def test_the_annual_frequency_has_a_publication_lag() -> None:

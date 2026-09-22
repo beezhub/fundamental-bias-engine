@@ -111,7 +111,12 @@ from typing import Any
 import yaml
 
 from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy, SourceError
-from fbe.datasources.registry import INDICATORS, SeriesRef
+from fbe.datasources.registry import (
+    INDICATORS,
+    SeriesRef,
+    series_for,
+    staleness_allowance,
+)
 from fbe.types import Observation
 from fbe.universe import G10
 
@@ -415,11 +420,11 @@ class ManualSource(BaseDataSource):
             to-do list and an empty mapping means there is nothing to do.
 
             "Fresh" is measured from ``period``, the span the figure describes,
-            against that indicator's own `IndicatorSpec.max_staleness_days`.
-            Per indicator rather than one number for the registry, because the
-            cadences here differ by an order of magnitude: a 2-year yield a
-            week old means the feed broke, while a quarterly figure five months
-            old is routinely the most current one published.
+            against that leg's own `registry.staleness_allowance`. Per leg
+            rather than one number for the registry, because the cadences here
+            differ by an order of magnitude: a 2-year yield a week old means
+            the feed broke, while a quarterly figure five months old is
+            routinely the most current one published.
 
             Every pair on this list can be filled in. An earlier draft
             refused four of them on entry while still reporting them here,
@@ -441,7 +446,11 @@ class ManualSource(BaseDataSource):
         outstanding: dict[str, list[str]] = {}
         for (indicator, currency), _ in self.refs().items():
             entered = newest.get((indicator, currency))
-            allowance = INDICATORS[indicator].max_staleness_days
+            ref = series_for(indicator, currency)
+            frequency = (
+                ref.frequency if ref is not None else (INDICATORS[indicator].frequency)
+            )
+            allowance = staleness_allowance(ref, frequency)
             # A period after `asof` is outstanding too. Without the lower bound
             # a mistyped year reads as a negative age, so the pair drops off
             # this list while `fetch` still filters the row out of its window:
