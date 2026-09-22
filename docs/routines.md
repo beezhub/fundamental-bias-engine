@@ -39,6 +39,56 @@ priority does not gate the implementation lanes. Build lane 1 is still barred
 from `p0` and `p1`, because a high-priority defect deserves a person deciding
 who fixes it.
 
+**Both bounds are on the change, not on the file.** A lane may correct a
+docstring in `src/fbe/types.py` or in a config type. It may not change a field,
+a type, an argument order, a default or a number. The bar exists because a
+moved number silently re-prices every score or every position and nobody reads
+a diff that changes one character in a float, and because renaming a field in
+`types.py` breaks every consumer at once. A docstring does neither: it is the
+description of the contract, not the contract. Read as a file bound it costs
+the pool a class of work it is well suited to, in exchange for protecting
+against nothing, which is why #11, #40 and #182 sat unclaimable. Ruled on #154.
+
+**A filing desk that wants an issue kept out of the maintenance pool applies
+`desk-only`.** Triage never adds `routine-safe` to an issue carrying it, the
+same way it never does to `roadmap` or `routine-hold`, so the three exclusions
+are one list and a lane matches on all of them.
+
+The label exists because prose does not work here. #71 is the case: it ends
+with a section headed "Why this is not `routine-safe`", arguing that its two
+halves belong to different owners and would drift if split, and it carried
+`routine-safe` anyway from 14 September. Build lane 1 could have claimed it at
+any of the nine weekday slots since, against the written reasoning of the desk
+that filed it, because **a lane matches on labels and does not read the closing
+section**. It was caught by luck. A filing desk writing that paragraph today
+applies `desk-only` as well, and the paragraph becomes the reason rather than
+the mechanism.
+
+`routine-hold` cannot take this job, and that is a ruling rather than a
+preference. Its defining sentence is "Only a person adds or removes it", so a
+filing desk applying it would break the one property that makes it legible:
+seeing it on an issue tells you a human stopped this deliberately. Overloaded,
+it would mean either that or "a desk thinks this needs two owners", with
+nothing to tell them apart, which is this section's own defect one level up in
+the control meant to fix it.
+
+**Where an issue argues against the label and carries no `desk-only`,** triage
+either applies `desk-only` itself or adds `routine-safe` with a comment that
+answers the argument. Never silently, and never a comment that merely notes it.
+"Labelling anyway, the two-owner concern is stale because the templates landed
+in #226" is a decision. "Labelling anyway, noted" is silence with extra words.
+
+**`desk-only` has no effect until the routine prompts carry it.** The label
+lives in this repository and the behaviour lives in four routine definitions
+outside it, which change only by recreating the routine. Until triage, build
+lane 1 and both implementation lanes have been recreated with the rule, adding
+`desk-only` marks the issue on the board and stops nothing. The same is still
+true of `routine-hold`, and this is not hypothetical: the build lane 1 prompt
+names `roadmap` in its exclusion rule and says nothing about `routine-hold`,
+so a run that followed its prompt rather than this file would claim a held
+issue. Recreating those four routines is the step that makes either label
+live, and only the owner can take it.
+
 **A `type:requirement` converted from an approved proposal carries `roadmap`,
 and carries no `phase:N`.** The implementation lanes then claim it like any
 other work in their pool, at any priority. `roadmap` is the claim key for that
@@ -135,8 +185,8 @@ issue, which is not a failure.
 | Run | When (SAST) | Role | Does | Does not |
 | --- | --- | --- | --- | --- |
 | deliver | weekdays 05:00 | product-analyst | Counts open issues carrying `roadmap` and `status:ready` whose dependencies have all landed. Four or more: files nothing and stops. Fewer: decomposes the current phase of `docs/roadmap.md` into `type:requirement` issues, at most 5 in one run, aiming for roughly 6 unblocked. Posts the delivery order as a comment on the phase's lowest-numbered issue. | Apply `routine-safe`. File defects or proposals. Touch any source file. Change what a stub docstring says a function should do. |
-| triage | weekdays 06:00 and 12:00 | architect | Releases stranded `status:in-progress` claims with no pull request referencing the issue, **open or merged**. Reports a claim whose pull request has merged for closure instead of releasing it. **Rules** every `status:needs-decision` issue that is not the owner's to decide, and never leaves one longer than two days. Unblocks what has landed. Spot-checks `status:ready`. Widens the maintenance pool by labelling qualifying `p2` or `p3` issues `routine-safe`. Splits anything too big for one pull request. Files at most 3 defects. | Touch source. Open proposals. Advance anything past the approval gate. Add `routine-safe` to anything carrying `roadmap`, or to anything carrying `routine-hold`. |
-| build lane 1 | weekdays 07:00, 11:00 and 15:00 | developer, then test-engineer, then code-reviewer | Looks after its own open pull requests first. Then claims **one** issue, the lowest-numbered that is `status:ready`, `routine-safe`, `p2` or `p3`. Branch, failing test, fix, four checks, pull request. | Take a second issue. Take an issue already at `status:in-progress` or carrying `routine-hold`. Touch `types.py`. Change a value in `ScoringConfig` or `RiskConfig`. Take anything at `p0` or `p1`. Merge. |
+| triage | weekdays 06:00 and 12:00 | architect | Releases stranded `status:in-progress` claims with no pull request referencing the issue, **open or merged**. Reports a claim whose pull request has merged for closure instead of releasing it. **Rules** every `status:needs-decision` issue that is not the owner's to decide, and never leaves one longer than two days. Unblocks what has landed. Spot-checks `status:ready`. Widens the maintenance pool by labelling qualifying `p2` or `p3` issues `routine-safe`. Splits anything too big for one pull request. Files at most 3 defects. | Touch source. Open proposals. Advance anything past the approval gate. Add `routine-safe` to anything carrying `roadmap`, `routine-hold` or `desk-only`. Override an issue's own argument against the label without a comment answering it. |
+| build lane 1 | weekdays 07:00, 11:00 and 15:00 | developer, then test-engineer, then code-reviewer | Looks after its own open pull requests first. Then claims **one** issue, the lowest-numbered that is `status:ready`, `routine-safe`, `p2` or `p3`. Branch, failing test, fix, four checks, pull request. | Take a second issue. Take an issue already at `status:in-progress` or carrying `routine-hold` or `desk-only`. Change a field, a type, an argument order or a default in `src/fbe/types.py`. Change a value in `ScoringConfig` or `RiskConfig`. Take anything at `p0` or `p1`. Merge. |
 | implement lane A | weekdays 09:00, 13:00 and 17:00 | developer, then test-engineer, then code-reviewer | Looks after its own open pull requests first. Then claims **one** issue carrying `type:requirement`, `roadmap` and `status:ready`, at any priority, preferring the **lowest** number whose dependencies have all landed. Tests first, each shown to fail against the stub for the right reason, then the implementation, four checks, pull request. | Take a second issue. Claim an issue carrying `routine-hold`, or one whose dependencies are still open. Change an existing default in `ScoringConfig` or `RiskConfig`. Change `types.py` without an architect ruling in the issue body naming every consumer. Force-push. Merge. |
 | implement lane B | weekdays 08:00, 12:00 and 16:00 | developer, then test-engineer, then code-reviewer | The same, preferring the **highest** number whose dependencies have all landed. | The same. |
 | improve | Sunday 08:00 | product-analyst | Converts every `type:proposal` carrying `approved` into a `type:requirement`. Then files at most 3 new proposals at `status:needs-approval`. | Approve anything. Convert a proposal without the `approved` label. |
@@ -148,13 +198,33 @@ finished work. That has happened, to #16 and #20, and it cost most of a
 maintenance slot. The check is one command:
 
 ```
-git log main --grep="#NN"
+git log main -E --grep="#NN\b"
 ```
+
+**The right-hand boundary is the whole of the command.** Without it, `--grep`
+takes `#2` as a prefix and matches every commit mentioning #20, #24 or #201. On
+`main` today that reports 54 commits of finished work behind #2, which has none,
+and the conclusion the paragraph draws from a hit is that the issue is finished.
+Every issue filed in the 200s adds another false match for #2 and #20. The `-E`
+pins the dialect rather than enabling the boundary: `\b` is a GNU extension and
+works here without it, verified on git 2.43.0 in the run container. If a git
+build ever rejects it, `-E --grep="#NN([^0-9]|$)"` is the POSIX form and gives
+the same answer.
 
 Nothing found means the claim really is stranded and triage releases it.
 Something found means the work landed and the issue is waiting to be closed, not
 to be reclaimed: triage reports it for closure and leaves the label alone. Only a
 person closes an issue, so the report is the whole of what triage does here.
+
+**A `type:proposal` is never released by this test.** A proposal at
+`status:in-progress` is a parent waiting on its children, and the workflow
+forbids implementing one directly, so it has no pull request of its own and
+never will. "Nothing found" therefore carries no information about it. Read
+literally, the paragraph above would move every approved proposal into the
+claimable pool, which is the one direction the `issue-workflow` skill says has
+no agent override: a lane matching on labels would find a `type:proposal`
+offered as work. Five sit in exactly that state today and only judgement has
+kept them there.
 
 The lanes within a pool take it from opposite ends so they do not race for the
 same issue: build lane 1 and the two implementation lanes each prefer one end

@@ -188,8 +188,17 @@ appends ``"event:unknown: <reason>"`` rather than treating the currency as
 clear.
 """
 
-EventHorizonGuard = Callable[[str, date], bool]
+EventHorizonGuard = Callable[[str, date], bool | None]
 """Injected hook answering whether a high-impact event is due within 24 hours.
+
+Three answers, not two. ``True`` is a high-impact event found in the horizon,
+``False`` is a horizon the guard reached and found quiet, and ``None`` is a
+guard that was asked and could not tell, most often a failed fetch or a cached
+week that does not reach ``asof``. The third is why this is not a ``bool``: a
+guard with only two answers has to return ``False`` when it cannot see, and
+``False`` is the one answer that buys full conviction. An unseen calendar was
+therefore worth more than a seen one, which is the defect issue #45 closes.
+`conviction_for` treats ``None`` exactly as it treats ``True``.
 
 Separate from `CalendarGuard` because the two questions have different answers
 and different consequences. The 30/60 minute window is about execution and is a
@@ -286,7 +295,7 @@ def build_pair_biases(
             # function's job because only it holds both legs.
             min(base_leg.coverage, quote_leg.coverage),
             max(base_leg.dispersion, quote_leg.dispersion),
-            event_near[base] or event_near[quote],
+            _worst_horizon_answer(event_near[base], event_near[quote]),
             config.scoring,
         )
         direction = direction_for(spread, config.scoring)
@@ -315,7 +324,7 @@ def _events_within_24h(
     by_currency: Mapping[str, CurrencyScore],
     asof: date,
     guard: EventHorizonGuard | None,
-) -> Mapping[str, bool]:
+) -> Mapping[str, bool | None]:
     """Ask the guard once per currency rather than once per pair.
 
     Args:
@@ -324,9 +333,17 @@ def _events_within_24h(
         guard: The injected `EventHorizonGuard`, or ``None``.
 
     Returns:
-        ``{currency: True}`` when a high-impact event is due within 24 hours.
-        All ``False`` when no guard was supplied, which applies no cap: the
-        right default for a backtest and the wrong one for a live run.
+        One answer per currency, passed through from the guard: ``True`` for an
+        event found in the horizon, ``False`` for a horizon reached and quiet,
+        ``None`` for a guard that could not tell. All ``False`` when no guard
+        was supplied, which applies no cap: the right default for a backtest
+        and the wrong one for a live run.
+
+        No guard at all is deliberately not ``None``. A caller that passed
+        nothing knows it passed nothing, and turning that into a universe-wide
+        conviction cap would demote every backtest ever run. A guard that was
+        asked and failed is the different fact, and it is the one ``None``
+        carries. ADR 0002 rule 4 is the general form.
 
     Each currency appears in seven of the 28 pairs, so asking per pair would
     make the same call seven times. A guard is a calendar lookup and may be a
@@ -337,7 +354,57 @@ def _events_within_24h(
     """
     if guard is None:
         return dict.fromkeys(by_currency, False)
-    return {currency: bool(guard(currency, asof)) for currency in by_currency}
+    return {
+        currency: _horizon_answer(guard(currency, asof)) for currency in by_currency
+    }
+
+
+def _horizon_answer(raw: object) -> bool | None:
+    """Normalise one guard answer without collapsing its third state.
+
+    Args:
+        raw: Whatever the injected guard returned.
+
+    Returns:
+        ``None`` unchanged, anything else through ``bool``. The truthiness
+        conversion is kept for the other two so a guard returning ``1`` or an
+        empty tuple still works, and ``None`` is routed around it because
+        ``bool(None)`` is ``False``, which is precisely the collapse this
+        function exists to prevent.
+
+    """
+    return None if raw is None else bool(raw)
+
+
+def _worst_horizon_answer(first: bool | None, second: bool | None) -> bool | None:
+    """Combine one pair's two legs into the answer the cap should act on.
+
+    Args:
+        first: The base leg's answer.
+        second: The quote leg's answer.
+
+    Returns:
+        ``True`` if either leg has an event, otherwise ``None`` if either leg
+        could not be told, otherwise ``False``.
+
+    The order matters and ``or`` cannot express it. ``None or False`` is
+    ``False``, so a pair whose base leg the guard could not see and whose quote
+    leg was quiet would read as a fully checked quiet pair, which is the same
+    defect one level up from the one the third state fixes.
+
+    Between ``True`` and ``None`` the order decides nothing today, because both
+    cap at `Conviction.LOW` and `build_pair_biases` discards this value after
+    the cap. ``True`` is returned first because it is the more specific fact,
+    so that the day something records which answer demoted a pair, it records
+    the release rather than the uncertainty around it. Until then no reader is
+    told either, which `docs/risk-and-execution.md` section 5 names as a gap.
+
+    """
+    if first is True or second is True:
+        return True
+    if first is None or second is None:
+        return None
+    return False
 
 
 def direction_for(spread: float, config: ScoringConfig) -> Direction:
@@ -383,7 +450,7 @@ def conviction_for(
     agreement_fraction: float,
     coverage_fraction: float,
     dispersion_value: float,
-    event_within_24h: bool,
+    event_within_24h: bool | None,
     config: ScoringConfig,
 ) -> Conviction:
     """Grade a directional call by size, breadth, completeness and timing.
@@ -399,8 +466,14 @@ def conviction_for(
         dispersion_value: The higher of the two legs' `CurrencyScore.dispersion`,
             for the mirror-image reason: one leg whose own pillars contradict
             each other is enough to make the spread an average of arguments.
-        event_within_24h: True when a high-impact event is due on either leg
-            within 24 hours, from `EventHorizonGuard`.
+        event_within_24h: ``True`` when a high-impact event is due on either
+            leg within 24 hours, ``False`` when the horizon was reached and is
+            quiet, ``None`` when the guard was asked and could not tell. From
+            `EventHorizonGuard` by way of `_worst_horizon_answer`, which
+            combines the pair's two legs. ``None`` caps exactly as ``True``
+            does: an unseen calendar must never be worth more than a seen one,
+            and a position opened today is held through whatever the model did
+            not see whether the release was found or merely not ruled out.
         config: Scoring configuration supplying the three spread thresholds,
             ``min_agreement``, ``coverage_demotion`` and ``max_dispersion``.
 
@@ -438,9 +511,18 @@ def conviction_for(
         leg's own pillars contradict each other, so the composite in the middle
         is an average of two real views rather than a view of its own.
 
-        ``event_within_24h``: cap at `Conviction.LOW`. A position opened today
-        would be held through a repricing the model has not seen, and the rate
-        path is exactly what the heaviest pillar is measuring.
+        ``event_within_24h`` is ``True`` **or** ``None``: cap at
+        `Conviction.LOW`. A position opened today would be held through a
+        repricing the model has not seen, and the rate path is exactly what the
+        heaviest pillar is measuring. ``None`` caps for the same reason and not
+        as a precaution: the engine cannot say the horizon is clear, so it must
+        not price the call as though it had.
+
+        Only ``False`` leaves the tier alone, and ``False`` means the guard
+        reached the horizon and found it quiet. Written as an explicit
+        three-way test rather than a truthiness check, because ``bool(None)``
+        is ``False`` and a truthiness check silently awards an unseen calendar
+        the uncapped answer.
 
     Demotions compound, and conviction never rises. A pair at ``|spread| = 2.8``
     with coverage 0.70, dispersion 1.4 and weak agreement falls from HIGH to
@@ -479,7 +561,10 @@ def conviction_for(
         tier = _demote(tier)
     if dispersion_value > config.max_dispersion:
         tier = _demote(tier)
-    if event_within_24h:
+    # ``is not False`` rather than a truthiness test, so the unknown answer
+    # caps alongside the found one. A plain ``if event_within_24h`` reads
+    # ``None`` as "no event" and hands an outage the HIGH tier.
+    if event_within_24h is not False:
         tier = _cap(tier, Conviction.LOW)
     return tier
 

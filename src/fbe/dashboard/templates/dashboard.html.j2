@@ -342,10 +342,16 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
       </p>
       {% endif %}
       {#- A shortlisted idea is tradeable, so anything in blockers here is a
-          check that did not run rather than a reason to stand aside. Labelling
-          the list off idea.bias.tradeable rather than assuming it keeps the
-          heading honest if the shortlist rule ever changes. Unlabelled, the two
-          cases read identically, which is issue #17 on this surface. -#}
+          check that did not run, or one that ran and could not finish, rather
+          than a reason to stand aside. Labelling the list off
+          idea.bias.tradeable rather than assuming it keeps the heading honest
+          if the shortlist rule ever changes. Unlabelled, the two cases read
+          identically, which is issue #17 on this surface.
+
+          One label over both, with the reason in the list beneath it, is
+          deliberate here and tested as such. The Markdown report now labels
+          them apart, and whether this surface should follow is part of issue
+          #45's first criterion, which waits on fbe.dashboard.build. -#}
       {% if idea.bias.blockers %}
       <p class="meta">
         {{ 'Not checked on this run' if idea.bias.tradeable else 'Blocked' }}:

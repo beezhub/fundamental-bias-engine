@@ -365,6 +365,89 @@ pre-trade checklist below only lets the news box be ticked on a real clear
 answer; on unknown, it says to check the calendar by hand and to write down
 that the guard could not.
 
+### What unknown coverage does to a trade
+
+The fail direction is not one direction. The owner ruled on #24 that it splits
+by event category, and the reason is that the two categories differ in how much
+a miss costs:
+
+* **Central bank rate decision: fail closed.** Unknown coverage over a rate
+  decision makes the pair not tradeable. A rate decision is the release the
+  heaviest pillar in the model is directly about, and being long into an
+  unexpected one is the kind of loss the calendar exists to prevent.
+* **Statistical release: fail open, with the marker visible.** The pair stays
+  tradeable, carries `event:unknown` with the reason, and the trader reviews
+  the calendar themselves as the daily routine already asks. Refusing all 28
+  pairs on one failed fetch costs a full trading day over an outage that may
+  clear on the next run, and the routine's own calendar review is the backstop.
+
+#### The interim rule, and exactly how much of it is missing
+
+Be precise about what is absent, because a broad reading of "not evaluated"
+is as wrong as a broad reading of "fail closed".
+
+**What does work today.** `HIGH_IMPACT_KEYWORDS` carries a `rate_decision`
+category, so a rate decision the feed publishes inside the fetched week is
+matched by `is_high_impact`, produces an `event` blocker, and makes the pair
+not tradeable. That is fail-closed behaviour on a rate decision, in the code,
+now.
+
+**What is missing is two narrower things.** The scheduled-meeting calendars for
+the eight central banks, which are the only source that reaches past the weekly
+feed's horizon, and the rule that fails closed on **unknown coverage** over a
+rate decision rather than on a rate decision the guard could see. Neither
+exists, and the second cannot be built without the first: with nothing that
+reaches beyond a week, a literal "fail closed when coverage might hide a rate
+decision" blocks every pair on every run, because the engine can never confirm
+that no rate decision is due. It would take the account from trading to not
+trading on the day it shipped.
+
+**So the interim rule is: the fail-closed half applies to rate decisions the
+feed shows, and the gap past the feed's horizon is not marked.** This is the
+part a reader has to carry themselves, and it is written here rather than left
+to fall out of the code.
+
+**The gap is unmarked, and that is a real cost rather than a formality.**
+`event:unknown` is the only unknown marker the engine emits, it comes from the
+statistical guard, and it fires when that guard could not answer. It says
+nothing about a rate decision eight days out that the weekly feed was never
+going to show. A Tuesday run whose fetch succeeded, whose week is quiet, and
+whose FOMC is next Wednesday prints an unqualified `yes` with no marker at all.
+The daily routine's own calendar review is the whole of the backstop for that,
+and it is the reason the routine keeps it.
+
+What this must never become is the opposite error, reading "the feed showed no
+rate decision this week" as "no rate decision is due". Silence and an all-clear
+do not look the same, which is ADR 0002 rule 4, and today only the trader can
+tell them apart on this one question.
+
+The fail-closed half on unknown coverage lands when there is a calendar to fail
+closed against. It is the planning desk's to decompose, per the owner's ruling.
+
+**The same direction governs the conviction cap.** A run that blocked a pair on
+an outage while still awarding it HIGH conviction would be incoherent, and so
+would the mirror image: a horizon the guard could not see caps conviction at
+LOW exactly where a release it *did* see caps it. An unseen calendar is never
+worth more than a seen one. `docs/scoring-spec.md` section 5.4 carries the row.
+
+**That cap is silent, and a reader should know it.** The horizon answer reaches
+`conviction_for` and is then discarded, so a pair demoted because the guard
+could not see the next 24 hours looks identical to one demoted because it found
+a release, and to one that graded LOW on its own spread. Nothing on `PairBias`
+records which. That is ADR 0002 rule 3 unsatisfied for this one input, and it
+predates the third answer: the cap on a release the guard *did* find has always
+been silent the same way. Making it visible means a field the reports render,
+which is a change to `PairBias` and therefore to `src/fbe/types.py`, so it is
+named here as a gap rather than taken. It costs nothing today because no
+horizon guard is wired in yet, and it costs a confusing tier the day one is.
+
+**The journal records which of the three happened.** `TradeRecord.blackout_check`
+holds `clear`, `unknown` or `not_run`, and `unknown` on a record means the trade
+was entered while the guard was blind. That is the count proposal #2 asks for:
+if the override is most of the runs on which the state fired, the guard has been
+converted into a prompt and this policy needs revisiting. A boolean could not
+produce that count, which is why it was replaced.
+
 ### Holding through an event is a different decision
 
 Entering into a window and holding through one are not the same choice, and the
@@ -392,7 +475,7 @@ The distinction is buffer, measured against `TIGHTEN_BUFFER_R`, which is
   precisely the loss the news rule exists to prevent. Close it and re-enter
   after the window if the setup survives.
 
-The comparison is inclusive: exactly 1.0R holds. Open profit is measured in R
+The comparison is inclusive: exactly 1.0R tightens. Open profit is measured in R
 against `realised_risk_amount`, the same denominator the journal uses, so the
 number on the screen and the number in the file mean the same thing. 1.0R is a
 threshold, not a measurement. Revisit it once the journal can group outcomes by
@@ -417,6 +500,31 @@ That is a viewing format, not a storage format.
 
 Corrections are appended with the same `trade_id`. Readers keep the last line
 per id and the superseded line stays in the file.
+
+### One breaking change to records already on disk
+
+`blackout_checked`, a boolean, was replaced by `blackout_check`, which holds
+`clear`, `unknown` or `not_run`. `load` refuses a line carrying a field
+`TradeRecord` does not have, and it refuses the file rather than the line, by
+design: dropping a line understates the trade count and flatters every figure
+computed from it. **So one record written before this change makes the whole
+journal unreadable.**
+
+The fix is a one-time rewrite of the file, replacing `"blackout_checked": true`
+with `"blackout_check": "clear"` and `"blackout_checked": false` with
+`"blackout_check": "not_run"`. Those are the honest translations: the old `true`
+meant the guard was consulted and said nothing was wrong, and the old `false`
+covered both "no guard ran" and "the guard could not see", which is the collapse
+the new field exists to undo. Records written under the old field cannot say
+which, so they take the state that claims least.
+
+No shim, and no silent acceptance of the old name. A reader that quietly mapped
+the old boolean would be inventing the distinction the field was added to
+record. This is stated here because the journal is the one file in this
+repository that is untracked, unbacked by anything automatic, and impossible to
+reconstruct, and because nothing in `src/` writes it yet, so the set of affected
+files may well be empty. It is worth a look before the first run after this
+lands rather than a surprise on the run after that.
 
 ### What each record holds
 
@@ -450,7 +558,11 @@ weights may have changed since. A snapshot at entry is the only version that is
 true. Without it there is no way to ever answer whether the model said anything
 useful, and the weights stay wherever they were first guessed, forever.
 
-**Discipline:** `agreed_with_bias` and `blackout_checked`.
+**Discipline:** `agreed_with_bias` and `blackout_check`, which is one of
+`clear`, `unknown` or `not_run` rather than a yes or no. `unknown` is a trade
+entered while the calendar guard was blind, and counting those against the runs
+where the state fired is how the fail-open policy in section 5 gets checked
+rather than assumed.
 
 ### Weekly review routine
 

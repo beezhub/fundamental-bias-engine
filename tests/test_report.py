@@ -79,10 +79,16 @@ CONTEXT_KEYS = {
     "pillar_order",
     "currencies",
     "pairs",
+    "unknown_prefix",
 }
-"""The keys `fbe.report.build_context` documents. Both templates read these and
-nothing else, so a key added without a docstring line is a key the dashboard
-will not know to render."""
+"""The keys `fbe.report.build_context` documents.
+
+A key added without a docstring line is a key one template reads and the other
+does not know about, which is how two views of one run start telling different
+stories. The set is what `build_context` supplies, not what either template
+happens to read: ``unknown_prefix`` is read by the Markdown template and not,
+yet, by the dashboard, and `build_context`'s own docstring is where that is
+recorded."""
 
 
 # --- fixtures ----------------------------------------------------------------
@@ -1795,7 +1801,7 @@ def test_a_zero_balance_cannot_reach_a_renderer() -> None:
     branch around the division is that the object carrying a zero denominator
     cannot be built by the only thing that builds one.
     """
-    from fbe.config import RiskConfig
+    from fbe.config import BrokerConfig, RiskConfig
     from fbe.risk import position_size as size_a_position
 
     with pytest.raises(ValueError, match="account_balance"):
@@ -1805,6 +1811,7 @@ def test_a_zero_balance_cannot_reach_a_renderer() -> None:
             1.0825,
             RiskConfig(account_balance=0.0),
             {"USDZAR": 18.50},
+            broker=BrokerConfig(),
             risk_fraction=0.01,
         )
 

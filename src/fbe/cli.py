@@ -106,6 +106,7 @@ from fbe.datasources.collect import (
     collect,
     lookback_start,
 )
+from fbe.pillar_audit import audit_run
 from fbe.pillars import default_pillars
 from fbe.scoring import score_currencies
 from fbe.types import (
@@ -1299,6 +1300,14 @@ def score(
             "come from the full universe.",
         ),
     ] = None,
+    audit: Annotated[
+        bool,
+        typer.Option(
+            "--audit",
+            help="Also print the pillar audit: what each pillar scored, every "
+            "absence with its reason, and the pillar cross-correlations.",
+        ),
+    ] = False,
 ) -> None:
     """Compute and print the currency ranking with its pillar breakdown.
 
@@ -1318,6 +1327,12 @@ def score(
         output_format: table, json or csv.
         pillars: Include per-pillar columns.
         currency: Restrict printed rows to these currencies.
+        audit: Print `fbe.pillar_audit.PillarAudit.render` after the table. It
+            answers what the per-pillar columns cannot: which of three things
+            happened to each missing score, and whether two pillars moved
+            together across the cross-section closely enough to be one
+            measurement carrying two weights. Off by default because it is a
+            diagnostic rather than part of the morning read.
 
     Every printed number is read from a `fbe.types.CurrencyScore` field and
     none is computed here. Composites are on the ``-3`` to ``+3`` band and
@@ -1402,6 +1417,16 @@ def score(
             typer.echo(note, err=True)
     else:
         _render_score(rows, order, run_date, config.digest())
+
+    if audit:
+        # Printed from the full score set rather than from `rows`, which
+        # --currency may have narrowed: every figure in the audit is
+        # cross-sectional, and auditing a subset would quietly change what the
+        # correlations are computed over.
+        typer.echo(
+            audit_run(scores, config_digest=config.digest(), asof=run_date).render(),
+            nl=False,
+        )
 
     if _coverage_collapsed(scores):
         # Every currency scored on nothing. The rows still print, with 0% and
@@ -2676,6 +2701,30 @@ def size(
     the rounding gap is routinely 10% or more, and the intended figure is the
     one that is never actually at risk.
 
+    **The calendar's three answers reach the ticket as three outcomes.** Blocked
+    without ``--force`` exits 3, which `docs/interfaces.md` defines as a guard
+    rule refusing rather than an error. Clear sizes the trade and says nothing.
+    Unknown coverage prints which of the three reasons applies, per
+    `fbe.calendar_guard.CoverageGap`, and when the coverage ends, and **exits
+    0**: the owner's ruling on #24 fails open for a statistical release, and
+    this is the warning path rather than a refusal. It is not exit 1 either.
+    Exit 1 means the result should not be traded on, and a usable size carrying
+    a caveat the reader can act on is not that.
+
+    The fail-closed half of that ruling covers unknown coverage over a central
+    bank rate decision, and it is not reachable today: deciding whether a gap
+    hides a rate decision needs the scheduled-meeting calendars that reach past
+    the weekly feed, and those do not exist. A rate decision the feed does show
+    inside the fetched week is a plain ``event`` blocker and already refuses.
+    What is unmarked is the gap past the horizon, and the daily routine's own
+    calendar review is the backstop for it. `docs/risk-and-execution.md` section
+    5 carries the policy and the interim rule, and issue #45 the reasoning.
+
+    A trade entered on an unknown answer is recorded as one:
+    `fbe.journal.BlackoutCheck.UNKNOWN` on the record, distinct from ``CLEAR``
+    and from ``NOT_RUN``. That is what makes the override countable, and
+    proposal #2's own falsification is that count.
+
     The portfolio limits are checked against the journal, with no flag and no way
     to skip the read. `fbe.risk.check_limits` can only compare against a book it
     is given, and for as long as nothing gave it one it reported four limits as
@@ -2716,7 +2765,9 @@ def size(
         direction: Optional direction override.
         balance: Optional account balance override.
         risk: Optional risk fraction override, clamped to the configured band.
-        force: Proceed despite an active blackout window.
+        force: Proceed despite an active blackout window. It applies to a
+            window the guard could see. Unknown coverage does not refuse, so
+            there is nothing for it to override there.
         output_format: table, json or csv.
 
     Raises:

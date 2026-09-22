@@ -70,9 +70,13 @@ Ranked by conviction then by the width of the spread:
 | {{ bias.pair }} | {{ bias.direction.value }} | {{ bias.conviction.value }} | {{ '%+.2f' | format(bias.spread) }} | {{ '%+.2f' | format(bias.base_score) }} | {{ '%+.2f' | format(bias.quote_score) }} | {{ (bias.agreement * 100) | int }}% | {% if bias.tradeable %}yes{% if bias.blockers %} ({{ bias.blockers | join(', ') }}){% endif %}{% else %}{{ bias.blockers | join(', ') }}{% endif %} |
 {% endfor %}
 
-A marker in brackets beside `yes` is a check that did not run, not a reason the
-pair was rejected. `event:unchecked` on every row means the run had no calendar:
-the pairs are tradeable on fundamentals and nobody has looked at the news.
+A marker in brackets beside `yes` is a check that did not run or one that ran
+and could not finish, not a reason the pair was rejected. `event:unchecked` on
+every row means the run had no calendar: the pairs are tradeable on
+fundamentals and nobody has looked at the news. `event:unknown` means a
+calendar was consulted and could not answer, which is the one that asks the
+reader to look at a calendar themselves within the hour. This column runs them
+together; the shortlist below labels them apart.
 
 `Agreement` is the share of pillar *weight* pointing the same way as the spread,
 not the share of pillars. One heavy pillar dissenting moves it further than one
@@ -129,7 +133,25 @@ Stand aside until {{ idea.blackout_until.strftime('%Y-%m-%d %H:%M %Z') }}: a
 high-impact release touches one of the legs before then.
 {%- endif %}
 {% if idea.bias.blockers -%}
-{{ 'Not checked' if idea.bias.tradeable else 'Blockers' }}: {{ idea.bias.blockers | join('; ') }}
+{%- if not idea.bias.tradeable -%}
+Blockers: {{ idea.bias.blockers | join('; ') }}
+{%- else -%}
+{#- Three states, not two. "Not checked" is true of an offline run and false
+    of a failed fetch, and only the second asks the reader to open a calendar
+    now. The prefix comes from the context so the string lives in
+    `fbe.bias.UNKNOWN_SUFFIX` alone. -#}
+{%- set blind = [] -%}
+{%- set quiet = [] -%}
+{%- for marker in idea.bias.blockers -%}
+{%- set _ = (blind if marker.startswith(unknown_prefix) else quiet).append(marker) -%}
+{%- endfor -%}
+{%- if blind -%}
+* Calendar unknown: {{ blind | join('; ') }}
+{% endif -%}
+{%- if quiet -%}
+* Not checked: {{ quiet | join('; ') }}
+{%- endif -%}
+{%- endif -%}
 {%- endif %}
 {% endfor %}
 {% endif %}
