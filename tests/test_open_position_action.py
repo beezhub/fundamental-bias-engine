@@ -133,6 +133,27 @@ def test_an_empty_calendar_holds_rather_than_closing() -> None:
     assert reason is None
 
 
+def test_a_one_pass_sequence_of_events_is_answered_in_full() -> None:
+    """A generator must not be read empty by the time the legs are searched.
+
+    The events are walked once for shape and then once per leg, so a caller
+    passing a generator, which the annotation does not prevent and a notebook
+    or the CLI could easily do, would have the later passes see nothing. The
+    answer would be HOLD on a morning holding a qualifying release, which is
+    the quiet wrong answer rather than a refusal. `blackout_windows` guards the
+    same hazard the same way.
+    """
+    events = (release for release in [event("EUR", title="CPI y/y")])
+
+    action, reason = action_for_open_position(
+        "EURUSD", WHEN, events, CONFIG, unrealised_r=BELOW
+    )
+
+    assert action is OpenPositionAction.FLATTEN
+    assert reason is not None
+    assert "EUR CPI y/y" in reason
+
+
 def test_an_event_that_does_not_qualify_leaves_the_position_alone() -> None:
     """`is_high_impact` decides, in one place. A second filter here would drift."""
     action, _ = action_for_open_position(
@@ -402,6 +423,53 @@ def test_with_both_legs_in_window_the_base_leg_is_the_one_named(
     assert "Non-Farm Payrolls" not in reason
 
 
+def test_with_two_events_on_one_leg_the_first_in_sequence_is_named() -> None:
+    """First in ``events`` order, not nearest to ``when``, and stated as such.
+
+    Both releases here are inside a window containing the moment, and the one
+    listed first is the further away of the two. Naming it is arbitrary in the
+    sense that either would do, and it is fixed anyway, because a reason that
+    depends on the order a caller happened to build its list cannot be
+    reproduced from the journal afterwards.
+    """
+    _, reason = action_for_open_position(
+        "EURUSD",
+        WHEN,
+        [
+            event("EUR", scheduled_for=WHEN + timedelta(minutes=10), title="CPI y/y"),
+            event("EUR", scheduled_for=WHEN, title="Retail Sales"),
+        ],
+        CONFIG,
+        unrealised_r=BELOW,
+    )
+
+    assert reason is not None
+    assert "CPI y/y" in reason
+    assert "Retail Sales" not in reason
+
+
+def test_a_global_event_does_not_reach_either_leg() -> None:
+    """The documented limit, pinned so it cannot change without being noticed.
+
+    ``fbe.datasources.calendar`` records the feed's "All" country as ``GLOBAL``,
+    and a leg comparison never matches it, so a summit or an election in window
+    leaves the position on HOLD. `is_blacked_out` has the same hole and records
+    it the same way. Whether a global event should act on every pair is a
+    decision rather than an oversight, and this test says which way the code
+    currently answers rather than endorsing it.
+    """
+    action, reason = action_for_open_position(
+        "EURUSD",
+        WHEN,
+        [event("GLOBAL", title="G20 Meetings")],
+        CONFIG,
+        unrealised_r=BELOW,
+    )
+
+    assert action is OpenPositionAction.HOLD
+    assert reason is None
+
+
 def test_the_reason_names_the_event_whose_window_contains_the_moment() -> None:
     """With two in range, the one being reported has to be the one acting.
 
@@ -493,6 +561,28 @@ def test_an_open_profit_that_is_not_a_number_is_refused(value: float) -> None:
 
     with pytest.raises(ValueError, match="finite"):
         action_for_open_position("EURUSD", WHEN, [], CONFIG, unrealised_r=value)
+
+
+def test_the_reason_formatter_refuses_a_naive_event_of_its_own() -> None:
+    """A private helper tested directly, because no public path reaches it.
+
+    `_describe` is reached only after a caller has validated every event, so
+    this cannot be provoked through `action_for_open_position`. It is checked
+    anyway: ``astimezone`` on a naive value assumes the machine's own zone, so
+    a naive 09:00 read on a SAST machine would print "07:00 UTC", which is
+    plausible, wrong by two hours, and permanent once the journal holds it.
+    Pulling the formatter out of `is_blacked_out` is what raised the number of
+    callers that could reach it with an unchecked event.
+    """
+    naive = CalendarEvent(
+        title="CPI y/y",
+        currency="EUR",
+        scheduled_for=datetime(2026, 9, 14, 9, 0),
+        impact="High",
+    )
+
+    with pytest.raises(ValueError, match="naive"):
+        fbe.calendar_guard._describe(naive)
 
 
 @pytest.mark.parametrize("pair", ["EUR", "EURUSDX"])
@@ -614,6 +704,11 @@ def test_the_module_imports_nothing_that_could_place_an_order() -> None:
 
     This is what fails the day a broker client is wired into the guard rather
     than an instruction being returned for the owner to carry out.
+
+    It also fails on a legitimate new import, and that is the cost of stating
+    the surface exactly. Whoever hits it decides which happened: widen the set
+    if the new module cannot act on an account, and if it can, the instruction
+    belongs on the returned value rather than in this module.
     """
     tree = ast.parse(Path(fbe.calendar_guard.__file__).read_text(encoding="utf-8"))
 
