@@ -45,6 +45,7 @@ from fbe.types import CurrencyScore, Observation, Pillar, PillarName, PillarScor
 from fbe.universe import G10
 
 __all__ = [
+    "PILLAR_FAILED",
     "score_currencies",
     "composite",
     "coverage",
@@ -53,6 +54,25 @@ __all__ = [
     "apply_staleness_penalty",
     "freshness",
 ]
+
+
+PILLAR_FAILED: str = "pillar_failed"
+"""`PillarScore.diagnostics` key marking an absence caused by the pillar raising.
+
+Present and set to ``1.0`` only on the scores `score_currencies` fabricates when
+``pillar.compute`` raised, so every currency lost that pillar at once. Absent on
+the absence a pillar returns for one currency it could not score.
+
+The two are the same shape otherwise, ``raw`` and ``z`` both ``None`` and
+``score`` of ``0.0``, and they call for different responses: a pillar that raised
+is a defect to fix, while a pillar with no data for NZD is the universe being
+what it is. `fbe.pillar_audit` reads this key to tell them apart. It is a typed
+marker rather than a phrase in ``notes`` because ``notes`` is prose for a reader
+and anything that parses it is one rewording away from silently reclassifying
+every absence in the run.
+
+Unitless. It is a flag, and ``1.0`` is the only value it takes.
+"""
 
 
 def score_currencies(
@@ -144,7 +164,7 @@ def score_currencies(
             )
             for currency in currencies:
                 per_currency[currency][pillar.name] = _unscored(
-                    pillar.name, currency, weight, config, asof, reason
+                    pillar.name, currency, weight, config, asof, reason, failed=True
                 )
             continue
 
@@ -210,6 +230,8 @@ def _unscored(
     config: ScoringConfig,
     asof: date,
     reason: str,
+    *,
+    failed: bool = False,
 ) -> PillarScore:
     """Build the neutral score a currency gets when a pillar could not score it.
 
@@ -223,6 +245,11 @@ def _unscored(
         asof: Run date.
         reason: Why, naming the pillar. Reaches a reader through
             ``PillarScore.notes``.
+        failed: True when the pillar raised, so every currency lost it at once,
+            and false when the pillar ran and had nothing for this currency.
+            Recorded as `PILLAR_FAILED` in ``diagnostics`` rather than left to
+            be read out of ``reason``, because the two absences are the same
+            shape and want different responses.
 
     Returns:
         A `PillarScore` with ``raw`` and ``z`` both ``None`` and ``score`` of
@@ -247,6 +274,7 @@ def _unscored(
         asof=asof,
         staleness_days=config.max_staleness_days + 1,
         notes=reason,
+        diagnostics={PILLAR_FAILED: 1.0} if failed else {},
     )
 
 
