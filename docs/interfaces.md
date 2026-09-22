@@ -205,6 +205,7 @@ relative to the others.
 | `--format` | `table` | `table`, `json` or `csv`. |
 | `--pillars` / `--no-pillars` | off | Show the seven pillar scores behind each composite. |
 | `--currency`, `-C` | all | Repeatable row filter. |
+| `--audit` | off | Also print the pillar audit: what each pillar scored, every absence with which of three things happened to it, and the pillar cross-correlations. Computed over the whole universe even when `--currency` narrows the table, since every figure in it is cross-sectional. |
 
 ```console
 $ fbe score --pillars

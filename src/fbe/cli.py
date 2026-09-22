@@ -106,6 +106,7 @@ from fbe.datasources.collect import (
     collect,
     lookback_start,
 )
+from fbe.pillar_audit import audit_run
 from fbe.pillars import default_pillars
 from fbe.scoring import score_currencies
 from fbe.types import (
@@ -1299,6 +1300,14 @@ def score(
             "come from the full universe.",
         ),
     ] = None,
+    audit: Annotated[
+        bool,
+        typer.Option(
+            "--audit",
+            help="Also print the pillar audit: what each pillar scored, every "
+            "absence with its reason, and the pillar cross-correlations.",
+        ),
+    ] = False,
 ) -> None:
     """Compute and print the currency ranking with its pillar breakdown.
 
@@ -1318,6 +1327,12 @@ def score(
         output_format: table, json or csv.
         pillars: Include per-pillar columns.
         currency: Restrict printed rows to these currencies.
+        audit: Print `fbe.pillar_audit.PillarAudit.render` after the table. It
+            answers what the per-pillar columns cannot: which of three things
+            happened to each missing score, and whether two pillars moved
+            together across the cross-section closely enough to be one
+            measurement carrying two weights. Off by default because it is a
+            diagnostic rather than part of the morning read.
 
     Every printed number is read from a `fbe.types.CurrencyScore` field and
     none is computed here. Composites are on the ``-3`` to ``+3`` band and
@@ -1402,6 +1417,16 @@ def score(
             typer.echo(note, err=True)
     else:
         _render_score(rows, order, run_date, config.digest())
+
+    if audit:
+        # Printed from the full score set rather than from `rows`, which
+        # --currency may have narrowed: every figure in the audit is
+        # cross-sectional, and auditing a subset would quietly change what the
+        # correlations are computed over.
+        typer.echo(
+            audit_run(scores, config_digest=config.digest(), asof=run_date).render(),
+            nl=False,
+        )
 
     if _coverage_collapsed(scores):
         # Every currency scored on nothing. The rows still print, with 0% and

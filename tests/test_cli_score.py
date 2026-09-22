@@ -1303,3 +1303,78 @@ def test_the_published_console_example_is_what_the_command_prints() -> None:
             },
         )
         assert _score_line(rebuilt, order) == line
+
+
+# --- --audit, issue #176 -----------------------------------------------------
+
+
+def test_the_audit_is_off_unless_asked_for(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A diagnostic, not part of the morning read."""
+    result, _ = run(monkeypatch, UNIVERSE)
+
+    assert result.exit_code == EXIT_OK
+    assert "Pillar audit" not in result.stdout
+
+
+def test_the_audit_prints_after_the_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Criterion 1 reaching a reader: what each pillar scored and every absence.
+
+    An audit nothing can run is the defect ADR 0002 rule 3 names, a marker that
+    does not reach the page, so the criterion's "a run reports" is what this
+    asserts rather than the module's own return value.
+    """
+    universe = tuple(
+        currency_score(
+            row.currency,
+            row.composite,
+            row.rank or 1,
+            pillars=full_pillars(row.currency, 0.4),
+        )
+        for row in UNIVERSE
+    )
+
+    result, _ = run(monkeypatch, universe, "--audit")
+
+    assert result.exit_code == EXIT_OK
+    assert "Pillar audit" in result.stdout
+    assert "Pillar cross-correlation" in result.stdout
+    assert "is a decision" in result.stdout
+    # After the table, not instead of it.
+    assert result.stdout.index("Composite") < result.stdout.index("Pillar audit")
+
+
+def test_the_audit_reports_an_absence_with_its_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reason the pillar gave, carried to the page."""
+    scores = {name: pillar(name, "USD", 0.4) for name in PillarName}
+    scores[PillarName.POSITIONING] = pillar(
+        PillarName.POSITIONING, "USD", 0.0, absent=True, notes="no COT contract"
+    )
+    universe = (currency_score("USD", 1.42, 1, pillars=scores),)
+
+    result, _ = run(monkeypatch, universe, "--audit")
+
+    assert "no_data" in result.stdout
+    assert "no COT contract" in result.stdout
+
+
+def test_the_audit_covers_the_whole_universe_not_the_printed_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--currency narrows the table. Every audit figure is cross-sectional, so
+    auditing the narrowed set would change what the correlations are over."""
+    universe = tuple(
+        currency_score(
+            row.currency,
+            row.composite,
+            row.rank or 1,
+            pillars=full_pillars(row.currency, 0.4),
+        )
+        for row in UNIVERSE
+    )
+
+    result, _ = run(monkeypatch, universe, "--audit", "--currency", "USD")
+
+    for code in ("USD", "CHF", "GBP", "JPY"):
+        assert code in result.stdout.split("Pillar audit")[1], code
