@@ -224,9 +224,19 @@ def build_context(
             than written into the templates so the string lives in
             `fbe.bias.UNKNOWN_SUFFIX` alone: a copy in a template is a copy
             that drifts, and the drift is silent because the label still
-            renders. Both templates use it to tell a failed fetch from an
-            offline run, which ADR 0002 rule 4 requires them to and which one
-            label over both states cannot do.
+            renders.
+
+            **Read by the Markdown template only.** It uses this to label a
+            failed fetch differently from an offline run, which one label over
+            both states cannot do. The dashboard gives the two states one
+            label, "Not checked on this run", and shows the reason in the list
+            beneath it;
+            ``tests/test_blockers.py::test_the_dashboard_says_an_unknown_marker_was_not_checked_too``
+            asserts that deliberately. Whether the dashboard should follow the
+            Markdown report here is part of issue #45's first criterion and
+            waits on `fbe.dashboard.build`, which is still scaffolded. This key
+            is supplied to both because `build_context` builds one context, not
+            two.
 
     Args:
         report: The run to render.

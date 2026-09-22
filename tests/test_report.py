@@ -81,9 +81,14 @@ CONTEXT_KEYS = {
     "pairs",
     "unknown_prefix",
 }
-"""The keys `fbe.report.build_context` documents. Both templates read these and
-nothing else, so a key added without a docstring line is a key the dashboard
-will not know to render."""
+"""The keys `fbe.report.build_context` documents.
+
+A key added without a docstring line is a key one template reads and the other
+does not know about, which is how two views of one run start telling different
+stories. The set is what `build_context` supplies, not what either template
+happens to read: ``unknown_prefix`` is read by the Markdown template and not,
+yet, by the dashboard, and `build_context`'s own docstring is where that is
+recorded."""
 
 
 # --- fixtures ----------------------------------------------------------------

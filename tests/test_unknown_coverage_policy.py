@@ -47,7 +47,7 @@ from fbe.bias import (
 )
 from fbe.config import Config, ScoringConfig
 from fbe.journal import BlackoutCheck, TradeRecord, append, load
-from fbe.report import render_report, write_report
+from fbe.report import build_context, render_report, write_report
 from fbe.types import (
     Conviction,
     CurrencyScore,
@@ -115,6 +115,12 @@ def universe(**composites: float) -> tuple[CurrencyScore, ...]:
     currency it has no score for, so a test cannot supply only the leg it cares
     about. The unnamed currencies sit at zero, which keeps every pair that is
     not the one under test at a spread of zero and therefore uninteresting.
+
+    Note what the filler costs an assertion. Every pair built from two unnamed
+    currencies has a spread of zero, so it grades `Conviction.NONE` from the
+    spread band before any cap is considered. A control assertion of the form
+    "this other pair is not LOW" is therefore vacuously true against one,
+    whatever the code under test does. A control pair has to be named and wide.
     """
     return tuple(score(code, composites.get(code, 0.0)) for code in sorted(G10))
 
@@ -228,24 +234,31 @@ def test_a_quiet_horizon_is_still_the_only_uncapped_answer() -> None:
     assert tier is Conviction.HIGH
 
 
-def test_the_cap_survives_the_route_from_the_guard_to_the_pair() -> None:
+@pytest.mark.parametrize("blind_leg", ["EUR", "USD"])
+def test_the_cap_survives_the_route_from_the_guard_to_the_pair(
+    blind_leg: str,
+) -> None:
     """The unit above proves the rule; this proves the wiring carries it.
 
     `build_pair_biases` asks the guard once per currency and hands the answer
     to `conviction_for`. A pipeline that coerced the guard's answer to ``bool``
     on the way would pass the unit test above and still award HIGH here.
+
+    Run over both legs. A pair has two, and a combiner that reads only the
+    first passes every test that blinds the base currency while leaving an
+    unseen quote leg buying the top tier.
     """
     scores = universe(EUR=1.40, USD=-1.40)
 
-    def blind_on_the_euro(currency: str, asof: date) -> bool | None:
-        return None if currency == "EUR" else False
+    def blind_on_one_leg(currency: str, asof: date) -> bool | None:
+        return None if currency == blind_leg else False
 
     def quiet(currency: str, asof: date) -> bool | None:
         return False
 
     blind = {
         row.pair: row
-        for row in build_pair_biases(scores, CONFIG, ASOF, blind_on_the_euro)
+        for row in build_pair_biases(scores, CONFIG, ASOF, blind_on_one_leg)
     }
     seen = {row.pair: row for row in build_pair_biases(scores, CONFIG, ASOF, quiet)}
 
@@ -260,8 +273,15 @@ def test_a_seen_leg_is_not_capped_by_an_unseen_one_elsewhere() -> None:
     A guard blind on one currency must not demote every pair in the universe:
     that converts one failed lookup into a run-wide downgrade, which is the
     banner-blindness cost ADR 0002 names in its own consequences section.
+
+    The control pair has to be a wide one. A pair at a spread of zero grades
+    NONE from the spread band before any cap is considered, so "not LOW" holds
+    against it whatever the cap does, and the assertion tests nothing. JPY is
+    therefore set alongside EUR rather than alongside USD, which makes USDJPY
+    a fully seen pair wide enough to reach HIGH, and the assertion is the
+    positive one rather than the absence of a tier.
     """
-    scores = universe(EUR=1.40, USD=-1.40, JPY=-1.40)
+    scores = universe(EUR=1.40, USD=-1.40, JPY=1.40)
 
     def blind_on_the_euro(currency: str, asof: date) -> bool | None:
         return None if currency == "EUR" else False
@@ -271,8 +291,36 @@ def test_a_seen_leg_is_not_capped_by_an_unseen_one_elsewhere() -> None:
         for row in build_pair_biases(scores, CONFIG, ASOF, blind_on_the_euro)
     }
 
+    assert abs(rows["USDJPY"].spread) >= SCORING.min_spread_high
     assert rows["EURUSD"].conviction is Conviction.LOW
-    assert rows["USDJPY"].conviction is not Conviction.LOW
+    assert rows["USDJPY"].conviction is Conviction.HIGH
+
+
+@pytest.mark.parametrize(
+    ("answer", "capped"),
+    [(1, True), (0, False), ((), False), ((object(),), True)],
+)
+def test_a_guard_answering_with_something_other_than_a_bool_still_works(
+    answer: object, capped: bool
+) -> None:
+    """Truthiness for the two states that have it, and ``None`` routed around.
+
+    The guard is an injected callable and nothing checks what it returns, so a
+    guard handing back ``1``, ``0`` or an empty sequence has to keep meaning
+    what those obviously mean. The trap is the implementation that skips the
+    coercion: ``0 is not False`` is ``True``, so a quiet answer written as a
+    zero would cap, and a run would lose the top tier on every pair for a
+    reason nobody could see on the page.
+    """
+    scores = universe(EUR=1.40, USD=-1.40)
+
+    def guard(currency: str, asof: date) -> bool | None:
+        return answer  # type: ignore[return-value]
+
+    rows = {row.pair: row for row in build_pair_biases(scores, CONFIG, ASOF, guard)}
+
+    expected = Conviction.LOW if capped else Conviction.HIGH
+    assert rows["EURUSD"].conviction is expected
 
 
 # --- the fail-open policy, which is the owner's ruling ------------------------
@@ -329,9 +377,7 @@ def test_the_unknown_marker_carries_why_rather_than_only_that() -> None:
 # --- the marker reaching the trader, which is ADR 0002 rule 3 -----------------
 
 
-def test_the_markdown_tells_an_unknown_calendar_from_an_unchecked_one(
-    tmp_path: Path,
-) -> None:
+def test_the_markdown_tells_an_unknown_calendar_from_an_unchecked_one() -> None:
     """The two states had one label between them on the shortlist.
 
     "Not checked" is true of an offline run and false of a failed fetch, and
@@ -339,19 +385,27 @@ def test_the_markdown_tells_an_unknown_calendar_from_an_unchecked_one(
     within the hour. Printing the same four words over both is the collapse
     this issue exists to undo, one layer above the one #43 undid.
     """
-    unknown = render_shortlist(tmp_path, (f"{UNKNOWN_MARKER}: Request Denied",))
-    unchecked = render_shortlist(tmp_path, (UNCHECKED_MARKER,))
+    unknown = render_report_for((f"{UNKNOWN_MARKER}: Request Denied",))
+    unchecked = render_report_for((UNCHECKED_MARKER,))
 
     assert "Not checked" in labels_of(unchecked)
     assert "Not checked" not in labels_of(unknown)
+    assert "Calendar unknown" in labels_of(unknown)
     assert "Request Denied" in unknown
 
 
-def test_the_pair_table_shows_the_marker_on_a_tradeable_row(tmp_path: Path) -> None:
-    """A row that reads an unqualified "yes" is the defect, not the marker."""
-    body = render_shortlist(tmp_path, (f"{UNKNOWN_MARKER}: Request Denied",))
+def test_the_pair_table_shows_the_marker_on_a_tradeable_row() -> None:
+    """A row that reads an unqualified "yes" is the defect, not the marker.
 
-    assert "Request Denied" in body
+    Read off the pair table's own row rather than from the document, which the
+    shortlist section below it would satisfy on its own. The two sections are
+    rendered separately and a reader scanning the table is the one who would
+    act on an unqualified yes.
+    """
+    row = pair_row(render_report_for((f"{UNKNOWN_MARKER}: Request Denied",)), "EURUSD")
+
+    assert "yes" in row
+    assert "Request Denied" in row
 
 
 def test_the_json_sidecar_keeps_the_two_markers_apart(tmp_path: Path) -> None:
@@ -367,6 +421,24 @@ def test_the_json_sidecar_keeps_the_two_markers_apart(tmp_path: Path) -> None:
     blockers = payload["pairs"][0]["blockers"]
     assert f"{UNKNOWN_MARKER}: Request Denied" in blockers
     assert UNCHECKED_MARKER in blockers
+
+
+def test_the_unknown_prefix_is_read_from_bias_rather_than_copied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One copy of the string, and this is what proves there is only one.
+
+    A literal in `build_context` renders identically today and drifts the day
+    `fbe.bias` changes the marker, silently, because the label still prints and
+    only the partition behind it goes wrong. Moving the suffix and watching the
+    context follow is the wire test the engineering standards ask for: a
+    constant that happens to equal the right value proves nothing.
+    """
+    monkeypatch.setattr("fbe.report.UNKNOWN_SUFFIX", ":cannot-tell")
+
+    context = build_context(report_with(()))  # type: ignore[arg-type]
+
+    assert context["unknown_prefix"] == "event:cannot-tell"
 
 
 # --- the journal, which is where the override has to be countable ------------
@@ -479,9 +551,32 @@ def report_with(blockers: tuple[str, ...]) -> object:
     )
 
 
-def render_shortlist(tmp_path: Path, blockers: tuple[str, ...]) -> str:
+def render_report_for(blockers: tuple[str, ...]) -> str:
     """The rendered Markdown for a report whose only pair carries ``blockers``."""
     return render_report(report_with(blockers))  # type: ignore[arg-type]
+
+
+def section(markdown: str, opening: str, closing: str) -> str:
+    """The text between two headings, refusing a document missing either.
+
+    ``str.split`` falls back to the whole string when its separator is absent,
+    so a helper written on it alone would quietly scan the entire document
+    after a heading was renumbered, and every assertion made through it would
+    go on passing while testing something else. Named absence rather than a
+    silent default, which is the same rule the package itself is held to.
+    """
+    assert opening in markdown, f"no {opening!r} heading in the rendered report"
+    rest = markdown.split(opening, 1)[1]
+    assert closing in rest, f"no {closing!r} heading after {opening!r}"
+    return rest.split(closing, 1)[0]
+
+
+def pair_row(markdown: str, pair: str) -> str:
+    """One pair's row from the table in section 2."""
+    table = section(markdown, "## 2.", "## 3.")
+    rows = [line for line in table.splitlines() if line.startswith(f"| {pair} ")]
+    assert len(rows) == 1, f"expected one {pair} row, found {len(rows)}"
+    return rows[0]
 
 
 def labels_of(markdown: str) -> list[str]:
@@ -491,11 +586,13 @@ def labels_of(markdown: str) -> list[str]:
     about the marker, which is already distinct by construction. A test written
     on the marker alone passes against a template that prints "Not checked"
     over both states, which is the defect.
+
+    Every line carrying a colon becomes a label, so this returns more than the
+    two markers when a shortlist entry has a size attached. That is why the
+    assertions are membership against exact strings rather than a count.
     """
-    marker = "## 3."
-    section = markdown.split(marker, 1)[-1].split("## 4.", 1)[0]
     return [
         line.split(":", 1)[0].strip()
-        for line in section.splitlines()
+        for line in section(markdown, "## 3.", "## 4.").splitlines()
         if ":" in line and not line.startswith("|")
     ]
