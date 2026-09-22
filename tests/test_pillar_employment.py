@@ -192,7 +192,11 @@ def test_the_employment_level_is_registered_in_persons() -> None:
 
     assert spec.unit == "persons"
     assert spec.pillar is not None and spec.pillar.name == "EMPLOYMENT"
-    assert spec.max_staleness_days == INDICATORS[CHG].max_staleness_days
+    # The level reuses the flow's refs, so every leg's ramp is the flow's too.
+    for currency, ref in spec.series.items():
+        flow = INDICATORS[CHG].series[currency]
+        assert ref.frequency is flow.frequency, currency
+        assert ref.publication_lag_days == flow.publication_lag_days, currency
 
 
 def test_the_level_reuses_the_flows_own_refs() -> None:

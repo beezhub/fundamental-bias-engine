@@ -27,19 +27,21 @@ staleness allowances the freshness assertions are computed against.
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
 
 import pytest
 
 from fbe.config import ScoringConfig
-from fbe.datasources.registry import INDICATORS
-from fbe.pillars.base import (
-    MIN_COMPONENT_WEIGHT,
-    BasePillar,
+from fbe.datasources.registry import (
+    CYCLE_DAYS,
+    DEFAULT_PUBLICATION_LAG_DAYS,
+    INDICATORS,
+    full_weight_age,
+    series_for,
     staleness_allowance,
 )
+from fbe.pillars.base import MIN_COMPONENT_WEIGHT, BasePillar
 from fbe.pillars.growth import GrowthPillar
 from fbe.scoring import freshness
 from fbe.types import Frequency, Observation
@@ -608,15 +610,23 @@ def test_the_survey_ages_against_its_own_allowance_and_not_the_global_ceiling(
         *activity("JPY", *UNIVERSE["JPY"], survey_period=QUARTERLY_SURVEY_PERIOD),
     ]
     age = (ASOF - QUARTERLY_SURVEY_PERIOD).days
-    allowance = staleness_allowance("business_confidence_mfg", pillar.config)
+    ref = series_for("business_confidence_mfg", "JPY")
+    assert ref is not None
+    full = full_weight_age(ref, ref.frequency)
+    allowance = staleness_allowance(ref, ref.frequency)
 
     scores = pillar.compute(observations, FOUR, ASOF)
     factor = scores["JPY"].diagnostics["freshness.business_confidence_mfg"]
 
-    assert allowance == 270
-    assert factor == pytest.approx(freshness(age, pillar.config, allowance))
+    # Japan's survey is the Tankan, quarterly, and the OECD publishes it 161
+    # days after the quarter starts, so it is punctual to 253 days and worth
+    # nothing at 345.
+    assert (full, allowance) == (253, 345)
+    assert factor == pytest.approx(freshness(age, full, allowance))
     assert factor > 0.0
-    assert freshness(age, pillar.config, pillar.config.max_staleness_days) == 0.0
+    # Judged as a monthly leg, which is what the parent spec calls this
+    # indicator, the same punctual print would be worth nothing.
+    assert freshness(age, 76, 107) == 0.0
 
 
 def test_each_component_ages_on_its_own_clock(pillar: GrowthPillar) -> None:
@@ -642,8 +652,14 @@ def test_each_component_ages_on_its_own_clock(pillar: GrowthPillar) -> None:
     # On the ramp rather than at either end of it, so a cliff cannot satisfy
     # this and neither can a factor pinned at 1.0.
     assert age == 226
+    gdp_ref = series_for("gdp_yoy", "USD")
+    assert gdp_ref is not None
     assert diagnostics["freshness.gdp_yoy"] == pytest.approx(
-        freshness(age, pillar.config, staleness_allowance("gdp_yoy", pillar.config))
+        freshness(
+            age,
+            full_weight_age(gdp_ref, gdp_ref.frequency),
+            staleness_allowance(gdp_ref, gdp_ref.frequency),
+        )
     )
     assert 0.0 < diagnostics["freshness.gdp_yoy"] < 1.0
     assert diagnostics["freshness.retail_sales_yoy"] == 1.0
@@ -682,31 +698,42 @@ def test_a_component_past_its_allowance_still_moves_the_score(
         assert scores["USD"].diagnostics["freshness.gdp_yoy"] == 0.0
         return scores["USD"].score
 
-    assert (ASOF - expired).days > staleness_allowance("gdp_yoy", pillar.config)
+    gdp_ref = series_for("gdp_yoy", "USD")
+    assert gdp_ref is not None
+    assert (ASOF - expired).days > staleness_allowance(gdp_ref, gdp_ref.frequency)
     assert run(2.4) != run(-6.0)
 
 
-def test_the_allowance_is_read_from_the_registry(
+def test_the_legs_own_ramp_is_read_from_the_registry(
     pillar: GrowthPillar, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Testing the wire, not the value.
 
-    The pillar reads each indicator's own allowance out of the registry, so
-    shortening one there has to move that component's factor. A pillar that had
-    retyped 270, or that fell back to the config's 45, does not move.
-    """
-    spec = INDICATORS["gdp_yoy"]
-    monkeypatch.setitem(
-        INDICATORS,
-        "gdp_yoy",
-        dataclasses.replace(spec, max_staleness_days=100),
-    )
+    The pillar reads each leg's own ramp out of the registry, so changing what
+    the registry says about that leg has to move the component's factor. A
+    pillar that had retyped the bounds, or that fell back to one figure for
+    everything, does not move.
 
+    The lever changed with #126: there is no allowance field to shorten any
+    more, so this shortens both tables the bounds are built from. A quarterly
+    lag of 30 days and a cycle of 30 puts the leg at ``30 + 30 = 60`` and
+    ``30 + 60 = 90``, so the 76-day print that is punctual on the shipped
+    tables lands halfway down the ramp at ``(90 - 76) / 30``.
+    """
+    monkeypatch.setattr(
+        "fbe.datasources.registry.DEFAULT_PUBLICATION_LAG_DAYS",
+        {**DEFAULT_PUBLICATION_LAG_DAYS, Frequency.QUARTERLY: 30},
+    )
+    monkeypatch.setattr(
+        "fbe.datasources.registry.CYCLE_DAYS",
+        {**CYCLE_DAYS, Frequency.QUARTERLY: 30},
+    )
     scores = pillar.compute(universe(), FOUR, ASOF)
     factor = scores["USD"].diagnostics["freshness.gdp_yoy"]
-
     age = (ASOF - QUARTERLY_PERIOD).days
-    assert factor == pytest.approx(freshness(age, pillar.config, 100))
+
+    assert age == 76
+    assert factor == pytest.approx(14 / 30)
     assert factor < 1.0
 
 

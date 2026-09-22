@@ -84,26 +84,30 @@ def test_the_registry_still_holds_its_global_indicators() -> None:
 
 
 def test_the_volatility_index_reaches_the_worklist_the_day_it_expires() -> None:
-    """Criterion 2, on the 7-day allowance and the 2026-09-08 observation.
+    """Criterion 2, on the derived allowance and the 2026-09-08 observation.
 
-    The ref is stamped 2026-09-08 and the allowance is 7 days, so 2026-09-15 is
-    the last day it is usable and 2026-09-16 is the first day it is not. Both
+    The ref is daily, so its allowance is ``1 + 2 * 4 = 9`` days: published the
+    day after its session, due again within four days over a long weekend, and
+    worth nothing a second such gap later. Stamped 2026-09-08 that makes
+    2026-09-17 the last usable day and 2026-09-18 the first it is not. Both
     sides are asserted: a fix that reported every ``GLOBAL`` indicator
     unconditionally would satisfy the first assertion and fail the second.
     """
-    assert "vol_index" not in stale_refs(date(2026, 9, 15))
-    assert "vol_index" in stale_refs(date(2026, 9, 16))
+    assert "vol_index" not in stale_refs(date(2026, 9, 17))
+    assert "vol_index" in stale_refs(date(2026, 9, 18))
 
 
 def test_the_commodity_index_reaches_the_worklist_the_day_it_expires() -> None:
     """The same boundary on the other allowance, so the fix is not date-specific.
 
-    90 days from 2026-07-01 puts the last usable day at 2026-09-29. Worth
-    asserting separately because 7 and 90 days are far enough apart that an
-    off-by-one in the comparison would show on one and not the other.
+    The global commodity leg is monthly, so its allowance is ``45 + 2 * 31 =
+    107`` days, and 107 days from 2026-07-01 puts the last usable day at
+    2026-10-16. Worth asserting separately because 9 and 107 days are far
+    enough apart that an off-by-one in the comparison would show on one and
+    not the other.
     """
-    assert "commodity_price" not in stale_refs(date(2026, 9, 29))
-    assert "commodity_price" in stale_refs(date(2026, 9, 30))
+    assert "commodity_price" not in stale_refs(date(2026, 10, 16))
+    assert "commodity_price" in stale_refs(date(2026, 10, 17))
 
 
 def test_a_global_indicator_is_reported_against_the_whole_universe() -> None:
@@ -118,7 +122,7 @@ def test_a_global_indicator_is_reported_against_the_whole_universe() -> None:
     ``G10``, and a reader comparing two rows of a report should not see the same
     set of currencies in two orders.
     """
-    assert stale_refs(date(2026, 9, 16))["vol_index"] == tuple(G10)
+    assert stale_refs(date(2026, 9, 18))["vol_index"] == tuple(G10)
 
 
 # --- the unfetchable half of criterion 1 -----------------------------------
@@ -136,7 +140,6 @@ def _global_spec(ref: SeriesRef) -> IndicatorSpec:
         pillar=PillarName.RISK,
         unit="index",
         frequency=Frequency.DAILY,
-        max_staleness_days=7,
         description="Test fixture. Never registered.",
         series={GLOBAL: ref},
     )

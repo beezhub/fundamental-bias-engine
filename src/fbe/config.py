@@ -210,11 +210,22 @@ class ScoringConfig:
     reasoning "at least five of seven" and writing ``0.71`` would cap every pair
     whose dissent includes MONETARY at 0.30, whatever the other six pillars do,
     because one heavy dissenter alone puts the ratio at 0.70."""
-    staleness_full_days: int = 15
-    """Inputs newer than this carry full weight. Past it the freshness factor
-    decays linearly to zero at ``max_staleness_days``, rather than falling off
-    a cliff, so a series does not swing a score the day it crosses a boundary."""
     max_staleness_days: int = 45
+    """Sentinel age for a pillar with no usable data at all, and nothing else.
+
+    `BasePillar.staleness_days` returns this plus one for an empty set, and
+    `scoring.missing_score` stamps an absent pillar with it, so an absent
+    pillar sorts as stale rather than as fresh.
+
+    It bounds no ramp. Since #126 the ramp derives both of its ages from the
+    leg that produced the observation, through
+    `fbe.datasources.registry.full_weight_age` and
+    `fbe.datasources.registry.staleness_allowance`, so nothing reads this to
+    decide what a real series is worth. Retiring the sentinel itself, and this
+    field with it, belongs with the decision on how an absent pillar is marked,
+    and issue #223 carries it. The note a sentinel produces quotes an age that
+    is not the reason for the absence, which #173 recorded.
+    """
     max_dispersion: float = 1.20
     """Dispersion above which conviction is demoted one step, in
     ``bias.conviction_for``. Compared against ``CurrencyScore.dispersion``,
@@ -495,9 +506,6 @@ class Config:
 
         The orderings, each one read by a named consumer:
 
-            ``0 < staleness_full_days < max_staleness_days``, the ramp in
-            ``scoring.apply_staleness_penalty``.
-
             ``0 < min_spread_low < min_spread_medium < min_spread_high``, the
             tiers in ``bias.conviction_for``.
 
@@ -515,15 +523,6 @@ class Config:
         """
         problems: list[str] = []
         s = self.scoring
-        if s.staleness_full_days <= 0:
-            problems.append(
-                f"staleness_full_days is {s.staleness_full_days}, expected above 0"
-            )
-        if s.staleness_full_days >= s.max_staleness_days:
-            problems.append(
-                f"staleness_full_days {s.staleness_full_days} must be below "
-                f"max_staleness_days {s.max_staleness_days}"
-            )
         if s.min_spread_low <= 0.0:
             problems.append(f"min_spread_low is {s.min_spread_low}, expected above 0")
         if s.min_spread_low >= s.min_spread_medium:

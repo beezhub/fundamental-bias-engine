@@ -886,20 +886,45 @@ own release calendar rather than measured in absolute days.
 describes, `2026-08-01` for August 2026 and `2026-04-01` for 2026Q2, so an
 input's age is the days since its period began, never since it was published.
 
-**The ramp.** For one input, let `s` be its age in days from `Observation.period`,
-`S` be that indicator's allowance, and `s0 = S * (staleness_full_days /
-max_staleness_days)`, one third of `S` on the shipped defaults:
+**The ramp.** For one input, let `s` be its age in days from
+`Observation.period`, and let `lag` and `cycle` be two facts about the leg that
+published it:
+
+    s0 = lag + cycle             the oldest a punctual newest print gets
+    S  = lag + 2 * cycle         one full cycle late, and worth nothing
 
     phi = 1.0                    for s <= s0
     phi = (S - s) / (S - s0)     for s0 < s <= S
     phi = 0.0                    for s > S
 
-`S` is `IndicatorSpec.max_staleness_days` from `datasources/registry.py`, which
-is the only module that knows the release calendar, and
-`ScoringConfig.max_staleness_days` (45) where the registry has no entry for the
-key. `ScoringConfig` supplies the shape of the ramp, the ratio of
-`staleness_full_days` to `max_staleness_days`, not its length. `scoring.freshness`
-computes it and `pillars/base.staleness_allowance` resolves `S`.
+`lag` is the days from a period starting to that leg's source publishing it,
+resolved by `registry.publication_lag`: `SeriesRef.publication_lag_days` where
+it has been measured, and `DEFAULT_PUBLICATION_LAG_DAYS` for the observation's
+frequency otherwise. It is the same number `BasePillar._visible` uses to decide
+whether a historical run could have seen the observation at all, so "when does
+this source publish this series" is stated once and read twice.
+
+`cycle` is `CYCLE_DAYS` for that frequency, the longest calendar gap between
+consecutive periods of a punctual series. Under the default lag table:
+
+| Frequency | `lag` | `cycle` | `s0` | `S` |
+| --- | --- | --- | --- | --- |
+| daily | 1 | 4 | 5 | 9 |
+| weekly | 7 | 7 | 14 | 21 |
+| monthly | 45 | 31 | 76 | 107 |
+| quarterly | 120 | 92 | 212 | 304 |
+| annual | 552 | 366 | 918 | 1284 |
+
+The frequency is the observation's own, which every source copies from
+`SeriesRef.frequency`, never the parent `IndicatorSpec.frequency`: 36 legs
+differ from their spec's, and a rule keyed on the spec calls a punctual
+quarterly print 44 days late. A leg carrying a measured lag shifts both of its
+own bounds by the difference and nothing else.
+
+Both tables live in `datasources/registry.py`, which is the only module that
+knows the release calendar. `scoring.freshness` is arithmetic and takes `s0`
+and `S` as arguments; `BasePillar.component_freshness` resolves them per leg
+through `registry.full_weight_age` and `registry.staleness_allowance`.
 
 **Why the ramp is not measured in absolute days.** `Observation.period` is the
 first day of the span a figure describes, so a punctual monthly print is 30 to 45
@@ -911,35 +936,51 @@ GROWTH, EMPLOYMENT, EXTERNAL and the CPI leg of MONETARY. Quarterly CPI for AUD
 and NZD was the visible case, at 162 days against a ramp that ended at 45, but it
 was not the only one.
 
+**Why the ramp is derived from the leg rather than from the indicator.** A
+cadence is not a lateness. The allowance used to be hand-keyed per indicator
+and `s0` a fixed fraction of it, which meant a quarterly print began life on
+the falling part of its own ramp: 120 days old on the day it was first visible,
+against an `s0` of 60 to 90. AUD and NZD carried 0.6 of their declared
+inflation weight on publication day and 0.225 by the end of the quarter, while
+the six currencies whose CPI is monthly carried all of theirs. That ranks a
+currency by its statistics office's calendar. Nine indicators reached `phi = 0`
+before their next print was due, on punctual data, because a hand-keyed
+allowance sat below the oldest age a punctual print reaches. Deriving both
+bounds from the leg removes the class of defect rather than the nine instances.
+Issue #126 and decision record 0014 carry the measurements.
+
 Worked: AUD headline CPI is stamped 2026-04-01 for 2026Q2. On a run dated
-2026-09-10 that is 162 days. `cpi_yoy` carries an allowance of 200 days, so
-`s0 = 200 * 15 / 45 = 66.67` and
+2026-09-10 that is 162 days. The leg is quarterly and publishes 120 days after
+its quarter starts, so `s0 = 120 + 92 = 212` and `S = 120 + 184 = 304`:
 
-    phi = (200 - 162) / (200 - 66.67) = 38 / 133.33 = 0.285
+    162 <= 212, so phi = 1.0
 
-against 0.0 under a 45-day ramp. The INFLATION pillar's effective weight for AUD
-is `0.15 * 0.285 = 0.0428`.
+The INFLATION pillar's effective weight for AUD is the configured `0.15`. The
+same print was worth 0.0 under a single 45-day ramp and 0.285 under the
+per-indicator allowance that replaced it. It stops being worth anything at 304
+days, which is one full quarter after the next print was due.
 
-**One rule, two modules.** `registry.coverage_report` already ages every series
-against the same allowance, with `SeriesRef.stale_on` comparing `age > S`. The
-ramp reaches zero at `s = S`, the last day the registry still counts a series as
-usable, so the scoring side is never the more permissive of the two. Before this
-they gave two answers about the same series: the registry reported AUD CPI as
-covered while the scorer gave it no weight.
+**One rule, two modules.** `registry.coverage_report` ages every series
+against the same `S`, with `SeriesRef.stale_on` comparing `age > S`, and both
+sides derive it from the same leg through `registry.staleness_allowance`. The
+ramp reaches zero at `s = S`, the last day the registry still counts a series
+as usable, so the scoring side is never the more permissive of the two. Before
+this they gave two answers about the same series: the registry reported AUD CPI
+as covered while the scorer gave it no weight.
 
-**Two levels.** Inside a pillar each component is aged against its own
-indicator's allowance by `BasePillar.component_freshness`, and a component built
-from two series takes the lower of their factors. The components enter the blend
-of section 2.3 at `u_j * phi_j`. Take a two-component blend carrying GROWTH's GDP
-and retail sales sub-weights, 0.30 and 0.20: a 162-day-old GDP print at
-`phi = 0.600` against a 5-day-old retail sales print at `phi = 1.000` gives GDP
-`0.180 / 0.380`, which is 0.474 of the blend where those two sub-weights alone
-would give it 0.600.
+**Two levels.** Inside a pillar each component is aged against its own leg's
+bounds by `BasePillar.component_freshness`, and a component built from two
+series takes the lower of their factors. The components enter the blend of
+section 2.3 at `u_j * phi_j`. Take a two-component blend carrying GROWTH's GDP
+and retail sales sub-weights, 0.30 and 0.20: a GDP print half a cycle late at
+`phi = 0.500`, which is 258 days for a quarterly leg, against a 5-day-old
+retail sales print at `phi = 1.000` gives GDP `0.150 / 0.350`, which is 0.429
+of the blend where those two sub-weights alone would give it 0.600.
 
 That is an illustration of the arithmetic and not a state GROWTH can reach, and
 the difference is worth stating because the figure has been read as the latter.
-GROWTH carries four components, so the same GDP print at `phi = 0.600` alongside
-three fresh ones takes `0.180 / 0.880`, which is 0.205 against the 0.300 its
+GROWTH carries four components, so the same GDP print at `phi = 0.500` alongside
+three fresh ones takes `0.150 / 0.850`, which is 0.176 against the 0.300 its
 sub-weight alone would give it. A GROWTH currency holding only GDP and retail
 sales holds exactly 0.50 of the sub-weight, which is `MIN_COMPONENT_WEIGHT`, so
 `BasePillar.blend_components` returns `None` for it and there is no blend to take

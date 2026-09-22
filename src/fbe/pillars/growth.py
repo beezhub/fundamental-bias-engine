@@ -197,12 +197,12 @@ class GrowthPillar(BasePillar):
         currency holds has expired is only reachable if late readings arrive
         there as values.
 
-        The allowance comes from the registry, per
-        `fbe.pillars.base.staleness_allowance`, not from
-        ``ScoringConfig.max_staleness_days``. That matters most here: this
-        pillar's survey is quarterly for half the universe and carries 270 days,
-        so the global 45 would expire four currencies' legs on the day they
-        published.
+        The ramp is derived from each leg, per
+        `fbe.datasources.registry.staleness_allowance`, not from a global. That
+        matters most here: this pillar's survey is quarterly for half the
+        universe, so any single figure expires one half of it or flatters the
+        other. Since #126 a punctual survey print carries full weight whichever
+        half it is in.
 
         All four components are levels, taken as published. The three
         year-on-year series are in comparable percent units and the survey

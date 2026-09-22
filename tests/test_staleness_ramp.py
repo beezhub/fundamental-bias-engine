@@ -40,16 +40,16 @@ import pytest
 import fbe.scoring as scoring_module
 from fbe.config import ScoringConfig
 from fbe.datasources.registry import (
+    CYCLE_DAYS,
     DEFAULT_PUBLICATION_LAG_DAYS,
     INDICATORS,
+    full_weight_age,
     publication_lag,
     series_for,
-)
-from fbe.pillars import default_pillars
-from fbe.pillars.base import (
-    BasePillar,
     staleness_allowance,
 )
+from fbe.pillars import default_pillars
+from fbe.pillars.base import BasePillar
 from fbe.pillars.growth import GrowthPillar
 from fbe.pillars.inflation import InflationPillar
 from fbe.pillars.monetary import MonetaryPillar
@@ -95,72 +95,76 @@ def _days_before(days: int) -> date:
 # ----------------------------------------------------------------------
 
 
-def test_the_default_ramp_still_matches_the_published_formula() -> None:
-    """Section 4.1's ramp is unchanged where no allowance is supplied.
+def test_the_ramp_shape_is_unchanged_on_the_bounds_it_is_given() -> None:
+    """Section 4.1's shape, now that both bounds arrive as arguments.
 
-    With the shipped defaults the ramp runs 15 to 45 days, so this is the
-    regression guard on every currency and pillar whose indicator the registry
-    does not know.
+    The ramp is still flat to ``s0``, linear to ``S`` and zero past it. What
+    #126 changed is where those two ages come from: the leg, rather than a
+    configured ratio of a hand-keyed allowance. Written on the old 15 and 45
+    so the shape can be compared against the published formula directly.
     """
-    assert freshness(0, CONFIG) == 1.0
-    assert freshness(15, CONFIG) == 1.0
-    assert freshness(30, CONFIG) == pytest.approx(0.5)
-    assert freshness(45, CONFIG) == 0.0
-    assert freshness(46, CONFIG) == 0.0
+    assert freshness(0, 15, 45) == 1.0
+    assert freshness(15, 15, 45) == 1.0
+    assert freshness(30, 15, 45) == pytest.approx(0.5)
+    assert freshness(45, 15, 45) == 0.0
+    assert freshness(46, 15, 45) == 0.0
 
 
-def test_quarterly_cpi_has_no_weight_under_the_default_ramp() -> None:
-    """The defect, stated as arithmetic.
+def test_the_quarterly_cpi_print_that_had_no_weight_now_has_all_of_it() -> None:
+    """The defect and its fix, stated as arithmetic on the same print.
 
     AUD and NZD headline CPI is stamped 2026-04-01 on a run dated 2026-09-10,
-    which is 162 days. Against the 45-day default the factor is 0.0 and the
-    INFLATION pillar contributes nothing to those two currencies.
+    which is 162 days. Against the 45-day global ramp the factor was 0.0.
+    Issue #8 raised it to 0.285 by giving the indicator a 200-day allowance,
+    which still started its discount at 200/3. The leg publishes 120 days
+    after its quarter starts and the next print is due 92 days later, so
+    nothing is late until 212 days and this print is worth all of its weight.
     """
     assert (ASOF - date(2026, 4, 1)).days == 162
-    assert freshness(162, CONFIG) == 0.0
+    assert freshness(162, AUD_CPI_S0, AUD_CPI_S) == 1.0
 
 
-def test_the_ramp_scales_to_the_indicators_own_allowance() -> None:
-    """The same 162-day print against `cpi_yoy`'s 200-day allowance.
+def test_the_same_print_is_judged_by_its_own_legs_calendar() -> None:
+    """One indicator, two legs, two answers, and the age is the same.
 
-    Full weight runs to ``200 * 15 / 45 = 66.67`` days and the ramp reaches zero
-    at 200, so the factor is ``(200 - 162) / (200 - 66.67) = 0.285``.
+    ``cpi_yoy`` is quarterly for AUD and monthly for USD. At 162 days the
+    Australian print is punctual, inside its 212-day window. The American one
+    is five months past a monthly release and long past its 107-day ceiling.
+    A ramp keyed on the indicator rather than the leg has to give one answer
+    for both, and either answer is wrong for one of them.
     """
-    assert freshness(162, CONFIG, allowance_days=200) == pytest.approx(0.285)
+    assert freshness(162, AUD_CPI_S0, AUD_CPI_S) == 1.0
+    assert freshness(162, 76, 107) == 0.0
 
 
-def test_aud_inflation_carries_weight_after_the_fix() -> None:
-    """Effective pillar weight for AUD INFLATION, before and after.
+def test_aud_inflation_carries_its_whole_configured_weight() -> None:
+    """Effective pillar weight for AUD INFLATION, through three stages.
 
-    Before: ``0.15 * 0.0 = 0.0``, so INFLATION drops out of AUD's coverage
-    entirely. After: ``0.15 * 0.285 = 0.042750``.
+    The 45-day global ramp gave ``0.15 * 0.0 = 0.0`` and INFLATION dropped out
+    of AUD's coverage entirely. Issue #8's allowance gave ``0.15 * 0.285``.
+    Deriving the ramp from the leg gives ``0.15 * 1.0``, which is the whole
+    point: the declared weight is the operative weight for a punctual print,
+    whatever its cadence.
     """
     weight = CONFIG.weights[InflationPillar.name]
-    assert weight * freshness(162, CONFIG) == 0.0
-    assert weight * freshness(162, CONFIG, allowance_days=200) == pytest.approx(0.04275)
+
+    assert weight * freshness(162, AUD_CPI_S0, AUD_CPI_S) == pytest.approx(0.15)
 
 
-def test_a_punctual_print_of_every_registered_indicator_carries_weight() -> None:
-    """The registry walk. No series may be born stale.
-
-    `DEFAULT_PUBLICATION_LAG_DAYS` is the age at which a series with no
-    ``released_at`` is first admitted by the visibility rule in
-    `BasePillar._extract`. An indicator admitted at that age and then given zero
-    weight by the ramp can never contribute to a score at all, which is the
-    widened form of this defect: it reaches every monthly and quarterly series
-    in the model, not only quarterly CPI.
+def test_the_registry_walk_moved_to_the_per_leg_file() -> None:
+    """This file's walk aged every indicator at
+    ``DEFAULT_PUBLICATION_LAG_DAYS[spec.frequency]``, the parent spec's
+    cadence. 36 legs carry a frequency their spec does not, so the walk was
+    reading a monthly ramp for quarterly legs, which is part of why #126
+    survived this long. ``tests/test_ramp_from_the_leg.py`` walks the same
+    ground per leg, and this placeholder records why the walk is not here.
     """
-    born_stale = [
-        key
-        for key, spec in INDICATORS.items()
-        if freshness(
-            DEFAULT_PUBLICATION_LAG_DAYS[spec.frequency],
-            CONFIG,
-            allowance_days=spec.max_staleness_days,
-        )
-        <= 0.0
-    ]
-    assert born_stale == []
+    import tests.test_ramp_from_the_leg as per_leg
+
+    assert hasattr(per_leg, "test_no_registered_leg_is_born_stale")
+    assert hasattr(
+        per_leg, "test_no_registered_leg_reaches_zero_before_its_next_print_is_due"
+    )
 
 
 def test_the_ramp_is_never_more_permissive_than_the_registry() -> None:
@@ -173,12 +177,12 @@ def test_the_ramp_is_never_more_permissive_than_the_registry() -> None:
     """
     checks = (("cpi_yoy", "AUD"), ("gdp_yoy", "USD"), ("yield_2y", "GBP"))
     for indicator, currency in checks:
-        spec = INDICATORS[indicator]
         ref = series_for(indicator, currency)
         assert ref is not None
-        allowance = spec.max_staleness_days
+        allowance = staleness_allowance(ref, ref.frequency)
+        full = full_weight_age(ref, ref.frequency)
         for age in range(0, allowance + 30):
-            factor = freshness(age, CONFIG, allowance_days=allowance)
+            factor = freshness(age, full, allowance)
             stale = ref.stale_on(
                 date.fromordinal(ref.last_observed.toordinal() + age)  # type: ignore[union-attr]
                 if ref.last_observed is not None
@@ -191,15 +195,16 @@ def test_the_ramp_is_never_more_permissive_than_the_registry() -> None:
                 assert factor == 0.0, f"{indicator}/{currency} at {age} days"
 
 
-def test_freshness_reads_the_ramp_shape_from_config() -> None:
-    """Override the config and confirm the answer moves.
-
-    A test that passes because a literal happens to equal a default proves
-    nothing, so this widens the full-weight window and checks the factor rises.
+def test_the_ramp_reads_no_config_at_all() -> None:
+    """It used to take its shape from ``staleness_full_days`` over
+    ``max_staleness_days`` and its ceiling from the indicator's allowance. Both
+    are gone: a caller that knows the leg passes both ages, and a configured
+    number that nothing reads would be the config-drift defect in reverse.
     """
-    wider = ScoringConfig(staleness_full_days=30)
-    assert freshness(160, CONFIG, allowance_days=200) == pytest.approx(0.3)
-    assert freshness(160, wider, allowance_days=200) == pytest.approx(0.6)
+    import inspect
+
+    assert "config" not in inspect.signature(freshness).parameters
+    assert not hasattr(ScoringConfig(), "staleness_full_days")
 
 
 def test_freshness_rejects_a_non_positive_allowance() -> None:
@@ -213,19 +218,28 @@ def test_freshness_rejects_a_non_positive_allowance() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_allowance_comes_from_the_registry_and_falls_back_to_config() -> None:
-    """The registry owns the release calendar; config owns the default."""
-    assert staleness_allowance("cpi_yoy", CONFIG) == 200
-    assert staleness_allowance("gdp_yoy", CONFIG) == 270
-    assert staleness_allowance("yield_2y", CONFIG) == 10
-    assert staleness_allowance("cb_guidance_tone", CONFIG) == CONFIG.max_staleness_days
+def test_the_allowance_comes_from_the_leg_and_needs_no_fallback() -> None:
+    """The registry owns the release calendar, and now owns both ages.
 
+    There is no config fallback left to reach for. A key the registry does not
+    carry still has an observation with a frequency on it, so the frequency
+    tables answer for it, which is the same answer `BasePillar._visible` gives
+    the same observation. One unknown key cannot take a different ramp from
+    the rule that decided whether the run could see it at all.
+    """
+    aud_cpi = series_for("cpi_yoy", "AUD")
+    usd_cpi = series_for("cpi_yoy", "USD")
+    assert aud_cpi is not None and usd_cpi is not None
 
-def test_the_allowance_fallback_is_wired_to_config_not_to_a_literal() -> None:
-    """Change the default and the fallback moves; the registry value does not."""
-    other = ScoringConfig(max_staleness_days=90)
-    assert staleness_allowance("cb_guidance_tone", other) == 90
-    assert staleness_allowance("cpi_yoy", other) == 200
+    # Same indicator, two cadences, two ramps. 120 + 92 and 45 + 31.
+    assert full_weight_age(aud_cpi, aud_cpi.frequency) == 212
+    assert staleness_allowance(aud_cpi, aud_cpi.frequency) == 304
+    assert full_weight_age(usd_cpi, usd_cpi.frequency) == 76
+    assert staleness_allowance(usd_cpi, usd_cpi.frequency) == 107
+
+    # An unregistered key falls to the frequency tables, not to a global.
+    assert full_weight_age(None, Frequency.MONTHLY) == 76
+    assert staleness_allowance(None, Frequency.MONTHLY) == 107
 
 
 def test_pillar_indicator_keys_without_a_registry_allowance_are_pinned() -> None:
@@ -276,12 +290,14 @@ def test_every_component_declares_the_indicators_it_is_aged_against() -> None:
 
 
 def test_components_of_one_pillar_are_aged_separately() -> None:
-    """GROWTH with a five-month-old GDP print and a five-day-old retail print.
+    """GROWTH with a GDP print half a quarter late and a fresh retail print.
 
     A single pillar-level scalar cannot say that, which is the reason the
-    discount moved to the component. GDP is 162 days old against its 270-day
-    allowance, so its factor is ``(270 - 162) / (270 - 90) = 0.600``; retail
-    sales at 5 days is inside its 90-day full-weight window and takes 1.0.
+    discount moved to the component. US GDP is quarterly: published 120 days
+    after the quarter starts, due again 92 days later, so nothing is late
+    until 212 days and the weight is gone at 304. At 258 days it is exactly
+    half a cycle late, ``(304 - 258) / (304 - 212) = 0.5``. Retail sales at 5
+    days is inside its own full-weight window and takes 1.0.
     """
     pillar = GrowthPillar()
     extracted = {
@@ -289,7 +305,7 @@ def test_components_of_one_pillar_are_aged_separately() -> None:
             _obs(
                 "gdp_yoy",
                 "USD",
-                _days_before(162),
+                _days_before(258),
                 frequency=Frequency.QUARTERLY,
             )
         ],
@@ -297,24 +313,24 @@ def test_components_of_one_pillar_are_aged_separately() -> None:
     }
     factors = pillar.component_freshness(extracted, ASOF)
     assert factors == {
-        "gdp_yoy": pytest.approx(0.600),
+        "gdp_yoy": pytest.approx(0.500),
         "retail_sales_yoy": pytest.approx(1.0),
     }
 
 
 def test_a_stale_component_enters_the_blend_at_a_reduced_sub_weight() -> None:
-    """GDP's share of the GROWTH blend falls from 0.60 to 0.474.
+    """GDP's share of the GROWTH blend falls from 0.60 to 0.4286.
 
-    The two components present carry 0.30 and 0.20. Discounted they carry
-    ``0.30 * 0.600 = 0.180`` and ``0.20 * 1.000 = 0.200``, so GDP takes
-    ``0.180 / 0.380 = 0.4737`` of the blend where the configured sub-weights
-    alone would give it ``0.30 / 0.50 = 0.600``.
+    The two components present carry 0.30 and 0.20. With GDP half a cycle
+    late they carry ``0.30 * 0.500 = 0.150`` and ``0.20 * 1.000 = 0.200``, so
+    GDP takes ``0.150 / 0.350 = 0.4286`` of the blend where the configured
+    sub-weights alone would give it ``0.30 / 0.50 = 0.600``.
     """
     pillar = GrowthPillar()
     factors = pillar.component_freshness(
         {
             "gdp_yoy": [
-                _obs("gdp_yoy", "USD", _days_before(162), frequency=Frequency.QUARTERLY)
+                _obs("gdp_yoy", "USD", _days_before(258), frequency=Frequency.QUARTERLY)
             ],
             "retail_sales_yoy": [_obs("retail_sales_yoy", "USD", _days_before(5))],
         },
@@ -323,8 +339,8 @@ def test_a_stale_component_enters_the_blend_at_a_reduced_sub_weight() -> None:
     weights = pillar.component_weights
     discounted = {key: weights[key] * phi for key, phi in factors.items()}
     total = sum(discounted.values())
-    assert discounted["gdp_yoy"] == pytest.approx(0.180)
-    assert discounted["gdp_yoy"] / total == pytest.approx(0.4737, abs=5e-4)
+    assert discounted["gdp_yoy"] == pytest.approx(0.150)
+    assert discounted["gdp_yoy"] / total == pytest.approx(0.4286, abs=5e-4)
 
 
 def test_a_component_with_no_data_is_absent_not_zero() -> None:
@@ -348,9 +364,10 @@ def test_a_component_with_no_data_is_absent_not_zero() -> None:
 def test_a_component_is_as_stale_as_its_stalest_input() -> None:
     """MONETARY's real policy rate is a policy rate minus a CPI print.
 
-    The policy rate is a day old and CPI is 162 days old, so the component takes
-    CPI's factor. Taking the freshest input would let a daily series carry a
-    five-month-old one through the blend at full weight.
+    The policy rate is a day old and the quarterly CPI print is 258 days old,
+    half a cycle late at 0.5, so the component takes CPI's factor. Taking the
+    freshest input would let a daily series carry a late one through the blend
+    at full weight.
     """
     pillar = MonetaryPillar()
     extracted = {
@@ -358,20 +375,26 @@ def test_a_component_is_as_stale_as_its_stalest_input() -> None:
             _obs("policy_rate", "AUD", _days_before(1), frequency=Frequency.DAILY)
         ],
         "cpi_yoy": [
-            _obs("cpi_yoy", "AUD", _days_before(162), frequency=Frequency.QUARTERLY)
+            _obs("cpi_yoy", "AUD", _days_before(258), frequency=Frequency.QUARTERLY)
         ],
     }
     factors = pillar.component_freshness(extracted, ASOF)
-    assert factors["real_policy_rate"] == pytest.approx(0.285)
+    assert factors["real_policy_rate"] == pytest.approx(0.5)
     assert factors["policy_rate"] == pytest.approx(1.0)
 
 
 def test_pillar_freshness_is_the_sub_weighted_mean_of_its_components() -> None:
-    """AUD INFLATION on 2026-09-10, both components stamped 2026-04-01.
+    """AUD INFLATION on 2026-09-10, with one component late and one punctual.
 
-    Both factors are 0.285, so the sub-weighted mean over the components present
-    is 0.285 and the pillar's effective weight is ``0.15 * 0.285 = 0.042750``,
-    against 0.0 before this change.
+    Headline CPI is stamped 2026-04-01, which is 162 days and inside the
+    212-day full-weight window, so it takes 1.0. Core is stamped 258 days back,
+    half a cycle late at 0.5. The sub-weights are 0.40 and 0.60, so the mean is
+    ``0.40 * 1.0 + 0.60 * 0.5 = 0.70`` and the pillar's effective weight is
+    ``0.15 * 0.70 = 0.105``.
+
+    Two different factors on purpose. With both components on one release they
+    always carry the same factor, and a mean of one number cannot tell a
+    sub-weighted mean from a plain one.
     """
     pillar = InflationPillar()
     extracted = {
@@ -379,12 +402,18 @@ def test_pillar_freshness_is_the_sub_weighted_mean_of_its_components() -> None:
             _obs("cpi_yoy", "AUD", date(2026, 4, 1), frequency=Frequency.QUARTERLY)
         ],
         "core_cpi_yoy": [
-            _obs("core_cpi_yoy", "AUD", date(2026, 4, 1), frequency=Frequency.QUARTERLY)
+            _obs(
+                "core_cpi_yoy",
+                "AUD",
+                _days_before(258),
+                frequency=Frequency.QUARTERLY,
+            )
         ],
     }
     factor = pillar.pillar_freshness(extracted, ASOF)
-    assert factor == pytest.approx(0.285)
-    assert CONFIG.weights[InflationPillar.name] * factor == pytest.approx(0.04275)
+    assert pillar.component_weights == {"cpi_gap": 0.40, "core_gap": 0.60}
+    assert factor == pytest.approx(0.70)
+    assert CONFIG.weights[InflationPillar.name] * factor == pytest.approx(0.105)
 
 
 def test_pillar_freshness_of_a_pillar_with_no_inputs_is_zero() -> None:
@@ -628,6 +657,23 @@ def test_the_docstring_names_missing_score_as_the_path_for_an_absent_pillar() ->
 # The factor reaching the composite
 # ----------------------------------------------------------------------
 
+MONTHLY_CPI = tuple(
+    currency
+    for currency, ref in INDICATORS["cpi_yoy"].series.items()
+    if ref.frequency is Frequency.MONTHLY
+)
+"""The six currencies whose CPI leg is monthly, read off the registry rather
+than typed. AUD and NZD are quarterly and have their own ramp, which is the
+whole of issue #126, so a test about a monthly boundary cannot include them."""
+
+AUD_CPI_S0 = 212
+"""``lag + cycle`` for AUD headline CPI: quarterly, published 120 days after
+the quarter starts, next print due 92 days later. Read off ADR 0014's table
+and checked against the registry below."""
+
+AUD_CPI_S = 304
+"""``lag + 2 * cycle`` for the same leg."""
+
 PUNCTUAL_MONTHLY_AGE = DEFAULT_PUBLICATION_LAG_DAYS[Frequency.MONTHLY]
 """Age of a monthly print on the day the visibility rule first admits it.
 
@@ -644,13 +690,30 @@ def _inflation_observations(age_days: int) -> list[Observation]:
     standardise fewer than three usable readings, and a flat cross-section has
     no spread to normalise against, so every ``z`` would come back ``None`` and
     the test would pass on an absence rather than on a score.
+
+    Each observation carries its own leg's frequency, which is what a source
+    stamps it with. Two of the eight CPI legs are quarterly, so a single age
+    means two different distances into the ramp, and a caller asserting on a
+    boundary uses `MONTHLY_CPI` rather than the whole universe.
     """
     period = _days_before(age_days)
     return [
-        _obs(indicator, currency, period, value=1.0 + offset * 0.25)
+        _obs(
+            indicator,
+            currency,
+            period,
+            value=1.0 + offset * 0.25,
+            frequency=_leg_frequency(indicator, currency),
+        )
         for offset, currency in enumerate(G10)
         for indicator in ("cpi_yoy", "core_cpi_yoy")
     ]
+
+
+def _leg_frequency(indicator: str, currency: str) -> Frequency:
+    """The frequency a source would stamp on this leg's observations."""
+    ref = series_for(indicator, currency)
+    return ref.frequency if ref is not None else INDICATORS[indicator].frequency
 
 
 def _inflation_through_the_scorer(
@@ -743,77 +806,78 @@ def test_a_currency_with_no_data_leaves_the_scorer_carrying_no_weight() -> None:
 def test_a_punctual_monthly_pillar_keeps_its_weight_through_the_scorer() -> None:
     """Issue #162, criterion 1. A punctual print carries close to its full weight.
 
-    CPI stamped 45 days before the run is the ordinary case, not a late one.
-    Its allowance is 200 days, full weight runs to ``200 * 15 / 45 = 66.67``
-    days, and 45 is inside that, so the factor is 1.0 and INFLATION leaves the
-    scorer with the whole 0.15 the configuration gave it.
+    CPI stamped 45 days before the run is the ordinary case for a monthly leg,
+    not a late one: the leg publishes at 45 days and the next print is due 31
+    days later, so nothing is late until 76 and the factor is 1.0. INFLATION
+    leaves the scorer with the whole 0.15 the configuration gave it.
 
     Before the fix the scorer judged the same print against the global 45-day
     ceiling, where `freshness` is exactly 0.0, so the weight was 0.0 and ``z``
     was cleared.
+
+    The two quarterly legs are not in this: at 45 days their print is not yet
+    published, so `BasePillar._visible` has not admitted it and the currency is
+    absent rather than discounted. That is the visibility rule doing its job,
+    and `test_real_pillars_reach_a_usable_composite_on_ordinary_inputs` is
+    where the quarterly legs are scored at their own punctual age.
     """
     scores = _inflation_through_the_scorer(
         _inflation_observations(PUNCTUAL_MONTHLY_AGE)
     )
     configured = CONFIG.weights[PillarName.INFLATION]
 
-    for currency in G10:
+    for currency in MONTHLY_CPI:
         score = scores[currency]
         assert score.z is not None, f"{currency} lost its score to the ramp"
         assert score.weight == pytest.approx(configured)
 
 
-def test_the_registry_allowance_decides_the_weight_the_scorer_applies() -> None:
-    """Issue #162, criterion 2. Override an allowance and the weight moves.
+def test_the_legs_own_cycle_decides_the_weight_the_scorer_applies() -> None:
+    """Issue #162, criterion 2, restated on what the ramp now reads.
 
-    With CPI's allowance cut from 200 days to 60, full weight runs to
-    ``60 * 15 / 45 = 20`` days and the ramp reaches zero at 60, so a 45-day-old
-    print sits at ``(60 - 45) / (60 - 20) = 0.375`` and the pillar leaves with
-    ``0.15 * 0.375 = 0.05625``.
+    The allowance is no longer a field to override, so the equivalent lever is
+    the leg's cycle. Shortening the monthly cycle from 31 days to 10 moves both
+    bounds: full weight to ``45 + 10 = 55`` and zero at ``45 + 20 = 65``. A
+    45-day-old print is punctual either way, so the test ages it to 60 days,
+    where the shipped tables give 1.0 (inside 76) and the shortened one gives
+    ``(65 - 60) / (65 - 55) = 0.5``.
 
-    The override is the point. A test that only checked the 200-day answer
-    would still pass if the implementation read the global default and happened
-    to agree.
+    The override is the point. A test that only checked the shipped answer
+    would still pass if the implementation read a global and happened to agree.
     """
-    observations = _inflation_observations(PUNCTUAL_MONTHLY_AGE)
+    observations = _inflation_observations(60)
     configured = CONFIG.weights[PillarName.INFLATION]
 
     full = _inflation_through_the_scorer(observations)
-    narrowed = {
-        key: (
-            replace(spec, max_staleness_days=60)
-            if key in ("cpi_yoy", "core_cpi_yoy")
-            else spec
-        )
-        for key, spec in INDICATORS.items()
-    }
+    shortened = {**CYCLE_DAYS, Frequency.MONTHLY: 10}
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr("fbe.pillars.base.INDICATORS", narrowed)
+        patch.setattr("fbe.datasources.registry.CYCLE_DAYS", shortened)
         reduced = _inflation_through_the_scorer(observations)
 
-    for currency in G10:
+    for currency in MONTHLY_CPI:
         assert full[currency].weight == pytest.approx(configured)
-        assert reduced[currency].weight == pytest.approx(configured * 0.375)
+        assert reduced[currency].weight == pytest.approx(configured * 0.5)
 
 
 def test_a_pillar_genuinely_past_its_allowance_still_loses_its_weight() -> None:
-    """Issue #162, criterion 3. The ramp still bites, either side of the boundary.
+    """Issue #162, criterion 3. The ramp still bites, either side of the edge.
 
-    CPI's allowance is 200 days. At 199 the factor is
-    ``(200 - 199) / (200 - 66.67) = 0.0075``, so the pillar survives on a
-    sliver of weight. At 200 it is 0.0, the weight is zero and ``z`` is cleared,
-    which is the marker the aggregator reads.
+    A monthly CPI leg is worth nothing from 107 days: ``45 + 2 * 31``. At 106
+    the factor is ``(107 - 106) / (107 - 76) = 1 / 31``, so the pillar survives
+    on a sliver of weight. At 107 it is 0.0, the weight is zero and ``z`` is
+    cleared, which is the marker the aggregator reads.
 
-    This is the half of the fix that could have been lost. Scaling the ramp to
-    the registry must not turn it off.
+    This is the half of the fix that could have been lost. Deriving the ramp
+    from the leg must not turn it off, and #126 is precisely a complaint that
+    it was turned on too early rather than that it should not exist.
     """
-    inside = _inflation_through_the_scorer(_inflation_observations(199))
-    past = _inflation_through_the_scorer(_inflation_observations(200))
+    inside = _inflation_through_the_scorer(_inflation_observations(106))
+    past = _inflation_through_the_scorer(_inflation_observations(107))
     configured = CONFIG.weights[PillarName.INFLATION]
 
-    for currency in G10:
+    for currency in MONTHLY_CPI:
         assert inside[currency].z is not None
-        assert inside[currency].weight == pytest.approx(configured * 0.0075)
+        assert inside[currency].weight == pytest.approx(configured * (1 / 31))
         assert past[currency].z is None
         assert past[currency].weight == 0.0
 
@@ -927,31 +991,66 @@ def test_real_pillars_reach_a_usable_composite_on_ordinary_inputs() -> None:
         # were never broken.
         inflation = row.pillars[PillarName.INFLATION]
         assert inflation.z is not None
-        if row.currency in QUARTERLY_CPI:
-            # #126, visible here since #222 made this fixture age each leg at
-            # its own lag: a punctual quarterly CPI print is 120 days old and
-            # the ramp #126 replaces discounts it to 0.6 of the declared
-            # weight. Pinned as a strict inequality so that #126 flips it
-            # rather than a later change quietly passing either way.
-            assert inflation.weight < CONFIG.weights[PillarName.INFLATION]
-        else:
-            assert inflation.weight == pytest.approx(
-                CONFIG.weights[PillarName.INFLATION]
-            )
-        # GROWTH is a pillar whose factor is not 1.0, so it is the one that
-        # catches a scorer applying a single factor to every pillar of a
-        # currency. Without this, a scorer that read the first pillar's factor
-        # and reused it passes the whole suite: the other ramp tests run one
-        # pillar at a time and the coverage floor sits 0.20 below the truth.
-        # The factor is not pinned: under the ramp #126 replaces, a punctual
-        # quarterly GDP print and the FRED-mirrored retail legs are discounted
-        # by amounts that differ per currency, and #126 is where the exact
-        # figure gets asserted. Here it is enough that it is below the
-        # configured weight and above zero while INFLATION's is exactly the
-        # configured weight.
+        # Flipped by #126, which is what this issue was about. #222 made this
+        # fixture age each leg at its own lag, which exposed the defect here:
+        # a punctual quarterly CPI print is 120 days old and the old ramp
+        # discounted it to 0.6 of the declared weight while the six monthly
+        # legs kept all of theirs. Every currency now carries the configured
+        # weight on a punctual print, whatever its cadence, and AUD and NZD
+        # are asserted alongside the rest rather than as an exception.
+        assert inflation.weight == pytest.approx(CONFIG.weights[PillarName.INFLATION])
+        # GROWTH mixes cadences within one pillar: a quarterly GDP leg, a
+        # monthly retail leg, and some of each slowed further by FRED's
+        # mirror. Before #126 those differences reached the weight, and the
+        # discount differed per currency for no reason but the calendar. All
+        # of them are punctual here, so all of them carry the configured
+        # weight. The test that a pillar's own factor reaches its own weight,
+        # rather than one factor being reused across a currency, is
+        # `test_one_late_leg_discounts_its_own_pillar_and_no_other` below.
         growth = row.pillars[PillarName.GROWTH]
         assert growth.z is not None
-        assert 0.0 < growth.weight < CONFIG.weights[PillarName.GROWTH]
+        assert growth.weight == pytest.approx(CONFIG.weights[PillarName.GROWTH])
+
+
+def test_one_late_leg_discounts_its_own_pillar_and_no_other() -> None:
+    """The guard the all-punctual fixture can no longer carry on its own.
+
+    A scorer that read one pillar's factor and reused it across the currency
+    passes every all-punctual assertion, because every factor is 1.0. So this
+    pushes exactly one leg late and checks the discount lands where it should
+    and nowhere else.
+
+    GDP for the United States is quarterly: punctual to 212 days, worthless at
+    304. At 258 it is half a cycle late, so its component factor is 0.5. All
+    four of GROWTH's components are present here and their sub-weights sum to
+    1.0, with GDP carrying 0.30, so the sub-weighted mean is
+    ``0.30 * 0.5 + 0.70 * 1.0 = 0.85`` and GROWTH leaves with
+    ``0.15 * 0.85 = 0.1275``. INFLATION, which shares no input with it, is
+    untouched.
+    """
+    observations = [
+        (
+            replace(observation, period=_days_before(258))
+            if observation.indicator == "gdp_yoy" and observation.currency == "USD"
+            else observation
+        )
+        for observation in _punctual_universe()
+    ]
+
+    scored = score_currencies(observations, default_pillars(CONFIG), CONFIG, ASOF)
+    rows = {row.currency: row for row in scored}
+
+    usd_growth = rows["USD"].pillars[PillarName.GROWTH]
+    assert usd_growth.weight == pytest.approx(0.1275, abs=5e-4)
+    assert rows["USD"].pillars[PillarName.INFLATION].weight == pytest.approx(
+        CONFIG.weights[PillarName.INFLATION]
+    )
+    for currency in G10:
+        if currency == "USD":
+            continue
+        assert rows[currency].pillars[PillarName.GROWTH].weight == pytest.approx(
+            CONFIG.weights[PillarName.GROWTH]
+        ), f"{currency} was discounted by the United States' late print"
 
 
 class _FactorDouble:
@@ -998,18 +1097,14 @@ def test_the_scorer_takes_the_pillars_factor_rather_than_the_default_ramp() -> N
     the full weight; a scorer reading the factor takes a quarter of it. The two
     cannot both pass.
 
-    The withheld case reports no factor at 30 days, where the ramp is 0.5, and is
-    the half that pins the documented fallback. At 0 days it would pin nothing:
-    the ramp answers 1.0 there and so does a quiet ``factor = 1.0`` default, so
-    an implementation that dropped the fallback entirely would still pass. The
-    age is 30 for exactly that reason.
+    The withheld case used to pin a documented fallback to a global ramp. Since
+    #126 there is no ramp this module can apply without knowing the leg, so a
+    pillar that reports no factor is refused rather than guessed at, and the
+    withheld half asserts the refusal reaches the caller instead.
     """
     configured = CONFIG.weights[PillarName.INFLATION]
 
     supplied = score_currencies([], [_FactorDouble(0.25)], CONFIG, ASOF)
-    withheld = score_currencies(
-        [], [_FactorDouble(None, staleness_days=30)], CONFIG, ASOF
-    )
 
     for row in supplied:
         score = row.pillars[PillarName.INFLATION]
@@ -1020,7 +1115,5 @@ def test_the_scorer_takes_the_pillars_factor_rather_than_the_default_ramp() -> N
         # factor from a pillar that never ran.
         assert score.z is not None, "the double did not score; it raised"
         assert score.weight == pytest.approx(configured * 0.25)
-    for row in withheld:
-        score = row.pillars[PillarName.INFLATION]
-        assert score.z is not None, "the double did not score; it raised"
-        assert score.weight == pytest.approx(configured * 0.5)
+    with pytest.raises(ValueError, match="no freshness factor"):
+        score_currencies([], [_FactorDouble(None, staleness_days=30)], CONFIG, ASOF)
