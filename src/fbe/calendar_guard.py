@@ -847,7 +847,11 @@ def action_for_open_position(
     Returns:
         ``(action, reason)``. The reason is ``None`` only for
         `OpenPositionAction.HOLD` when no event is in range, and otherwise names
-        the event, so the journal records what prompted an early exit.
+        the event, so the journal records what prompted an early exit. When
+        both legs carry an event in range the base leg's is the one named.
+        The action is the same either way, so the choice decides only which
+        event the journal shows, and fixing it keeps the reason reproducible
+        rather than dependent on the order the caller happened to pass.
 
     Raises:
         ValueError: If ``when`` is naive, ``pair`` is malformed, an event

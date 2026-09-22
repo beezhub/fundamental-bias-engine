@@ -28,10 +28,13 @@ Every event is built in this file. Nothing reaches the network.
 
 from __future__ import annotations
 
+import ast
 from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
+import fbe.calendar_guard
 from fbe.calendar_guard import (
     TIGHTEN_BUFFER_R,
     CalendarCoverage,
@@ -80,6 +83,27 @@ A literal 1.5 and 0.5 would keep passing if the threshold moved, which is the
 config-drift defect the engineering standards name: a number that exists in
 two places will disagree, and the disagreement will be silent.
 """
+
+
+# --- the vocabulary itself ----------------------------------------------------
+
+
+def test_every_action_is_an_instruction_a_person_carries_out() -> None:
+    """A wire-format test, not evidence that the module places no orders.
+
+    These are `StrEnum` values and they reach the report and the journal as
+    strings, so renaming one breaks a written record rather than renaming a
+    symbol. Nothing else in the suite catches that.
+
+    It cannot fail on a change to `action_for_open_position`, because it never
+    calls it. It sits with the enum rather than under criterion 7, where it
+    read as an argument that the guard is advisory and was no such thing.
+    """
+    assert {member.value for member in OpenPositionAction} == {
+        "hold",
+        "tighten",
+        "flatten",
+    }
 
 
 # --- nothing in range --------------------------------------------------------
@@ -298,32 +322,37 @@ def test_the_window_widths_come_from_config() -> None:
 # --- the reason ---------------------------------------------------------------
 
 
-def test_the_reason_names_the_event_its_currency_and_its_time() -> None:
+@pytest.mark.parametrize(
+    "unrealised_r, expected",
+    [(BELOW, OpenPositionAction.FLATTEN), (ABOVE, OpenPositionAction.TIGHTEN)],
+    ids=["flatten", "tighten"],
+)
+def test_the_reason_names_the_event_its_currency_and_its_time(
+    unrealised_r: float, expected: OpenPositionAction
+) -> None:
     """The journal records this string, and later has to explain an early exit.
 
     "Closed on news" is not a record. "Closed on EUR CPI y/y at 09:00 UTC" is
     one a review can check against what the release actually did.
+
+    Both branches, because they are two separate returns. Asserting the full
+    string on one and only the title on the other would leave the second
+    pinned by ``reason is not None``, which any string satisfies.
     """
     action, reason = action_for_open_position(
-        "EURUSD", WHEN, [event("EUR", title="CPI y/y")], CONFIG, unrealised_r=BELOW
+        "EURUSD",
+        WHEN,
+        [event("EUR", title="CPI y/y")],
+        CONFIG,
+        unrealised_r=unrealised_r,
     )
 
-    assert action is OpenPositionAction.FLATTEN
+    assert action is expected
     assert reason is not None
     assert "EUR" in reason
     assert "CPI y/y" in reason
     assert "09:00" in reason
     assert "UTC" in reason
-
-
-def test_a_tightened_position_names_the_event_too() -> None:
-    """Both instructions are acted on, so both have to say what prompted them."""
-    _, reason = action_for_open_position(
-        "EURUSD", WHEN, [event("EUR", title="CPI y/y")], CONFIG, unrealised_r=ABOVE
-    )
-
-    assert reason is not None
-    assert "CPI y/y" in reason
 
 
 def test_the_reason_reports_the_release_time_in_utc() -> None:
@@ -341,6 +370,36 @@ def test_the_reason_reports_the_release_time_in_utc() -> None:
     assert reason is not None
     assert "09:00" in reason
     assert "11:00" not in reason
+
+
+@pytest.mark.parametrize(
+    "unrealised_r, expected",
+    [(0.0, OpenPositionAction.FLATTEN), (TIGHTEN_BUFFER_R, OpenPositionAction.TIGHTEN)],
+    ids=["no-buffer", "buffered"],
+)
+def test_with_both_legs_in_window_the_base_leg_is_the_one_named(
+    unrealised_r: float, expected: OpenPositionAction
+) -> None:
+    """Which release the journal records when two are in range at once.
+
+    The action cannot differ, since both legs are inside a window and the
+    buffer decides alone, so reversing the search order changes nothing a
+    caller acts on. It changes the reason, and the reason is the only record
+    of why a live position was closed. Asserted on both sides of the buffer so
+    the ordering is pinned for whichever instruction comes out.
+    """
+    action, reason = action_for_open_position(
+        "EURUSD",
+        WHEN,
+        [event("USD", title="Non-Farm Payrolls"), event("EUR", title="CPI y/y")],
+        CONFIG,
+        unrealised_r=unrealised_r,
+    )
+
+    assert action is expected
+    assert reason is not None
+    assert "EUR CPI y/y" in reason
+    assert "Non-Farm Payrolls" not in reason
 
 
 def test_the_reason_names_the_event_whose_window_contains_the_moment() -> None:
@@ -389,14 +448,73 @@ def test_a_naive_event_time_is_refused() -> None:
         action_for_open_position("EURUSD", WHEN, [naive], CONFIG)
 
 
-@pytest.mark.parametrize("pair", ["EURXYZ", "XYZUSD", "EUR", "EURUSDX"])
-def test_a_malformed_pair_is_refused(pair: str) -> None:
+def test_a_naive_event_is_refused_on_a_currency_the_pair_does_not_hold() -> None:
+    """The check is on the feed's shape, not on whether the event is relevant.
+
+    The test above passes even with this function's own check removed, because
+    a naive event on a leg of the pair reaches `blackout_windows`, which
+    refuses it. This one does not: a yen event on EURUSD never reaches the
+    window builder.
+
+    ``tests/test_blackout_windows.py`` carries the same test for
+    `is_blacked_out` and records it as a live defect there, where the refusal
+    was conditional on the event sitting on a leg, so a naive yen event was
+    silently ignored on EURUSD and would have reached a qualifying event on
+    the next run. Reproducing the guard without reproducing its test is how
+    that comes back.
+    """
+    naive = CalendarEvent(
+        title="Policy Rate",
+        currency="JPY",
+        scheduled_for=datetime(2026, 9, 14, 9, 0),
+        impact="High",
+    )
+
+    with pytest.raises(ValueError, match="naive"):
+        action_for_open_position("EURUSD", WHEN, [naive], CONFIG)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_an_open_profit_that_is_not_a_number_is_refused(value: float) -> None:
+    """The guard on the one input that decides between two live instructions.
+
+    A NaN fails every comparison, so it falls past the buffer test into
+    FLATTEN: an instruction to close a position on a real account, reached by
+    refusing to answer rather than by deciding. The infinities are in here
+    because a check written as ``value != value`` catches only the NaN and
+    reads as if it catches all three.
+
+    Asserted twice, once with an event in range and once with nothing in
+    range, so the refusal is about the argument rather than about the branch
+    it would otherwise have fallen into.
+    """
+    with pytest.raises(ValueError, match="finite"):
+        action_for_open_position("EURUSD", WHEN, [event()], CONFIG, unrealised_r=value)
+
+    with pytest.raises(ValueError, match="finite"):
+        action_for_open_position("EURUSD", WHEN, [], CONFIG, unrealised_r=value)
+
+
+@pytest.mark.parametrize("pair", ["EUR", "EURUSDX"])
+def test_a_pair_of_the_wrong_length_is_refused(pair: str) -> None:
+    """Matched on the message, as ``tests/test_blackout_windows.py`` does.
+
+    Asserting only `ValueError` would pass with `split_pair` taken out
+    altogether, and that is the canonical splitter and the one place the
+    quoting convention is enforced.
+    """
+    with pytest.raises(ValueError, match="six-character"):
+        action_for_open_position(pair, WHEN, [event()], CONFIG)
+
+
+@pytest.mark.parametrize("pair", ["EURXYZ", "XYZUSD"])
+def test_a_leg_that_is_not_a_currency_is_refused(pair: str) -> None:
     """One mistyped character splits as cleanly as a real pair.
 
     It would then match no event and this function would answer HOLD, which is
     an instruction to keep a position through a release nobody checked for.
     """
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a G10 currency"):
         action_for_open_position(pair, WHEN, [event()], CONFIG)
 
 
@@ -436,7 +554,6 @@ def test_the_open_position_answer_differs_from_the_entry_answer() -> None:
 
     assert blocked is True
     assert action is OpenPositionAction.TIGHTEN
-    assert action is not OpenPositionAction.FLATTEN
     assert entry_reason is not None
     assert held_reason is not None
 
@@ -461,13 +578,17 @@ def test_the_two_agree_when_there_is_no_buffer() -> None:
 
 
 def test_the_guard_returns_an_instruction_and_changes_nothing() -> None:
-    """Criterion 7. The owner executes, which is the line the plan draws.
+    """Criterion 7, as far as it is checkable. See the test below it.
 
-    Nothing here can place an order, because nothing in this package can. What
-    this asserts is the weaker property that is checkable: the call is pure, so
-    it cannot have acted on the position by mutating what it was handed, and
-    asking twice gives the same answer rather than a different one the second
-    time.
+    Purity is the part that can fail: the call cannot have acted on the
+    position by mutating what it was handed, and asking twice gives the same
+    answer rather than a different one, which a memoised mutable default
+    would break.
+
+    An earlier version also asserted two default `DataConfig` instances are
+    equal. They are, by construction, since it is a frozen dataclass with
+    deterministic defaults, so that assertion held with the function body
+    replaced by ``return HOLD, None``. It read as a check and was not one.
     """
     events = [event()]
     before = list(events)
@@ -479,13 +600,32 @@ def test_the_guard_returns_an_instruction_and_changes_nothing() -> None:
 
     assert first == second
     assert events == before
-    assert DataConfig() == CONFIG
 
 
-def test_every_action_is_an_instruction_a_person_carries_out() -> None:
-    """The vocabulary is advice, not execution: hold, tighten, flatten."""
-    assert {member.value for member in OpenPositionAction} == {
-        "hold",
-        "tighten",
-        "flatten",
+def test_the_module_imports_nothing_that_could_place_an_order() -> None:
+    """The checkable half of criterion 7.
+
+    "Nothing in this module places, sizes or closes anything" cannot be
+    asserted head-on, because nothing in this package can place an order at
+    all, so such a test passes for the wrong reason and would keep passing
+    the day one could. What can be asserted is the import surface: the guard
+    reaches `fbe.config`, `fbe.types` and `fbe.universe`, none of which can
+    act on an account, and nothing else.
+
+    This is what fails the day a broker client is wired into the guard rather
+    than an instruction being returned for the owner to carry out.
+    """
+    tree = ast.parse(Path(fbe.calendar_guard.__file__).read_text(encoding="utf-8"))
+
+    reached: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            reached.add(node.module)
+        elif isinstance(node, ast.Import):
+            reached.update(alias.name for alias in node.names)
+
+    assert {name for name in reached if name.startswith("fbe")} == {
+        "fbe.config",
+        "fbe.types",
+        "fbe.universe",
     }

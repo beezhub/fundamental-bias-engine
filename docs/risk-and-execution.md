@@ -392,7 +392,7 @@ The distinction is buffer, measured against `TIGHTEN_BUFFER_R`, which is
   precisely the loss the news rule exists to prevent. Close it and re-enter
   after the window if the setup survives.
 
-The comparison is inclusive: exactly 1.0R holds. Open profit is measured in R
+The comparison is inclusive: exactly 1.0R tightens. Open profit is measured in R
 against `realised_risk_amount`, the same denominator the journal uses, so the
 number on the screen and the number in the file mean the same thing. 1.0R is a
 threshold, not a measurement. Revisit it once the journal can group outcomes by

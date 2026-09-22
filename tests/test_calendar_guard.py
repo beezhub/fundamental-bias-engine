@@ -11,12 +11,12 @@ difference visible, and this file pins the shape of the fix.
 is empty and every assertion here is real. The guard machinery stays: while a
 function raises ``NotImplementedError``, the test asserts exactly that, the
 same pattern ``tests/test_datasource_base.py`` uses for ``available()``, and
-`next_clear_time` and `action_for_open_position` are the second half of this
-module and are still scaffolded. Removing a name from `SCAFFOLDED` is what
-turns a guard into a real assertion, and forgetting to would leave it silently
-asserting nothing, which a bare ``except NotImplementedError: pass`` would do
-by accident. The contract shape is checked unconditionally either way, so a
-regression in a signature is caught even while a body is still a stub.
+`next_clear_time` is the one function in this module still scaffolded.
+Removing a name from `SCAFFOLDED` is what turns a guard into a real assertion,
+and forgetting to would leave it silently asserting nothing, which a bare
+``except NotImplementedError: pass`` would do by accident. The contract shape
+is checked unconditionally either way, so a regression in a signature is caught
+even while a body is still a stub.
 """
 
 from __future__ import annotations
@@ -43,8 +43,7 @@ than continuing to pass on the strength of a guarded branch nobody revisits.
 
 Empty since #198 implemented both, so every assertion below is now real. The
 guard machinery stays rather than being deleted with the set: `next_clear_time`
-and `action_for_open_position` are the second half of this module and are still
-scaffolded, so the next issue to land here has the pattern to hand.
+is still scaffolded, so the next issue to land here has the pattern to hand.
 """
 
 CONFIG = DataConfig()
