@@ -265,12 +265,44 @@ class CurrencyScore:
     asof: date
     rank: int | None = None
     dispersion: float = 0.0
-    """Standard deviation across pillar scores. High dispersion means the
-    pillars disagree, which should reduce conviction on any pair using this
-    currency."""
+    """The effective-weighted standard deviation of this currency's pillar
+    scores about its composite, and not the unweighted standard deviation
+    across those scores.
+
+    The weights are the post-staleness effective weights, renormalised to sum
+    to 1.0 so the measure stays on the score band whatever the coverage was.
+    ``docs/scoring-spec.md`` section 4.4 defines it and `fbe.scoring.dispersion`
+    computes it. Read by `fbe.bias.conviction_for` against
+    ``ScoringConfig.max_dispersion``, above which conviction is demoted one
+    step.
+
+    High dispersion means the pillars disagree, which should reduce conviction
+    on any pair using this currency. The two readings are far enough apart to
+    change that decision. On a currency with MONETARY at +2.0, INFLATION at
+    -1.0 and the other five at 0.0, all fresh, the weighted figure is 1.071214
+    and the unweighted one is 0.832993, against a threshold of 1.20 that was
+    judged against the first.
+
+    ``0.0`` when fewer than two pillars are usable. That is a floor rather than
+    a finding, and the coverage alongside it is the real signal in that case.
+    """
     coverage: float = 1.0
-    """Fraction of pillar weight that had usable data. Below 1.0 the composite
-    is extrapolated from a partial picture."""
+    """The sum of the effective pillar weights, ``sum over p of w_eff(p)``.
+
+    ``docs/scoring-spec.md`` section 4.2 defines it and `fbe.scoring.coverage`
+    computes it. Effective weight carries the staleness discount, so this is
+    the share of pillar weight that had usable and fresh data rather than the
+    share of pillars present: a pillar scoring on a 30-day-old input
+    contributes half its weight, not all of it. It is therefore continuous
+    rather than a count.
+
+    Below 1.0 the composite is extrapolated from a partial picture. Read by
+    `fbe.bias.apply_filters` against ``ScoringConfig.min_coverage``, which
+    blocks the pair outright, and by `fbe.bias.conviction_for` against
+    ``ScoringConfig.coverage_demotion``, which demotes it one step. Exactly
+    ``0.0`` means the currency has no composite and every pair using it is
+    blocked with ``no_coverage``.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,7 +326,33 @@ class PairBias:
     base_score: float = 0.0
     quote_score: float = 0.0
     agreement: float = 0.0
-    """Fraction of pillars pointing the same way as ``direction``."""
+    """The share of pillar weight pointing the same way as ``direction``.
+
+    ``sum of w_pair over agreeing / sum of w_pair over considered``, where
+    ``w_pair`` is the mean of the two legs' post-staleness effective weights.
+    ``docs/scoring-spec.md`` section 5.3 defines it and `fbe.bias.agreement`
+    computes it. Read by `fbe.bias.conviction_for` against
+    ``ScoringConfig.min_agreement``, below which conviction is capped at
+    `Conviction.LOW`.
+
+    This is not a count of pillars, and the two readings differ by enough to
+    mislead. On the worked USDJPY case in section 7.7, four of the seven
+    pillars agree, a headcount of 57%, while the weight share is 0.70. Both
+    renderers print "of pillar weight agrees" for that reason, and a reader who
+    meets the field here first should not have to find the renderer to learn
+    which of the two they are holding.
+
+    Two exclusions, and they are different rules. A pillar scoring the two legs
+    identically has no opinion on this pair, so it is excluded from both the
+    numerator and the denominator: leaving it in the denominator would make a
+    thin run look like a disputed one. A pillar with no usable data on either
+    leg is excluded too, because the neutral ``0.0`` that
+    `fbe.scoring.missing_score` stamps it with would otherwise read as an
+    opinion held by whichever leg does have data.
+
+    ``0.0`` when no pillar is considered, which pairs with a coverage figure
+    low enough to block the trade anyway.
+    """
     tradeable: bool = True
     """False when the pair fails a hard filter such as spread cost or an
     imminent high-impact event on either leg."""
