@@ -64,6 +64,27 @@
       .muted {
         color: var(--ink-muted);
       }
+
+      /* A card declares its own ground. The guard has to tell this apart from
+         the body's, which is the one the host paints behind. */
+      .card {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+      }
+
+      /* The page is required to be readable at 400px, so a real one carries
+         at least one width query beside the theme queries. */
+      @media (max-width: 420px) {
+        .wrap {
+          padding-inline: 16px;
+        }
+
+        h1 {
+          font-size: 1.25rem;
+        }
+      }
     </style>
   </head>
   <body>
@@ -84,7 +105,15 @@
       </p>
 
       <h2 id="coverage">Coverage</h2>
-      <p class="muted">Seven pillars, 100% of weight present.</p>
+      <div class="card">
+        <p class="muted">Seven pillars, 100% of weight present.</p>
+        <img
+          alt=""
+          width="1"
+          height="1"
+          src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
+        />
+      </div>
     </div>
 
     <script>

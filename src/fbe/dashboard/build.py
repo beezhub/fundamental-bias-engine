@@ -205,10 +205,24 @@ def check_constraints(html: str) -> list[str]:
         html: The rendered document.
 
     Returns:
-        One message per violation. Empty means the page is publishable.
+        One message per violation, in a list rather than a generator: a caller
+        counts them and then prints them, and an exhausted generator reports
+        nothing the second time. Empty means the page is publishable.
 
-    Raises:
-        NotImplementedError: Always, until the checks land.
+    Known limits, each reported loudly rather than passed quietly, so the
+    failure is a page that will not write rather than one that renders blank:
+
+        * Only ``src`` and ``href`` are walked, not ``srcset`` or CSS
+          ``image-set()``. The constraint is written over the two attributes.
+        * Hosts are compared exactly, so a differing case or an explicit
+          ``:443`` is reported. Neither comes out of a generator.
+        * ``http:`` on an allowed host is accepted here and blocked by the
+          browser as mixed content. It is the one case in this list that fails
+          the quiet way, and it is left to the renderer not to emit it.
+        * A background set through a ``style=`` attribute rather than in a
+          stylesheet is not seen.
+        * A ``}`` inside a CSS comment ends a block early, so a rule carrying
+          one reads as empty.
 
     """
     document = _Document.of(html)
@@ -332,9 +346,14 @@ def _size_violations(html: str) -> list[str]:
     the host downloads. A page of currency names and event titles from a feed
     is not pure ASCII, and ``len(html)`` understates it by up to a third.
 
+    The comparison is strict, so a page of exactly `MAX_RENDERED_BYTES` is
+    reported. ``docs/interfaces.md`` and this module's own header both say
+    "under 16MB", and a ceiling that admits its own value is the off-by-one
+    discovered by the page that does not load.
+
     """
     size = len(html.encode("utf-8"))
-    if size <= MAX_RENDERED_BYTES:
+    if size < MAX_RENDERED_BYTES:
         return []
     return [
         f"Rendered size is {size} bytes against the {MAX_RENDERED_BYTES} "
@@ -380,7 +399,12 @@ def _reference_violations(document: _Document) -> list[str]:
     The rule is applied to every ``src`` and ``href``, which includes an
     ordinary link to another site. That is what the constraint says and it
     errs loudly: a page that cannot be published is a worse outcome than a
-    link the guard asks about.
+    link the guard asks about. ``tests/test_dashboard_constraints.py`` pins
+    that case so it reads as a decision rather than as an oversight.
+
+    The host is compared against the allow-list whole. A substring test would
+    accept ``cdnjs.cloudflare.com.example``, which is the usual way an
+    allow-list is got around, and that page would then fail the quiet way.
 
     """
     messages: list[str] = []
@@ -414,6 +438,11 @@ def _script_violations(document: _Document) -> list[str]:
     Only script bodies are searched, never the whole document. The report's own
     footer says a calendar fetch failed, and a substring search over the page
     reports that sentence as a violation.
+
+    A comment inside script is still script here, so a line saying the page
+    does not fetch anything is reported. That is a false rejection and it
+    fails loudly, which is the right side to be wrong on for a check whose
+    real failures are all silent.
 
     """
     body = "\n".join(document.scripts)
@@ -520,6 +549,12 @@ def _theme_violations(document: _Document) -> list[str]:
     override gives them the wrong theme; a transparent body inherits whatever
     the host painted behind it.
 
+    The palette and the body background are both looked for outside the
+    at-rules, for the same reason: a declaration whose only definition sits
+    inside a media block is absent for every reader the query does not match,
+    and the published contract says no colour may be defined that way. The two
+    dark overrides are the opposite case and are looked for inside.
+
     """
     messages: list[str] = []
     css = document.css
@@ -545,7 +580,10 @@ def _theme_violations(document: _Document) -> list[str]:
             "toggle then does nothing on a phone whose system theme already "
             "matches, which reads as a broken control."
         )
-    if not any(_BODY_BACKGROUND.search(block) for block in _blocks(css, _BODY_RULE)):
+    bare_css = _without_at_rules(css)
+    if not any(
+        _BODY_BACKGROUND.search(block) for block in _blocks(bare_css, _BODY_RULE)
+    ):
         messages.append(
             "No explicit background on `body`: the host paints its own ground "
             "behind a transparent body, so the page inherits the wrong theme "

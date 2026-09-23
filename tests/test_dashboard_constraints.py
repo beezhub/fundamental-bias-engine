@@ -115,7 +115,13 @@ def document(
 
 
 def reported(html: str) -> str:
-    """Every message joined, for asserting what a violation says."""
+    """Every message joined, for asserting what a violation says.
+
+    Assert on the offending host or path rather than on an allowed one. The
+    reference message recites the allow-list it rejected the URL against, so
+    ``"cdnjs.cloudflare.com" in reported(...)`` is true of a page that has no
+    script at all, and a test written that way would pass on the recital.
+    """
     return " | ".join(check_constraints(html))
 
 
@@ -156,7 +162,7 @@ def test_a_document_just_under_the_ceiling_is_not_reported() -> None:
     html = document(body_extra=padding)
 
     assert len(html.encode("utf-8")) < MAX_RENDERED_BYTES
-    assert not any("byte" in message.lower() for message in check_constraints(html))
+    assert check_constraints(html) == []
 
 
 def test_the_ceiling_is_measured_in_bytes_rather_than_characters() -> None:
@@ -173,6 +179,23 @@ def test_the_ceiling_is_measured_in_bytes_rather_than_characters() -> None:
 
     assert len(html) < MAX_RENDERED_BYTES
     assert len(html.encode("utf-8")) > MAX_RENDERED_BYTES
+    assert any(
+        str(MAX_RENDERED_BYTES) in message for message in check_constraints(html)
+    )
+
+
+def test_a_document_of_exactly_the_ceiling_is_reported() -> None:
+    """The ceiling admits nothing, which is what "under 16MB" means.
+
+    One byte, and the only way to find out which side the comparison falls on
+    is the page that does not load. ``docs/interfaces.md`` and the module
+    header both say under, so exactly the ceiling is over it.
+    """
+    comment = "<!-- {} -->"
+    base = len(document(body_extra=comment.format("")).encode("utf-8"))
+    html = document(body_extra=comment.format("x" * (MAX_RENDERED_BYTES - base)))
+
+    assert len(html.encode("utf-8")) == MAX_RENDERED_BYTES
     assert any(
         str(MAX_RENDERED_BYTES) in message for message in check_constraints(html)
     )
@@ -273,6 +296,54 @@ def test_a_relative_path_is_reported() -> None:
     assert "styles/app.css" in reported(document(head_extra=link))
 
 
+def test_an_ordinary_link_to_another_site_is_reported_too() -> None:
+    """Deliberate, and the surprising half of the rule.
+
+    The constraint is written over every ``src`` and ``href``, so a plain link
+    to a source's own page is reported like any other external reference. It
+    is pinned here rather than left to the implementation's docstring, because
+    the test file is what a later reader checks before deciding this is a bug
+    and removing it. Changing the behaviour means changing the constraint.
+    """
+    anchor = '<a href="https://www.federalreserve.gov/">Fed</a>'
+
+    assert "federalreserve.gov" in reported(document(body_extra=anchor))
+
+
+def test_a_host_that_only_looks_allowed_is_reported() -> None:
+    """The allow-list is matched whole, not as a substring.
+
+    ``cdnjs.cloudflare.com.example`` contains an allowed host and is not one,
+    and a containment test is the usual way an allow-list is got around. The
+    consequence here is the quiet one: the script does not load and the panel
+    it drew is empty.
+    """
+    script = '<script src="https://cdnjs.cloudflare.com.example/d3.js"></script>'
+
+    assert "cdnjs.cloudflare.com.example" in reported(document(head_extra=script))
+
+
+def test_an_external_url_carrying_a_fragment_is_still_external() -> None:
+    """A fragment is allowed because it stays on the page, not because of "#"."""
+    link = '<link rel="stylesheet" href="https://example.com/app.css#panel" />'
+
+    assert "example.com" in reported(document(head_extra=link))
+
+
+def test_an_allowed_script_host_is_matched_on_the_host_and_not_the_path() -> None:
+    """Host-level, and said out loud because two documents read differently.
+
+    ``ALLOWED_SCRIPT_HOSTS`` holds hosts, and the criterion on #251 says a
+    script from ``cdnjs.cloudflare.com`` is accepted. The module header says
+    ``cdn.jsdelivr.net/npm/``, with a path. This pins what the constant says,
+    and the discrepancy is on the issue for the desk rather than settled by
+    the guard inventing a rule its own constant does not carry.
+    """
+    script = '<script src="https://cdn.jsdelivr.net/gh/user/repo@1/x.js"></script>'
+
+    assert check_constraints(document(head_extra=script)) == []
+
+
 # --- inline script that reaches off the page ---------------------------------
 
 
@@ -360,7 +431,73 @@ def test_a_page_with_no_explicit_toggle_override_is_reported() -> None:
     """
     messages = check_constraints(document(dark_attribute=""))
 
-    assert any("data-theme" in message for message in messages)
+    assert any('[data-theme="dark"]' in message for message in messages)
+
+
+def test_a_bare_root_inside_a_media_block_does_not_count_as_the_palette() -> None:
+    """ "Bare" means outside the at-rules, not merely "written without a suffix".
+
+    This is the document the criterion is about and it is the one an obvious
+    implementation accepts: the selector is exactly ``:root``, and it is still
+    invisible to every reader whose system is not dark.
+    """
+    nested = """
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --surface: #0f1215;
+          --ink: #e9edf1;
+        }
+      }
+"""
+
+    messages = check_constraints(document(palette=nested))
+
+    assert any(":root" in message for message in messages)
+
+
+def test_another_media_query_does_not_satisfy_the_dark_requirement() -> None:
+    """The page is required to be responsive, so it has other media queries.
+
+    An implementation that looks for any ``@media`` carrying a token passes
+    every page with a width breakpoint and no dark override, which is the
+    wrong implementation someone would actually write.
+    """
+    responsive = """
+      @media (max-width: 420px) {
+        :root {
+          --gutter: 12px;
+        }
+      }
+"""
+
+    messages = check_constraints(document(dark_media=responsive))
+
+    assert any("prefers-color-scheme" in message for message in messages)
+
+
+@pytest.mark.parametrize("block", ["dark_media", "dark_attribute"])
+def test_a_dark_block_that_defines_no_token_is_reported(block: str) -> None:
+    """A selector with no custom property in it is not an override.
+
+    The same hole the bare palette is checked for, on the two blocks that
+    override it. A page carrying ``color-scheme: dark`` and no tokens has the
+    shape of a themed page and the colours of an unthemed one.
+    """
+    hollow_media = """
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          color-scheme: dark;
+        }
+      }
+"""
+    hollow_attribute = """
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+      }
+"""
+    hollow = {"dark_media": hollow_media, "dark_attribute": hollow_attribute}
+
+    assert check_constraints(document(**{block: hollow[block]})) != []
 
 
 # --- the body background -----------------------------------------------------
@@ -392,6 +529,54 @@ def test_a_body_with_no_background_is_reported_with_the_reason() -> None:
 def test_a_body_rule_that_is_absent_entirely_is_reported() -> None:
     assert any(
         "background" in message for message in check_constraints(document(body_rule=""))
+    )
+
+
+def test_a_background_on_another_selector_does_not_satisfy_the_body_rule() -> None:
+    """The real page declares a background on every card and on the heatmap.
+
+    An implementation searching the whole stylesheet for the word passes a
+    page whose ``body`` sets only a colour, which is the page that renders its
+    text onto whatever the host painted.
+    """
+    elsewhere = """
+      body {
+        color: var(--ink);
+      }
+
+      .card {
+        background: var(--surface-raised);
+      }
+"""
+
+    assert any(
+        "background" in message
+        for message in check_constraints(document(body_rule=elsewhere))
+    )
+
+
+def test_a_body_background_defined_only_in_a_media_block_is_reported() -> None:
+    """Same rule as the palette: no colour gets its only definition there.
+
+    A reader whose system is light then gets a transparent body, which is the
+    exact failure the criterion names, arriving through the block that was
+    supposed to be an override.
+    """
+    conditional = """
+      body {
+        color: var(--ink);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: var(--surface);
+        }
+      }
+"""
+
+    assert any(
+        "background" in message
+        for message in check_constraints(document(body_rule=conditional))
     )
 
 
@@ -437,9 +622,12 @@ def test_three_violations_come_back_as_three_messages() -> None:
 def test_every_message_names_the_constraint_and_what_it_found() -> None:
     """A message a reader can act on without opening the page.
 
-    "Constraint violated" is useless at six in the morning. Each message has
-    to carry the offending thing, so asserting they are non-trivial strings is
-    the weakest form of that and still catches a bare enum name.
+    Both halves, because the title is a promise about both. The constraint
+    half is the prose, and a bare label such as "External reference" fails the
+    length assertion. The "what it found" half is the offending artefact
+    itself: a message naming the rule and not the URL sends the reader back to
+    the page to find out which one, at six in the morning, which is the moment
+    this whole function exists to avoid.
     """
     html = document(
         title="",
@@ -449,11 +637,15 @@ def test_every_message_names_the_constraint_and_what_it_found() -> None:
     )
 
     messages = check_constraints(html)
+    joined = " | ".join(messages)
 
     assert messages
+    for found in ("example.com", "fetch", "title", "background"):
+        assert found in joined, found
     for message in messages:
         assert len(message) > 30, message
         assert message[0].isupper() or message[0] == "`", message
+        assert message.rstrip().endswith("."), message
 
 
 def test_the_result_is_a_list_rather_than_a_generator() -> None:
@@ -469,15 +661,6 @@ def test_the_result_is_a_list_rather_than_a_generator() -> None:
 
 
 # --- the checker changes nothing ---------------------------------------------
-
-
-def test_the_checker_leaves_its_input_alone() -> None:
-    html = document(title="")
-    before = html
-
-    check_constraints(html)
-
-    assert html == before
 
 
 def test_an_empty_document_is_reported_rather_than_accepted() -> None:
