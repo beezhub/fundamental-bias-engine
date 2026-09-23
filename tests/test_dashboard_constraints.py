@@ -386,6 +386,17 @@ def test_the_word_fetch_in_prose_is_not_a_violation() -> None:
     assert check_constraints(document(body_extra=prose)) == []
 
 
+def test_a_handler_attribute_is_inline_script_too() -> None:
+    """The page carries a theme toggle, so this is where its script will be.
+
+    `onclick` is inline script by any reading, and a check that walks only
+    `<script>` bodies certifies the page that does its fetching from a button.
+    """
+    button = "<button onclick=\"fetch('/api/bias')\">Refresh</button>"
+
+    assert "fetch" in reported(document(body_extra=button))
+
+
 # --- the palette and the two dark blocks -------------------------------------
 
 
@@ -587,11 +598,90 @@ def test_a_missing_title_is_reported() -> None:
     assert any("title" in message for message in check_constraints(document(title="")))
 
 
+def test_a_title_inside_an_svg_does_not_title_the_page() -> None:
+    """The charts are drawn as inline SVG, so the two are certain to meet.
+
+    `<title>` inside `<svg>` is the accessible name of the chart and does
+    nothing for the tab. Counting it leaves the owner with an untitled tab
+    among the others, which is what this constraint exists to prevent, and
+    with a guard that said the page was fine.
+    """
+    chart = '<svg role="img"><title>Currency ranking</title></svg>'
+
+    messages = check_constraints(document(title="", body_extra=chart))
+
+    assert any("title" in message for message in messages)
+
+
 def test_an_empty_title_is_reported() -> None:
     """A tab reading "index" is the same failure as no tab name at all."""
     assert any(
         "title" in message
         for message in check_constraints(document(title="<title></title>"))
+    )
+
+
+def test_a_toggle_override_nested_in_the_preference_query_is_reported() -> None:
+    """The explicit toggle has to win in both directions, so it cannot nest.
+
+    An override inside `prefers-color-scheme: dark` cannot beat that
+    preference, so a reader on a light system presses the button and nothing
+    happens, which is the failure the message for this check describes. The
+    selector is present and the page is still broken, which is why the check
+    has to look outside the at-rules rather than anywhere.
+    """
+    nested = ""
+    both_inside = """
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --surface: #0f1215;
+        }
+
+        :root[data-theme="dark"] {
+          --surface: #0f1215;
+        }
+      }
+"""
+
+    messages = check_constraints(
+        document(dark_media=both_inside, dark_attribute=nested)
+    )
+
+    assert any('[data-theme="dark"]' in message for message in messages)
+
+
+# --- a document the parser could not finish ----------------------------------
+
+
+def test_a_page_cut_off_inside_a_script_is_refused_rather_than_cleared() -> None:
+    """The one answer a guard must never give for a page it could not read.
+
+    `HTMLParser` buffers a script body until it sees the closing tag, so a
+    document that ends inside one leaves that script and everything after it
+    unparsed. Before this was handled the page came back with no violations at
+    all: the `fetch` was invisible, and so was every reference after it. A
+    renderer that raises part way through a write produces exactly this file.
+    """
+    truncated = (
+        "<!doctype html><html><head><title>Bias</title><style>"
+        ":root { --surface: #fff; }"
+        '@media (prefers-color-scheme: dark) { :root { --surface: #111; } }'
+        ':root[data-theme="dark"] { --surface: #111; }'
+        "body { background: var(--surface); }"
+        "</style></head><body><script>fetch(\"https://evil.example/x\")"
+    )
+
+    messages = check_constraints(truncated)
+
+    assert messages
+    assert any("unclosed" in message for message in messages)
+
+
+def test_a_complete_page_is_not_reported_as_truncated() -> None:
+    """The other side, so the check cannot be a constant."""
+    assert not any(
+        "unclosed" in message
+        for message in check_constraints(FIXTURE.read_text(encoding="utf-8"))
     )
 
 
@@ -660,7 +750,7 @@ def test_the_result_is_a_list_rather_than_a_generator() -> None:
     assert messages == check_constraints(document(title=""))
 
 
-# --- the checker changes nothing ---------------------------------------------
+# --- degenerate input --------------------------------------------------------
 
 
 def test_an_empty_document_is_reported_rather_than_accepted() -> None:

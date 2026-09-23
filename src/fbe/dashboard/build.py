@@ -209,24 +209,37 @@ def check_constraints(html: str) -> list[str]:
         counts them and then prints them, and an exhausted generator reports
         nothing the second time. Empty means the page is publishable.
 
-    Known limits, each reported loudly rather than passed quietly, so the
-    failure is a page that will not write rather than one that renders blank:
+    Known limits. The first group is reported loudly, so the failure is a page
+    that will not write rather than one that renders blank:
 
-        * Only ``src`` and ``href`` are walked, not ``srcset`` or CSS
-          ``image-set()``. The constraint is written over the two attributes.
         * Hosts are compared exactly, so a differing case or an explicit
           ``:443`` is reported. Neither comes out of a generator.
-        * ``http:`` on an allowed host is accepted here and blocked by the
-          browser as mixed content. It is the one case in this list that fails
-          the quiet way, and it is left to the renderer not to emit it.
+        * A comment inside script is still script, so a line saying the page
+          fetches nothing is reported.
+        * A ``}`` inside a CSS comment ends a block early, and an ``@media``
+          inside one truncates the stylesheet from that point, so a rule
+          carrying either reads as empty.
+
+    The second group is not detected, which is the expensive direction, and is
+    listed so that a page passing this check is not read as more than it is:
+
+        * ``srcset`` is not walked. ``image-set()`` is caught only where it
+          wraps a ``url()``, which is how a stylesheet normally writes it.
         * A background set through a ``style=`` attribute rather than in a
           stylesheet is not seen.
-        * A ``}`` inside a CSS comment ends a block early, so a rule carrying
-          one reads as empty.
+        * ``http:`` on an allowed host is accepted here and blocked by the
+          browser as mixed content.
+        * The allow-lists are matched on host, so any path on an allowed host
+          is accepted. This module's header and ``docs/interfaces.md`` name
+          ``cdn.jsdelivr.net/npm/``, with a path, while `ALLOWED_SCRIPT_HOSTS`
+          holds a bare host. Host-only is what the constant says and what this
+          function implements rather than encoding the rule in a second place;
+          the discrepancy is open on issue #251.
 
     """
     document = _Document.of(html)
     return [
+        *_truncation_violations(document),
         *_size_violations(html),
         *_reference_violations(document),
         *_script_violations(document),
@@ -263,9 +276,15 @@ class _Document:
         css: Every inline ``<style>`` body, concatenated.
         scripts: Every inline ``<script>`` body. A ``<script src>`` contributes
             a reference instead, since its body is not in this document.
-        has_title: Whether a ``<title>`` element is present at all, which is a
-            different fact from whether it carries text.
+        has_title: Whether a document ``<title>`` is present at all, which is a
+            different fact from whether it carries text. An SVG ``<title>``
+            does not count: it names a chart for a screen reader and does
+            nothing for the tab, and the page this module describes is drawn
+            in inline SVG, so the two are certain to meet.
         title: The text inside it.
+        unterminated: The element the document ended inside, if any. A page
+            cut off mid-``<script>`` is not a page with no script in it, and
+            without this the two are the same value.
 
     Parsed with `html.parser` rather than by pattern matching. The checks are
     about elements and their attributes, and a regular expression over markup
@@ -280,12 +299,24 @@ class _Document:
         self.scripts: list[str] = []
         self.has_title: bool = False
         self.title: str = ""
+        self.unterminated: str | None = None
 
     @classmethod
     def of(cls, html: str) -> _Document:
-        """Parse one document, tolerating markup a browser would tolerate."""
+        """Parse one document, tolerating markup a browser would tolerate.
+
+        Closed rather than only fed. ``HTMLParser`` buffers the body of a
+        ``<script>`` or ``<style>`` until it sees the closing tag, so a
+        document that ends inside one leaves that body unparsed and every
+        element after it unseen. The page then reports no violations, which is
+        the one answer a guard must never give for a document it could not
+        finish reading.
+        """
         document = cls()
-        _Collector(document).feed(html)
+        collector = _Collector(document)
+        collector.feed(html)
+        collector.close()
+        document.unterminated = collector.capturing
         return document
 
     def css_urls(self) -> list[tuple[str, str, str]]:
@@ -309,28 +340,75 @@ class _Collector(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._document = document
         self._capturing: str | None = None
+        self._svg_depth = 0
+
+    @property
+    def capturing(self) -> str | None:
+        """The element still open when the parse ended, or ``None``."""
+        return self._capturing
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {name: value for name, value in attrs if value is not None}
         for attribute in ("src", "href"):
             if attribute in values:
                 self._document.references.append((tag, attribute, values[attribute]))
-        if tag in {"style", "title"} or (tag == "script" and "src" not in values):
+        # An event handler is inline script written in an attribute, and the
+        # page carries a theme toggle, so this is where its script will be.
+        self._document.scripts.extend(
+            value for name, value in values.items() if name.startswith("on")
+        )
+        if tag == "svg":
+            self._svg_depth += 1
+        in_svg = self._svg_depth > 0
+        if tag in {"style"} or (tag == "script" and "src" not in values):
             self._capturing = tag
-        if tag == "title":
+        elif tag == "title" and not in_svg:
+            self._capturing = tag
             self._document.has_title = True
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "svg" and self._svg_depth:
+            self._svg_depth -= 1
         if tag == self._capturing:
             self._capturing = None
 
     def handle_data(self, data: str) -> None:
         if self._capturing == "style":
-            self._document.css += data
+            # Separated, so a selector at the end of one block and a brace at
+            # the start of the next cannot read as one rule.
+            self._document.css += data + "\n"
         elif self._capturing == "script":
             self._document.scripts.append(data)
         elif self._capturing == "title":
             self._document.title += data
+
+
+def _truncation_violations(document: _Document) -> list[str]:
+    """Refuse a document the parser could not finish reading.
+
+    Args:
+        document: The parsed page.
+
+    Returns:
+        One message when the markup ended inside an element whose body is
+        read here, else none.
+
+    A page cut off mid-``<script>``, because the renderer raised part way
+    through the write or the disk filled, has that script and everything after
+    it unparsed. Without this the result is an empty list, which is the same
+    answer a clean page gets, and
+    ``docs/decisions/0002-representing-not-known.md`` rule 4 is precisely that
+    a source that failed must be able to say so rather than returning nothing.
+
+    """
+    if document.unterminated is None:
+        return []
+    return [
+        f"The document ends inside an unclosed `<{document.unterminated}>`, so "
+        "the rest of it was never read. Nothing below that point has been "
+        "checked, and a partly written page is refused rather than reported "
+        "as clean."
+    ]
 
 
 def _size_violations(html: str) -> list[str]:
@@ -340,7 +418,8 @@ def _size_violations(html: str) -> list[str]:
         html: The rendered document.
 
     Returns:
-        One message when the page is over `MAX_RENDERED_BYTES`, else none.
+        One message when the page is at or over `MAX_RENDERED_BYTES`, else
+        none.
 
     Measured in UTF-8 bytes rather than in characters, because bytes are what
     the host downloads. A page of currency names and event titles from a feed
@@ -549,16 +628,22 @@ def _theme_violations(document: _Document) -> list[str]:
     override gives them the wrong theme; a transparent body inherits whatever
     the host painted behind it.
 
-    The palette and the body background are both looked for outside the
-    at-rules, for the same reason: a declaration whose only definition sits
-    inside a media block is absent for every reader the query does not match,
-    and the published contract says no colour may be defined that way. The two
-    dark overrides are the opposite case and are looked for inside.
+    Three of the four are looked for outside the at-rules: the palette, the
+    body background and the explicit toggle. A declaration whose only
+    definition sits inside a media block is absent for every reader the query
+    does not match, and the published contract says no colour may be defined
+    that way. The toggle is the case that reads as an exception and is not:
+    an override nested inside the preference query cannot win against that
+    preference, so a reader on a light system presses the toggle and nothing
+    happens, which is the failure its own message describes. Only the
+    preference override is looked for inside, because inside is where it
+    belongs.
 
     """
     messages: list[str] = []
     css = document.css
-    bare = _blocks(_without_at_rules(css), _BARE_ROOT)
+    bare_css = _without_at_rules(css)
+    bare = _blocks(bare_css, _BARE_ROOT)
     if not any(_CUSTOM_PROPERTY.search(block) for block in bare):
         messages.append(
             "No palette on a bare `:root`: the light tokens must be defined "
@@ -573,14 +658,13 @@ def _theme_violations(document: _Document) -> list[str]:
             "dark ground."
         )
     if not any(
-        _CUSTOM_PROPERTY.search(block) for block in _blocks(css, _DARK_ATTRIBUTE)
+        _CUSTOM_PROPERTY.search(block) for block in _blocks(bare_css, _DARK_ATTRIBUTE)
     ):
         messages.append(
             'No dark override under `[data-theme="dark"]`: the explicit '
             "toggle then does nothing on a phone whose system theme already "
             "matches, which reads as a broken control."
         )
-    bare_css = _without_at_rules(css)
     if not any(
         _BODY_BACKGROUND.search(block) for block in _blocks(bare_css, _BODY_RULE)
     ):
