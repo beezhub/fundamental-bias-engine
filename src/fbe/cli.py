@@ -88,6 +88,7 @@ import httpx
 import typer
 
 from fbe import config as config_module
+from fbe import journal as journal_module
 from fbe import report as report_module
 from fbe.bias import (
     apply_filters,
@@ -106,8 +107,10 @@ from fbe.datasources.collect import (
     collect,
     lookback_start,
 )
+from fbe.journal import TradeRecord
 from fbe.pillar_audit import audit_run
 from fbe.pillars import default_pillars
+from fbe.risk import MissingRateError, pip_size, pip_value
 from fbe.scoring import score_currencies
 from fbe.types import (
     BiasReport,
@@ -118,7 +121,7 @@ from fbe.types import (
     PillarName,
     TradeIdea,
 )
-from fbe.universe import G10, MAJORS
+from fbe.universe import G10, MAJORS, split_pair
 
 if TYPE_CHECKING:
     from fbe.config import Config
@@ -3239,12 +3242,295 @@ def journal_add(
         note: Free text.
         tag: Labels for grouping.
 
+    The trade id is derived rather than asked for: the pair and the minute the
+    trade was opened. `docs/risk-and-execution.md` makes a correction an append
+    carrying the same id, so two invocations describing one trade have to agree
+    on it, and a trader who has to remember a string will not.
+
+    Money and the R-multiple are recorded only when the account currency can be
+    reached from the pair's quote currency. The engine has no source for a rate
+    into ZAR, which is the owner's account: no G10 cross has a ZAR leg and
+    nothing in `fbe.datasources.prices` or ``data/manual`` supplies USDZAR. On
+    such a run the outcome and the R-multiple are recorded as absent and the
+    reason is printed, rather than a rate being assumed. A guessed conversion
+    is the defect `fbe.risk.MissingRateError` exists to prevent, and it
+    understates or overstates every money figure in the book by the same factor.
+
+    Args:
+        ctx: Typer context carrying the effective config.
+        pair: Pair in market convention.
+        direction: Side taken on the base currency.
+        entry: Fill price.
+        stop: Stop price at entry.
+        exit_price: Exit price, omitted while open.
+        lots: Size traded.
+        opened_at: Open timestamp, defaults to now.
+        setup: Technical setup label.
+        followed_plan: Whether the trade obeyed the plan.
+        note: Free text.
+        tag: Labels for grouping.
+
     Raises:
-        NotImplementedError: Always, until `fbe.journal` lands.
+        typer.BadParameter: On a pair outside the universe, a stop equal to the
+            entry, or a size that is missing or not positive. Each writes
+            nothing: a journal half-written is worse than one line short,
+            because the trader believes the trade is in it.
+        typer.Exit: With `EXIT_UNUSABLE` when the write fails or the chain has
+            no row for the pair.
 
     """
-    raise NotImplementedError(
-        "fbe.cli.journal_add is scaffolded; see docs/roadmap.md Phase 4"
+    config = _effective_config(ctx)
+    normalised = pair.upper()
+    _checked_journal_pair(normalised)
+    if stop == entry:
+        raise typer.BadParameter(
+            f"--stop {stop} equals the entry, so the trade risks nothing and "
+            "every R-multiple computed from it would divide by zero.",
+            param_hint="--stop",
+        )
+    if lots is None or lots <= 0.0:
+        raise typer.BadParameter(
+            "--lots is the size the account actually took, and the record's "
+            "money figures are derived from it. Sizing it here instead would "
+            "record a position the account did not hold, which is the one "
+            "thing the journal must not do.",
+            param_hint="--lots",
+        )
+
+    moment = _opened_moment(opened_at)
+    run_date = moment.date()
+    row = _engine_view(config, normalised, run_date)
+    units = lots * config.broker.contract_size
+    risk_amount, outcome, absence = _realised_money(
+        config, normalised, entry, stop, exit_price, direction, units
+    )
+
+    record = TradeRecord(
+        trade_id=f"{normalised}-{moment:%Y%m%dT%H%M}",
+        pair=normalised,
+        direction=direction,
+        opened_at=moment,
+        entry=entry,
+        stop=stop,
+        units=units,
+        lots=lots,
+        risk_amount=risk_amount if risk_amount is not None else 0.0,
+        risk_fraction=(
+            risk_amount / config.risk.account_balance
+            if risk_amount is not None
+            else 0.0
+        ),
+        account_balance_at_entry=config.risk.account_balance,
+        conviction=row.conviction,
+        base_score=row.base_score,
+        quote_score=row.quote_score,
+        spread_score=row.spread,
+        config_digest=config.digest(),
+        account_currency=config.risk.account_currency,
+        closed_at=datetime.now(UTC) if exit_price is not None else None,
+        exit_price=exit_price,
+        outcome_zar=outcome,
+        r_multiple=(
+            outcome / risk_amount if outcome is not None and risk_amount else None
+        ),
+        setup=setup or "",
+        agreed_with_bias=direction is row.direction,
+        followed_plan=followed_plan,
+        broker=config.broker.name,
+        notes=note or "",
+        tags=tuple(tag or ()),
+    )
+
+    try:
+        journal_module.append(record, journal_module.JOURNAL_PATH)
+    except OSError as error:
+        # Never swallowed. A trade that was taken and not recorded is
+        # discovered at the review, by which time the entry price and the
+        # reasoning behind it are gone.
+        typer.echo(f"Could not write the journal: {error}", err=True)
+        raise typer.Exit(EXIT_UNUSABLE) from error
+
+    _render_journal_add(record, row, absence)
+
+
+def _checked_journal_pair(pair: str) -> tuple[str, str]:
+    """Refuse a pair the universe does not hold, before anything is written.
+
+    Args:
+        pair: The pair as typed, already uppercased.
+
+    Returns:
+        ``(base, quote)``.
+
+    Raises:
+        typer.BadParameter: If it is not six characters or either leg is
+            outside `fbe.universe.G10`. `split_pair` checks length only, so one
+            mistyped character splits as cleanly as a real pair and would be
+            journalled as a trade on a currency that does not exist.
+
+    """
+    try:
+        base, quote = split_pair(pair)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="PAIR") from error
+    for leg in (base, quote):
+        if leg not in G10:
+            raise typer.BadParameter(
+                f"{pair!r} has a leg {leg!r} that is not a G10 currency, so "
+                "the engine has no score for it and the record would carry a "
+                "bias for a pair the model never built.",
+                param_hint="PAIR",
+            )
+    return base, quote
+
+
+def _opened_moment(opened_at: datetime | None) -> datetime:
+    """Resolve the open timestamp into an aware instant in UTC.
+
+    Args:
+        opened_at: What the caller passed, or ``None`` for now.
+
+    Returns:
+        An aware UTC datetime. A naive value from the parser is read as UTC,
+        which is what every other timestamp in the journal means, and
+        `fbe.journal.append` refuses a naive one outright.
+
+    """
+    if opened_at is None:
+        return datetime.now(UTC)
+    if opened_at.tzinfo is None:
+        return opened_at.replace(tzinfo=UTC)
+    return opened_at.astimezone(UTC)
+
+
+def _engine_view(config: Config, pair: str, run_date: date) -> PairBias:
+    """Run the chain for one date and return its row for this pair.
+
+    Args:
+        config: The effective config.
+        pair: Pair in market convention.
+        run_date: The date the trade was opened.
+
+    Returns:
+        The filtered `fbe.types.PairBias` the engine held that day.
+
+    Raises:
+        typer.Exit: `EXIT_UNUSABLE` when the chain produced no row for the
+            pair, which means the record would carry no view at all.
+
+    Reads the cache and never the network, for the reason `bias` gives at the
+    same call: a rolled-over TTL refetching mid-session would let the journal
+    record a different view from the one the trader was looking at.
+
+    """
+    start = lookback_start(run_date, config.scoring.lookback_years)
+    result = collect(
+        replace(config.data, offline=True),
+        start=start,
+        end=run_date,
+        sources=ALL_SOURCES,
+    )
+    scores = score_currencies(
+        result.observations,
+        default_pillars(config.scoring),
+        config.scoring,
+        run_date,
+    )
+    by_currency = {score.currency: score for score in scores}
+    for row in build_pair_biases(scores, config, run_date):
+        if row.pair == pair:
+            return apply_filters(row, by_currency, config, run_date)
+    typer.echo(
+        f"The engine produced no row for {pair} on {run_date}, so the trade "
+        "would be recorded with no view attached, which is the one thing this "
+        "command is for. Run fbe refresh to fill the cache.",
+        err=True,
+    )
+    raise typer.Exit(EXIT_UNUSABLE)
+
+
+def _realised_money(
+    config: Config,
+    pair: str,
+    entry: float,
+    stop: float,
+    exit_price: float | None,
+    direction: Direction,
+    units: float,
+) -> tuple[float | None, float | None, str | None]:
+    """Value the position in the account currency, or say why it could not be.
+
+    Args:
+        config: The effective config, for the account currency.
+        pair: Pair in market convention.
+        entry: Fill price.
+        stop: Stop price at entry.
+        exit_price: Exit price, or ``None`` while open.
+        direction: Side taken on the base currency.
+        units: Size in base-currency units.
+
+    Returns:
+        ``(realised_risk, outcome, absence)``. The risk is the money the stop
+        exposes for the size actually traded, in the account currency, and is
+        what `fbe.journal.TradeRecord.risk_amount` means: never the intended
+        figure the ladder asked for, which the lot step has already moved. The
+        outcome is ``None`` while the trade is open. ``absence`` is a sentence
+        naming why the money could not be valued, and is ``None`` when it was.
+
+    No rate table is supplied, so the only route that resolves is the identity
+    one: an account denominated in the pair's quote currency. Everything else
+    raises `fbe.risk.MissingRateError`, which is caught here and reported
+    rather than defaulted. Guessing a rate is how a 1% risk became an 18% risk
+    once already, and `fbe.risk` opens with that case.
+
+    """
+    try:
+        per_pip = pip_value(pair, units, config.risk.account_currency, {})
+    except MissingRateError as error:
+        return None, None, str(error)
+    stop_pips = abs(entry - stop) / pip_size(pair)
+    risk = stop_pips * per_pip
+    if exit_price is None:
+        return risk, None, None
+    moved = exit_price - entry if direction is Direction.LONG else entry - exit_price
+    return risk, moved / pip_size(pair) * per_pip, None
+
+
+def _render_journal_add(
+    record: TradeRecord, row: PairBias, absence: str | None
+) -> None:
+    """Print what was recorded, and what the engine thought at the time.
+
+    Args:
+        record: The record just written.
+        row: The engine's view of the pair on the date.
+        absence: Why the money figures are missing, or ``None``.
+
+    The alignment line is the point of the command in one sentence, so it is
+    printed rather than left for the review weeks later.
+
+    """
+    pips = abs(record.entry - record.stop) / pip_size(record.pair)
+    typer.echo(
+        f"Recorded {record.pair} {record.direction.value}, {record.lots} lots, "
+        f"{pips:.1f} pip stop."
+    )
+    if record.outcome_zar is not None and record.r_multiple is not None:
+        typer.echo(
+            f"{record.account_currency} {record.outcome_zar:+.2f}, "
+            f"{record.r_multiple:+.2f}R against the realised risk of "
+            f"{record.account_currency} {record.risk_amount:.2f}."
+        )
+    elif absence is not None:
+        typer.echo(
+            f"No money figures: {absence} The trade is recorded without them "
+            "rather than with a guessed rate."
+        )
+    alignment = "Aligned." if record.agreed_with_bias else "Against the bias."
+    typer.echo(
+        f"Engine that day: {row.direction.value}, "
+        f"{row.conviction.value} conviction, spread {row.spread:+.2f}. "
+        f"{alignment}"
     )
 
 
