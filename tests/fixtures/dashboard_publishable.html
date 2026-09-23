@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FX fundamental bias</title>
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&amp;display=swap"
+    />
+    <style>
+      /* The full light palette on bare :root, which is what makes the two
+         dark blocks below overrides rather than the only definitions. */
+      :root {
+        --surface: #ffffff;
+        --surface-raised: #f6f7f9;
+        --ink: #14171a;
+        --ink-muted: #5b6570;
+        --line: #dfe3e8;
+        --long: #1f7a5a;
+        --short: #a33a3a;
+        --neutral: #8b949e;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --surface: #0f1215;
+          --surface-raised: #171b20;
+          --ink: #e9edf1;
+          --ink-muted: #9aa4af;
+          --line: #262c33;
+        }
+      }
+
+      :root[data-theme="dark"] {
+        --surface: #0f1215;
+        --surface-raised: #171b20;
+        --ink: #e9edf1;
+        --ink-muted: #9aa4af;
+        --line: #262c33;
+      }
+
+      @font-face {
+        font-family: "Inter";
+        src: url("https://fonts.gstatic.com/s/inter/v13/inter.woff2")
+          format("woff2");
+        font-display: swap;
+      }
+
+      body {
+        background: var(--surface);
+        color: var(--ink);
+        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        margin: 0;
+      }
+
+      .wrap {
+        padding-inline: 16px;
+        padding-block: 24px;
+        max-width: 720px;
+        margin-inline: auto;
+      }
+
+      .muted {
+        color: var(--ink-muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>FX fundamental bias</h1>
+      <p class="muted">As of 2026-09-23. Generated 05:30 UTC.</p>
+
+      <svg viewBox="0 0 320 40" role="img" aria-label="USD, plus 1.20">
+        <line x1="160" y1="4" x2="160" y2="36" stroke="var(--line)" />
+        <rect x="160" y="10" width="96" height="20" fill="var(--long)" />
+        <text x="8" y="25" fill="var(--ink)">USD +1.20</text>
+      </svg>
+
+      <p>
+        The weights are priors and nothing here has been measured against
+        out-of-sample returns.
+        <a href="#coverage">Coverage</a>
+      </p>
+
+      <h2 id="coverage">Coverage</h2>
+      <p class="muted">Seven pillars, 100% of weight present.</p>
+    </div>
+
+    <script>
+      // Inline, and it touches nothing off the page.
+      const root = document.documentElement;
+      document.querySelectorAll("[data-toggle-theme]").forEach((node) => {
+        node.addEventListener("click", () => {
+          const next = root.dataset.theme === "dark" ? "light" : "dark";
+          root.dataset.theme = next;
+        });
+      });
+    </script>
+  </body>
+</html>

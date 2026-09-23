@@ -1,0 +1,498 @@
+"""The publishing guard: what makes a dashboard fail silently once published.
+
+Every constraint here has the same shape of failure, and it is the reason this
+function exists rather than a linter. A page that breaks one of these does not
+error. It renders, with a blank panel where the chart was, or in the wrong
+theme, or with no text at all against a background the host painted. The only
+place that shows up is on the owner's phone at six in the morning, four hours
+after the run that produced it, which is the one moment the page exists for.
+
+So the guard is written to be loud. It reports every violation rather than the
+first, because a caller fixing one at a time round-trips once per constraint,
+and each message names the constraint and what it found, so a reader does not
+have to open the page to act on it.
+
+What this file deliberately does not do is build its documents with
+`render_dashboard`. A checker verified against the output of the thing it is
+meant to police agrees with it the day they are both wrong, and this checker
+exists precisely because the renderer cannot check itself. Every document here
+is written out by hand: the publishable one as a committed fixture, and the
+violating ones from a builder that changes one part at a time.
+
+Nothing here reaches the network and nothing loads a browser. The subject is a
+string.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from fbe.dashboard.build import (
+    ALLOWED_SCRIPT_HOSTS,
+    ALLOWED_STYLE_HOSTS,
+    MAX_RENDERED_BYTES,
+    check_constraints,
+)
+
+FIXTURE = Path(__file__).parent / "fixtures" / "dashboard_publishable.html"
+"""A small document satisfying every constraint, written by hand.
+
+Committed rather than generated so that the day the renderer starts emitting a
+violation, this file still says what a publishable page looks like.
+"""
+
+PALETTE = """
+      :root {
+        --surface: #ffffff;
+        --ink: #14171a;
+      }
+"""
+
+DARK_MEDIA = """
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --surface: #0f1215;
+          --ink: #e9edf1;
+        }
+      }
+"""
+
+DARK_ATTRIBUTE = """
+      :root[data-theme="dark"] {
+        --surface: #0f1215;
+        --ink: #e9edf1;
+      }
+"""
+
+BODY = """
+      body {
+        background: var(--surface);
+        color: var(--ink);
+      }
+"""
+
+
+def document(
+    *,
+    title: str = "<title>FX fundamental bias</title>",
+    palette: str = PALETTE,
+    dark_media: str = DARK_MEDIA,
+    dark_attribute: str = DARK_ATTRIBUTE,
+    body_rule: str = BODY,
+    head_extra: str = "",
+    body_extra: str = "",
+    script: str = "",
+) -> str:
+    """One document, with exactly the part under test replaced.
+
+    Built from parts rather than by editing a single string, so a test that
+    removes the dark media block cannot accidentally remove anything else and
+    pass for the wrong reason.
+    """
+    inline_script = f"<script>{script}</script>" if script else ""
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    {title}
+    {head_extra}
+    <style>
+{palette}
+{dark_media}
+{dark_attribute}
+{body_rule}
+    </style>
+  </head>
+  <body>
+    <h1>FX fundamental bias</h1>
+    {body_extra}
+    {inline_script}
+  </body>
+</html>
+"""
+
+
+def reported(html: str) -> str:
+    """Every message joined, for asserting what a violation says."""
+    return " | ".join(check_constraints(html))
+
+
+# --- the page that is fine ---------------------------------------------------
+
+
+def test_a_publishable_page_reports_nothing() -> None:
+    """The fixture is the positive case, and it is the one that can rot.
+
+    A guard with no passing example drifts into rejecting everything, and
+    nobody notices until the renderer it is meant to serve cannot satisfy it.
+    """
+    html = FIXTURE.read_text(encoding="utf-8")
+
+    assert check_constraints(html) == []
+
+
+# --- size --------------------------------------------------------------------
+
+
+def test_a_document_over_the_ceiling_is_reported() -> None:
+    """The sandbox refuses it, and refusing it here costs nothing."""
+    padding = "<!-- " + "x" * MAX_RENDERED_BYTES + " -->"
+
+    messages = check_constraints(document(body_extra=padding))
+
+    assert any(str(MAX_RENDERED_BYTES) in message for message in messages)
+
+
+def test_a_document_just_under_the_ceiling_is_not_reported() -> None:
+    """The boundary from the other side, so the comparison cannot be inverted.
+
+    Written against `MAX_RENDERED_BYTES` rather than a literal, because a test
+    carrying its own copy of the ceiling passes when the two disagree.
+    """
+    base = len(document().encode("utf-8"))
+    padding = "<!-- " + "x" * (MAX_RENDERED_BYTES - base - 200) + " -->"
+    html = document(body_extra=padding)
+
+    assert len(html.encode("utf-8")) < MAX_RENDERED_BYTES
+    assert not any("byte" in message.lower() for message in check_constraints(html))
+
+
+def test_the_ceiling_is_measured_in_bytes_rather_than_characters() -> None:
+    """A page of multi-byte characters is bigger than its length suggests.
+
+    The sandbox counts what it downloads. This document is comfortably under
+    the ceiling in characters and over it in bytes, so an implementation
+    measuring ``len(html)`` accepts a page the sandbox refuses. Every currency
+    name and event title on the real page comes from a feed, so non-ASCII is
+    the normal case rather than a contrived one.
+    """
+    padding = "€" * (MAX_RENDERED_BYTES // 2)
+    html = document(body_extra=f"<p>{padding}</p>")
+
+    assert len(html) < MAX_RENDERED_BYTES
+    assert len(html.encode("utf-8")) > MAX_RENDERED_BYTES
+    assert any(
+        str(MAX_RENDERED_BYTES) in message for message in check_constraints(html)
+    )
+
+
+# --- external references -----------------------------------------------------
+
+
+def test_a_stylesheet_from_an_arbitrary_host_is_reported() -> None:
+    link = '<link rel="stylesheet" href="https://example.com/app.css" />'
+
+    assert "example.com" in reported(document(head_extra=link))
+
+
+def test_an_external_image_is_reported() -> None:
+    """Blocked by the sandbox, and it leaves a gap rather than an error."""
+    image = '<img src="https://example.com/chart.png" alt="chart" />'
+
+    assert "example.com" in reported(document(body_extra=image))
+
+
+def test_a_script_from_an_unlisted_cdn_is_reported() -> None:
+    script = '<script src="https://unpkg.com/d3@7"></script>'
+
+    assert "unpkg.com" in reported(document(head_extra=script))
+
+
+@pytest.mark.parametrize("host", ALLOWED_SCRIPT_HOSTS)
+def test_a_script_from_an_allowed_host_is_accepted(host: str) -> None:
+    """Parametrised over the constant, so adding a host cannot skip a test."""
+    script = f'<script src="https://{host}/npm/d3@7/dist/d3.min.js"></script>'
+
+    assert check_constraints(document(head_extra=script)) == []
+
+
+def test_a_stylesheet_from_google_fonts_is_accepted() -> None:
+    link = (
+        '<link rel="stylesheet" '
+        'href="https://fonts.googleapis.com/css2?family=Inter" />'
+    )
+
+    assert check_constraints(document(head_extra=link)) == []
+
+
+def test_a_font_file_from_the_allowed_host_is_accepted() -> None:
+    """The font arrives through CSS rather than through an attribute.
+
+    `@font-face` names its file in a `url()`, so a check that only walked
+    `src` and `href` attributes would pass every external font ever embedded,
+    including ones from hosts the sandbox blocks.
+    """
+    face = """
+      @font-face {
+        font-family: "Inter";
+        src: url("https://fonts.gstatic.com/s/inter/v13/inter.woff2");
+      }
+"""
+
+    assert check_constraints(document(body_rule=BODY + face)) == []
+
+
+def test_a_font_file_from_an_arbitrary_host_is_reported() -> None:
+    """The other half of the case above, which is the one that fails silently."""
+    face = """
+      @font-face {
+        font-family: "Inter";
+        src: url("https://cdn.example.com/inter.woff2");
+      }
+"""
+
+    assert "cdn.example.com" in reported(document(body_rule=BODY + face))
+
+
+def test_a_data_uri_is_accepted() -> None:
+    pixel = (
+        '<img alt="" src="data:image/gif;base64,'
+        'R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" />'
+    )
+
+    assert check_constraints(document(body_extra=pixel)) == []
+
+
+def test_a_fragment_link_is_accepted() -> None:
+    """Within the page, so nothing is fetched."""
+    anchor = '<a href="#coverage">Coverage</a><h2 id="coverage">Coverage</h2>'
+
+    assert check_constraints(document(body_extra=anchor)) == []
+
+
+def test_a_relative_path_is_reported() -> None:
+    """One file means one file. A relative asset resolves to nothing.
+
+    This is the case a developer hits first, because it works when the page is
+    opened from disk beside its assets and breaks the moment it is published.
+    """
+    link = '<link rel="stylesheet" href="styles/app.css" />'
+
+    assert "styles/app.css" in reported(document(head_extra=link))
+
+
+# --- inline script that reaches off the page ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        'fetch("/api/bias")',
+        "new XMLHttpRequest()",
+        'new WebSocket("wss://example.com")',
+    ],
+)
+def test_a_call_that_leaves_the_page_is_reported(call: str) -> None:
+    """Each separately, because the sandbox blocks all three the same way.
+
+    The page still renders. The panel that needed the data is empty, and an
+    empty panel on a bias dashboard reads as no opinion rather than as a
+    failure, which is the worst of the three outcomes.
+    """
+    messages = check_constraints(document(script=f"const x = {call};"))
+
+    assert messages
+    assert any(call.split("(")[0].split()[-1] in message for message in messages)
+
+
+def test_a_script_that_only_touches_the_document_is_accepted() -> None:
+    script = 'document.documentElement.dataset.theme = "dark";'
+
+    assert check_constraints(document(script=script)) == []
+
+
+def test_the_word_fetch_in_prose_is_not_a_violation() -> None:
+    """The check is about script, and a page about a data fetch says the word.
+
+    A substring search over the whole document reports the footer sentence
+    explaining that a fetch failed, which is exactly the sentence the report is
+    supposed to carry.
+    """
+    prose = "<p>The calendar fetch failed, so the window is unknown.</p>"
+
+    assert check_constraints(document(body_extra=prose)) == []
+
+
+# --- the palette and the two dark blocks -------------------------------------
+
+
+def test_a_palette_defined_only_inside_a_media_block_is_reported() -> None:
+    """The light page then has no tokens at all, and renders unstyled.
+
+    This is the theming mistake that looks correct in a dark-mode browser and
+    is discovered by the one person who has their phone set to light.
+    """
+    messages = check_constraints(document(palette=""))
+
+    assert any(":root" in message for message in messages)
+
+
+def test_a_bare_root_block_with_no_custom_property_is_reported() -> None:
+    """A `:root` block that sets no token is not a palette.
+
+    Checked because the obvious implementation looks for the selector and
+    stops there, which passes a page whose tokens are all defined in the dark
+    blocks and whose light mode is blank.
+    """
+    empty = """
+      :root {
+        font-size: 16px;
+      }
+"""
+
+    assert check_constraints(document(palette=empty)) != []
+
+
+def test_a_page_with_no_preference_media_override_is_reported() -> None:
+    messages = check_constraints(document(dark_media=""))
+
+    assert any("prefers-color-scheme" in message for message in messages)
+
+
+def test_a_page_with_no_explicit_toggle_override_is_reported() -> None:
+    """An explicit toggle has to win in both directions.
+
+    Without this block the header's theme button appears to do nothing on a
+    phone whose system theme is already dark, which reads as a broken control
+    rather than as a missing rule.
+    """
+    messages = check_constraints(document(dark_attribute=""))
+
+    assert any("data-theme" in message for message in messages)
+
+
+# --- the body background -----------------------------------------------------
+
+
+def test_a_body_with_no_background_is_reported_with_the_reason() -> None:
+    """The message has to carry why, because the page looks fine locally.
+
+    A transparent body inherits whatever the host paints behind it, so the
+    page renders dark text on a dark ground for exactly the readers who did
+    not choose it.
+    """
+    no_background = """
+      body {
+        color: var(--ink);
+      }
+"""
+
+    messages = [
+        message
+        for message in check_constraints(document(body_rule=no_background))
+        if "background" in message
+    ]
+
+    assert messages
+    assert any("transparent" in message or "host" in message for message in messages)
+
+
+def test_a_body_rule_that_is_absent_entirely_is_reported() -> None:
+    assert any(
+        "background" in message for message in check_constraints(document(body_rule=""))
+    )
+
+
+# --- the title ---------------------------------------------------------------
+
+
+def test_a_missing_title_is_reported() -> None:
+    assert any("title" in message for message in check_constraints(document(title="")))
+
+
+def test_an_empty_title_is_reported() -> None:
+    """A tab reading "index" is the same failure as no tab name at all."""
+    assert any(
+        "title" in message
+        for message in check_constraints(document(title="<title></title>"))
+    )
+
+
+# --- every violation, not the first ------------------------------------------
+
+
+def test_three_violations_come_back_as_three_messages() -> None:
+    """The criterion that makes this a checker rather than a validator.
+
+    Returning the first means a caller fixes one, re-runs, finds the next, and
+    round-trips once per constraint. Three separate causes here, chosen so no
+    one of them could plausibly produce the other two.
+    """
+    html = document(
+        title="",
+        body_rule="",
+        head_extra='<link rel="stylesheet" href="https://example.com/app.css" />',
+    )
+
+    messages = check_constraints(html)
+
+    assert len(messages) >= 3
+    assert any("title" in message for message in messages)
+    assert any("background" in message for message in messages)
+    assert any("example.com" in message for message in messages)
+
+
+def test_every_message_names_the_constraint_and_what_it_found() -> None:
+    """A message a reader can act on without opening the page.
+
+    "Constraint violated" is useless at six in the morning. Each message has
+    to carry the offending thing, so asserting they are non-trivial strings is
+    the weakest form of that and still catches a bare enum name.
+    """
+    html = document(
+        title="",
+        body_rule="",
+        head_extra='<img src="https://example.com/chart.png" alt="" />',
+        script='fetch("/api")',
+    )
+
+    messages = check_constraints(html)
+
+    assert messages
+    for message in messages:
+        assert len(message) > 30, message
+        assert message[0].isupper() or message[0] == "`", message
+
+
+def test_the_result_is_a_list_rather_than_a_generator() -> None:
+    """A caller counts it and then prints it, which a generator makes wrong.
+
+    An exhausted generator reports no violations on the second read, and the
+    second read is the one in the error message.
+    """
+    messages = check_constraints(document(title=""))
+
+    assert isinstance(messages, list)
+    assert messages == check_constraints(document(title=""))
+
+
+# --- the checker changes nothing ---------------------------------------------
+
+
+def test_the_checker_leaves_its_input_alone() -> None:
+    html = document(title="")
+    before = html
+
+    check_constraints(html)
+
+    assert html == before
+
+
+def test_an_empty_document_is_reported_rather_than_accepted() -> None:
+    """The degenerate input, which must never read as publishable.
+
+    An empty string satisfies no constraint, and a checker written as a series
+    of "if present and wrong" tests returns an empty list for it, which reads
+    as a clean bill of health for a blank page.
+    """
+    assert check_constraints("") != []
+
+
+@pytest.mark.parametrize("host", ALLOWED_STYLE_HOSTS)
+def test_the_allowed_style_hosts_are_each_accepted(host: str) -> None:
+    """Parametrised over the constant for the same reason as the scripts."""
+    link = f'<link rel="stylesheet" href="https://{host}/css2?family=Inter" />'
+
+    assert check_constraints(document(head_extra=link)) == []
