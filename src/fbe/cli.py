@@ -79,7 +79,7 @@ import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -97,7 +97,13 @@ from fbe.bias import (
     build_pair_biases,
     shortlist,
 )
-from fbe.datasources import ALL_SOURCES
+from fbe.calendar_guard import (
+    CalendarCoverage,
+    CoverageGap,
+    blackout_windows,
+    coverage_gap,
+)
+from fbe.datasources import ALL_SOURCES, CalendarSource
 from fbe.datasources.base import ProbeRequest, SourceError
 from fbe.datasources.cache import DiskCache
 from fbe.datasources.collect import (
@@ -114,6 +120,7 @@ from fbe.risk import MissingRateError, pip_size, pip_value, risk_fraction_for
 from fbe.scoring import score_currencies
 from fbe.types import (
     BiasReport,
+    CalendarEvent,
     Conviction,
     CurrencyScore,
     Direction,
@@ -136,6 +143,23 @@ EXIT_UNUSABLE = 1
 
 EXIT_BLOCKED = 3
 """A guard rule refused the request. Not an error, a decision."""
+
+
+WINDOW_LOOKAROUND = timedelta(days=7)
+"""How far either side of the horizon the blackout windows are derived from.
+
+A window is only honest if every release that merges into it was seen. A run
+asking for the next four hours, whose window is extended by a speaker twenty
+minutes past that horizon, would otherwise print a window ending earlier than
+the market reopens, which is a plausible wrong number of exactly the kind
+`docs/risk-and-execution.md` is written against.
+
+Seven days because the feed publishes one week at a time, so this reaches
+everything the source can hold and costs nothing: the second call is filtered
+from the same cached payload rather than fetched again. It is not a threshold
+and nothing about the model depends on it; widen it and the answer cannot
+change, because there is no eighth day to find.
+"""
 
 LABEL_WIDTH = 16
 STATUS_WIDTH = 10
@@ -425,6 +449,22 @@ and each command see the same entry. ``ctx.obj`` would not do: it holds a
 frozen `GlobalOptions`, and the point is one config per invocation rather than
 one per command.
 """
+
+
+def _now() -> datetime:
+    """Return the current instant in UTC.
+
+    One function rather than a call at each site, so a test can pin the moment
+    a horizon is measured from. Every command that needs a wall clock reads it
+    through here, and no command reads the local zone: the rendering layer
+    converts on the way out, which keeps the arithmetic in UTC where a
+    daylight-saving change cannot move it.
+
+    Returns:
+        An aware datetime in UTC.
+
+    """
+    return datetime.now(UTC)
 
 
 def _effective_config(ctx: typer.Context) -> Config:
@@ -2568,28 +2608,626 @@ def calendar(
     high-impact news, which is only actionable once "high impact" has a clock
     time attached to it and a list of which pairs it touches. Each event is
     expanded into a window using the configured minutes before and after, then
-    windows on the same pair are merged so the output is a short list of times
-    to stand aside rather than a wall of releases.
+    overlapping and touching windows are merged so the output is a short list
+    of times to stand aside rather than a wall of releases.
+
+    Merged across the selection rather than per pair, which is what this
+    docstring used to say. `fbe.calendar_guard.blackout_windows` states the
+    rule it implements, "windows are not per-currency here", and leaves
+    filtering to the pair being traded to `fbe.calendar_guard.is_blacked_out`.
+    So ``--currency`` and ``--pair`` decide which releases are in the
+    selection, and the windows are that selection's shape. Asking for one pair
+    gives that pair's windows by construction; asking for none gives the
+    calendar's.
 
     Times print in the local timezone with the UTC offset shown, because a
-    calendar that is ambiguous about the hour is worse than no calendar.
+    calendar that is ambiguous about the hour is worse than no calendar. The
+    offset is on every stamp rather than stated once in a header: a reader
+    scanning one row acts on that row. The arithmetic stays in UTC and the
+    conversion happens on the way out, so a daylight-saving change cannot move
+    a window.
+
+    **Which releases are listed and which close the market are two questions.**
+    ``--impact`` answers the first: it is the floor
+    `fbe.datasources.calendar.CalendarSource.events` filters on, and this
+    command never re-applies it. `fbe.calendar_guard.is_high_impact` answers
+    the second, inside `fbe.calendar_guard.blackout_windows`, and it reads the
+    trading plan's own keyword list as well as the feed's rating. So a
+    Medium-rated release with no keyword is listed at ``--impact medium`` and
+    closes nothing, and a Medium-rated CPI print closes the market at any
+    floor, including one that leaves it off the page.
+
+    That second fact is why the windows are derived from a **wider** fetch than
+    the list. Two calls go to the source: the horizon at the requested floor,
+    which is what a person reads, and `WINDOW_LOOKAROUND` either side of it at
+    the lowest floor, which is what the windows are built from. Deriving them
+    from the listed slice would lose two things, both quietly: a window held
+    open by a release just past the horizon, printed as reopening before it
+    does, and a window from a release the floor excluded. The second call is
+    filtered from the same cached payload, so it is not a second fetch.
+
+    A window is reported whole if any part of it touches the horizon, and it is
+    never trimmed to fit. What a trader needs from a window is when it ends.
+
+    **A failed fetch and a quiet week are different facts.** An empty calendar
+    clears every blackout at once, and this is the command a person reads
+    before deciding the morning is quiet, so a failure names its category from
+    `fbe.calendar_guard.CoverageGap`, says what the publisher said, and exits
+    `EXIT_UNUSABLE` rather than printing a page with no rows on it. Coverage
+    that succeeds but does not reach the end of the horizon is a third answer
+    again: it prints how far the data does reach and exits `EXIT_OK`, because
+    the feed publishes one week at a time, so every Friday run is short of the
+    following Monday and refusing on it would refuse every Friday.
 
     Args:
         ctx: Typer context carrying the effective config.
         hours: Horizon in hours from now.
-        currency: Restrict to these currencies.
-        pair: Restrict to events touching either leg of these pairs.
-        impact: Minimum impact level.
-        blackouts: Show merged windows instead of raw events.
-        output_format: table, json or csv.
+        currency: Restrict to these currencies. Case-insensitive, and a code
+            outside `G10` is a usage error rather than a filter matching
+            nothing, which would render as a quiet morning.
+        pair: Restrict to events touching either leg of these pairs. Both legs,
+            because a filter matching only the quote currency would hide every
+            EUR, GBP, AUD and NZD release on the dollar pairs the plan trades.
+            ``GLOBAL`` events arrive whatever the filter, which is the source's
+            own rule: an event with no single currency can move any of them,
+            and a reader who cannot see the row cannot judge it either.
+        impact: Minimum published impact level to show. ``Holiday`` is not a
+            level and no floor admits it, per
+            `fbe.datasources.calendar.IMPACT_SEVERITY`.
+        blackouts: Show merged windows instead of raw events. A table choice
+            only: both views carry both lists in ``json`` and ``csv``, so a
+            consumer never has to run the command twice and compare two
+            fetches.
+        output_format: table, json or csv. The machine formats carry UTC ISO
+            times, which keep their ``+00:00``, because a spreadsheet given a
+            local time with no offset reads it as its own. ``csv`` cannot nest,
+            so events and windows share one shape and a ``kind`` column says
+            which a row is.
 
     Raises:
-        NotImplementedError: Always, until `fbe.calendar_guard` lands.
+        typer.BadParameter: With exit code 2 on a currency outside `G10`, a
+            pair that is not six characters, or a pair with a leg outside
+            `G10`.
+        typer.Exit: With `EXIT_UNUSABLE` when the calendar fetch fails, which
+            is the one case where printing nothing would read as good news.
 
     """
-    raise NotImplementedError(
-        "fbe.cli.calendar is scaffolded; see docs/roadmap.md Phase 4"
+    config = _effective_config(ctx)
+    now = _now()
+    end = now + timedelta(hours=hours)
+    wanted = _calendar_currencies(currency, pair)
+
+    source = CalendarSource(config.data)
+    try:
+        events = tuple(source.events(wanted, now, end, min_impact=impact.value))
+        surrounding = tuple(
+            source.events(
+                wanted,
+                now - WINDOW_LOOKAROUND,
+                end + WINDOW_LOOKAROUND,
+                min_impact=Impact.LOW.value,
+            )
+        )
+    except SourceError as error:
+        # Reported through `coverage_gap` rather than as a bare error string, so
+        # the three categories are named by the guard that defines them. A
+        # failed fetch with a cached week underneath it is a different morning
+        # from one with nothing at all, and the operator's next step differs.
+        failed = CalendarCoverage(
+            events=(),
+            covers_through=source.horizon(),
+            fetch_ok=False,
+            fetch_error=str(error),
+        )
+        gap = coverage_gap(failed, end)
+        detail = f"{gap[0].value}: {gap[1]}" if gap is not None else str(error)
+        typer.echo(f"Calendar fetch failed. {detail}")
+        typer.echo(
+            "No window is reported, because an empty calendar and a failed "
+            "fetch are different facts and only one of them is quiet. Check "
+            "both legs by hand before trading."
+        )
+        raise typer.Exit(EXIT_UNUSABLE) from error
+
+    coverage = CalendarCoverage(events=events, covers_through=source.horizon())
+    gap = coverage_gap(coverage, end)
+    windows = _windows_touching(blackout_windows(surrounding, config.data), now, end)
+
+    if output_format is OutputFormat.JSON:
+        typer.echo(
+            _calendar_json(
+                now, end, hours, wanted, impact, events, surrounding, windows, gap
+            )
+        )
+        return
+    if output_format is OutputFormat.CSV:
+        typer.echo(_calendar_csv(events, surrounding, windows, gap))
+        return
+
+    for line in _calendar_table(
+        now, end, hours, events, surrounding, windows, gap, blackouts
+    ):
+        typer.echo(line)
+
+
+def _calendar_currencies(
+    currency: Sequence[str] | None,
+    pair: Sequence[str] | None,
+) -> tuple[str, ...]:
+    """Resolve the currency filters into the set to ask the source for.
+
+    Both filters narrow the same axis, so they are resolved together into one
+    set rather than applied in sequence. ``--pair EURUSD --currency JPY`` means
+    all three currencies, which is what a trader watching a cross and a yen
+    release wants, and it is also the only reading that does not depend on the
+    order the options were written in.
+
+    Args:
+        currency: ISO 4217 codes from ``--currency``, case-insensitive.
+        pair: Six-character pairs from ``--pair``, either leg matching.
+
+    Returns:
+        The currencies to request, sorted so the request is reproducible. Every
+        G10 currency when neither filter was given, which is the source's own
+        idea of no filter rather than a special value it has to interpret.
+
+        `fbe.datasources.calendar.CalendarSource.events` adds its ``GLOBAL``
+        events to every request whatever this returns, because an event with no
+        single currency can move any of them. So a pair filter narrows the
+        named currencies and does not suppress those, which is deliberate on a
+        listing: `fbe.calendar_guard.is_blacked_out` matches a ``GLOBAL`` event
+        against neither leg, and a reader who cannot see the row cannot make up
+        their own mind about it either.
+
+    Raises:
+        typer.BadParameter: With exit code 2 when a currency is not in `G10`,
+            when a pair is not six characters, or when either of its legs is
+            not in `G10`. A filter that matched nothing would render as a quiet
+            morning, which is the one output this command must never invent.
+
+    """
+    wanted: set[str] = set()
+    for code in currency or ():
+        folded = code.strip().upper()
+        if folded not in G10:
+            raise typer.BadParameter(
+                f"{code!r} is not one of the G10 currencies {sorted(G10)}. A "
+                f"filter matching no currency prints an empty calendar, which "
+                f"reads as a quiet morning.",
+                param_hint="--currency",
+            )
+        wanted.add(folded)
+    for entry in pair or ():
+        wanted.update(_calendar_pair_legs(entry))
+    return tuple(sorted(wanted)) if wanted else tuple(sorted(G10))
+
+
+def _calendar_pair_legs(entry: str) -> tuple[str, str]:
+    """Split one ``--pair`` value into its two legs, or refuse it.
+
+    Args:
+        entry: A six-character pair in market convention, any case.
+
+    Returns:
+        ``(base, quote)`` upper-cased.
+
+    Raises:
+        typer.BadParameter: With exit code 2 when the value is not six
+            characters or a leg is not in `G10`. `fbe.universe.split_pair`
+            checks length and nothing else, so ``EURXAU`` splits as cleanly as
+            ``EURUSD`` and would filter the calendar down to one real leg
+            while looking like it had matched both.
+
+    """
+    normalised = entry.strip().upper()
+    try:
+        base, quote = split_pair(normalised)
+    except ValueError as error:
+        raise typer.BadParameter(
+            f"{entry!r} is not a six-character pair: {error}",
+            param_hint="--pair",
+        ) from error
+    for leg in (base, quote):
+        if leg not in G10:
+            raise typer.BadParameter(
+                f"{entry!r} has a leg {leg!r} that is not a G10 currency, so "
+                f"this filter would hide every release on the leg that is.",
+                param_hint="--pair",
+            )
+    return base, quote
+
+
+def _offset(moment: datetime) -> str:
+    """Render an aware datetime's UTC offset as ``+HH:MM``.
+
+    Args:
+        moment: An aware datetime, already converted to the zone to show.
+
+    Returns:
+        The offset with a colon, which is what ISO 8601 and every reader
+        expect. ``%z`` alone gives ``+0200``, and the two spellings on one page
+        invite the question of whether they mean the same thing.
+
+    """
+    raw = moment.strftime("%z")
+    return f"{raw[:3]}:{raw[3:]}"
+
+
+def _local_stamp(moment: datetime) -> str:
+    """Render a moment in the local zone, with the day and the offset.
+
+    Args:
+        moment: An aware datetime in any zone.
+
+    Returns:
+        ``Wed 16 Sep 15:30 +02:00``. The offset is on every stamp rather than
+        stated once in a header, because a reader scanning one row acts on that
+        row: ``docs/interfaces.md`` puts it plainly, a calendar that is
+        ambiguous about the hour is worse than no calendar.
+
+    """
+    local = moment.astimezone()
+    return f"{local.strftime('%a %d %b %H:%M')} {_offset(local)}"
+
+
+def _local_clock(moment: datetime) -> str:
+    """Render just the local clock time, for the second end of a window.
+
+    Args:
+        moment: An aware datetime in any zone.
+
+    Returns:
+        ``17:00``, with no offset and no date. Used only where the same row
+        already carries both, so the offset is never the thing left out.
+
+    """
+    return moment.astimezone().strftime("%H:%M")
+
+
+def _windows_touching(
+    windows: Sequence[tuple[datetime, datetime]],
+    start: datetime,
+    end: datetime,
+) -> tuple[tuple[datetime, datetime], ...]:
+    """Keep the windows that overlap the horizon, whole.
+
+    Selection rather than arithmetic: no window is trimmed to the horizon and
+    none is merged here. A window that opens before the run and closes inside
+    it is kept at its real length, because a trader reading one needs to know
+    when it ends and not when the page stops looking.
+
+    Args:
+        windows: Merged windows from `fbe.calendar_guard.blackout_windows`,
+            derived over `WINDOW_LOOKAROUND` either side of the horizon.
+        start: The start of the horizon, in UTC.
+        end: The end of the horizon, in UTC.
+
+    Returns:
+        Those windows intersecting ``[start, end]``, inclusive at both ends so
+        one touching the horizon's edge is reported rather than dropped.
+
+    """
+    return tuple(
+        (opens, closes) for opens, closes in windows if closes >= start and opens <= end
     )
+
+
+def _window_for(
+    event: CalendarEvent,
+    windows: Sequence[tuple[datetime, datetime]],
+) -> tuple[datetime, datetime] | None:
+    """Find the window a listed event sits in, for the row it prints on.
+
+    Attribution for display, not a guard decision. Which events close the
+    market is `fbe.calendar_guard.is_high_impact`'s call and the windows are
+    `fbe.calendar_guard.blackout_windows`'s; this only asks which of those
+    windows, if any, contains this event's scheduled time.
+
+    Args:
+        event: One listed event.
+        windows: The merged windows for this run, in UTC.
+
+    Returns:
+        The containing window, or ``None`` when the event produced none, which
+        is every event the impact floor admitted and the guard did not treat as
+        high impact. Containment is inclusive at both ends, matching
+        `fbe.calendar_guard.is_blacked_out`, so an event on a boundary is
+        reported inside rather than falling between two rows.
+
+    """
+    scheduled = event.scheduled_for.astimezone(UTC)
+    for opens, closes in windows:
+        if opens <= scheduled <= closes:
+            return (opens, closes)
+    return None
+
+
+def _window_events(
+    window: tuple[datetime, datetime],
+    events: Sequence[CalendarEvent],
+) -> tuple[str, ...]:
+    """Name the listed events inside one window, for its row.
+
+    Args:
+        window: One merged window, in UTC.
+        events: The listed events for this run.
+
+    Returns:
+        ``CCY Title`` for each event inside, in time order. Empty when the
+        window came from an event the filters excluded from the listing, which
+        a caller renders as such rather than as a window nobody asked for.
+
+    """
+    opens, closes = window
+    return tuple(
+        f"{event.currency} {event.title}"
+        for event in sorted(events, key=lambda item: item.scheduled_for)
+        if opens <= event.scheduled_for.astimezone(UTC) <= closes
+    )
+
+
+def _coverage_line(
+    gap: tuple[CoverageGap, str] | None,
+    end: datetime,
+) -> str | None:
+    """Say how far the calendar reaches when it does not reach the horizon.
+
+    Args:
+        gap: What `fbe.calendar_guard.coverage_gap` returned for ``end``.
+        end: The end of the requested horizon, in UTC.
+
+    Returns:
+        One line naming the category and the moment coverage ends, or ``None``
+        when the data covers the whole horizon. Nothing is printed in that
+        case: a caveat on every run is a caveat nobody reads, and the feed
+        publishes a week at a time so most mornings genuinely are covered.
+
+    """
+    if gap is None:
+        return None
+    kind, reason = gap
+    return (
+        f"Coverage does not reach the end of the horizon "
+        f"{_local_stamp(end)} ({kind.value}): {reason}."
+    )
+
+
+def _calendar_table(
+    now: datetime,
+    end: datetime,
+    hours: int,
+    events: Sequence[CalendarEvent],
+    surrounding: Sequence[CalendarEvent],
+    windows: Sequence[tuple[datetime, datetime]],
+    gap: tuple[CoverageGap, str] | None,
+    blackouts: bool,
+) -> list[str]:
+    """Render the calendar for a terminal, in the layout ``docs/interfaces.md`` shows.
+
+    Args:
+        now: The instant the horizon is measured from, in UTC.
+        end: The end of the horizon, in UTC.
+        hours: The horizon in hours, as asked for.
+        events: The listed events, in time order.
+        surrounding: Every release either side of the horizon, which is what
+            the windows were derived from and what names them. A window can be
+            held open by a release outside the horizon, and a row naming only
+            the ones inside it would read as a window with no cause.
+        windows: The merged blackout windows, already narrowed to the horizon.
+        gap: What `fbe.calendar_guard.coverage_gap` said about ``end``.
+        blackouts: True for the merged windows, false for the event list.
+
+    Returns:
+        The lines to print, header first. Times are local with the offset on
+        every stamp; the arithmetic behind them stayed in UTC.
+
+    """
+    lines = [
+        f"Local time {_local_stamp(now)}, horizon {hours}h to {_local_stamp(end)}",
+        "",
+    ]
+    if blackouts:
+        lines.append(f"{'From':<24} {'To':<8} Releases")
+        for window in windows:
+            opens, closes = window
+            named = _window_events(window, surrounding) or ("none listed",)
+            lines.append(
+                f"{_local_stamp(opens):<24} {_local_clock(closes):<8} "
+                f"{'; '.join(named)}"
+            )
+        if not windows:
+            lines.append(
+                f"No blackout window in the next {hours}h from the releases "
+                f"this run can see."
+            )
+    else:
+        lines.append(f"{'When':<24} {'CCY':<4} {'Impact':<8} {'Release':<34} Blackout")
+        for event in events:
+            covering = _window_for(event, windows)
+            blackout = (
+                f"{_local_clock(covering[0])} - {_local_clock(covering[1])}"
+                if covering is not None
+                else "-"
+            )
+            lines.append(
+                f"{_local_stamp(event.scheduled_for):<24} {event.currency:<4} "
+                f"{event.impact:<8} {event.title:<34} {blackout}"
+            )
+        if not events:
+            lines.append(f"No release at this impact in the next {hours}h.")
+    line = _coverage_line(gap, end)
+    if line is not None:
+        lines.extend(("", line))
+    return lines
+
+
+def _calendar_payload(
+    now: datetime,
+    end: datetime,
+    hours: int,
+    wanted: Sequence[str],
+    impact: Impact,
+    events: Sequence[CalendarEvent],
+    surrounding: Sequence[CalendarEvent],
+    windows: Sequence[tuple[datetime, datetime]],
+    gap: tuple[CoverageGap, str] | None,
+) -> dict[str, object]:
+    """Build the machine view of one run, shared by the JSON rendering.
+
+    Both the events and the windows are always present, whichever table
+    ``--blackouts`` chose. That flag decides what a person reads, not what the
+    run knew, and a consumer that had to run the command twice to get both
+    would be comparing two fetches.
+
+    Args:
+        now: The instant the horizon is measured from, in UTC.
+        end: The end of the horizon, in UTC.
+        hours: The horizon in hours.
+        wanted: The currencies requested.
+        impact: The impact floor applied.
+        events: The listed events.
+        surrounding: Every release the windows were derived from.
+        windows: The merged windows, narrowed to the horizon.
+        gap: What `fbe.calendar_guard.coverage_gap` said about ``end``.
+
+    Returns:
+        Plain data. Every moment is a UTC ISO string, which carries ``+00:00``
+        rather than dropping the offset, so a consumer in another zone cannot
+        read a naive time as local.
+
+    """
+    return {
+        "now": now.isoformat(),
+        "horizon_hours": hours,
+        "horizon_end": end.isoformat(),
+        "currencies": list(wanted),
+        "impact_floor": impact.value,
+        "coverage": {
+            "gap": None if gap is None else gap[0].value,
+            "reason": None if gap is None else gap[1],
+        },
+        "events": [
+            {
+                "scheduled_for": event.scheduled_for.astimezone(UTC).isoformat(),
+                "currency": event.currency,
+                "impact": event.impact,
+                "title": event.title,
+                "blackout": _blackout_payload(event, windows),
+            }
+            for event in events
+        ],
+        "windows": [
+            {
+                "opens": opens.isoformat(),
+                "closes": closes.isoformat(),
+                "releases": list(_window_events((opens, closes), surrounding)),
+            }
+            for opens, closes in windows
+        ],
+    }
+
+
+def _blackout_payload(
+    event: CalendarEvent,
+    windows: Sequence[tuple[datetime, datetime]],
+) -> dict[str, str] | None:
+    """Render one event's containing window for the machine view.
+
+    Args:
+        event: One listed event.
+        windows: The merged windows for this run.
+
+    Returns:
+        The window's two ends as UTC ISO strings, or ``None`` where the guard
+        gave this event no window. ``None`` rather than an empty mapping,
+        because a consumer testing the key would read ``{}`` as a window with
+        no times in it.
+
+    """
+    covering = _window_for(event, windows)
+    if covering is None:
+        return None
+    return {"opens": covering[0].isoformat(), "closes": covering[1].isoformat()}
+
+
+def _calendar_json(
+    now: datetime,
+    end: datetime,
+    hours: int,
+    wanted: Sequence[str],
+    impact: Impact,
+    events: Sequence[CalendarEvent],
+    surrounding: Sequence[CalendarEvent],
+    windows: Sequence[tuple[datetime, datetime]],
+    gap: tuple[CoverageGap, str] | None,
+) -> str:
+    """Return the run as JSON, events and windows together."""
+    return json.dumps(
+        _calendar_payload(
+            now, end, hours, wanted, impact, events, surrounding, windows, gap
+        ),
+        indent=2,
+    )
+
+
+def _calendar_csv(
+    events: Sequence[CalendarEvent],
+    surrounding: Sequence[CalendarEvent],
+    windows: Sequence[tuple[datetime, datetime]],
+    gap: tuple[CoverageGap, str] | None,
+) -> str:
+    """Return the run as CSV, one row per event and one per window.
+
+    A flat format cannot nest, so the two kinds share a shape and a ``kind``
+    column says which a row is. The alternative, two tables separated by a
+    blank line, is not CSV and no parser would read it.
+
+    Args:
+        events: The listed events.
+        surrounding: Every release the windows were derived from, which names
+            them on the window rows.
+        windows: The merged windows, narrowed to the horizon.
+        gap: What `fbe.calendar_guard.coverage_gap` said about the horizon,
+            carried as its own row when there is one. The table prints that
+            caveat and the JSON carries it, so leaving it out of this format
+            would be the unrendered marker ADR 0002 rule 3 forbids: a consumer
+            reading three window rows would have no way to learn that the data
+            stops before the horizon does.
+
+    Returns:
+        CSV text with a header row. Times are UTC ISO strings, as in the JSON,
+        because a spreadsheet given local times with no offset silently treats
+        them as its own.
+
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(("kind", "starts", "ends", "currency", "impact", "title"))
+    for event in events:
+        writer.writerow(
+            (
+                "event",
+                event.scheduled_for.astimezone(UTC).isoformat(),
+                "",
+                event.currency,
+                event.impact,
+                event.title,
+            )
+        )
+    for opens, closes in windows:
+        writer.writerow(
+            (
+                "window",
+                opens.isoformat(),
+                closes.isoformat(),
+                "",
+                "",
+                "; ".join(_window_events((opens, closes), surrounding)),
+            )
+        )
+    if gap is not None:
+        writer.writerow(("coverage", "", "", "", gap[0].value, gap[1]))
+    return buffer.getvalue().rstrip("\r\n")
 
 
 @app.command(
