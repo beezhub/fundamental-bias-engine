@@ -41,6 +41,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from fbe import cli as cli_module
 from fbe import config as config_module
 from fbe.cli import app
 from fbe.datasources.collect import CollectionResult
@@ -49,6 +50,7 @@ from fbe.types import (
     Conviction,
     CurrencyScore,
     Direction,
+    Observation,
     PairBias,
     PillarName,
     PillarScore,
@@ -170,7 +172,7 @@ def pillars(currency: str, composite: float) -> Mapping[PillarName, PillarScore]
     }
 
 
-def currency_score(code: str, composite: float) -> CurrencyScore:
+def currency_score(code: str, composite: float, coverage: float = 1.0) -> CurrencyScore:
     """One leg's score, carrying the seven pillar values the record copies."""
     return CurrencyScore(
         currency=code,
@@ -179,8 +181,26 @@ def currency_score(code: str, composite: float) -> CurrencyScore:
         asof=date(2026, 9, 21),
         rank=1,
         dispersion=0.40,
-        coverage=1.0,
+        coverage=coverage,
     )
+
+
+OBSERVATION = Observation(
+    indicator="policy_rate",
+    currency="EUR",
+    value=2.15,
+    period=date(2026, 8, 1),
+    source="fred",
+    series_id="ECBDFR",
+    unit="percent",
+    released_at=datetime(2026, 9, 11, 12, 15, tzinfo=UTC),
+)
+"""One reading, so the run the fakes describe is a run that found something.
+
+`CollectionResult.usable` is false on an empty observation set, and the command
+refuses on it, so a fake returning nothing would describe an outage rather than
+a working chain and every test built on it would be testing the refusal.
+"""
 
 
 def config_file(
@@ -229,7 +249,9 @@ def add(
     account_currency: str = "ZAR",
     contract_size: float | None = None,
     account_balance: float = 2000.0,
-    unscored: tuple[str, ...] = (),
+    empty_cache: bool = False,
+    coverage: float = 1.0,
+    rows_raise: bool = False,
     seen: dict[str, object] | None = None,
 ) -> tuple[int, str, Path]:
     """Run ``fbe journal add`` with the chain replaced and the journal in tmp.
@@ -237,9 +259,9 @@ def add(
     Returns the exit code, the combined output, and the journal path, so a test
     can assert on what was written as well as on what was printed. Pass ``seen``
     to collect what each stand-in was handed, which is how the tests pin the
-    date the chain was run for and that the cache was read offline, and
-    ``unscored`` to make the run produce no score for a currency, which is a
-    coverage gap rather than an error.
+    date the chain was run for and that the cache was read offline.
+    ``empty_cache``, ``coverage`` and ``rows_raise`` each describe one of the
+    three ways the chain can come back with nothing worth recording.
     """
     journal = tmp_path / "trades.jsonl"
     config_path = config_file(
@@ -251,7 +273,11 @@ def add(
     def fake_collect(config_in: object, **kwargs: object) -> CollectionResult:
         noted["offline"] = getattr(config_in, "offline", None)
         noted["end"] = kwargs.get("end")
-        return CollectionResult(observations=(), outcomes=(), gaps={})
+        return CollectionResult(
+            observations=() if empty_cache else (OBSERVATION,),
+            outcomes=(),
+            gaps={},
+        )
 
     def fake_score_currencies(
         observations: object, pillars_in: object, scoring: object, asof: date
@@ -261,9 +287,7 @@ def add(
         composites.setdefault(DECOY.base, DECOY.base_score)
         composites.setdefault(DECOY.quote, DECOY.quote_score)
         return tuple(
-            currency_score(code, value)
-            for code, value in composites.items()
-            if code not in unscored
+            currency_score(code, value, coverage) for code, value in composites.items()
         )
 
     def fake_build_pair_biases(
@@ -273,6 +297,8 @@ def add(
         guard: object = None,
     ) -> Sequence[PairBias]:
         noted["biased_asof"] = asof
+        if rows_raise:
+            raise KeyError(f"{row.base} has no CurrencyScore, so {row.pair} ...")
         return (DECOY, row)
 
     def fake_apply_filters(
@@ -579,6 +605,153 @@ def test_a_pair_the_engine_has_no_view_on_is_recorded(
     assert code == 0, output
     assert record.conviction is Conviction.NONE
     assert record.agreed_with_bias is False
+
+
+# --- a run with nothing in it is refused, never recorded ----------------------
+
+
+def test_an_empty_cache_is_refused_rather_than_recorded_as_no_view(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The quietest way this command can be wrong.
+
+    The chain does not fail on an empty cache. Every currency scores zero,
+    `build_pair_biases` still returns all 28 rows, and the record lands with
+    both composites at zero, seven zeroed pillars each, a conviction of none
+    and ``agreed_with_bias`` false on any real direction. It reads afterwards
+    as an engine that had no opinion, not as a run that had no data, and the
+    discipline split that counts trades taken against the engine is poisoned
+    in the direction that blames the trader.
+    """
+    code, output, journal = add(monkeypatch, tmp_path, *taken(), empty_cache=True)
+
+    assert code == UNUSABLE, output
+    assert "refresh" in output
+    assert not journal.exists()
+
+
+def test_a_run_that_scored_on_no_data_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Observations present, coverage zero. The same fabricated record.
+
+    ``fbe score`` and ``fbe bias`` print their rows and exit 1, because the
+    zeros are on screen with their reasons beside them. This command writes to
+    an append-only file instead, so it writes nothing at all.
+    """
+    code, output, journal = add(monkeypatch, tmp_path, *taken(), coverage=0.0)
+
+    assert code == UNUSABLE, output
+    assert not journal.exists()
+
+
+def test_a_chain_that_cannot_build_its_rows_exits_rather_than_raising(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`build_pair_biases` raises `KeyError` for a leg it has no score for.
+
+    Uncaught, that is a traceback where the command's `Raises:` section
+    promises an exit code, and a trader reading it has no way to tell a broken
+    install from a thin cache.
+    """
+    code, output, journal = add(monkeypatch, tmp_path, *taken(), rows_raise=True)
+
+    assert code == UNUSABLE, output
+    assert "CurrencyScore" in output
+    # The helper prints the repr of anything that is not a SystemExit, so this
+    # is what separates a handled failure from one that reached the runner.
+    # Both exit 1, and only one of them is the documented behaviour.
+    assert "KeyError" not in output
+    assert not journal.exists()
+
+
+def test_a_journal_that_cannot_be_read_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Because an add that cannot read the book cannot tell a correction.
+
+    Treating an unreadable file as a first entry would recompute the bias and
+    overwrite the entry snapshot of whatever trade is already under that id.
+    """
+    journal = tmp_path / "trades.jsonl"
+    journal.write_text("{not json\n", encoding="utf-8")
+
+    code, output, _ = add(monkeypatch, tmp_path, *taken())
+
+    assert code == UNUSABLE, output
+    assert "could not be read" in output
+    assert journal.read_text(encoding="utf-8") == "{not json\n"
+
+
+# --- a correction carries the entry's view, it does not re-derive it ----------
+
+
+def test_a_correction_keeps_the_bias_recorded_at_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The record `load` keeps has to be the one written at entry.
+
+    `journal.load` keeps the last line per id, so the close is what survives.
+    Recomputing the chain at close time makes ``conviction``, which
+    `TradeRecord` calls the single most important field for evaluation, a
+    reading of the cache three days after the trade. Macro series get revised
+    and the normalisation is cross-sectional, so any other currency's newer
+    data moves this pair's scores. The trade would then be bucketed under a
+    conviction the engine never held when it was taken.
+    """
+    moved = replace(
+        ENGINE,
+        spread=0.44,
+        direction=Direction.LONG,
+        conviction=Conviction.LOW,
+        base_score=0.22,
+        quote_score=-0.22,
+    )
+
+    add(monkeypatch, tmp_path, *taken())
+    code, output, journal = add(
+        monkeypatch, tmp_path, *taken(**{"--exit": "1.0791"}), engine=moved
+    )
+
+    record = only_record(journal)
+
+    assert code == 0, output
+    assert record.exit_price == pytest.approx(1.0791)
+    assert record.conviction is Conviction.MEDIUM
+    assert record.base_score == pytest.approx(ENGINE.base_score)
+    assert record.quote_score == pytest.approx(ENGINE.quote_score)
+    assert record.spread_score == pytest.approx(ENGINE.spread)
+    assert record.agreed_with_bias is True
+    assert dict(record.base_pillars) == pytest.approx(
+        {
+            name: pillar.score
+            for name, pillar in pillars("EUR", ENGINE.base_score).items()
+        }
+    )
+    assert "Engine at entry, carried: medium conviction, spread -2.31." in output
+
+
+def test_a_correction_that_changes_the_side_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Because the record does not hold the engine's own side.
+
+    Only whether the trade agreed with it. So a correction that swaps the side
+    cannot say whether the new one agrees, and the two ways out are both worse
+    than refusing: carrying the old flag writes a bool that is now wrong, and
+    recomputing the chain answers with today's view of the pair, which is the
+    thing the correction path exists to avoid.
+    """
+    add(monkeypatch, tmp_path, *taken())
+    code, output, journal = add(
+        monkeypatch, tmp_path, *taken(**{"--direction": "long"})
+    )
+
+    record = only_record(journal)
+
+    assert code == USAGE_ERROR, output
+    assert record.direction is Direction.SHORT
+    assert len(journal.read_text(encoding="utf-8").strip().splitlines()) == 1
 
 
 # --- open, then closed, both lines on disk ------------------------------------
@@ -941,6 +1114,85 @@ def test_a_stop_equal_to_the_entry_is_refused(
     assert not journal.exists()
 
 
+def test_a_neutral_direction_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Neutral is the engine saying it has no side, not a side to hold.
+
+    It is a member of `Direction` and the parser accepts it, so without this
+    refusal it falls through to the short branch of the outcome arithmetic. A
+    long position mistyped as neutral is then recorded with its profit and loss
+    inverted at full magnitude, which is the worst shape a wrong number here
+    can take: right size, wrong sign, and nothing on screen.
+    """
+    code, output, journal = add(
+        monkeypatch, tmp_path, *taken(**{"--direction": "neutral"})
+    )
+
+    assert code == USAGE_ERROR, output
+    assert not journal.exists()
+
+
+@pytest.mark.parametrize("option", ["--entry", "--stop", "--exit"])
+def test_a_price_that_is_not_finite_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, option: str
+) -> None:
+    """A NaN compares unequal to itself, so it walks past the stop check.
+
+    What it produces is a NaN outcome and a NaN R, and the journal refuses to
+    serialise those, so the command dies with a traceback rather than the
+    refusal its contract documents.
+    """
+    code, output, journal = add(monkeypatch, tmp_path, *taken(**{option: "nan"}))
+
+    assert code == USAGE_ERROR, output
+    assert not journal.exists()
+
+
+def test_an_account_balance_of_zero_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`risk_fraction` divides by it, and `Config.validate` does not check it.
+
+    Every other sizing path goes through `fbe.risk.position_size`, which
+    refuses the input. This one derives the fraction itself, so it has to make
+    the same refusal rather than dividing by zero at the last line.
+    """
+    code, output, journal = add(
+        monkeypatch,
+        tmp_path,
+        *taken(**{"--exit": "1.0791"}),
+        account_currency="USD",
+        account_balance=0.0,
+    )
+
+    assert code == UNUSABLE, output
+    assert "balance" in output.lower()
+    assert not journal.exists()
+
+
+def test_the_close_time_is_the_one_the_caller_gave(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Not the moment the trade was written up.
+
+    The Phase 6 revenge rule measures from one trade's close to the next one's
+    open, so a Friday close stamped on Monday hides the sequences it looks for
+    and can manufacture new ones out of a batch of write-ups.
+    """
+    _, output, journal = add(
+        monkeypatch,
+        tmp_path,
+        *taken(**{"--exit": "1.0791"}),
+        "--closed",
+        "2026-09-24 15:30",
+    )
+
+    record = only_record(journal)
+
+    assert record.closed_at == datetime(2026, 9, 24, 15, 30, tzinfo=UTC), output
+
+
 def test_a_direction_the_engine_does_not_recognise_is_refused(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1073,19 +1325,15 @@ def test_the_record_copies_the_pillar_scores_for_both_legs(
     assert dict(record.base_pillars) != pytest.approx(expected_quote)
 
 
-def test_the_pillar_snapshot_is_empty_when_the_run_scored_no_such_leg(
+def test_the_pillar_snapshot_is_empty_rather_than_seven_zeros(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Empty says the chain had nothing, and that is the honest answer.
+    """A unit test, because the command cannot reach this today.
 
-    Filling seven neutral values in would say the opposite, and a review
-    reading them back has no way to tell an absent pillar from one the model
-    scored at the middle of its band. The other leg is still copied, so the
-    gap is recorded as the gap it is rather than costing the whole snapshot.
+    `build_pair_biases` raises for a leg it has no score for, so the command
+    exits before the snapshot is taken, which the test above pins. The branch
+    is still the one that matters the day that changes: seven zeros read back
+    as a currency the model scored at the middle of its band, and an empty map
+    reads as the chain having had nothing. They are different facts.
     """
-    _, output, journal = add(monkeypatch, tmp_path, *taken(), unscored=("EUR",))
-
-    record = only_record(journal)
-
-    assert record.base_pillars == {}, output
-    assert set(record.quote_pillars) == set(PillarName)
+    assert cli_module._pillar_snapshot({}, "EUR") == {}

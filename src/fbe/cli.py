@@ -3198,6 +3198,17 @@ def journal_add(
             ),
         ),
     ] = None,
+    closed_at: Annotated[
+        datetime | None,
+        typer.Option(
+            "--closed",
+            formats=DATE_FORMATS + ["%Y-%m-%d %H:%M"],
+            help=(
+                "When the trade was closed, read as UTC. Defaults to now, and "
+                "only recorded when --exit is given."
+            ),
+        ),
+    ] = None,
     setup: Annotated[
         str | None,
         typer.Option(
@@ -3269,6 +3280,12 @@ def journal_add(
         exit_price: Exit price, omitted while open.
         lots: Size traded.
         opened_at: Open timestamp, defaults to now.
+        closed_at: Exit fill time, defaults to now and recorded only when
+            ``exit_price`` is given. It is an option rather than the wall clock
+            because the Phase 6 revenge rule measures from one trade's close to
+            the next one's open, and a Friday close written up on Monday would
+            both hide the sequences that rule looks for and manufacture new
+            ones.
         setup: Technical setup label.
         followed_plan: Whether the trade obeyed the plan.
         note: Free text.
@@ -3285,12 +3302,34 @@ def journal_add(
     """
     config = _effective_config(ctx)
     normalised = pair.upper()
-    base, quote = _checked_journal_pair(normalised)
+    _checked_journal_pair(normalised)
+    if direction is Direction.NEUTRAL:
+        raise typer.BadParameter(
+            "--direction neutral is the engine's way of saying it has no side, "
+            "not a side an account can hold. Recorded, the outcome would be "
+            "priced as a short and a long position would come back with its "
+            "profit and loss sign inverted at full magnitude.",
+            param_hint="--direction",
+        )
+    for name, value in (("--entry", entry), ("--stop", stop), ("--exit", exit_price)):
+        if value is not None and not math.isfinite(value):
+            raise typer.BadParameter(
+                f"{name} {value} is not a finite price. A NaN compares unequal "
+                "to itself, so it slips past the stop check below, and every "
+                "money figure derived from it is a NaN that the journal cannot "
+                "even write.",
+                param_hint=name,
+            )
     if stop == entry:
         raise typer.BadParameter(
             f"--stop {stop} equals the entry, so the trade risks nothing and "
             "every R-multiple computed from it would divide by zero.",
             param_hint="--stop",
+        )
+    if lots is not None and not math.isfinite(lots):
+        raise typer.BadParameter(
+            f"--lots {lots} is not a finite size.",
+            param_hint="--lots",
         )
     if lots is None or lots <= 0.0:
         raise typer.BadParameter(
@@ -3301,16 +3340,27 @@ def journal_add(
             param_hint="--lots",
         )
 
+    if config.risk.account_balance <= 0.0:
+        typer.echo(
+            f"The configured account balance is "
+            f"{config.risk.account_balance}, so the fraction of it this trade "
+            "risks cannot be computed and the record would carry a division "
+            "by zero or a negative share. Set risk.account_balance. Nothing "
+            "was written.",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
+
     moment = _opened_moment(opened_at)
-    run_date = moment.date()
-    row, scores = _engine_view(config, normalised, run_date)
+    trade_id = f"{normalised}-{moment:%Y%m%dT%H%M}"
+    view = _entry_view(config, normalised, direction, moment.date(), trade_id)
     units = lots * config.broker.contract_size
     risk_amount, outcome, absence = _realised_money(
         config, normalised, entry, stop, exit_price, direction, units
     )
 
     record = TradeRecord(
-        trade_id=f"{normalised}-{moment:%Y%m%dT%H%M}",
+        trade_id=trade_id,
         pair=normalised,
         direction=direction,
         opened_at=moment,
@@ -3323,22 +3373,22 @@ def journal_add(
             None if risk_amount is None else risk_amount / config.risk.account_balance
         ),
         account_balance_at_entry=config.risk.account_balance,
-        conviction=row.conviction,
-        base_score=row.base_score,
-        quote_score=row.quote_score,
-        spread_score=row.spread,
-        config_digest=config.digest(),
-        base_pillars=_pillar_snapshot(scores, base),
-        quote_pillars=_pillar_snapshot(scores, quote),
+        conviction=view.conviction,
+        base_score=view.base_score,
+        quote_score=view.quote_score,
+        spread_score=view.spread_score,
+        config_digest=view.config_digest,
+        base_pillars=view.base_pillars,
+        quote_pillars=view.quote_pillars,
         account_currency=config.risk.account_currency,
-        closed_at=datetime.now(UTC) if exit_price is not None else None,
+        closed_at=_closed_moment(closed_at, exit_price),
         exit_price=exit_price,
         outcome_zar=outcome,
         r_multiple=(
             outcome / risk_amount if outcome is not None and risk_amount else None
         ),
         setup=setup or "",
-        agreed_with_bias=direction is row.direction,
+        agreed_with_bias=view.agreed_with_bias,
         followed_plan=followed_plan,
         broker=config.broker.name,
         notes=note or "",
@@ -3356,7 +3406,7 @@ def journal_add(
 
     _render_journal_add(
         record,
-        row,
+        view,
         absence,
         risk_fraction_for(record.conviction, config.risk) * config.risk.account_balance,
     )
@@ -3421,6 +3471,156 @@ def _opened_moment(opened_at: datetime | None) -> datetime:
     return opened_at.astimezone(UTC)
 
 
+@dataclass(frozen=True, slots=True)
+class _EntryView:
+    """The bias snapshot one record carries, and where it came from.
+
+    Attributes:
+        conviction: The engine's conviction at entry.
+        base_score: Composite of the base currency at entry.
+        quote_score: Composite of the quote currency at entry.
+        spread_score: ``base_score - quote_score``.
+        base_pillars: Seven pillar scores for the base leg, on the ``-3..+3``
+            band. Empty when the run scored nothing for that currency.
+        quote_pillars: The same for the quote leg.
+        config_digest: The digest the snapshot was produced under.
+        agreed_with_bias: Whether the direction taken matched the engine's.
+        direction: The engine's own side at entry, or ``None`` when this view
+            was carried forward from a record rather than computed, because
+            `fbe.journal.TradeRecord` does not store it. Only the rendering
+            reads it, and it prints the side only when it has one rather than
+            guessing from the sign of the spread.
+
+    Carried forward on a correction rather than recomputed. `journal.load`
+    keeps the last line per id, so a second add is what survives, and
+    recomputing here would make the surviving record's bias the chain's view at
+    close time. `TradeRecord.conviction` is specified as the conviction at
+    entry and is the field the whole ladder is evaluated on, so a close
+    appended three days later would rebucket the trade under whatever the
+    cache says now.
+
+    """
+
+    conviction: Conviction
+    base_score: float
+    quote_score: float
+    spread_score: float
+    base_pillars: Mapping[PillarName, float]
+    quote_pillars: Mapping[PillarName, float]
+    config_digest: str
+    agreed_with_bias: bool
+    direction: Direction | None
+
+
+def _entry_view(
+    config: Config,
+    pair: str,
+    direction: Direction,
+    run_date: date,
+    trade_id: str,
+) -> _EntryView:
+    """Attach the engine's view, from the entry record when there is one.
+
+    Args:
+        config: The effective config.
+        pair: Pair in market convention.
+        direction: The side the caller says was taken.
+        run_date: The date the trade was opened.
+        trade_id: The id this add will write under.
+
+    Returns:
+        The snapshot to record. Computed from the chain on a first add, and
+        read off the existing record on a correction.
+
+    Raises:
+        typer.BadParameter: On a correction that changes the direction. The
+            engine's own side is not on the record, only whether the trade
+            agreed with it, so a correction that swaps the side cannot say
+            whether the new one agrees. Recomputing the chain to find out would
+            answer with today's view of the pair rather than the entry's, which
+            is the whole failure this function exists to prevent. Storing the
+            engine's direction on the record would lift the restriction and is
+            raised on the issue rather than taken here.
+        typer.Exit: `EXIT_UNUSABLE` when the journal exists and cannot be read,
+            because then this add cannot tell a correction from a first entry,
+            and guessing the first would silently overwrite a snapshot. Also
+            whatever `_engine_view` raises on a first add.
+
+    """
+    try:
+        existing = {
+            record.trade_id: record
+            for record in journal_module.load(path=journal_module.JOURNAL_PATH)
+        }.get(trade_id)
+    except (OSError, ValueError) as error:
+        typer.echo(
+            f"The journal could not be read: {error} Until it can, an add "
+            "cannot tell whether it is correcting a trade already in the book, "
+            "and recording it as new would overwrite that trade's bias with "
+            "today's. Nothing was written.",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UNUSABLE) from error
+
+    if existing is not None:
+        if existing.direction is not direction:
+            raise typer.BadParameter(
+                f"{trade_id} is already in the journal as a "
+                f"{existing.direction.value}, and a correction carries the "
+                "bias recorded at entry rather than recomputing it. The "
+                "engine's own side is not on the record, so this add cannot "
+                "say whether a "
+                f"{direction.value} agreed with it. Record the corrected trade "
+                "under a different --opened minute, or edit the line by hand.",
+                param_hint="--direction",
+            )
+        return _EntryView(
+            conviction=existing.conviction,
+            base_score=existing.base_score,
+            quote_score=existing.quote_score,
+            spread_score=existing.spread_score,
+            base_pillars=existing.base_pillars,
+            quote_pillars=existing.quote_pillars,
+            config_digest=existing.config_digest,
+            agreed_with_bias=existing.agreed_with_bias,
+            direction=None,
+        )
+
+    base, quote = split_pair(pair)
+    row, scores = _engine_view(config, pair, run_date)
+    return _EntryView(
+        conviction=row.conviction,
+        base_score=row.base_score,
+        quote_score=row.quote_score,
+        spread_score=row.spread,
+        base_pillars=_pillar_snapshot(scores, base),
+        quote_pillars=_pillar_snapshot(scores, quote),
+        config_digest=config.digest(),
+        agreed_with_bias=direction is row.direction,
+        direction=row.direction,
+    )
+
+
+def _closed_moment(
+    closed_at: datetime | None, exit_price: float | None
+) -> datetime | None:
+    """Resolve the exit fill time, or say the trade is still open.
+
+    Args:
+        closed_at: What the caller passed, or ``None`` for now.
+        exit_price: The exit fill, or ``None`` while the trade is open.
+
+    Returns:
+        ``None`` while the trade is open, so that `fbe.journal.load` and the
+        review agree on what open means, and otherwise an aware UTC instant
+        read the same way `_opened_moment` reads ``--opened``.
+
+    """
+    if exit_price is None:
+        return None
+    return _opened_moment(closed_at)
+
+
 def _engine_view(
     config: Config, pair: str, run_date: date
 ) -> tuple[PairBias, Mapping[str, CurrencyScore]]:
@@ -3432,20 +3632,41 @@ def _engine_view(
         run_date: The date the trade was opened.
 
     Returns:
-        The filtered `fbe.types.PairBias` the engine held that day, and the
-        composite scores the run produced, keyed by currency. The scores are
-        returned rather than recomputed by the caller because the pillar
-        snapshot on the record comes from them, and running the chain twice for
-        one trade could produce two different views if the cache rolled over
-        between the calls.
+        The chain's view of that date as the current cache reports it, filtered
+        the way `bias` filters it, and the composite scores the run produced,
+        keyed by currency. The scores are returned rather than recomputed by
+        the caller because the pillar snapshot on the record comes from them,
+        and running the chain twice for one trade could produce two different
+        views if the cache rolled over between the calls.
+
+        It is the view of that date and not the view the trader saw on it.
+        `collect` takes no vintage, so the sources serve their current
+        revisions, and the cross-sectional normalisation runs over whatever the
+        cache holds now. For a trade recorded the same session the two are the
+        same run. For a backfilled ``--opened`` they are not, and nothing here
+        can recover the earlier one: `CLAUDE.md` gives the same argument for
+        committing ``data/reports/``.
 
     Raises:
-        typer.Exit: `EXIT_UNUSABLE` when the chain produced no row for the
-            pair, which means the record would carry no view at all.
+        typer.Exit: `EXIT_UNUSABLE` when the cache held nothing for the window,
+            when every currency scored on nothing, when a leg of the pair has
+            no score, or when the chain produced no row for the pair. All four
+            leave the journal untouched.
 
     Reads the cache and never the network, for the reason `bias` gives at the
     same call: a rolled-over TTL refetching mid-session would let the journal
     record a different view from the one the trader was looking at.
+
+    The two collapse checks are the ones `bias` and `report` already make, and
+    they matter more here than in either. `score` and `bias` print their rows
+    and exit 1, so the absence is on screen next to the zeros. This command
+    writes a line to an append-only file instead. A run on an empty cache
+    scores every currency at zero, `build_pair_biases` still returns all 28
+    rows, and the record lands with a composite of zero on both legs, seven
+    zeroed pillars each, a conviction of none and ``agreed_with_bias`` false on
+    any real direction. Nothing about it looks wrong afterwards, and the
+    discipline split that counts trades taken against the engine is poisoned in
+    the direction that blames the trader.
 
     """
     start = lookback_start(run_date, config.scoring.lookback_years)
@@ -3455,14 +3676,46 @@ def _engine_view(
         end=run_date,
         sources=ALL_SOURCES,
     )
+    if not result.usable:
+        typer.echo(
+            f"No observations in the cache for the window ending {run_date}, "
+            "so the engine has no view to attach and the record would carry a "
+            "fabricated one. Run fbe refresh to fill it, or fbe doctor to find "
+            "out why it is empty. Nothing was written.",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
+
     scores = score_currencies(
         result.observations,
         default_pillars(config.scoring),
         config.scoring,
         run_date,
     )
+    if _coverage_collapsed(scores):
+        typer.echo(
+            f"Every currency scored on no data for {run_date}, so every "
+            "composite is zero and every spread is a difference between two "
+            "zeros. Recorded, that reads as an engine with no view rather than "
+            "as an outage. Nothing was written.",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
+
     by_currency = {score.currency: score for score in scores}
-    for row in build_pair_biases(scores, config, run_date):
+    try:
+        rows = build_pair_biases(scores, config, run_date)
+    except KeyError as error:
+        # Raised when a leg of some pair has no CurrencyScore at all, which is
+        # a thinner failure than a collapse and would otherwise leave the
+        # command with a traceback where its Raises section promises an exit.
+        typer.echo(
+            f"The chain could not build its rows for {run_date}: {error}. "
+            "Nothing was written.",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UNUSABLE) from error
+    for row in rows:
         if row.pair == pair:
             return apply_filters(row, by_currency, config, run_date), by_currency
     typer.echo(
@@ -3490,6 +3743,14 @@ def _pillar_snapshot(
         currency, which the caller records as it stands: an empty map says the
         chain had nothing for that leg, and inventing neutral values would say
         the opposite.
+
+        That branch cannot be reached from `_engine_view` today, because
+        `build_pair_biases` raises for a leg it has no score for and the caller
+        turns that into an exit. It is kept because the alternative on the day
+        the chain stops raising is seven zeros presented as a reading, which is
+        the failure this function exists to avoid, and because a run whose
+        coverage is zero for one currency is a different and quieter case that
+        `_engine_view` does not refuse.
 
     `docs/risk-and-execution.md` puts these inside the part of the record that
     cannot be reconstructed later, alongside the composite. The composite is
@@ -3552,13 +3813,16 @@ def _realised_money(
 
 
 def _render_journal_add(
-    record: TradeRecord, row: PairBias, absence: str | None, intended: float
+    record: TradeRecord, view: _EntryView, absence: str | None, intended: float
 ) -> None:
     """Print what was recorded, and what the engine thought at the time.
 
     Args:
         record: The record just written.
-        row: The engine's view of the pair on the date.
+        view: The engine's view at entry, computed on a first add and carried
+            from the existing record on a correction. Its ``direction`` is
+            ``None`` in the second case, and the line then names the conviction
+            and the spread without a side rather than inferring one.
         absence: Why the money figures are missing, or ``None``.
         intended: Money the conviction ladder would have put at risk for this
             conviction, in the account currency, before the broker's lot step
@@ -3601,9 +3865,11 @@ def _render_journal_add(
         else:
             typer.echo(f"Open, against {realised}.")
     alignment = "Aligned." if record.agreed_with_bias else "Against the bias."
+    side = "" if view.direction is None else f"{view.direction.value}, "
+    when = "that day" if view.direction is not None else "at entry, carried"
     typer.echo(
-        f"Engine that day: {row.direction.value}, "
-        f"{row.conviction.value} conviction, spread {row.spread:+.2f}. "
+        f"Engine {when}: {side}"
+        f"{view.conviction.value} conviction, spread {view.spread_score:+.2f}. "
         f"{alignment}"
     )
 

@@ -606,15 +606,28 @@ digest are attached automatically. That is the point: months later the journal
 should be able to say whether the losing trades were the ones taken against the
 engine, the ones taken against the plan, or neither.
 
+Attached from a run of the chain over the cache as it stands now, cut off at
+that date. For a trade recorded the same session that is the run the trader was
+looking at. For one backfilled a week later it is the chain's reading of that
+date today, because the sources serve their current revisions and the
+normalisation is cross-sectional over whatever the cache holds. Record the
+trade when you take it.
+
+A run that found nothing is refused rather than recorded. An empty cache scores
+every currency at zero and still produces a row for every pair, so the record
+would land complete, with both composites at zero and a conviction of none, and
+read afterwards as an engine with no opinion rather than as an outage.
+
 | Option | Default | Meaning |
 |---|---|---|
 | `PAIR` | required | Positional, market convention. |
-| `--direction`, `-d` | required | `long`, `short` or `neutral`, on the base currency. |
+| `--direction`, `-d` | required | `long` or `short`, on the base currency. `neutral` is refused: it is the engine's way of saying it has no side, not a position an account can hold, and recorded it would price a long as a short. |
 | `--entry`, `-e` | required | Fill price. |
 | `--stop`, `-s` | required | Stop price at entry. |
 | `--exit`, `-x` | open | Exit price. Omit while the trade is still open. |
 | `--lots` | required | Size actually traded, in lots. No default: the record's money figures come from it, and sizing the trade here would put a position in the book the account never held. |
 | `--opened` | now | `YYYY-MM-DD` or `YYYY-MM-DD HH:MM`, read as UTC. It also fixes the trade id, which a correction has to repeat. |
+| `--closed` | now | Exit fill time, same formats, recorded only with `--exit`. |
 | `--setup` | none | Technical setup label, for example `channel-low-bounce`. |
 | `--followed-plan` / `--broke-plan` | followed | Whether the trade obeyed the plan, independent of whether it made money. |
 | `--note`, `-m` | none | Free text for the lesson or the context. |
@@ -631,9 +644,11 @@ absent rather than with a guessed rate.
 Engine that day: short, medium conviction, spread -2.31. Aligned.
 ```
 
-The elision is the list of symbols `fbe.risk.pip_value` looked for before it
-gave up, which the command prints in full so the person reading it knows what
-to supply.
+The bracket stands for two things the command prints and this page leaves out:
+the list of symbols `fbe.risk.pip_value` looked for before it gave up, and the
+sentence after it telling you to supply one of them and not to substitute a
+rate of 1.0, a stale rate or a wider search. Both console blocks here are
+wrapped to fit the page: the command prints each line unwrapped.
 
 That is the ZAR account, and it is what the owner sees today. The engine has no
 rate into ZAR, so the position cannot be valued in the account currency and the
@@ -656,6 +671,12 @@ MEDIUM the ladder asks for 1.5% of a 2,000 balance, which is 30.00, and a 38 pip
 stop turns that into 0.0789 lots. The broker's 0.01 step rounds it down to 0.07,
 so 26.60 is what the account actually carried. Dividing by 30.00 would report
 +1.38R for a trade that earned +1.55R.
+
+A second add carrying the same `--opened` records the close, and the line that
+survives keeps the bias recorded at entry rather than re-deriving it. Its last
+line then reads `Engine at entry, carried: medium conviction, spread -2.31`,
+without the engine's own side, because the record does not store it. A
+correction that changes `--direction` is refused for the same reason.
 
 ### `fbe journal review`
 

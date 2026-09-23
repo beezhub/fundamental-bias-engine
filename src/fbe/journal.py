@@ -181,8 +181,16 @@ class TradeRecord:
             ``risk_amount`` is.
         account_balance_at_entry: Balance the size was derived from.
         account_currency: Denomination of every money figure here, ``"ZAR"``.
-        outcome_zar: Realised profit or loss in the account currency, net of
-            spread and commission. Negative for a loss. ``None`` while open.
+        outcome_zar: Realised profit or loss in the account currency. Negative
+            for a loss. ``None`` while open, and ``None`` when ``risk_amount``
+            is, for the reason given there.
+
+            Gross of costs as `fbe.cli.journal_add` writes it today, not net.
+            ``BrokerConfig.commission_per_lot`` and ``typical_spread_pips``
+            both exist and neither is read, so the figure is the price move on
+            the size traded. A Phase 6 reader must subtract costs itself rather
+            than assume they are already out, and the field is named here
+            rather than left to be discovered from a number that looks right.
         r_multiple: ``outcome_zar / risk_amount``, and therefore divided by the
             REALISED risk. The only comparable measure of a result across
             different position sizes and account balances: a +2R on a R2,000
