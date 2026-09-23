@@ -392,8 +392,11 @@ grid is a pair list with 28 pairs written backwards.
 ### `fbe calendar`
 
 Each event is expanded into a window using the configured minutes either side,
-then windows on the same pair are merged, so the output is a short list of times
-to stand aside rather than a wall of releases. Times print in the local zone
+then overlapping and touching windows are merged, so the output is a short list
+of times to stand aside rather than a wall of releases. The merge is across the
+selection rather than per pair: `--currency` and `--pair` decide which releases
+are in it, and the windows are that selection's shape, which is the rule
+`calendar_guard.blackout_windows` documents. Times print in the local zone
 with the offset shown: a calendar that is ambiguous about the hour is worse than
 no calendar.
 
@@ -408,22 +411,75 @@ no calendar.
 
 ```console
 $ fbe calendar --hours 24
-Local time SAST (UTC+02:00), now Wed 09 Sep 08:12
+Local time Wed 16 Sep 12:00 +02:00, horizon 24h to Thu 17 Sep 12:00 +02:00
 
-When            CCY  Event                       Impact  Blackout
-Wed 09 14:30    USD  CPI y/y                     high    14:00 - 15:30
-Wed 09 16:00    CAD  BoC rate decision           high    15:30 - 17:00
-Thu 10 03:30    AUD  Employment change           high    03:00 - 04:30
-
-Pairs affected today: every USD pair 14:00-15:30, USDCAD also 15:30-17:00.
-Clear window for USDJPY: 08:12 - 14:00 and after 15:30.
+When                     CCY  Impact   Release                            Blackout
+Wed 16 Sep 13:00 +02:00  EUR  High     Retail Sales m/m                   12:30 - 14:00
+Wed 16 Sep 15:30 +02:00  USD  High     CPI y/y                            15:00 - 17:00
+Wed 16 Sep 16:00 +02:00  USD  High     Fed Chair Powell Speaks            15:00 - 17:00
+Thu 17 Sep 03:30 +02:00  AUD  High     Employment Change                  03:00 - 04:30
 ```
+
+The offset is on every stamp, not stated once at the top, because a reader
+scanning one row acts on that row.
+
+Two releases sharing a window is the merge working: CPI at 15:30 and the
+speaker at 16:00 give 15:00-16:30 and 15:30-17:00, and reporting two windows
+would invite someone to trade the half hour between them.
 
 ```console
-$ fbe calendar --pair EURUSD --hours 4
-EURUSD clear for the next 4 hours. Next event on either leg is USD CPI at
-14:30 (in 6h 18m), blackout from 14:00.
+$ fbe calendar --hours 24 --blackouts
+Local time Wed 16 Sep 12:00 +02:00, horizon 24h to Thu 17 Sep 12:00 +02:00
+
+From                     To       Releases
+Wed 16 Sep 12:30 +02:00  14:00    EUR Retail Sales m/m
+Wed 16 Sep 15:00 +02:00  17:00    USD CPI y/y; USD Fed Chair Powell Speaks
+Thu 17 Sep 03:00 +02:00  04:30    AUD Employment Change
 ```
+
+A window is reported whole whenever any part of it touches the horizon, and it
+is never trimmed to fit, because what a trader needs from a window is when it
+ends. A release outside the horizon that holds a window open is still named on
+its row: a window with no visible cause reads as a rendering fault.
+
+Coverage that does not reach the end of the horizon says how far it does reach
+and exits 0. The feed publishes one week at a time, so a Friday run is short of
+the following Monday by design and refusing on it would refuse every Friday:
+
+```console
+$ fbe calendar --hours 96
+...
+Coverage does not reach the end of the horizon Sun 20 Sep 12:00 +02:00
+(beyond_horizon): covers through 2026-09-18T22:45:00+00:00.
+```
+
+A failed fetch is the one case where an empty page would read as good news, so
+it names its category, says what the publisher said, and exits 1:
+
+```console
+$ fbe calendar --hours 24
+Calendar fetch failed. fetch_failed: forexfactory returned the publisher's rate
+limit page rather than the calendar. Their guidance is to download once a week
+and work from the copy, so wait rather than retrying.
+No window is reported, because an empty calendar and a failed fetch are
+different facts and only one of them is quiet. Check both legs by hand before
+trading.
+```
+
+Which releases are listed and which close the market are two questions.
+`--impact` is the floor on the first, applied by the source. The second is
+`calendar_guard.is_high_impact`, which also reads the trading plan's keyword
+list, so a Medium-rated release with no keyword is listed and closes nothing,
+and a Medium-rated CPI print closes the market at any floor. The windows are
+therefore derived from a wider fetch than the list, at the lowest floor, from
+the same cached payload.
+
+`--format json` and `--format csv` carry both the events and the windows
+whichever table `--blackouts` chose, with UTC ISO times that keep their
+`+00:00`. CSV cannot nest, so events, windows and the coverage caveat share one
+shape and a `kind` column says which a row is. The caveat is there because a
+consumer reading window rows and nothing else would conclude the horizon was
+covered.
 
 ### `fbe size`
 
