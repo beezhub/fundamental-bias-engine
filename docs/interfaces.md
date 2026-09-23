@@ -613,8 +613,8 @@ engine, the ones taken against the plan, or neither.
 | `--entry`, `-e` | required | Fill price. |
 | `--stop`, `-s` | required | Stop price at entry. |
 | `--exit`, `-x` | open | Exit price. Omit while the trade is still open. |
-| `--lots` | none | Size traded. |
-| `--opened` | now | `YYYY-MM-DD` or `YYYY-MM-DD HH:MM`. |
+| `--lots` | required | Size actually traded, in lots. No default: the record's money figures come from it, and sizing the trade here would put a position in the book the account never held. |
+| `--opened` | now | `YYYY-MM-DD` or `YYYY-MM-DD HH:MM`, read as UTC. It also fixes the trade id, which a correction has to repeat. |
 | `--setup` | none | Technical setup label, for example `channel-low-bounce`. |
 | `--followed-plan` / `--broke-plan` | followed | Whether the trade obeyed the plan, independent of whether it made money. |
 | `--note`, `-m` | none | Free text for the lesson or the context. |
@@ -622,12 +622,40 @@ engine, the ones taken against the plan, or neither.
 
 ```console
 $ fbe journal add EURUSD -d short -e 1.0850 -s 1.0888 -x 1.0791 \
-    --lots 0.004 --setup trendline-break-retest --followed-plan \
+    --lots 0.07 --setup trendline-break-retest --followed-plan \
     -m "Waited for the retest instead of chasing the break."
-Recorded EURUSD short, +59.0 pips, ZAR +41.54, +1.55R.
-R measured against the realised risk of ZAR 26.75, not the intended ZAR 30.00.
+Recorded EURUSD short, 0.07 lots, 38.0 pip stop.
+No money figures: no rate from USD to ZAR: neither a direct quote nor a single
+hop through USD could be built. [...] Risk, outcome and R are recorded as
+absent rather than with a guessed rate.
 Engine that day: short, medium conviction, spread -2.31. Aligned.
 ```
+
+The elision is the list of symbols `fbe.risk.pip_value` looked for before it
+gave up, which the command prints in full so the person reading it knows what
+to supply.
+
+That is the ZAR account, and it is what the owner sees today. The engine has no
+rate into ZAR, so the position cannot be valued in the account currency and the
+money fields are recorded absent rather than guessed. See the risk section of
+`docs/risk-and-execution.md` for why that is a data gap and not a defect in this
+command.
+
+On an account denominated in the pair's quote currency, where no conversion is
+needed, the same trade prints the money instead:
+
+```console
+Recorded EURUSD short, 0.07 lots, 38.0 pip stop.
+USD +41.30, +1.55R against the realised risk of USD 26.60, not the intended
+USD 30.00.
+Engine that day: short, medium conviction, spread -2.31. Aligned.
+```
+
+The second line is the whole reason the R-multiple is defined the way it is. At
+MEDIUM the ladder asks for 1.5% of a 2,000 balance, which is 30.00, and a 38 pip
+stop turns that into 0.0789 lots. The broker's 0.01 step rounds it down to 0.07,
+so 26.60 is what the account actually carried. Dividing by 30.00 would report
++1.38R for a trade that earned +1.55R.
 
 ### `fbe journal review`
 

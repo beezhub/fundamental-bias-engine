@@ -158,16 +158,27 @@ class TradeRecord:
         target: Take-profit level as originally planned.
         units: Position size in base-currency units.
         lots: Same size in the broker's lots.
-        risk_amount: Money actually at risk in ZAR if the stop fills. Populate
-            this from ``PositionSize.realised_risk_amount``, never from
-            ``PositionSize.risk_amount``, which is the intended figure before
-            the lot size was rounded down. The two differ on almost every trade
-            at this account size, routinely by 10% or more, and the realised one
-            is what was on the book. Should land within 1-2% of
+        risk_amount: Money actually at risk in the account currency if the
+            stop fills, or ``None`` when the position could not be valued in
+            it. Populate this from ``PositionSize.realised_risk_amount``, never
+            from ``PositionSize.risk_amount``, which is the intended figure
+            before the lot size was rounded down. The two differ on almost
+            every trade at this account size, routinely by 10% or more, and the
+            realised one is what was on the book. Should land within 1-2% of
             ``account_balance_at_entry``.
+
+            ``None`` rather than ``0.0`` because the two are read the same way
+            by anything that compares sizes and mean opposite things: a trade
+            that risked nothing, and a trade whose risk nobody could price. It
+            is absent whenever `fbe.risk.pip_value` cannot reach the account
+            currency from the pair's quote currency, which today is every trade
+            on the owner's ZAR account, since nothing supplies a rate into ZAR.
+            Read by `discipline_flags`, which skips the comparison rather than
+            treating an unpriced trade as a small one.
         risk_fraction: ``risk_amount / account_balance_at_entry``, using the
             realised figure above. Stored explicitly so a breach of the band is
-            visible without arithmetic.
+            visible without arithmetic, and ``None`` exactly when
+            ``risk_amount`` is.
         account_balance_at_entry: Balance the size was derived from.
         account_currency: Denomination of every money figure here, ``"ZAR"``.
         outcome_zar: Realised profit or loss in the account currency, net of
@@ -235,8 +246,8 @@ class TradeRecord:
     stop: float
     units: float
     lots: float
-    risk_amount: float
-    risk_fraction: float
+    risk_amount: float | None
+    risk_fraction: float | None
     account_balance_at_entry: float
     conviction: Conviction
     base_score: float
@@ -794,7 +805,10 @@ def discipline_flags(records: Sequence[TradeRecord]) -> Sequence[DisciplineFlag]
         the loss, or carries a larger ``risk_amount`` than the trade that lost,
         both of which are the classic shape of trying to win it straight back.
         Compare realised risk against realised risk, since that is what both
-        records hold.
+        records hold, and skip the size half of the comparison when either
+        ``risk_amount`` is ``None``. An unpriced trade is not a small one, and
+        reading it as zero would rank every priced trade above it and report
+        the escalation backwards.
 
     Overtrading:
         More than `OVERTRADING_TRADES_PER_WEEK` entries in any rolling seven-day

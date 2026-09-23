@@ -110,7 +110,7 @@ from fbe.datasources.collect import (
 from fbe.journal import TradeRecord
 from fbe.pillar_audit import audit_run
 from fbe.pillars import default_pillars
-from fbe.risk import MissingRateError, pip_size, pip_value
+from fbe.risk import MissingRateError, pip_size, pip_value, risk_fraction_for
 from fbe.scoring import score_currencies
 from fbe.types import (
     BiasReport,
@@ -3178,14 +3178,24 @@ def journal_add(
     ] = None,
     lots: Annotated[
         float | None,
-        typer.Option("--lots", help="Size traded, in lots."),
+        typer.Option(
+            "--lots",
+            help=(
+                "Size actually traded, in lots. Required: the record's money "
+                "figures come from it and there is no safe default."
+            ),
+        ),
     ] = None,
     opened_at: Annotated[
         datetime | None,
         typer.Option(
             "--opened",
             formats=DATE_FORMATS + ["%Y-%m-%d %H:%M"],
-            help="When the trade was opened. Defaults to now.",
+            help=(
+                "When the trade was opened, read as UTC. Defaults to now. It "
+                "also fixes the trade id a correction has to repeat, so pass "
+                "it on the first add of a trade you may correct later."
+            ),
         ),
     ] = None,
     setup: Annotated[
@@ -3228,33 +3238,27 @@ def journal_add(
     than the intended risk, so the number the review reports is the one the
     account actually took.
 
-    Args:
-        ctx: Typer context carrying the effective config.
-        pair: Pair in market convention.
-        direction: Side taken on the base currency.
-        entry: Fill price.
-        stop: Stop price at entry.
-        exit_price: Exit price, omitted while open.
-        lots: Size traded.
-        opened_at: Open timestamp, defaults to now.
-        setup: Technical setup label.
-        followed_plan: Whether the trade obeyed the plan.
-        note: Free text.
-        tag: Labels for grouping.
-
     The trade id is derived rather than asked for: the pair and the minute the
     trade was opened. `docs/risk-and-execution.md` makes a correction an append
     carrying the same id, so two invocations describing one trade have to agree
     on it, and a trader who has to remember a string will not.
 
-    Money and the R-multiple are recorded only when the account currency can be
+    Every money figure is recorded only when the account currency can be
     reached from the pair's quote currency. The engine has no source for a rate
     into ZAR, which is the owner's account: no G10 cross has a ZAR leg and
     nothing in `fbe.datasources.prices` or ``data/manual`` supplies USDZAR. On
-    such a run the outcome and the R-multiple are recorded as absent and the
-    reason is printed, rather than a rate being assumed. A guessed conversion
-    is the defect `fbe.risk.MissingRateError` exists to prevent, and it
-    understates or overstates every money figure in the book by the same factor.
+    such a run the risk, the outcome and the R-multiple are all recorded as
+    absent and the reason is printed, rather than a rate being assumed. A
+    guessed conversion is the defect `fbe.risk.MissingRateError` exists to
+    prevent, and it understates or overstates every money figure in the book by
+    the same factor.
+
+    Absent means ``None`` on all four fields and not ``0.0`` on the two that
+    could carry it. A risk of zero is a real and different fact, and the Phase
+    6 revenge rule compares one trade's ``risk_amount`` against another's, so a
+    book of zeros would rank every unpriced trade as the smallest trade taken
+    and report the escalation backwards. This is the rule
+    ``docs/decisions/0002-representing-not-known.md`` states generally.
 
     Args:
         ctx: Typer context carrying the effective config.
@@ -3281,7 +3285,7 @@ def journal_add(
     """
     config = _effective_config(ctx)
     normalised = pair.upper()
-    _checked_journal_pair(normalised)
+    base, quote = _checked_journal_pair(normalised)
     if stop == entry:
         raise typer.BadParameter(
             f"--stop {stop} equals the entry, so the trade risks nothing and "
@@ -3299,7 +3303,7 @@ def journal_add(
 
     moment = _opened_moment(opened_at)
     run_date = moment.date()
-    row = _engine_view(config, normalised, run_date)
+    row, scores = _engine_view(config, normalised, run_date)
     units = lots * config.broker.contract_size
     risk_amount, outcome, absence = _realised_money(
         config, normalised, entry, stop, exit_price, direction, units
@@ -3314,11 +3318,9 @@ def journal_add(
         stop=stop,
         units=units,
         lots=lots,
-        risk_amount=risk_amount if risk_amount is not None else 0.0,
+        risk_amount=risk_amount,
         risk_fraction=(
-            risk_amount / config.risk.account_balance
-            if risk_amount is not None
-            else 0.0
+            None if risk_amount is None else risk_amount / config.risk.account_balance
         ),
         account_balance_at_entry=config.risk.account_balance,
         conviction=row.conviction,
@@ -3326,6 +3328,8 @@ def journal_add(
         quote_score=row.quote_score,
         spread_score=row.spread,
         config_digest=config.digest(),
+        base_pillars=_pillar_snapshot(scores, base),
+        quote_pillars=_pillar_snapshot(scores, quote),
         account_currency=config.risk.account_currency,
         closed_at=datetime.now(UTC) if exit_price is not None else None,
         exit_price=exit_price,
@@ -3350,7 +3354,12 @@ def journal_add(
         typer.echo(f"Could not write the journal: {error}", err=True)
         raise typer.Exit(EXIT_UNUSABLE) from error
 
-    _render_journal_add(record, row, absence)
+    _render_journal_add(
+        record,
+        row,
+        absence,
+        risk_fraction_for(record.conviction, config.risk) * config.risk.account_balance,
+    )
 
 
 def _checked_journal_pair(pair: str) -> tuple[str, str]:
@@ -3393,7 +3402,16 @@ def _opened_moment(opened_at: datetime | None) -> datetime:
     Returns:
         An aware UTC datetime. A naive value from the parser is read as UTC,
         which is what every other timestamp in the journal means, and
-        `fbe.journal.append` refuses a naive one outright.
+        `fbe.journal.append` refuses a naive one outright. The owner trades
+        from SAST, so a bare ``09:00`` is recorded as 09:00 UTC and not 07:00
+        UTC. The help text on ``--opened`` says so, because the alternative is
+        a record two hours out with nothing on screen to suggest it.
+
+        The offset branch cannot fire from the CLI today: `DATE_FORMATS` plus
+        ``%Y-%m-%d %H:%M`` parse no offset, so the parser only ever hands this
+        a naive value. It is kept because adding one format to that list would
+        otherwise start recording the wrong instant, silently, in the one field
+        every other record is ordered against.
 
     """
     if opened_at is None:
@@ -3403,7 +3421,9 @@ def _opened_moment(opened_at: datetime | None) -> datetime:
     return opened_at.astimezone(UTC)
 
 
-def _engine_view(config: Config, pair: str, run_date: date) -> PairBias:
+def _engine_view(
+    config: Config, pair: str, run_date: date
+) -> tuple[PairBias, Mapping[str, CurrencyScore]]:
     """Run the chain for one date and return its row for this pair.
 
     Args:
@@ -3412,7 +3432,12 @@ def _engine_view(config: Config, pair: str, run_date: date) -> PairBias:
         run_date: The date the trade was opened.
 
     Returns:
-        The filtered `fbe.types.PairBias` the engine held that day.
+        The filtered `fbe.types.PairBias` the engine held that day, and the
+        composite scores the run produced, keyed by currency. The scores are
+        returned rather than recomputed by the caller because the pillar
+        snapshot on the record comes from them, and running the chain twice for
+        one trade could produce two different views if the cache rolled over
+        between the calls.
 
     Raises:
         typer.Exit: `EXIT_UNUSABLE` when the chain produced no row for the
@@ -3439,7 +3464,7 @@ def _engine_view(config: Config, pair: str, run_date: date) -> PairBias:
     by_currency = {score.currency: score for score in scores}
     for row in build_pair_biases(scores, config, run_date):
         if row.pair == pair:
-            return apply_filters(row, by_currency, config, run_date)
+            return apply_filters(row, by_currency, config, run_date), by_currency
     typer.echo(
         f"The engine produced no row for {pair} on {run_date}, so the trade "
         "would be recorded with no view attached, which is the one thing this "
@@ -3447,6 +3472,36 @@ def _engine_view(config: Config, pair: str, run_date: date) -> PairBias:
         err=True,
     )
     raise typer.Exit(EXIT_UNUSABLE)
+
+
+def _pillar_snapshot(
+    scores: Mapping[str, CurrencyScore], currency: str
+) -> Mapping[PillarName, float]:
+    """Flatten one currency's pillar scores into the map the record stores.
+
+    Args:
+        scores: The run's composite scores, keyed by currency.
+        currency: The leg to snapshot.
+
+    Returns:
+        Each pillar the run produced for that currency, on the engine's
+        ``-3..+3`` band, which is `fbe.types.PillarScore.score` rather than
+        ``raw`` or ``z``. Empty when the run produced no score for the
+        currency, which the caller records as it stands: an empty map says the
+        chain had nothing for that leg, and inventing neutral values would say
+        the opposite.
+
+    `docs/risk-and-execution.md` puts these inside the part of the record that
+    cannot be reconstructed later, alongside the composite. The composite is
+    one number over seven, and a review asking why a losing trade was scored
+    the way it was has to be able to see which pillar carried it. Revisions and
+    a re-weighting both make that unanswerable from the series afterwards.
+
+    """
+    score = scores.get(currency)
+    if score is None:
+        return {}
+    return {name: pillar.score for name, pillar in score.pillars.items()}
 
 
 def _realised_money(
@@ -3497,7 +3552,7 @@ def _realised_money(
 
 
 def _render_journal_add(
-    record: TradeRecord, row: PairBias, absence: str | None
+    record: TradeRecord, row: PairBias, absence: str | None, intended: float
 ) -> None:
     """Print what was recorded, and what the engine thought at the time.
 
@@ -3505,9 +3560,20 @@ def _render_journal_add(
         record: The record just written.
         row: The engine's view of the pair on the date.
         absence: Why the money figures are missing, or ``None``.
+        intended: Money the conviction ladder would have put at risk for this
+            conviction, in the account currency, before the broker's lot step
+            moved the size. Printed beside the realised figure so the gap the
+            R-multiple turns on is visible at the desk rather than only in the
+            spec. Zero at `fbe.types.Conviction.NONE`, where the ladder asks
+            for no trade at all, and the comparison is then left out rather
+            than printed as a target of nothing.
 
     The alignment line is the point of the command in one sentence, so it is
     printed rather than left for the review weeks later.
+
+    The absence line names the risk as well as the outcome. Telling the trader
+    the money is missing while writing a figure into the file would be the
+    quieter half of the same defect: they would have no reason to look.
 
     """
     pips = abs(record.entry - record.stop) / pip_size(record.pair)
@@ -3515,17 +3581,25 @@ def _render_journal_add(
         f"Recorded {record.pair} {record.direction.value}, {record.lots} lots, "
         f"{pips:.1f} pip stop."
     )
-    if record.outcome_zar is not None and record.r_multiple is not None:
+    if record.risk_amount is None:
         typer.echo(
-            f"{record.account_currency} {record.outcome_zar:+.2f}, "
-            f"{record.r_multiple:+.2f}R against the realised risk of "
-            f"{record.account_currency} {record.risk_amount:.2f}."
+            f"No money figures: {absence or 'the position could not be valued.'} "
+            "Risk, outcome and R are recorded as absent rather than with a "
+            "guessed rate."
         )
-    elif absence is not None:
-        typer.echo(
-            f"No money figures: {absence} The trade is recorded without them "
-            "rather than with a guessed rate."
+    else:
+        realised = (
+            f"the realised risk of {record.account_currency} {record.risk_amount:.2f}"
         )
+        if intended > 0.0:
+            realised += f", not the intended {record.account_currency} {intended:.2f}"
+        if record.outcome_zar is not None and record.r_multiple is not None:
+            typer.echo(
+                f"{record.account_currency} {record.outcome_zar:+.2f}, "
+                f"{record.r_multiple:+.2f}R against {realised}."
+            )
+        else:
+            typer.echo(f"Open, against {realised}.")
     alignment = "Aligned." if record.agreed_with_bias else "Against the bias."
     typer.echo(
         f"Engine that day: {row.direction.value}, "
