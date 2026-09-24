@@ -77,6 +77,7 @@ import json
 import logging
 import math
 import time
+import webbrowser
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
@@ -103,6 +104,7 @@ from fbe.calendar_guard import (
     blackout_windows,
     coverage_gap,
 )
+from fbe.dashboard.build import build_dashboard
 from fbe.datasources import ALL_SOURCES, CalendarSource
 from fbe.datasources.base import ProbeRequest, SourceError
 from fbe.datasources.cache import DiskCache
@@ -3728,7 +3730,10 @@ def dashboard(
         typer.Option(
             "--asof",
             formats=DATE_FORMATS,
-            help="Point-in-time cutoff, YYYY-MM-DD. Defaults to today.",
+            help=(
+                "Render the report with this as-of date. Defaults to the "
+                "latest report on disk, which on a normal morning is today's."
+            ),
         ),
     ] = None,
     out: Annotated[
@@ -3737,7 +3742,9 @@ def dashboard(
             "--out",
             "-o",
             help=(
-                "Output HTML file. Defaults to data/reports/dashboard-YYYY-MM-DD.html."
+                "Output HTML file. Defaults to "
+                "data/reports/dashboard-YYYY-MM-DD.html, dated by the report "
+                "it renders rather than by today."
             ),
             dir_okay=False,
         ),
@@ -3765,20 +3772,96 @@ def dashboard(
     would leave the ranking unreadable at exactly the wrong moment. See
     `fbe.dashboard.build.build_dashboard` for the full constraint list.
 
+    Renders a report that already exists and computes nothing itself. The
+    committed Markdown and this page are then two views of one run rather than
+    two readings of one date taken at different times, and only one of those
+    can be the record.
+
     Args:
         ctx: Typer context carrying the effective config.
-        asof: Point-in-time cutoff for observations.
-        out: Output HTML path.
-        compare: Diff baseline, ``last``, ``none`` or a path.
+        asof: As-of date of the report to render. Without it, the latest report
+            on disk, which on a normal morning is today's and before `report`
+            has run is yesterday's. A page from this morning is worth more on a
+            phone mid-session than a refusal saying today's run has not
+            happened yet.
+        out: Output HTML path. The default is dated by the report being
+            rendered, not by today, so rendering an older run does not overwrite
+            the current page.
+        compare: Diff baseline, ``last``, ``none`` or a path. ``last`` means the
+            run before the one being rendered rather than the newest on disk,
+            so a backfilled run does not diff against its own successor and
+            print every move backwards.
         open_after: Open the result in a browser.
 
     Raises:
-        NotImplementedError: Always, until `fbe.dashboard.build` lands.
+        typer.Exit: `EXIT_UNUSABLE` when there is no report to render, and when
+            the rendered page breaks a publishing constraint. Both are "it ran,
+            and there is nothing here you should publish", which is what code 1
+            means in ``docs/interfaces.md``. Neither is a usage error and
+            neither is a guard rule refusing a trade, so neither is 2 or 3.
 
     """
-    raise NotImplementedError(
-        "fbe.cli.dashboard is scaffolded; see docs/roadmap.md Phase 5"
+    config = _effective_config(ctx)
+    reports_dir = config.data.reports_dir
+    sidecar = _report_to_render(reports_dir, asof.date() if asof else None)
+    run = report_module.load_report(sidecar)
+
+    baseline_path = _baseline_path(compare, reports_dir, run.asof)
+    baseline = (
+        report_module.load_report(baseline_path) if baseline_path is not None else None
     )
+    diff = report_module.diff_reports(baseline, run) if baseline is not None else None
+
+    target = out if out is not None else reports_dir / f"dashboard-{run.asof}.html"
+    try:
+        written = build_dashboard(run, target, diff=diff, config=config)
+    except ValueError as error:
+        # Printed rather than raised: the violations are the message, and a
+        # traceback in front of them is noise around the one thing to act on.
+        typer.echo(str(error))
+        raise typer.Exit(EXIT_UNUSABLE) from error
+
+    typer.echo(f"Wrote {written} ({written.stat().st_size / 1024:.1f} KB)")
+    typer.echo("Checked against the publishing constraints: no violations.")
+    if open_after:
+        webbrowser.open(written.as_uri())
+
+
+def _report_to_render(reports_dir: Path, asof: date | None) -> Path:
+    """Find the sidecar this run renders, or refuse and say what is missing.
+
+    Args:
+        reports_dir: The configured reports directory.
+        asof: The as-of date asked for, or ``None`` for the latest on disk.
+
+    Returns:
+        Path to the sidecar, which is the file `fbe.report.load_report` reads.
+
+    Raises:
+        typer.Exit: `EXIT_UNUSABLE` when there is nothing to render, with a
+            message naming the date or the directory and the command that fills
+            it. Rendering an empty page instead would put a file on disk that
+            opens, looks like a run, and describes one that never happened.
+
+    """
+    if asof is None:
+        latest = report_module.latest_report(reports_dir)
+        if latest is not None:
+            return latest
+        typer.echo(
+            f"No report to render: {reports_dir} holds none. Run fbe report to "
+            "write one, then build the page from it."
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
+    named = reports_dir / report_module.SIDECAR_FORMAT.format(asof=asof)
+    if named.exists():
+        return named
+    typer.echo(
+        f"No report for {asof} in {reports_dir}, so there is nothing to render "
+        f"for that date. Run fbe report --asof {asof} to write one, or drop "
+        "--asof for the latest report on disk."
+    )
+    raise typer.Exit(EXIT_UNUSABLE)
 
 
 @journal_app.command(

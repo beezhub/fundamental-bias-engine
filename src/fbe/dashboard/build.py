@@ -77,7 +77,9 @@ is carried by colour alone.
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from html.parser import HTMLParser
@@ -531,14 +533,48 @@ def build_dashboard(
         The path written, for the caller to print or open.
 
     Raises:
-        NotImplementedError: Always, until rendering lands.
-        ValueError: Once implemented, when `check_constraints` reports a
-            violation.
+        ValueError: When `check_constraints` reports a violation, naming every
+            one of them so the page can be fixed in one pass. Nothing is
+            written: a page on disk is the page the owner opens on their phone
+            and it carries no sign of having failed a check, so an unpublishable
+            one is worse than none. An existing file at ``out_path`` is left
+            alone for the same reason, which is why the check comes before the
+            write rather than before the rename.
+
+    Note:
+        Written as UTF-8 bytes, because that is what `check_constraints`
+        measures against `MAX_RENDERED_BYTES` and what the host downloads. A
+        text write under the platform encoding would publish a different number
+        of bytes from the one that was checked, and on Windows would rewrite
+        every newline as well.
+
+        Put in place by rename, so a reader either finds the previous page or
+        the whole new one. A crash partway through a direct write leaves valid
+        HTML that stops in the middle of the matrix, which renders.
 
     """
-    raise NotImplementedError(
-        "fbe.dashboard.build.build_dashboard is scaffolded; see docs/roadmap.md Phase 5"
+    html = render_dashboard(report, diff=diff, config=config)
+    violations = check_constraints(html)
+    if violations:
+        listed = "\n".join(f"  - {violation}" for violation in violations)
+        raise ValueError(
+            f"The rendered dashboard breaks {len(violations)} publishing "
+            f"constraint{'' if len(violations) == 1 else 's'}, so nothing was "
+            f"written to {out_path}:\n{listed}"
+        )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    handle, created = tempfile.mkstemp(
+        dir=out_path.parent, prefix=f".{out_path.name}.", suffix=".part"
     )
+    os.close(handle)
+    part = Path(created)
+    try:
+        part.write_bytes(html.encode("utf-8"))
+        part.replace(out_path)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    return out_path
 
 
 def check_constraints(html: str) -> list[str]:

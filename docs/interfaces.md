@@ -644,16 +644,44 @@ rounded up.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--asof` | today | Point-in-time cutoff. |
-| `--out`, `-o` | `data/reports/dashboard-YYYY-MM-DD.html` | Output file. |
+| `--asof` | the latest report on disk | Which run to render. |
+| `--out`, `-o` | `data/reports/dashboard-YYYY-MM-DD.html` | Output file, dated by the report it renders. |
 | `--compare` | `last` | Diff baseline, same values as `report --compare`. |
 | `--open` / `--no-open` | no-open | Open the result in a browser. |
 
 ```console
 $ fbe dashboard --open
-Wrote data/reports/dashboard-2026-09-09.html (38 KB)
-Constraint check: 0 external assets, 38 KB of 16 MB, theme tokens ok.
+Wrote data/reports/dashboard-2026-09-09.html (38.4 KB)
+Checked against the publishing constraints: no violations.
 ```
+
+This command renders a report that already exists and computes nothing. The
+committed Markdown and this page are two views of one run rather than two
+readings of one date taken at different times, and only one of those can be the
+record. `--asof` therefore names a run that was already written: it selects, it
+does not recompute, and asking for a date with no report is refused rather than
+answered by scoring that date now.
+
+The default is the latest report rather than today's, because today's does not
+exist until `fbe report` has run and this is the command opened on a phone
+mid-session. A page from this morning is worth more there than a refusal saying
+the day's run has not happened yet. The output file is named after the run it
+renders for the same reason: rendering an older report does not overwrite the
+current page.
+
+Two failures exit 1, and the distinction between them is in the message rather
+than in the code. There is no report to render, which names the date or the
+directory and the command that fills it; or the rendered page breaks a
+publishing constraint, which lists every violation so the page can be fixed in
+one pass. Both mean the command ran and there is nothing here that should be
+published, which is what code 1 says. Neither is a usage error and neither is a
+guard rule refusing a trade.
+
+Nothing is written in either case, and an existing page is left alone. A file on
+disk is the file the owner opens, it carries no sign of having failed a check,
+and yesterday's page is worth more than a blank one. The page is put in place by
+rename, so a reader finds either the previous file or the whole new one, never
+half of the new one.
 
 ### `fbe journal add`
 
