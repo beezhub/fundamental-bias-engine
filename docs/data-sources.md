@@ -344,7 +344,16 @@ of last month, so today's number only appears in the first. Columns are
 **Shift-JIS**, not UTF-8, and carry a Japanese-language footer row that is not
 data. Missing tenors appear as `-`.
 
-**Bank of England.** Two different things, do not confuse them.
+**Bank of England.** Two different things, do not confuse them, and one thing
+they share: **both refuse a Python client's default `User-Agent` with HTTP
+403**, before any body is served. Probed live on 2026-09-24: `python-httpx` and
+`python-requests` strings answered 403 on the database and on the archive, and
+a string naming this project answered 200 on both. `CurvesSource` therefore
+sends `fundamental-bias-engine/0.1 (+repository URL)` on every request, set as
+the class's `default_headers` so it reaches all seven providers. If a 403 from
+this host reappears, check that header first; without it the base class reads
+the 403 as a wrong request and does not retry, so GBP loses Bank Rate and every
+provider here loses its 2-year yield for the run (#273).
 
 The interactive database at `/boeapps/iadb/fromshowcolumns.asp` serves flat CSV
 for named series. Query: `csv.x=yes`, `Datefrom`/`Dateto` as `DD/Mon/YYYY`,
