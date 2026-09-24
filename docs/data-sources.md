@@ -308,7 +308,20 @@ Every issuer publishes the number free and without a key. The cost is that
 there is no single API: seven providers, seven formats, seven failure modes.
 Each covers exactly one currency, so none can substitute for another and losing one
 provider means losing a currency's heaviest pillar rather than degrading a
-series. Fail loudly.
+series.
+
+**What fails loudly, and at what scope.** Each provider is its own source:
+`EcbSource`, `BocSource`, `MofJpSource`, `BoeSource`, `RbaSource`, `SnbSource`
+and `RbnzSource`, sharing `CurvesSource` as their base, which holds the parsers
+and is not itself a source in a run. A provider that raises, or that answers
+with no session inside the window, is a failed source under its own name on the
+refresh output, and its currency reaches the score as an explicit absence: the
+monetary pillar prints n/a for that currency and coverage is demoted. The other
+six providers' yields still land. `fbe refresh -s ecb` selects one provider;
+there is no `-s curves`. Until #218 the seven sat behind one `curves` source,
+and one central bank's website being down cost every two-year yield in the run.
+ADR 0013 records the ruling and why the split was preferred over a partial
+status on one source.
 
 ### The providers
 
