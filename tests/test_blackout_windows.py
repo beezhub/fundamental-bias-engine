@@ -5,8 +5,8 @@ raising.
 
 **The feed capitalises its impact field.** `fbe.datasources.calendar` publishes
 ``"High"``, ``"Medium"``, ``"Low"`` and ``"Holiday"`` exactly as the feed emits
-them, and records that `fbe.types.CalendarEvent.impact`'s docstring is stale in
-saying otherwise. A comparison written as ``event.impact == "high"`` matches
+them, and is named by `fbe.types.CalendarEvent.impact` as the authority on
+that vocabulary. A comparison written as ``event.impact == "high"`` matches
 nothing on real data, and the failure is silent: every week reads as clear and
 the guard never blocks anything. `IMPACT_LEVELS` is imported here so the
 assertion is tied to what the feed actually sends.
@@ -151,8 +151,8 @@ def test_the_feed_capitalises_its_rating_and_the_comparison_folds_case() -> None
 
     `fbe.datasources.calendar.IMPACT_LEVELS` is what the feed sends, capitalised,
     and its docstring says a consumer comparing against the lower-case spelling
-    in `fbe.types.CalendarEvent` "would match nothing and report every week as
-    clear". Both spellings are asserted so neither direction of the fold can
+    "would match nothing and report every week as clear". Both spellings are
+    asserted so neither direction of the fold can
     regress.
     """
     assert "High" in IMPACT_LEVELS
@@ -191,6 +191,21 @@ def test_a_keyword_in_the_title_alone_qualifies() -> None:
 def test_neither_the_rating_nor_the_title_leaves_it_out() -> None:
     """The case that has to stay False, or the guard blocks every morning."""
     assert is_high_impact(event(title=QUIET_TITLE, impact="Low")) is False
+
+
+def test_a_market_closure_is_not_a_high_impact_release() -> None:
+    """The fourth value, which nothing here represented until now.
+
+    ``Holiday`` is in `IMPACT_LEVELS` because the feed emits it and out of
+    `IMPACT_SEVERITY` because it is not a severity. Neither fact stops a
+    consumer treating the string as one, and the direction of that mistake
+    matters: read as a severity below ``Low`` it is harmless, read as one above
+    ``High`` it blocks every closure. The guard has to return False, and the
+    title is held quiet so the rating is the only thing under test.
+    """
+    assert "Holiday" in IMPACT_LEVELS
+
+    assert is_high_impact(event(title=QUIET_TITLE, impact="Holiday")) is False
 
 
 @pytest.mark.parametrize("category", sorted(HIGH_IMPACT_KEYWORDS))
