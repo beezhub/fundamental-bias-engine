@@ -342,10 +342,9 @@ def is_high_impact(event: CalendarEvent) -> bool:
     """
     # Folded, not compared. The feed publishes ``"High"`` capitalised, which
     # `fbe.datasources.calendar.IMPACT_LEVELS` records along with the warning
-    # that a consumer comparing against the lower-case spelling in
-    # `fbe.types.CalendarEvent` "would match nothing and report every week as
-    # clear". That failure is silent, so the fold is the load-bearing part of
-    # this line rather than tidiness.
+    # that a consumer comparing against the lower-case spelling "would match
+    # nothing and report every week as clear". That failure is silent, so the
+    # fold is the load-bearing part of this line rather than tidiness.
     if event.impact.strip().casefold() == "high":
         return True
     folded = event.title.casefold()
