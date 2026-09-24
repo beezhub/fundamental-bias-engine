@@ -907,7 +907,7 @@ QUARTERLY_CPI = frozenset(
 registry rather than typed so the assertion follows a registry change."""
 
 HISTORY_POINTS = 24
-"""Observations per series, enough to clear `MIN_TIME_SERIES_WINDOW` of 12.
+"""Observations per series, enough to clear the monthly history floor of 12.
 
 EMPLOYMENT reads a six-month change and RISK reads a drawdown and a volatility
 z-score, so neither can be scored from a single print however fresh it is. A
