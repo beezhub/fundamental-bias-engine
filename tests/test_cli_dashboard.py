@@ -204,10 +204,15 @@ def test_an_existing_page_survives_a_run_that_refuses(
         "fbe.dashboard.build.check_constraints", lambda html: ["something wrong"]
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as caught:
         build_dashboard(report, target)
 
     assert target.read_bytes() == before
+    # Naming it, because "nothing was written" leaves the operator guessing
+    # what the phone will show, and the answer is an earlier render of the
+    # same run under the same name.
+    assert target.name in str(caught.value)
+    assert "already holds a page" in str(caught.value)
 
 
 def test_the_file_appears_whole_or_not_at_all(
@@ -515,6 +520,152 @@ def test_the_default_name_carries_the_run_it_renders(
     run_command(monkeypatch, reports)
 
     assert dashboards_in(reports) == [reports / "dashboard-2026-09-07.html"]
+
+
+def test_a_run_scored_under_another_config_says_so(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one thing rendering an old run makes possible, and it is silent.
+
+    The page is coloured on today's bands and every conviction on it was graded
+    under the ones in force when the run was written. `_View.heat`'s own
+    docstring says a cell coloured for one band and labelled with another
+    cannot happen; rendering a report from before a config change is how it
+    happens, and nothing else in the output would say so.
+    """
+    reports = reports_in(tmp_path / "reports", replace(report, asof=date(2026, 9, 9)))
+    monkeypatch.setenv("FBE_SCORING_MIN_SPREAD_HIGH", "2.75")
+
+    result = run_command(monkeypatch, reports)
+
+    assert result.exit_code == EXIT_OK, result.output
+    assert "config has changed" in result.output
+    assert report.config_digest in result.output
+
+
+def test_a_run_scored_under_this_config_says_nothing(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The normal morning. A warning printed every day is a warning nobody reads."""
+    reports = reports_in(tmp_path / "reports", replace(report, asof=date(2026, 9, 9)))
+
+    result = run_command(monkeypatch, reports)
+
+    assert result.exit_code == EXIT_OK, result.output
+    assert "config has changed" not in result.output
+
+
+def test_the_output_says_which_run_is_on_the_page(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Otherwise a week-old page ships in silence.
+
+    `fbe report` exits without writing on an empty cache, so a run of failures
+    leaves the newest report where it was and this command renders it, prints
+    two lines of success and exits 0. The file name carries the date and
+    ``--out`` takes even that away.
+    """
+    reports = reports_in(tmp_path / "reports", replace(report, asof=date(2026, 9, 7)))
+
+    result = run_command(monkeypatch, reports, "--out", str(tmp_path / "page.html"))
+
+    assert "2026-09-07" in result.output
+    assert f"{report.generated_at:%Y-%m-%d %H:%M}" in result.output
+
+
+def test_a_relative_output_path_can_still_be_opened(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Path.as_uri` refuses a relative path, and both paths here can be one.
+
+    ``--out page.html`` is what a person types, and `FBE_DATA_REPORTS_DIR` is
+    stored unresolved, so the default path can be relative too. The page is
+    already written when the browser is opened, so raising there reports a
+    failed build for a file that is on disk and correct.
+    """
+    opened: list[str] = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
+    reports = reports_in(tmp_path / "reports", replace(report, asof=date(2026, 9, 9)))
+    monkeypatch.chdir(tmp_path)
+
+    result = run_command(monkeypatch, reports, "--out", "page.html", "--open")
+
+    assert result.exit_code == EXIT_OK, result.output
+    assert opened == [(tmp_path / "page.html").resolve().as_uri()]
+
+
+def test_a_browser_that_will_not_open_is_reported(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`webbrowser.open` returns False on a headless host and raises nothing."""
+    monkeypatch.setattr("webbrowser.open", lambda url: False)
+    reports = reports_in(tmp_path / "reports", replace(report, asof=date(2026, 9, 9)))
+
+    result = run_command(monkeypatch, reports, "--open")
+
+    assert result.exit_code == EXIT_OK, result.output
+    assert "No browser could be opened" in result.output
+
+
+def test_a_sidecar_that_cannot_be_read_is_refused_with_its_reason(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Existing and readable are different questions.
+
+    A sidecar from another version, hand-edited or half-copied passes the first
+    and fails the second, and `load_report` says exactly what is wrong with it.
+    That sentence has to reach the operator as a sentence.
+    """
+    reports = reports_in(tmp_path / "reports", replace(report, asof=date(2026, 9, 9)))
+    (reports / "bias-2026-09-09.json").write_text('{"asof": "2026-09-09"}')
+
+    result = run_command(monkeypatch, reports)
+
+    assert result.exit_code == EXIT_UNUSABLE, result.output
+    assert not isinstance(result.exception, ValueError), result.exception
+    assert "bias-2026-09-09.json" in result.output
+    assert dashboards_in(reports) == []
+
+
+def test_an_undated_file_in_the_reports_directory_is_refused(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`latest_report` is loud about one on purpose, and loud must mean a message.
+
+    ``bias-backup.json`` sorts after every dated name, so a newest-by-name rule
+    hands it to the renderer; skipping it quietly makes the newest report
+    depend on what else is in the directory.
+    """
+    reports = reports_in(tmp_path / "reports", replace(report, asof=date(2026, 9, 9)))
+    (reports / "bias-backup.json").write_text("{}")
+
+    result = run_command(monkeypatch, reports)
+
+    assert result.exit_code == EXIT_UNUSABLE, result.output
+    assert not isinstance(result.exception, ValueError), result.exception
+    assert "bias-backup.json" in result.output
+
+
+def test_a_destination_that_cannot_be_written_is_refused(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full or read-only destination is a third way to exit 1.
+
+    `docs/interfaces.md` enumerates the exits, so one that arrives as a
+    traceback contradicts the page the operator was told to read.
+    """
+    reports = reports_in(tmp_path / "reports", replace(report, asof=date(2026, 9, 9)))
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", refuse)
+
+    result = run_command(monkeypatch, reports)
+
+    assert result.exit_code == EXIT_UNUSABLE, result.output
+    assert not isinstance(result.exception, OSError), result.exception
+    assert "No space left on device" in result.output
 
 
 def test_no_browser_is_opened_without_the_flag(

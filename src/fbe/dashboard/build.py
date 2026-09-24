@@ -81,7 +81,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -101,6 +101,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "TEMPLATE_NAME",
+    "DASHBOARD_FORMAT",
     "MAX_RENDERED_BYTES",
     "ALLOWED_SCRIPT_HOSTS",
     "ALLOWED_STYLE_HOSTS",
@@ -112,6 +113,16 @@ __all__ = [
 
 TEMPLATE_NAME = "dashboard.html.j2"
 """Template file inside ``fbe/dashboard/templates``."""
+
+DASHBOARD_FORMAT = "dashboard-{asof:%Y-%m-%d}.html"
+"""Default name of the written page, dated by the run it renders.
+
+A constant for the same reason `fbe.report.SIDECAR_FORMAT` is one: the name
+appears in the command, in ``docs/interfaces.md`` and in the tests, and a
+rename that moves only some of them leaves a command writing a file nothing
+else can find. Dated by the run rather than by today, so rendering an older
+report does not overwrite the current page.
+"""
 
 MAX_RENDERED_BYTES = 16 * 1024 * 1024
 """Hard ceiling the sandbox enforces on the rendered page."""
@@ -557,10 +568,21 @@ def build_dashboard(
     violations = check_constraints(html)
     if violations:
         listed = "\n".join(f"  - {violation}" for violation in violations)
+        # The existing page is named when there is one. A refusal that says
+        # only "nothing was written" leaves the operator guessing what the
+        # phone will show, and the answer is an earlier render of the same run
+        # under the same file name, differing only in its generation time.
+        standing = (
+            f" {out_path.name} already holds a page generated at "
+            f"{datetime.fromtimestamp(out_path.stat().st_mtime, UTC):%Y-%m-%d %H:%M} "
+            "UTC, and that is what is still there."
+            if out_path.exists()
+            else ""
+        )
         raise ValueError(
             f"The rendered dashboard breaks {len(violations)} publishing "
             f"constraint{'' if len(violations) == 1 else 's'}, so nothing was "
-            f"written to {out_path}:\n{listed}"
+            f"written to {out_path}.{standing}\n{listed}"
         )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     handle, created = tempfile.mkstemp(

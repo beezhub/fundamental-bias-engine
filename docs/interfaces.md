@@ -89,9 +89,10 @@ loads, so `fbe doctor` can print the problem rather than the resolver hiding
 it behind an exception.
 
 Once resolved, the config is validated before it is used. `fbe doctor` and
-every command that scores or sizes from the config (`score`, `bias`, `report`,
-`dashboard` and `size`) call `Config.validate` first and refuse to run on a
-non-empty result, printing each problem on its own line. `validate` rejects
+every command that scores or sizes from the config (`score`, `bias`, `report`
+and `size`) call `Config.validate` first and refuse to run on a non-empty
+result, printing each problem on its own line. `dashboard` is not in that list:
+it neither scores nor sizes, it renders a run that was already scored. `validate` rejects
 weights that do not cover every pillar, are negative or do not sum to 1.0, a
 risk cap above the plan's 2%, and any threshold ordering that would leave a
 scoring formula undefined or a conviction band empty. A config that fails here
@@ -673,13 +674,32 @@ A `--compare` path whose sidecar does not exist exits 2, the same as it does on
 `fbe report` and for the same reason: a run that named a baseline and got a page
 with no diff on it reads as a first run rather than as a typo.
 
-Two failures exit 1, and the distinction between them is in the message rather
-than in the code. There is no report to render, which names the date or the
-directory and the command that fills it; or the rendered page breaks a
-publishing constraint, which lists every violation so the page can be fixed in
-one pass. Both mean the command ran and there is nothing here that should be
-published, which is what code 1 says. Neither is a usage error and neither is a
-guard rule refusing a trade.
+Everything that goes wrong here exits 1 with a message, never a traceback, and
+the distinction between them is in the message rather than in the code. There is
+no report to render, which names the date or the directory and the command that
+fills it. The sidecar exists and cannot be read as a report, which says what is
+wrong with it: existing and readable are different questions, and a file written
+by another version or half-copied passes the first. The reports directory holds
+a file matching the sidecar glob with no date in its name, which is refused
+loudly rather than skipped, because skipping it makes the newest report depend on
+what else is in the directory. The rendered page breaks a publishing constraint,
+which lists every violation so the page can be fixed in one pass. Or the
+destination cannot be written. All of them mean the command ran and there is
+nothing here that should be published, which is what code 1 says. None is a usage
+error and none is a guard rule refusing a trade.
+
+The page names its own provenance on the console as well as in its header: the
+as-of date of the run and when that run was generated. `fbe report` exits without
+writing on an empty cache, so a week of failed refreshes leaves the newest report
+where it was and this command renders it without complaint. The file name carries
+the date and `--out` takes even that away, so the line is the only thing left
+saying how old the page is.
+
+When the run was scored under a different config digest from the one in force
+now, that is said too. The page is coloured on today's bands and every conviction
+on it was graded under the ones that were current when it was written, so a
+cell's colour and the conviction beside it can disagree. It is a warning rather
+than a refusal: the report is still the best record of that day.
 
 Nothing is written in either case, and an existing page is left alone. A file on
 disk is the file the owner opens, it carries no sign of having failed a check,
