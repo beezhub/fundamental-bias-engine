@@ -651,7 +651,7 @@ rounded up.
 
 ```console
 $ fbe dashboard --open
-Wrote data/reports/dashboard-2026-09-09.html (38.4 KB)
+Wrote data/reports/dashboard-2026-09-09.html (27.2 KB)
 Checked against the publishing constraints: no violations.
 ```
 
@@ -668,6 +668,10 @@ mid-session. A page from this morning is worth more there than a refusal saying
 the day's run has not happened yet. The output file is named after the run it
 renders for the same reason: rendering an older report does not overwrite the
 current page.
+
+A `--compare` path whose sidecar does not exist exits 2, the same as it does on
+`fbe report` and for the same reason: a run that named a baseline and got a page
+with no diff on it reads as a first run rather than as a typo.
 
 Two failures exit 1, and the distinction between them is in the message rather
 than in the code. There is no report to render, which names the date or the

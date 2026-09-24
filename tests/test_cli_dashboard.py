@@ -28,6 +28,8 @@ and nothing opens a browser.
 
 from __future__ import annotations
 
+import re
+import tempfile
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -37,7 +39,7 @@ from typer.testing import CliRunner, Result
 
 from fbe.cli import EXIT_OK, EXIT_UNUSABLE, app
 from fbe.config import Config, DataConfig, RiskConfig, ScoringConfig
-from fbe.dashboard.build import build_dashboard, render_dashboard
+from fbe.dashboard.build import build_dashboard, check_constraints, render_dashboard
 from fbe.report import load_report, write_report
 from fbe.types import BiasReport
 
@@ -76,6 +78,13 @@ def run_command(
 
 def dashboards_in(directory: Path) -> list[Path]:
     return sorted(directory.glob("dashboard-*.html"))
+
+
+def read_back(report: BiasReport, directory: Path) -> str:
+    """Build the page and return what is actually on disk afterwards."""
+    target = directory / "dashboard.html"
+    build_dashboard(report, target)
+    return target.read_text(encoding="utf-8")
 
 
 # --- build_dashboard ----------------------------------------------------------
@@ -239,25 +248,139 @@ def test_nothing_is_left_behind_beside_the_page(
     assert [path.name for path in tmp_path.iterdir()] == ["dashboard.html"]
 
 
+def test_the_file_on_disk_passes_the_publishing_checks_as_written(
+    report: BiasReport, tmp_path: Path
+) -> None:
+    """Read back and checked again, which is where self-containment is decided.
+
+    Asserting on the string that was rendered would only prove the check was
+    called. The file is what gets published, so the file is what is checked,
+    and this fails if the write ever alters what was approved.
+    """
+    target = tmp_path / "dashboard.html"
+
+    build_dashboard(report, target)
+
+    assert check_constraints(target.read_text(encoding="utf-8")) == []
+
+
 def test_the_page_carries_no_reference_to_a_sibling_file(
     report: BiasReport, tmp_path: Path
 ) -> None:
-    """Self-contained, asserted on the bytes read back rather than the string.
+    """Every way a document can name another file, scanned on the bytes read back.
 
-    They should be the same and the point of reading them back is to notice
-    when they are not. A relative reference resolves against wherever the file
-    is opened from, which on a phone is not the reports directory, so the panel
-    it feeds is simply absent.
+    A relative reference resolves against wherever the file is opened from,
+    which on a phone is not the reports directory, so the panel it feeds is
+    simply absent. The page as it stands carries no reference of any kind, so
+    what this holds is that it stays that way: a template that grows an
+    ``@import`` or a background image fails here.
+
+    Both quote styles and the CSS forms are scanned because ``check_constraints``
+    reads ``src`` and ``href`` attributes, and its own docstring records that a
+    ``style`` attribute's ``url()`` and a ``srcset`` are beyond it.
     """
-    import re
+    page = read_back(report, tmp_path)
 
+    references = [
+        *re.findall(r"""\b(?:src|srcset|href)\s*=\s*["']([^"']*)["']""", page),
+        *re.findall(r"url\(\s*['\"]?([^)'\"]*)", page),
+        *re.findall(r"""@import\s+["']([^"']*)["']""", page),
+    ]
+
+    assert [
+        value
+        for value in references
+        if not value.startswith(("data:", "#", "https://"))
+    ] == []
+
+
+def test_the_page_that_is_checked_is_the_page_that_is_written(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One render, checked once, and those bytes are the ones that land.
+
+    Rendering twice, or checking a page rendered without the diff and the
+    config and writing one rendered with them, both publish something nobody
+    looked at. The second is the live risk: an event title or a blocker string
+    only appears once the diff section is there, and that is exactly the text
+    that arrives from a feed.
+    """
+    checked: list[str] = []
+    real = check_constraints
+    monkeypatch.setattr(
+        "fbe.dashboard.build.check_constraints",
+        lambda html: checked.append(html) or real(html),
+    )
     target = tmp_path / "dashboard.html"
-    build_dashboard(report, target)
-    page = target.read_text(encoding="utf-8")
+    # Bands well away from the packaged ladder, so a page rendered without this
+    # config is a different page. On the defaults the two would be identical
+    # and this test would pass against a build that checked one and wrote the
+    # other.
+    config = Config(
+        risk=RiskConfig(),
+        scoring=ScoringConfig(
+            min_spread_low=0.30, min_spread_medium=0.60, min_spread_high=0.90
+        ),
+        data=DataConfig(),
+    )
+    plain = render_dashboard(report)
+    dressed = render_dashboard(report, config=config)
+    assert plain != dressed
 
-    for attribute in ("src", "href"):
-        for value in re.findall(rf'{attribute}="([^"]*)"', page):
-            assert value.startswith(("data:", "#", "https://")), value
+    build_dashboard(report, target, config=config)
+
+    assert len(checked) == 1
+    assert checked[0] == dressed
+    assert checked[0].encode("utf-8") == target.read_bytes()
+
+
+def test_a_page_carrying_text_from_a_feed_is_written_as_utf_8(
+    report: BiasReport, tmp_path: Path
+) -> None:
+    """The fixture is pure ASCII and a real run is not.
+
+    Every ASCII-compatible encoding writes identical bytes for this page, so
+    nothing here can tell UTF-8 from latin-1 until the page carries something
+    outside it. Event titles and warnings come from a feed in the language the
+    publisher used, and the size ceiling is measured in UTF-8: a page written
+    under another encoding publishes a different number of bytes from the one
+    that was checked, or raises partway through the write.
+    """
+    accented = replace(
+        report, warnings=("Ifo Geschäftsklimaindex was published at 09:00 CET",)
+    )
+    target = tmp_path / "dashboard.html"
+
+    build_dashboard(accented, target)
+    page = render_dashboard(accented)
+
+    assert not page.isascii()
+    assert target.read_bytes() == page.encode("utf-8")
+
+
+def test_the_part_file_is_made_beside_the_page_it_replaces(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`os.replace` is only atomic within one filesystem.
+
+    A part file in the system temporary directory renames across a device
+    boundary the moment ``data/`` is a mount or ``/tmp`` is a tmpfs, which is
+    an ``OSError`` on the operator's machine and never on this one. The
+    leftover is invisible here too, since nothing looks outside ``tmp_path``.
+    """
+    seen: dict[str, object] = {}
+    real = tempfile.mkstemp
+
+    def watched(**kwargs: object) -> tuple[int, str]:
+        seen.update(kwargs)
+        return real(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("fbe.dashboard.build.tempfile.mkstemp", watched)
+    target = tmp_path / "pages" / "dashboard.html"
+
+    build_dashboard(report, target)
+
+    assert seen["dir"] == target.parent
 
 
 # --- the command --------------------------------------------------------------
@@ -347,6 +470,7 @@ def test_a_page_that_fails_a_constraint_exits_non_zero_with_the_violations(
     assert result.exit_code == EXIT_UNUSABLE, result.output
     assert "<title> is missing" in result.output
     assert "body sets no background token" in result.output
+    assert "no violations" not in result.output
     assert dashboards_in(reports) == []
 
 
@@ -435,6 +559,28 @@ def test_nothing_is_opened_when_nothing_was_written(
     assert opened == []
 
 
+def test_nothing_is_opened_when_the_page_was_refused(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The flag is about the page, and the page was not written.
+
+    Opening anyway shows a file that does not exist on a first run, and
+    yesterday's page presented as today's on any later one, while the command
+    exits non-zero behind it.
+    """
+    opened: list[str] = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(
+        "fbe.dashboard.build.check_constraints", lambda html: ["something wrong"]
+    )
+    reports = reports_in(tmp_path / "reports", replace(report, asof=date(2026, 9, 9)))
+
+    result = run_command(monkeypatch, reports, "--open")
+
+    assert result.exit_code == EXIT_UNUSABLE, result.output
+    assert opened == []
+
+
 def test_the_diff_against_the_previous_run_reaches_the_page(
     report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -483,6 +629,189 @@ def test_the_baseline_is_the_run_before_the_one_rendered(
     run_command(monkeypatch, reports, "--asof", "2026-09-07")
 
     assert seen["diff"] is None
+
+
+def test_the_diff_is_taken_from_the_baseline_to_the_run(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`diff_reports` is positional, and the two arguments are interchangeable.
+
+    Handed the wrong way round it still renders, and a currency that gained a
+    full point publishes as having lost one, with the two as-of dates swapped
+    in the heading above it. Nothing raises and every number looks plausible.
+    """
+    weaker = replace(report, asof=date(2026, 9, 7))
+    stronger = replace(
+        report,
+        asof=date(2026, 9, 9),
+        currencies=tuple(
+            replace(score, composite=score.composite + 1.0)
+            if score.currency == "USD"
+            else score
+            for score in report.currencies
+        ),
+    )
+    reports = reports_in(tmp_path / "reports", weaker, stronger)
+    seen: dict[str, object] = {}
+
+    def watched(run: BiasReport, out_path: Path, **kwargs: object) -> Path:
+        seen["diff"] = kwargs.get("diff")
+        out_path.write_text("<!doctype html>", encoding="utf-8")
+        return out_path
+
+    monkeypatch.setattr("fbe.cli.build_dashboard", watched)
+    run_command(monkeypatch, reports, "--asof", "2026-09-09")
+
+    diff = seen["diff"]
+    assert diff is not None
+    assert diff.previous_asof == date(2026, 9, 7)  # type: ignore[attr-defined]
+    assert diff.current_asof == date(2026, 9, 9)  # type: ignore[attr-defined]
+    moved = {
+        change.currency: change.delta
+        for change in diff.currencies  # type: ignore[attr-defined]
+    }
+    assert moved["USD"] == pytest.approx(1.0)
+
+
+def test_the_default_run_is_diffed_against_the_one_before_it(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without `--asof` there is no date to resolve the baseline from.
+
+    Resolving it from the date asked for, which is nothing, hands
+    `latest_report` no cutoff and it returns the report being rendered. The run
+    then diffs against itself, every delta is zero, and the page says nothing
+    moved every morning of the year.
+    """
+    weaker = replace(report, asof=date(2026, 9, 7))
+    stronger = replace(
+        report,
+        asof=date(2026, 9, 9),
+        currencies=tuple(
+            replace(score, composite=score.composite + 1.0)
+            if score.currency == "USD"
+            else score
+            for score in report.currencies
+        ),
+    )
+    reports = reports_in(tmp_path / "reports", weaker, stronger)
+    seen: dict[str, object] = {}
+
+    def watched(run: BiasReport, out_path: Path, **kwargs: object) -> Path:
+        seen["diff"] = kwargs.get("diff")
+        out_path.write_text("<!doctype html>", encoding="utf-8")
+        return out_path
+
+    monkeypatch.setattr("fbe.cli.build_dashboard", watched)
+    run_command(monkeypatch, reports)
+
+    diff = seen["diff"]
+    assert diff is not None
+    assert diff.previous_asof == date(2026, 9, 7)  # type: ignore[attr-defined]
+    moved = {
+        change.currency: change.delta
+        for change in diff.currencies  # type: ignore[attr-defined]
+    }
+    assert moved["USD"] == pytest.approx(1.0)
+
+
+def test_a_report_written_today_is_the_one_rendered_by_default(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The normal morning, and the one case a fixed fixture date cannot reach.
+
+    Every other test here dates its reports in the past, so a default that
+    quietly excluded today would pass all of them and render yesterday on the
+    one day that matters. This is the only place in this file that reads the
+    real clock, and it reads it for exactly that reason.
+    """
+    today = date.today()
+    reports = reports_in(tmp_path / "reports", replace(report, asof=today))
+
+    result = run_command(monkeypatch, reports)
+
+    assert result.exit_code == EXIT_OK, result.output
+    assert dashboards_in(reports) == [reports / f"dashboard-{today}.html"]
+
+
+def test_a_baseline_given_as_a_path_is_used(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--compare` takes the same values as `report --compare`, a path included."""
+    reports = reports_in(
+        tmp_path / "reports",
+        replace(report, asof=date(2026, 9, 7)),
+        replace(report, asof=date(2026, 9, 9)),
+    )
+    seen: dict[str, object] = {}
+
+    def watched(run: BiasReport, out_path: Path, **kwargs: object) -> Path:
+        seen["diff"] = kwargs.get("diff")
+        out_path.write_text("<!doctype html>", encoding="utf-8")
+        return out_path
+
+    monkeypatch.setattr("fbe.cli.build_dashboard", watched)
+    baseline = reports / "bias-2026-09-07.json"
+    run_command(monkeypatch, reports, "--compare", str(baseline))
+
+    diff = seen["diff"]
+    assert diff is not None
+    assert diff.previous_asof == date(2026, 9, 7)  # type: ignore[attr-defined]
+
+
+def test_a_baseline_path_that_does_not_exist_is_refused(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit 2, naming the option, rather than a page with no diff on it.
+
+    Falling back to no baseline would print "no baseline report to compare
+    against" on a run that asked for a specific one, which reads as a first run
+    rather than as a typo.
+    """
+    reports = reports_in(tmp_path / "reports", replace(report, asof=date(2026, 9, 9)))
+
+    result = run_command(monkeypatch, reports, "--compare", str(tmp_path / "gone.json"))
+
+    assert result.exit_code == 2, result.output
+    assert dashboards_in(reports) == []
+
+
+def test_a_markdown_report_with_no_sidecar_is_refused_rather_than_opened(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sidecar is what `load_report` reads, so it is what decides existence.
+
+    Deciding on the Markdown accepts a pair whose sidecar is gone and then
+    fails inside the read, which reaches the operator as a traceback rather
+    than as the refusal the command is supposed to make.
+    """
+    reports = reports_in(tmp_path / "reports", replace(report, asof=date(2026, 9, 9)))
+    (reports / "bias-2026-09-09.json").unlink()
+    assert (reports / "bias-2026-09-09.md").is_file()
+
+    result = run_command(monkeypatch, reports, "--asof", "2026-09-09")
+
+    assert result.exit_code == EXIT_UNUSABLE, result.output
+    # The exit code alone does not separate a refusal from a crash: the Typer
+    # runner reports an uncaught exception as exit 1 too, and prints nothing.
+    assert not isinstance(result.exception, FileNotFoundError), result.exception
+    assert "2026-09-09" in result.output
+
+
+def test_the_refusal_names_a_date_the_operator_can_retype(
+    report: BiasReport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--asof` parses to a datetime, and the message is read by a person.
+
+    "No report for 2026-09-08 00:00:00" tells them to run
+    ``fbe report --asof 2026-09-08 00:00:00``, which is not a command.
+    """
+    reports = reports_in(tmp_path / "reports", replace(report, asof=date(2026, 9, 9)))
+
+    result = run_command(monkeypatch, reports, "--asof", "2026-09-08")
+
+    assert "2026-09-08" in result.output
+    assert "00:00:00" not in result.output
 
 
 def test_compare_none_renders_without_a_baseline(
