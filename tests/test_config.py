@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import re
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -947,3 +948,86 @@ def test_help_still_works_with_a_broken_default_config_file(
     assert (
         runner.invoke(app, ["--config", str(broken), "doctor", "--help"]).exit_code == 0
     )
+
+
+# --- .env.example names settings the config accepts ---------------------------
+
+ENV_EXAMPLE = REPO_ROOT / ".env.example"
+"""The file the README and the file's own header tell a new user to copy."""
+
+ASSIGNMENT = re.compile(r"^(FBE_[A-Z0-9_]+)=(.*)$", re.MULTILINE)
+"""An ``FBE_``-prefixed assignment, ignoring the commented lines around it.
+
+Anchored at the start of a line so a name inside a comment or a prose example
+is not swept. ``FRED_API_KEY`` is deliberately out of scope: it is read
+directly by `default_config` rather than through the ``FBE_<SECTION>_<FIELD>``
+mechanism, so it has nothing to be checked against.
+"""
+
+
+def _example_variables() -> dict[str, str]:
+    """Every ``FBE_`` name the example file sets, with its example value.
+
+    Parsed from the file rather than listed here. A test naming the three
+    variables that were wrong would pass while a fourth drifted, which is the
+    defect this file is about: the example and the config were each correct on
+    their own and nothing compared them.
+    """
+    return dict(ASSIGNMENT.findall(ENV_EXAMPLE.read_text()))
+
+
+def test_the_example_file_sets_variables_for_the_sweep_to_check() -> None:
+    """Guards the sweep below against passing because it found nothing.
+
+    If `ASSIGNMENT` ever stops matching, every per-variable test is skipped
+    silently and the suite reports green on an example file nobody checked.
+    That is the same shape of failure as the defect, so it gets its own
+    assertion rather than being left to the sweep's own emptiness.
+    """
+    found = _example_variables()
+
+    assert found, f"no FBE_ assignments parsed out of {ENV_EXAMPLE}"
+    assert len(found) >= 3, found
+
+
+def test_every_example_variable_is_a_setting_the_config_accepts(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The defect, in one assertion, against the whole file at once.
+
+    `.env.example` named ``FBE_ACCOUNT_CURRENCY``, ``FBE_ACCOUNT_BALANCE`` and
+    ``FBE_OFFLINE``. The config reads ``FBE_<SECTION>_<FIELD>``, so all three
+    were rejected and anyone who followed the file got a `ConfigError` on every
+    command, before any work was done.
+
+    The whole file is exported at once rather than one variable per run,
+    because that is what a user does: they copy the file. A name that is
+    individually valid but collides with another is caught this way and not
+    the other.
+    """
+    variables = _example_variables()
+    for name, value in variables.items():
+        monkeypatch.setenv(name, value)
+
+    try:
+        load_config()
+    except ConfigError as error:  # pragma: no cover - the failure path
+        pytest.fail(f"{ENV_EXAMPLE} sets a name the config rejects: {error}")
+
+
+@pytest.mark.parametrize("name", sorted(_example_variables()))
+def test_each_example_variable_is_accepted_on_its_own(
+    name: str, clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One case per variable, so a failure names the offending one.
+
+    The sweep above fails on the first rejection and its message carries only
+    that name. This reports every broken variable in one run, which is what
+    someone repairing the file wants.
+    """
+    monkeypatch.setenv(name, _example_variables()[name])
+
+    try:
+        load_config()
+    except ConfigError as error:  # pragma: no cover - the failure path
+        pytest.fail(f"{name} is not a setting: {error}")
