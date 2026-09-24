@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -60,6 +61,8 @@ def trade(
     duration: timedelta | None = timedelta(minutes=30),
     r_multiple: float | None = 0.6,
     risk_amount: float | None = 37.0,
+    balance: float = 2000.0,
+    direction: Direction = Direction.SHORT,
     agreed_with_bias: bool = True,
 ) -> TradeRecord:
     """One journal record, varying only what a rule below reads.
@@ -74,15 +77,15 @@ def trade(
     return TradeRecord(
         trade_id=trade_id,
         pair=pair,
-        direction=Direction.SHORT,
+        direction=direction,
         opened_at=opened_at,
         entry=1.0850,
         stop=1.0870,
         units=1000.0,
         lots=0.01,
         risk_amount=risk_amount,
-        risk_fraction=None if risk_amount is None else risk_amount / 2000.0,
-        account_balance_at_entry=2000.0,
+        risk_fraction=None if risk_amount is None else risk_amount / balance,
+        account_balance_at_entry=balance,
         conviction=Conviction.MEDIUM,
         base_score=-1.52,
         quote_score=1.84,
@@ -103,6 +106,8 @@ def loser(
     *,
     pair: str = "EURUSD",
     risk_amount: float | None = 37.0,
+    balance: float = 2000.0,
+    r_multiple: float = -1.0,
 ) -> TradeRecord:
     """A closed trade that lost, which is what starts the revenge window."""
     closed = MONDAY + timedelta(hours=1) if closed_at is None else closed_at
@@ -111,8 +116,9 @@ def loser(
         opened_at=closed - timedelta(hours=4),
         pair=pair,
         closed_at=closed,
-        r_multiple=-1.0,
+        r_multiple=r_multiple,
         risk_amount=risk_amount,
+        balance=balance,
     )
 
 
@@ -217,6 +223,63 @@ def test_an_entry_after_an_open_trade_is_not_revenge() -> None:
     assert of_kind(discipline_flags((running, after)), "revenge") == []
 
 
+def test_each_entry_inside_the_window_is_its_own_flag() -> None:
+    """Three entries in the twenty minutes after one loss is three reactions.
+
+    Counting the loss rather than the reactions would read in the review as one
+    lapse, which is the opposite of what the record shows.
+    """
+    loss = loser()
+    after = tuple(
+        trade(
+            f"r{index}", loss.closed_at + timedelta(minutes=5 * index), pair=BOOK[index]
+        )
+        for index in range(1, 4)
+    )
+
+    flags = of_kind(discipline_flags((loss, *after)), "revenge")
+
+    assert [flag.trade_id for flag in flags] == [record.trade_id for record in after]
+
+
+def test_the_flag_reads_as_one_sentence_about_this_entry_and_that_loss() -> None:
+    """Every field distinct, because each one is a place the wrong value fits.
+
+    A gap in seconds still contains the minutes as a substring, the two money
+    figures are interchangeable, the loss can be printed without its sign, and
+    the entry's own pair and result can stand in for the loss's. Each of those
+    reads as a plausible sentence, so the whole sentence is asserted.
+    """
+    loss = loser("loss", MONDAY + timedelta(hours=1), pair="EURUSD", risk_amount=20.0)
+    loss = replace(loss, r_multiple=-1.7, outcome_zar=-34.0)
+    after = trade(
+        "after",
+        loss.closed_at + timedelta(minutes=12),
+        pair="GBPUSD",
+        risk_amount=45.0,
+    )
+
+    flags = of_kind(discipline_flags((loss, after)), "revenge")
+
+    assert flags[0].detail == (
+        "entered GBPUSD 12 minutes after a -1.7R loss on EURUSD, "
+        "larger risk than the trade that lost, ZAR 45.00 against ZAR 20.00"
+    )
+
+
+def test_the_same_pair_reads_before_the_size_when_both_apply() -> None:
+    """Both aggravations on one entry, in one sentence."""
+    loss = loser(risk_amount=20.0)
+    after = trade("after", loss.closed_at + timedelta(minutes=3), risk_amount=25.0)
+
+    flags = of_kind(discipline_flags((loss, after)), "revenge")
+
+    assert flags[0].detail == (
+        "entered EURUSD 3 minutes after a -1.0R loss on EURUSD, same pair and "
+        "larger risk than the trade that lost, ZAR 25.00 against ZAR 20.00"
+    )
+
+
 def test_the_same_pair_makes_the_flag_say_so() -> None:
     """Going straight back into the pair that just lost is the classic shape."""
     loss = loser(pair="EURUSD")
@@ -272,6 +335,39 @@ def test_the_flag_names_the_most_recent_loss_in_the_window() -> None:
 
     assert "USDCAD" in detail
     assert "AUDNZD" not in detail
+
+
+def test_the_size_comparison_is_money_rather_than_its_share_of_the_account() -> None:
+    """The same money on a smaller account is the same position, not a bigger one.
+
+    Comparing fractions would flag a trader who kept their size constant while
+    their balance fell, which is the drawdown case and a different conversation
+    from sizing up after a loss. The flag would also print two identical money
+    figures beside the claim that one is larger.
+    """
+    loss = loser(risk_amount=40.0, balance=4000.0)
+    after = trade(
+        "after",
+        loss.closed_at + timedelta(minutes=5),
+        risk_amount=40.0,
+        balance=2000.0,
+    )
+
+    assert loss.risk_fraction != after.risk_fraction
+    assert "larger" not in of_kind(discipline_flags((loss, after)), "revenge")[0].detail
+
+
+def test_the_size_comparison_is_risk_against_risk_not_risk_against_loss() -> None:
+    """A trade cut early lost less than it risked, and the risk is the comparison.
+
+    Reading the realised loss as the size of the losing trade makes any normal
+    position look like an escalation after a stop that was managed well.
+    """
+    loss = loser(risk_amount=40.0, r_multiple=-0.2)
+    after = trade("after", loss.closed_at + timedelta(minutes=5), risk_amount=20.0)
+
+    assert loss.outcome_zar is not None and abs(loss.outcome_zar) < 20.0
+    assert "larger" not in of_kind(discipline_flags((loss, after)), "revenge")[0].detail
 
 
 @pytest.mark.parametrize(
@@ -364,6 +460,53 @@ def test_the_window_is_counted_on_open_time_rather_than_on_input_order() -> None
     assert flags[0].occurred_at == records[0].opened_at
 
 
+def spread_over(span: timedelta) -> tuple[TradeRecord, ...]:
+    """Six entries, five bunched at the start and the last ``span`` after them."""
+    first = tuple(
+        trade(f"n{index}", MONDAY + timedelta(hours=index), pair=BOOK[index])
+        for index in range(OVERTRADING_TRADES_PER_WEEK)
+    )
+    return (*first, trade("last", MONDAY + span, pair=BOOK[5]))
+
+
+@pytest.mark.parametrize(
+    "span, flagged",
+    [
+        (timedelta(days=7), True),
+        (timedelta(days=7, seconds=1), False),
+    ],
+)
+def test_the_week_is_seven_days_and_its_far_edge_is_inclusive(
+    span: timedelta, flagged: bool
+) -> None:
+    """Both sides of the window, because a week stated in days is read at its edge.
+
+    Without this the length is free: a window quietly widened to a fortnight
+    flags a selective month as overtrading, and one narrowed to six days misses
+    a genuine six-in-seven and reports the week clean.
+    """
+    records = spread_over(span)
+
+    assert bool(of_kind(discipline_flags(records), "overtrading")) is flagged
+
+
+def test_two_busy_windows_are_two_flags() -> None:
+    """A flag closes its own window and the next one is counted from scratch.
+
+    Skipping to the end of the records instead would report the first busy week
+    of the journal and nothing after it, for the life of the file.
+    """
+    june = week_of(OVERTRADING_TRADES_PER_WEEK + 1)
+    august = week_of(OVERTRADING_TRADES_PER_WEEK + 1, MONDAY + timedelta(days=60))
+    august = tuple(
+        replace(record, trade_id=f"aug{index}") for index, record in enumerate(august)
+    )
+
+    flags = of_kind(discipline_flags((*june, *august)), "overtrading")
+
+    assert [flag.trade_id for flag in flags] == [june[0].trade_id, august[0].trade_id]
+
+
 def test_the_window_is_rolling_rather_than_a_calendar_week() -> None:
     """The case a calendar-week reading misses entirely.
 
@@ -406,13 +549,24 @@ def test_the_weekly_allowance_is_the_module_constant() -> None:
 # --- too many positions open at once -----------------------------------------
 
 
-def overlapping(count: int) -> tuple[TradeRecord, ...]:
-    """``count`` trades opened an hour apart and all still open together."""
+BOOK = ("EURUSD", "GBPUSD", "AUDUSD", "USDJPY", "USDCAD", "NZDUSD")
+"""Distinct pairs, so a limit read per pair rather than per book does not pass."""
+
+
+def overlapping(count: int, *, closed: bool = False) -> tuple[TradeRecord, ...]:
+    """``count`` trades opened an hour apart in different pairs, open together.
+
+    Open by default, because the live book is the only state
+    `max_concurrent_positions` is about and a reading that counts only closed
+    history would look correct against closed fixtures and say nothing about
+    the tickets currently on.
+    """
     return tuple(
         trade(
             f"o{index}",
             MONDAY + timedelta(hours=index),
-            closed_at=MONDAY + timedelta(days=3),
+            pair=BOOK[index % len(BOOK)],
+            duration=timedelta(days=3) if closed else None,
         )
         for index in range(count)
     )
@@ -423,7 +577,10 @@ def test_more_positions_open_at_once_than_the_limit_allows_is_flagged() -> None:
 
     `check_limits` refuses this before the trade is taken, so a journal holding
     it means the refusal was overridden or never consulted. That is a different
-    fact from a busy week and the review has to be able to tell them apart.
+    fact from a busy week and the review has to be able to tell them apart, so
+    the whole sentence is asserted rather than the phrase `check_limits`. A flag
+    reading "check_limits reviewed and allowed this" would pass a substring
+    check and say the opposite of what happened.
     """
     limit = RiskConfig().max_concurrent_positions
     records = overlapping(limit + 1)
@@ -436,7 +593,70 @@ def test_more_positions_open_at_once_than_the_limit_allows_is_flagged() -> None:
 
     assert len(flags) == 1
     assert flags[0].trade_id == records[limit].trade_id
-    assert "check_limits" in flags[0].detail
+    assert flags[0].occurred_at == records[limit].opened_at
+    assert flags[0].detail == (
+        "4 positions open at once on entering USDJPY, above the 3 in "
+        "RiskConfig.max_concurrent_positions, which check_limits refuses "
+        "before a trade is taken"
+    )
+
+
+def test_a_position_with_no_close_is_still_an_open_position() -> None:
+    """The live book, which is the case the limit exists for.
+
+    A reading that counts only trades with a ``closed_at`` looks right against
+    closed history and reports nothing at all about the tickets currently on.
+    Both books are also read for when the breach happened: on the entry that
+    caused it, not on the exit that ended it, which is a date the review cannot
+    act on and which reorders the flag against everything around it.
+    """
+    limit = RiskConfig().max_concurrent_positions
+    for records in (overlapping(limit + 1), overlapping(limit + 1, closed=True)):
+        flags = [
+            flag
+            for flag in of_kind(discipline_flags(records), "overtrading")
+            if "at once" in flag.detail
+        ]
+
+        assert [flag.trade_id for flag in flags] == [
+            record.trade_id for record in records[limit:]
+        ]
+        assert [flag.occurred_at for flag in flags] == [
+            record.opened_at for record in records[limit:]
+        ]
+
+
+def test_the_limit_counts_the_book_rather_than_each_pair() -> None:
+    """Four tickets in four pairs is four tickets.
+
+    The limit is about attention, not about exposure to one currency, so a
+    count taken per pair would never reach it however many charts are open.
+    """
+    records = overlapping(RiskConfig().max_concurrent_positions + 1)
+
+    assert len({record.pair for record in records}) == len(records)
+    assert [
+        flag.trade_id
+        for flag in of_kind(discipline_flags(records), "overtrading")
+        if "at once" in flag.detail
+    ] == [records[-1].trade_id]
+
+
+def test_every_entry_beyond_the_limit_is_its_own_flag() -> None:
+    """Going from four open tickets to six is an escalation, not one event."""
+    limit = RiskConfig().max_concurrent_positions
+    records = overlapping(limit + 3)
+
+    flags = [
+        flag
+        for flag in of_kind(discipline_flags(records), "overtrading")
+        if "at once" in flag.detail
+    ]
+
+    assert [flag.trade_id for flag in flags] == [
+        record.trade_id for record in records[limit:]
+    ]
+    assert [flag.detail.split()[0] for flag in flags] == ["4", "5", "6"]
 
 
 def test_exactly_the_concurrent_limit_is_not_flagged() -> None:
@@ -504,6 +724,7 @@ def test_the_concurrent_limit_comes_from_the_risk_config() -> None:
     ]
 
     assert len(flags) == 1
+    assert "above the 2 in" in flags[0].detail
 
 
 # --- trading against the engine ----------------------------------------------
@@ -519,6 +740,31 @@ def test_a_trade_taken_against_the_engine_is_flagged_as_its_own_group() -> None:
 
     assert len(flags) == 1
     assert flags[0].trade_id == "against"
+
+
+def test_the_override_flag_names_the_side_that_was_taken() -> None:
+    """Which way the trade went is half of what an override was.
+
+    A flag that prints the opposite side reads in the review as a trade the
+    owner did not take, and the engine's lean cannot be argued with from it.
+    """
+    records = (
+        trade("long", MONDAY, direction=Direction.LONG, agreed_with_bias=False),
+        trade(
+            "short",
+            MONDAY + timedelta(days=1),
+            direction=Direction.SHORT,
+            agreed_with_bias=False,
+        ),
+    )
+
+    flags = of_kind(discipline_flags(records), "against_bias")
+
+    assert "EURUSD long against" in flags[0].detail
+    assert "EURUSD short against" in flags[1].detail
+    assert [flag.occurred_at for flag in flags] == [
+        record.opened_at for record in records
+    ]
 
 
 def test_each_override_is_its_own_flag() -> None:
@@ -546,9 +792,20 @@ def test_the_override_flag_does_not_call_the_trade_a_mistake() -> None:
 
     detail = of_kind(discipline_flags(records), "against_bias")[0].detail.lower()
 
-    for word in ("mistake", "wrong", "error", "should not", "bad"):
+    for word in (
+        "mistake",
+        "wrong",
+        "error",
+        "should not",
+        "bad",
+        "breach",
+        "lapse",
+        "failure",
+        "avoidable",
+        "undisciplined",
+    ):
         assert word not in detail, detail
-    assert "counted" in detail or "group" in detail
+    assert "counted" in detail
 
 
 # --- ordering, and what the function does not do ------------------------------
@@ -568,6 +825,29 @@ def test_flags_come_back_in_chronological_order() -> None:
         flag.occurred_at for flag in flags
     )
     assert kinds(flags) == ["against_bias", "revenge", "against_bias"]
+
+
+def test_nothing_is_read_from_disk_and_nothing_is_written_to_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It reads the records it is given, and only those.
+
+    Falling back to `load` on an empty argument would be invisible here: a
+    fresh clone has no journal, so the fallback returns nothing and the tests
+    stay green while the function reads a file on the owner's own machine that
+    the caller never asked for. Writing anything is the same problem in reverse,
+    since the journal is append-only and this is a read.
+    """
+    monkeypatch.setattr("fbe.journal.JOURNAL_DIR", tmp_path)
+    monkeypatch.setattr("fbe.journal.JOURNAL_PATH", tmp_path / "trades.jsonl")
+    monkeypatch.setattr(
+        "fbe.journal.load",
+        lambda *args, **kwargs: pytest.fail("discipline_flags read the journal"),
+    )
+
+    assert list(discipline_flags(())) == []
+    assert discipline_flags((loser(), trade("after", MONDAY + timedelta(hours=1))))
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_the_records_are_not_altered() -> None:
