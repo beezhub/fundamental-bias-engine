@@ -70,7 +70,7 @@ Verification date for everything below: 2026-09-09.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date
 
@@ -78,8 +78,10 @@ from fbe.types import Frequency, PillarName
 from fbe.universe import G10
 
 __all__ = [
+    "ABSOLUTE_MIN_HISTORY",
     "CYCLE_DAYS",
     "DEFAULT_PUBLICATION_LAG_DAYS",
+    "MIN_HISTORY_OBSERVATIONS",
     "GLOBAL",
     "INDICATORS",
     "IndicatorSpec",
@@ -150,6 +152,91 @@ numbers nobody had, and that error flatters rather than penalises, so it survive
 review. Where a source can supply a real ``released_at``, it should, and this
 table should never be reached.
 """
+
+ABSOLUTE_MIN_HISTORY: int = 12
+"""Fewest observations any time-series z-score will accept, whatever the cadence.
+
+Below twelve readings the sample standard deviation is too unstable to divide
+by: it swings with a single value, and the z-score it produces describes the
+window rather than the currency. That is true of a quarterly series holding
+three years and of a daily one holding a fortnight alike, so it is a floor on
+the count and not on the span.
+
+It is the second half of the rule `MIN_HISTORY_OBSERVATIONS` is derived from,
+and the binding half for every cadence that prints fewer than twelve times a
+year.
+"""
+
+MIN_HISTORY_OBSERVATIONS: Mapping[Frequency, int] = {
+    Frequency.DAILY: 252,
+    Frequency.WEEKLY: 52,
+    Frequency.MONTHLY: 12,
+    Frequency.QUARTERLY: 12,
+    Frequency.ANNUAL: 12,
+    Frequency.IRREGULAR: 12,
+}
+"""Fewest in-window observations a time-series z-score will accept, per cadence.
+
+One rule generates every row, so each number is derivable rather than chosen:
+
+> The floor is one year of that series' own prints, and never fewer than
+> `ABSOLUTE_MIN_HISTORY`.
+
+Which half binds depends on the cadence. ``DAILY`` at 252 and ``WEEKLY`` at 52
+are the one-year half. ``MONTHLY`` at 12 is both at once, which is why a single
+count of twelve looked right for as long as it did. ``QUARTERLY``, ``ANNUAL``
+and ``IRREGULAR`` take the count floor: a year of quarterly prints is four,
+which is not enough to z-score against, and ``IRREGULAR`` has no period to take
+a year of.
+
+The floor it replaced was a bare count of twelve reasoned from the monthly
+case, and neither half of that reasoning survived on the cadences that actually
+call it. `fbe.pillars.base.BasePillar.time_series_z` has two callers:
+``cot_net_pct_oi`` is weekly, where twelve prints is eleven weeks, and
+``vol_index`` is daily, where twelve prints is a fortnight. No monthly series
+reaches it at all. The constant asked "how many" where the fact that decides the
+answer is "how often". Issue #214 carries the measurement and the ruling.
+
+Read through `history_floor`, never directly, so a window whose observations do
+not share a cadence takes the strictest floor present rather than whichever one
+happened to be looked up.
+
+This is not `DRAWDOWN_WINDOW_SESSIONS` and not
+`fbe.pillars.risk.MIN_DRAWDOWN_WINDOW_SESSIONS`, which answer a different
+question: how much of a 252-session window must be present before a fall from
+its high is worth reporting. That one deliberately stays at twelve.
+"""
+
+
+def history_floor(frequencies: Iterable[Frequency]) -> int:
+    """Return the strictest minimum-observation floor among ``frequencies``.
+
+    Args:
+        frequencies: The cadences of the observations in one window, normally
+            one repeated value.
+
+    Returns:
+        The largest entry of `MIN_HISTORY_OBSERVATIONS` across them.
+
+    Raises:
+        ValueError: If ``frequencies`` is empty. A window with no observations
+            has no cadence, so there is no floor to answer with, and returning
+            `ABSOLUTE_MIN_HISTORY` would be a number nobody derived. The caller
+            refuses an empty window before asking.
+
+    The strictest rather than the first is the point. Mixed cadences are not a
+    state the registry produces today, since one `SeriesRef` carries one
+    frequency, and a helper that read ``series[0].frequency`` would be correct
+    until the day a pillar blends a weekly leg with a monthly one. It would then
+    be wrong quietly, applying a floor of twelve to a window holding weekly data,
+    which is the defect this mapping exists to remove.
+
+    """
+    floors = [MIN_HISTORY_OBSERVATIONS[frequency] for frequency in frequencies]
+    if not floors:
+        raise ValueError("no frequencies given, so there is no history floor")
+    return max(floors)
+
 
 CYCLE_DAYS: Mapping[Frequency, int] = {
     Frequency.DAILY: 4,

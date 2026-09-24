@@ -29,6 +29,7 @@ from fbe.config import ScoringConfig
 from fbe.datasources import registry
 from fbe.datasources.registry import (
     full_weight_age,
+    history_floor,
     publication_lag,
     staleness_allowance,
 )
@@ -38,23 +39,8 @@ from fbe.types import Observation, PillarName, PillarScore
 __all__ = [
     "BasePillar",
     "MIN_CROSS_SECTION",
-    "MIN_TIME_SERIES_WINDOW",
     "MIN_COMPONENT_WEIGHT",
 ]
-
-
-MIN_TIME_SERIES_WINDOW: int = 12
-"""Fewest in-window observations a time-series z-score will accept.
-
-Most of these series are monthly, so twelve is one year: the shortest window
-that can tell a level shift from a seasonal one. Below it the standard deviation
-is dominated by whichever part of the year the window happens to cover, and the
-z-score it produces describes the calendar rather than the currency.
-
-`BasePillar.time_series_z` returns ``None`` below this count rather than scoring
-a short window, for the same reason `MIN_CROSS_SECTION` refuses a thin
-cross-section: a confident number from too little data is worse than no number.
-"""
 
 
 MIN_CROSS_SECTION: int = 3
@@ -982,10 +968,25 @@ class BasePillar(ABC):
 
         Returns:
             The z-score of the newest in-window value, or ``None`` when the
-            window holds fewer than twelve observations or its standard
-            deviation is zero. Twelve is the floor because most of these series
-            are monthly and a shorter window cannot distinguish a level shift
-            from a seasonal one.
+            window is shorter than its cadence's floor or its standard
+            deviation is zero.
+
+            The floor is `fbe.datasources.registry.MIN_HISTORY_OBSERVATIONS`,
+            read through `history_floor`: 252 for a daily series, 52 for a
+            weekly one, twelve for everything else. One year of that series'
+            own prints, and never fewer than twelve. It is a floor per cadence
+            rather than a single count because "how many observations is
+            enough" is decided by how often the series prints: twelve daily
+            prints is a fortnight and twelve weekly prints is eleven weeks,
+            neither of which is a history to z-score against, while twelve
+            monthly prints is the year the old single count was reasoned for.
+            A window mixing cadences takes the strictest floor present.
+
+            ``None`` rather than a short-window score for the same reason
+            `MIN_CROSS_SECTION` refuses a thin cross-section: a confident
+            number from too little data is worse than no number. The absence
+            reaches the aggregator as reduced coverage, never as a neutral
+            zero.
 
         Raises:
             ValueError: If ``lookback_years`` is negative, which would put the
@@ -1000,7 +1001,9 @@ class BasePillar(ABC):
         when = asof if asof is not None else max(item.period for item in series)
         earliest = _years_earlier(when, lookback_years)
         window = [item for item in series if earliest <= item.period <= when]
-        if len(window) < MIN_TIME_SERIES_WINDOW:
+        if not window:
+            return None
+        if len(window) < history_floor(item.frequency for item in window):
             return None
 
         readings = [item.value for item in window]

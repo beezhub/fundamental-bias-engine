@@ -40,8 +40,8 @@ from math import sqrt
 import pytest
 
 from fbe.config import ScoringConfig
-from fbe.datasources.registry import INDICATORS
-from fbe.pillars.base import MIN_TIME_SERIES_WINDOW, BasePillar
+from fbe.datasources.registry import INDICATORS, MIN_HISTORY_OBSERVATIONS
+from fbe.pillars.base import BasePillar
 from fbe.pillars.positioning import (
     CONTRARIAN_CAP,
     CONTRARIAN_SLOPE,
@@ -49,7 +49,7 @@ from fbe.pillars.positioning import (
     SIGN_FLIP_Z,
     PositioningPillar,
 )
-from fbe.types import Observation, PillarName
+from fbe.types import Frequency, Observation, PillarName
 from fbe.universe import G10
 
 INDICATOR = "cot_net_pct_oi"
@@ -63,13 +63,25 @@ RELEASE_LAG = timedelta(days=3)
 ASOF = date(2026, 9, 14)
 """The Monday after the release, so every week in the fixture is visible."""
 
-WEEKS = 20
+WEEKLY_FLOOR = MIN_HISTORY_OBSERVATIONS[Frequency.WEEKLY]
+"""One year of this series' own prints, which is what the floor asks for.
+
+Read from the mapping rather than written as 52, so a test that shortens a
+history by one is pinned to the rule and not to today's number.
+"""
+
+WEEKS = 52
 """Window length per currency.
 
-Eight more than `MIN_TIME_SERIES_WINDOW` so a test can shorten a history and
-still be testing the floor rather than the fixture. It also has to clear
-``2 * p ** 2 + 1``, which is 12.52 at the section 7.4 fixture's widest reading
-of -2.40, or `window` cannot build a history with that z and a real spread.
+Exactly `WEEKLY_FLOOR`, the fewest weekly reports `BasePillar.time_series_z`
+will score, so a test that shortens a history by one is testing the floor
+rather than the fixture. It was 20 until #214 made the floor frequency-aware,
+at which point every currency here would have been refused.
+
+`window` builds the values from the target z, so lengthening the history keeps
+every published figure exact rather than approximating it. The count also has
+to be even and to clear ``2 * p ** 2 + 1``, which is 12.52 at the section 7.4
+fixture's widest reading of -2.40. 52 satisfies both with room.
 """
 
 # Section 7.4 of `docs/scoring-spec.md`: {currency: (net_pct_oi, mean, p, f(p))}.
@@ -446,62 +458,83 @@ def test_the_lookback_is_anchored_on_the_run_date_and_not_on_the_last_print(
     assert "over 157 weekly reports" in scored.notes
 
 
-def test_a_history_under_the_window_floor_scores_none_rather_than_zero(
+def test_a_history_one_print_under_the_floor_scores_none_rather_than_zero(
     pillar: PositioningPillar,
 ) -> None:
-    """Criterion 4. Eleven weeks is not a positioning extreme, it is no reading.
+    """Criterion 4, and the lower half of the boundary on a weekly series.
 
-    A zero would say this contract sits exactly at its own average, which is a
+    Fifty-one weekly reports is not a positioning extreme, it is no reading. A
+    zero would say this contract sits exactly at its own average, which is a
     statement about the crowd that nobody made. The neutral 0.0 on the score is
     `missing_score`'s placeholder and the ``None`` on ``z`` is what the
     aggregator reads to drop the pillar's weight.
+
+    One under the floor rather than an arbitrarily short window, so the test
+    fails if the floor moves in either direction rather than only if it is
+    removed.
     """
     values = window(*FIXTURE["USD"][:3])
-    short = weekly("USD", values[-(MIN_TIME_SERIES_WINDOW - 1) :])
+    short = weekly("USD", values[-(WEEKLY_FLOOR - 1) :])
 
     scores = pillar.compute(short, ["USD"], ASOF)
 
-    assert len(short) == MIN_TIME_SERIES_WINDOW - 1
+    assert len(short) == WEEKLY_FLOOR - 1
     assert scores["USD"].z is None
     assert scores["USD"].raw is None
     assert scores["USD"].score == 0.0
     # `compute` names the missing indicator only where the currency had none of
-    # it at all, and this currency has eleven weeks of it. So the note says it
-    # could not score and stops there, which is thin for a reader but is
+    # it at all, and this currency has fifty-one weeks of it. So the note says
+    # it could not score and stops there, which is thin for a reader but is
     # `BasePillar.compute`'s behaviour for all seven pillars rather than this
     # pillar's to change. What matters here is that it claims no reading.
     assert "could not score" in scores["USD"].notes
     assert "standard deviation" not in scores["USD"].notes
 
 
-def test_twelve_weekly_prints_score_at_full_weight_and_say_how_few(
-    pillar: PositioningPillar,
-) -> None:
-    """The other half of the floor, and the half that produces a number.
+def test_twelve_weekly_prints_are_now_refused(pillar: PositioningPillar) -> None:
+    """The case #214 was filed for, inverted.
 
-    `MIN_TIME_SERIES_WINDOW` is a count with no notion of the series' frequency,
-    so on a weekly series it is about eleven weeks rather than the year its own
-    docstring reasons about. A contract with twelve prints therefore scores, at
-    the configured weight, with the freshness ramp satisfied because the newest
-    print is current. Over twelve readings with ``ddof=1`` the reachable ``|p|``
-    runs to 3.17, which is inside the contrarian branch.
+    Twelve weekly prints is eleven weeks. It used to score at the configured
+    weight with the freshness ramp satisfied, because the newest print is
+    current and the old floor was a bare count of twelve reasoned from the
+    monthly case. Over twelve readings with ``ddof=1`` the reachable ``|p|``
+    runs to 3.17, past the sign flip at 2.0 and close to saturation, so a
+    quarter of a year of data could put this pillar near the loudest value it
+    can emit against a currency the other six scored on years.
 
-    That is issue #214 and it is not fixed here, because the floor is shared
-    with every other pillar and the frequency-aware replacement is a number
-    nobody has ruled on. What this asserts is that the case is visible: the note
-    names the print count, so a reader is told the mean is over twelve weeks
-    rather than over five years.
+    It is now an absence: no ``z``, no ``raw``, and a weight the aggregator
+    drops. This test is the record that the old behaviour is gone, so it
+    asserts the count explicitly rather than deriving it from the floor.
     """
-    values = window(*FIXTURE["NZD"][:3], count=MIN_TIME_SERIES_WINDOW)
+    values = window(*FIXTURE["NZD"][:3], count=12)
     short = weekly("NZD", values)
 
     scored = pillar.compute(short, ["NZD"], ASOF)["NZD"]
 
-    assert len(short) == MIN_TIME_SERIES_WINDOW
-    assert scored.z is not None, "twelve prints is the floor, not below it"
+    assert len(short) == 12
+    assert scored.z is None
+    assert scored.raw is None
+    assert scored.score == 0.0
+
+
+def test_a_history_exactly_at_the_floor_scores(pillar: PositioningPillar) -> None:
+    """Criterion 4, the upper half. The floor is inclusive.
+
+    Fifty-two weekly reports is one year of this series' own prints, which is
+    what the rule asks for, so it scores at the configured weight with the
+    freshness ramp satisfied. Without this the floor could be raised
+    arbitrarily and only the refusal test above would still pass.
+    """
+    values = window(*FIXTURE["NZD"][:3], count=WEEKLY_FLOOR)
+    short = weekly("NZD", values)
+
+    scored = pillar.compute(short, ["NZD"], ASOF)["NZD"]
+
+    assert len(short) == WEEKLY_FLOOR
+    assert scored.z is not None, "the floor is inclusive, not exclusive"
     assert scored.weight == pytest.approx(0.10)
     assert scored.freshness_factor == pytest.approx(1.0)
-    assert f"{MIN_TIME_SERIES_WINDOW} weekly reports" in scored.notes
+    assert f"{WEEKLY_FLOOR} weekly reports" in scored.notes
     assert "5-year" not in scored.notes
 
 
