@@ -52,6 +52,13 @@ MONDAY = datetime(2026, 6, 29, 8, 0, tzinfo=UTC)
 """Every record is placed relative to this, so the arithmetic reads by eye."""
 
 
+ENTRY = 1.0850
+"""One price for every record, so a test that moves a price is testing it."""
+
+STOP_DISTANCE = 0.0020
+"""Twenty pips, the distance from entry to stop, and so one R in price terms."""
+
+
 def trade(
     trade_id: str,
     opened_at: datetime,
@@ -60,8 +67,10 @@ def trade(
     closed_at: datetime | None = None,
     duration: timedelta | None = timedelta(minutes=30),
     r_multiple: float | None = 0.6,
+    priced: bool = True,
     risk_amount: float | None = 37.0,
     balance: float = 2000.0,
+    currency: str = "ZAR",
     direction: Direction = Direction.SHORT,
     agreed_with_bias: bool = True,
 ) -> TradeRecord:
@@ -72,29 +81,53 @@ def trade(
     so a test that changes one field is testing that field. Pass
     ``duration=None`` for a position that is still open, which is a different
     record and a different answer to every rule here.
+
+    ``r_multiple`` shapes the exit price as well as the recorded result, and the
+    stop sits on the side of the entry that the direction puts it, so the price
+    and the money always tell the same story. A fixture where they disagree
+    would let a rule read either one and look right.
+
+    ``priced`` false is the owner's own account: `fbe journal add` writes
+    ``risk_amount``, ``outcome_zar`` and ``r_multiple`` as ``None`` together,
+    because all three need a rate into the account currency that nothing in the
+    tree supplies. The price is still there. Passing ``risk_amount=None`` does
+    the same thing, since a record cannot hold an R multiple without the risk it
+    is a multiple of.
     """
     closed = opened_at + duration if closed_at is None and duration else closed_at
+    long = direction is Direction.LONG
+    stop = ENTRY - STOP_DISTANCE if long else ENTRY + STOP_DISTANCE
+    money = priced and risk_amount is not None
+    moved = None if r_multiple is None else r_multiple * STOP_DISTANCE
+    exit_price = None
+    if closed is not None and moved is not None:
+        exit_price = ENTRY + moved if long else ENTRY - moved
     return TradeRecord(
         trade_id=trade_id,
         pair=pair,
         direction=direction,
         opened_at=opened_at,
-        entry=1.0850,
-        stop=1.0870,
+        entry=ENTRY,
+        stop=stop,
         units=1000.0,
         lots=0.01,
-        risk_amount=risk_amount,
-        risk_fraction=None if risk_amount is None else risk_amount / balance,
+        risk_amount=risk_amount if money else None,
+        risk_fraction=risk_amount / balance if money and risk_amount else None,
         account_balance_at_entry=balance,
+        account_currency=currency,
         conviction=Conviction.MEDIUM,
         base_score=-1.52,
         quote_score=1.84,
         spread_score=-3.36,
         config_digest="7f3c1a9de204",
         closed_at=closed,
-        exit_price=1.0800 if closed is not None else None,
-        outcome_zar=None if r_multiple is None else r_multiple * (risk_amount or 0.0),
-        r_multiple=None if closed is None else r_multiple,
+        exit_price=exit_price,
+        outcome_zar=(
+            r_multiple * risk_amount
+            if money and closed is not None and r_multiple is not None and risk_amount
+            else None
+        ),
+        r_multiple=r_multiple if money and closed is not None else None,
         agreed_with_bias=agreed_with_bias,
         blackout_check=BlackoutCheck.CLEAR,
     )
@@ -107,6 +140,8 @@ def loser(
     pair: str = "EURUSD",
     risk_amount: float | None = 37.0,
     balance: float = 2000.0,
+    currency: str = "ZAR",
+    priced: bool = True,
     r_multiple: float = -1.0,
 ) -> TradeRecord:
     """A closed trade that lost, which is what starts the revenge window."""
@@ -119,6 +154,8 @@ def loser(
         r_multiple=r_multiple,
         risk_amount=risk_amount,
         balance=balance,
+        currency=currency,
+        priced=priced,
     )
 
 
@@ -194,6 +231,128 @@ def test_an_entry_before_the_loss_closed_is_not_a_reaction_to_it() -> None:
     earlier = trade("earlier", loss.closed_at - timedelta(minutes=10))
 
     assert of_kind(discipline_flags((loss, earlier)), "revenge") == []
+
+
+def test_a_loss_is_found_from_the_price_when_no_money_figure_exists() -> None:
+    """The only shape of record the owner's own journal holds.
+
+    `fbe journal add` writes ``risk_amount``, ``outcome_zar`` and ``r_multiple``
+    as ``None`` together, because valuing a G10 pip in ZAR needs a rate nothing
+    in the tree supplies. A rule that recognises a loss only through those three
+    finds none on the real file and returns an empty sequence, which the
+    docstring and the weekly routine both tell the reader means a clean run.
+    """
+    loss = loser(priced=False)
+    after = trade("after", loss.closed_at + timedelta(minutes=9), priced=False)
+
+    assert (loss.risk_amount, loss.outcome_zar, loss.r_multiple) == (None, None, None)
+    assert loss.exit_price is not None
+
+    flags = of_kind(discipline_flags((loss, after)), "revenge")
+
+    assert [flag.trade_id for flag in flags] == ["after"]
+    assert (
+        flags[0].detail == "entered EURUSD 9 minutes after a loss on EURUSD, same pair"
+    )
+
+
+@pytest.mark.parametrize(
+    "direction, result, lost",
+    [
+        (Direction.LONG, -1.0, True),
+        (Direction.LONG, 1.0, False),
+        (Direction.SHORT, -1.0, True),
+        (Direction.SHORT, 1.0, False),
+    ],
+)
+def test_the_price_reading_carries_the_direction(
+    direction: Direction, result: float, lost: bool
+) -> None:
+    """An exit below the entry is a loss on a long and a win on a short.
+
+    Reading the move without the direction halves the rule: every short that
+    worked would start a revenge window and every short that failed would not.
+    """
+    closed = MONDAY + timedelta(hours=1)
+    first = trade(
+        "first",
+        closed - timedelta(hours=4),
+        closed_at=closed,
+        direction=direction,
+        r_multiple=result,
+        priced=False,
+    )
+    after = trade("after", closed + timedelta(minutes=5), priced=False)
+
+    assert bool(of_kind(discipline_flags((first, after)), "revenge")) is lost
+
+
+def test_the_recorded_money_outweighs_the_price_when_the_two_disagree() -> None:
+    """A hand-edited line where the money says flat and the price says down.
+
+    `fbe journal add` writes the two from the same numbers, so they only part
+    company in a file someone edited. The money is still the authority: it is
+    the figure that is net of costs, and the price is the fallback for when
+    there is no money figure at all, not a second opinion about one there is.
+    """
+    flat = replace(
+        loser("flat", priced=False),
+        outcome_zar=0.0,
+    )
+    after = trade("after", flat.closed_at + timedelta(minutes=5), priced=False)
+
+    assert flat.exit_price is not None and flat.exit_price > flat.entry
+    assert of_kind(discipline_flags((flat, after)), "revenge") == []
+
+
+def test_a_trade_that_exited_at_its_entry_did_not_lose() -> None:
+    """Scratched at breakeven, on the price reading as on the other two."""
+    flat = trade(
+        "flat",
+        MONDAY,
+        closed_at=MONDAY + timedelta(hours=1),
+        r_multiple=0.0,
+        priced=False,
+    )
+    after = trade("after", MONDAY + timedelta(hours=1, minutes=5), priced=False)
+
+    assert flat.exit_price == flat.entry
+    assert of_kind(discipline_flags((flat, after)), "revenge") == []
+
+
+def test_a_record_with_no_side_is_not_read_as_either_one() -> None:
+    """`fbe journal add` refuses a neutral direction, and `load` does not.
+
+    Without a side the sign of a price move means nothing, so the record is an
+    unknown rather than a loss. Guessing long would make half of them losses.
+    """
+    sideless = trade(
+        "sideless",
+        MONDAY,
+        closed_at=MONDAY + timedelta(hours=1),
+        direction=Direction.NEUTRAL,
+        r_multiple=1.0,
+        priced=False,
+    )
+    after = trade("after", MONDAY + timedelta(hours=1, minutes=5), priced=False)
+
+    assert sideless.exit_price is not None and sideless.exit_price < sideless.entry
+    assert of_kind(discipline_flags((sideless, after)), "revenge") == []
+
+
+def test_a_closed_trade_with_no_exit_price_and_no_money_is_not_a_loss() -> None:
+    """Three absences are not a result. An unknown does not start the window."""
+    unknown = trade(
+        "unknown",
+        MONDAY,
+        closed_at=MONDAY + timedelta(hours=1),
+        r_multiple=None,
+        priced=False,
+    )
+    after = trade("after", MONDAY + timedelta(hours=1, minutes=5), priced=False)
+
+    assert unknown.exit_price is None
+    assert of_kind(discipline_flags((unknown, after)), "revenge") == []
 
 
 def test_an_entry_after_a_winning_trade_is_not_revenge() -> None:
@@ -304,6 +463,41 @@ def test_a_larger_risk_than_the_losing_trade_makes_the_flag_say_so() -> None:
 
     assert "larger" in bigger_flag.detail
     assert "larger" not in smaller_flag.detail
+
+
+def test_two_risks_in_different_currencies_are_not_compared() -> None:
+    """A journal that spans a change of denomination holds both.
+
+    ZAR 350 and USD 20 are the same position, and a bare comparison of the two
+    numbers reports the second trade as four times the size of the first while
+    printing one currency symbol in front of both figures. The size half is
+    skipped, as it is when a figure is missing, and the rest of the flag stands.
+    """
+    loss = loser(risk_amount=20.0, currency="USD")
+    after = trade(
+        "after",
+        loss.closed_at + timedelta(minutes=5),
+        risk_amount=350.0,
+        currency="ZAR",
+    )
+
+    flags = of_kind(discipline_flags((loss, after)), "revenge")
+
+    assert len(flags) == 1
+    assert "larger" not in flags[0].detail
+    assert "ZAR" not in flags[0].detail
+
+
+def test_a_scalp_closed_in_the_minute_it_opened_is_not_its_own_revenge() -> None:
+    """Trade ids are minute resolution, so open and close can share a stamp.
+
+    A trade normally opens before it closes, which puts its own close outside
+    the window at the lower end. At the same stamp the gap is zero, which is
+    inside it, and the rule would report a trade as a reaction to itself.
+    """
+    scalp = trade("scalp", MONDAY, closed_at=MONDAY, r_multiple=-1.0, priced=False)
+
+    assert of_kind(discipline_flags((scalp,)), "revenge") == []
 
 
 def test_the_same_risk_as_the_losing_trade_is_not_an_escalation() -> None:
@@ -444,6 +638,46 @@ def test_one_busy_window_produces_one_flag_rather_than_one_per_entry() -> None:
     assert len(of_kind(discipline_flags(records), "overtrading")) == 1
 
 
+def test_a_later_run_does_not_swallow_an_earlier_one() -> None:
+    """A quiet month between a busy week and a busier one.
+
+    Looking for the densest window in the whole journal rather than in the run
+    being flagged reports the worst week ever recorded and nothing before it.
+    """
+    june = week_of(OVERTRADING_TRADES_PER_WEEK + 1)
+    august = week_of(OVERTRADING_TRADES_PER_WEEK + 4, MONDAY + timedelta(days=60))
+    august = tuple(
+        replace(record, trade_id=f"aug{index}") for index, record in enumerate(august)
+    )
+
+    flags = of_kind(discipline_flags((*june, *august)), "overtrading")
+
+    assert [flag.trade_id for flag in flags] == [june[0].trade_id, august[0].trade_id]
+    assert [flag.detail.split()[0] for flag in flags] == ["6", "9"]
+
+
+def test_one_run_is_reported_once_however_its_worst_week_sits_in_it() -> None:
+    """Six entries on six days, then six more on the eighth.
+
+    The run breaches first as a window of six and its worst week holds ten,
+    which ends after the last of them. Advancing past the window that opened
+    the run rather than past the one reported leaves the tail of it uncounted
+    and flags the same fortnight twice.
+    """
+    early = tuple(
+        trade(f"d{index}", MONDAY + timedelta(days=index)) for index in range(6)
+    )
+    late = tuple(
+        trade(f"l{index}", MONDAY + timedelta(days=8, hours=index))
+        for index in range(6)
+    )
+
+    flags = of_kind(discipline_flags((*early, *late)), "overtrading")
+
+    assert len(flags) == 1
+    assert flags[0].detail.startswith("10 entries in the seven days from ")
+
+
 def test_the_window_is_counted_on_open_time_rather_than_on_input_order() -> None:
     """`load` sorts, and a caller building records by hand does not.
 
@@ -488,6 +722,30 @@ def test_the_week_is_seven_days_and_its_far_edge_is_inclusive(
     records = spread_over(span)
 
     assert bool(of_kind(discipline_flags(records), "overtrading")) is flagged
+
+
+def test_the_flag_reports_the_worst_week_in_the_run_rather_than_the_first() -> None:
+    """Six entries on six days, then five more on the eighth.
+
+    The first breaching window holds six, the worst true week in that run runs
+    from the second day to the ninth and holds nine, and nine is the number the
+    review acts on. A flag reading six against an allowance of five describes a
+    marginal week that the record does not hold.
+    """
+    early = tuple(
+        trade(f"d{index}", MONDAY + timedelta(days=index)) for index in range(6)
+    )
+    late = tuple(
+        trade(f"l{index}", MONDAY + timedelta(days=8, hours=index))
+        for index in range(5)
+    )
+
+    flags = of_kind(discipline_flags((*early, *late)), "overtrading")
+
+    assert len(flags) == 1
+    assert flags[0].trade_id == "d2"
+    assert flags[0].occurred_at == early[2].opened_at
+    assert flags[0].detail.startswith("9 entries in the seven days from ")
 
 
 def test_two_busy_windows_are_two_flags() -> None:
@@ -581,6 +839,11 @@ def test_more_positions_open_at_once_than_the_limit_allows_is_flagged() -> None:
     the whole sentence is asserted rather than the phrase `check_limits`. A flag
     reading "check_limits reviewed and allowed this" would pass a substring
     check and say the opposite of what happened.
+
+    The sentence says what the limit is for rather than that it ran, because
+    `risk._concurrent_check` reports not performed on every run today: it is
+    never given an open book to count. A flag claiming a refusal was overridden
+    would be describing a gate that has not yet been consulted once.
     """
     limit = RiskConfig().max_concurrent_positions
     records = overlapping(limit + 1)
@@ -596,8 +859,8 @@ def test_more_positions_open_at_once_than_the_limit_allows_is_flagged() -> None:
     assert flags[0].occurred_at == records[limit].opened_at
     assert flags[0].detail == (
         "4 positions open at once on entering USDJPY, above the 3 in "
-        "RiskConfig.max_concurrent_positions, which check_limits refuses "
-        "before a trade is taken"
+        "RiskConfig.max_concurrent_positions, a limit check_limits refuses "
+        "when it is told what is already open"
     )
 
 
@@ -690,6 +953,28 @@ def test_positions_that_do_not_overlap_are_not_concurrent() -> None:
         for flag in of_kind(discipline_flags(records), "overtrading")
         if "at once" in flag.detail
     ] == []
+
+
+def test_a_scalp_closed_in_the_minute_it_opened_counts_in_its_own_book() -> None:
+    """Four tickets on, one of them opened and closed in the same minute.
+
+    The rule that a position closed at a moment is not open at that moment is
+    about the other records. Applied to the entering record it drops that
+    ticket from its own count, and a book of four reads as three and clears.
+    """
+    limit = RiskConfig().max_concurrent_positions
+    running = overlapping(limit)
+    moment = MONDAY + timedelta(hours=limit)
+    scalp = trade("scalp", moment, closed_at=moment, pair="NZDCAD")
+
+    flags = [
+        flag
+        for flag in of_kind(discipline_flags((*running, scalp)), "overtrading")
+        if "at once" in flag.detail
+    ]
+
+    assert [flag.trade_id for flag in flags] == ["scalp"]
+    assert flags[0].detail.startswith("4 positions open at once")
 
 
 def test_a_ticket_replaced_at_the_moment_the_last_one_closed_is_one_position() -> None:

@@ -584,21 +584,40 @@ form of this. Closing the gap means a ZAR rate source, which is data work and
 not a change to the journal.
 
 **Discipline flags read this.** `journal.discipline_flags` skips the size half
-of its revenge comparison when either record's `risk_amount` is absent, rather
-than treating an unpriced trade as a small one. The rest of the rule still
-fires, so the entry is still flagged and the flag simply says nothing about
-size.
+of its revenge comparison when either record's `risk_amount` is absent, and
+again when the two records carry different account currencies, rather than
+treating an unpriced trade as a small one or comparing ZAR against USD. The
+rest of the rule still fires and the flag simply says nothing about size.
+
+It still finds the loss, which matters because on this account no record holds
+a money figure at all. `r_multiple` is read first and `outcome_zar` next, and
+when both are absent the rule reads the exit price against the entry, carrying
+the direction: a long that exited below its entry lost, a short that exited
+above it lost. That says whether the trade lost and nothing about how much, and
+it needs no rate. Without it the rule would find no loss anywhere in the owner's
+own journal and return an empty sequence, which this document and the function's
+own docstring both tell the reader means a clean run.
 
 `discipline_flags` reads two overtrading limits and keeps them as separate
-flags. `OVERTRADING_TRADES_PER_WEEK` is a habit, counted over any rolling
-seven-day window rather than a calendar week, because three trades late on a
-Sunday and three early the following Tuesday are six inside six days and a
-calendar reading calls both weeks clean. `max_concurrent_positions` in section
-4 is a limit `check_limits` refuses before the trade is taken, so a journal
-holding a breach of it means the refusal was bypassed or never asked for, and
-the flag says so. The function takes a `RiskConfig` so a journal written under
-one limit can be read against that limit rather than against whatever the
-defaults say today.
+flags, distinguished today only by the text of `detail`, since `DisciplineFlag`
+carries three kinds and both of these are `overtrading`.
+`OVERTRADING_TRADES_PER_WEEK` is a habit, counted over any rolling seven-day
+window rather than a calendar week, because three trades late on a Sunday and
+three early the following Tuesday are six inside six days and a calendar
+reading calls both weeks clean. Where several breaching windows overlap, the
+flag reports the densest of them, which is the number worth acting on.
+`max_concurrent_positions` in section 4 is the limit the pre-trade checks exist
+to refuse, so a journal holding a breach of it means the refusal was bypassed or
+never asked for. Note that `_concurrent_check` reports not performed on every
+run today, because it is never given an open book to count, so nothing has in
+fact refused one of these yet.
+
+The function takes a `RiskConfig` and defaults to `RiskConfig()`, which is the
+packaged limit of three rather than whatever is in your own `fbe.yaml`. A caller
+that has loaded a config should pass `load_config().risk`. Nothing in
+`TradeRecord` records the limit that was in force when the trade was entered, so
+reading an old journal against the limit of its day means knowing what that was:
+`config_digest` pins the config but does not spell it out.
 
 **Outcome:** `outcome_zar` net of costs, and `r_multiple`, which is
 `outcome_zar` divided by the realised risk. Both are `None` while the trade is
@@ -637,7 +656,12 @@ rather than assumed.
 
 Run this once a week, at the same time, away from the market.
 
-1. Load the week's records.
+1. Load the last two weeks of records, not one. Both time rules read across
+   the edges of whatever they are given and neither can tell it was handed a
+   slice: a loss that closed on Monday morning is invisible to a book loaded
+   from Monday, and seven days of records fed to a rolling seven-day count is
+   the calendar week the rolling window exists to avoid. Report on the week,
+   load more than it.
 2. Run `evaluate`. Read expectancy by conviction bucket. **Expectancy should
    rise from LOW through MEDIUM to HIGH.** If it does not, the conviction model
    is wrong, and the ladder is actively harmful because it is putting more money
