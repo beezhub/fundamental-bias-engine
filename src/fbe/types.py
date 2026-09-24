@@ -367,7 +367,19 @@ class CalendarEvent:
     currency: str
     scheduled_for: datetime
     impact: str
-    """``"high"``, ``"medium"`` or ``"low"`` as published by the source."""
+    """The source's own rating, verbatim and case included.
+
+    One of ``"High"``, ``"Medium"``, ``"Low"`` or ``"Holiday"``, capitalised
+    exactly like that. ``Holiday`` marks a market closure rather than a
+    release, so it is not a fourth severity and does not sort against the
+    other three.
+
+    `fbe.datasources.calendar.IMPACT_LEVELS` is the authority on this
+    vocabulary and is where a new value lands if the feed adds one. Compare
+    case-insensitively: this field carries whatever the source sent, so a
+    consumer written against a lower-case spelling matches nothing and reports
+    every week as clear.
+    """
     source: str = "forexfactory"
     forecast: str | None = None
     previous: str | None = None
@@ -522,8 +534,17 @@ class BiasReport:
     shortlist: Sequence[TradeIdea] = field(default_factory=tuple)
     warnings: Sequence[str] = field(default_factory=tuple)
     config_digest: str = ""
-    """Hash of the effective config, so a report can be tied to the weights
-    that produced it."""
+    """Hash of the settings that change what a run computes, so a report can be
+    tied to the weights and limits that produced it, and so ``--compare`` can
+    treat a change as a re-weighting and report two runs as not comparable.
+
+    It covers the whole of ``ScoringConfig`` and all of ``RiskConfig`` except
+    ``account_balance``. It leaves out ``account_balance``, ``DataConfig`` and
+    ``BrokerConfig``, so two reports carrying the same digest may still have
+    been sized on different balances, read under different data settings and
+    produced against different broker profiles. `fbe.config.Config.digest` is
+    the definition of record and says why each is left out.
+    """
 
 
 @runtime_checkable

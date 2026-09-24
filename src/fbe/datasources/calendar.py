@@ -110,20 +110,20 @@ IMPACT_LEVELS: tuple[str, ...] = ("High", "Medium", "Low", "Holiday")
 """Exact strings the feed emits, case included. ``Holiday`` marks a market
 closure rather than a release.
 
-`fbe.types.CalendarEvent.impact` documents this field as ``"high"``,
-``"medium"`` or ``"low"``, lower case and without ``Holiday``. That docstring is
-stale: the feed publishes these four capitalised, `docs/data-sources.md` records
-them that way, and a `CalendarEvent` built here carries them unchanged.
-Correcting the shared vocabulary needs an architect ruling naming every
-consumer, so it is recorded on issue #178 rather than done here.
+`fbe.types.CalendarEvent.impact` states the same four values and names this
+constant as the authority, so a value the feed adds lands here first and the
+shared vocabulary follows. It described the field as ``"high"``, ``"medium"``
+or ``"low"``, lower case and without ``Holiday``, until #182 corrected it.
+`docs/data-sources.md` records the four capitalised, and a `CalendarEvent`
+built here carries them unchanged.
 
 Two consequences worth knowing before the guard is written.
 `fbe.calendar_guard.is_high_impact` already specifies a case-insensitive
 comparison, so it is safe. `fbe.cli.Impact` spells the three in lower case, which
 is why `CalendarSource.events` folds the case of ``min_impact`` rather than
-making that caller discover the mismatch as a crash. A future consumer written
-to `types.py` that compares ``event.impact == "high"`` would match nothing and
-report every week as clear.
+making that caller discover the mismatch as a crash. A consumer that compares
+``event.impact == "high"`` would match nothing and report every week as clear,
+whichever file it was written against.
 """
 
 BLACKOUT_IMPACTS: frozenset[str] = frozenset({"High"})

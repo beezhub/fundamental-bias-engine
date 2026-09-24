@@ -77,8 +77,11 @@ is carried by colour alone.
 
 from __future__ import annotations
 
+import re
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from fbe.config import Config
@@ -202,13 +205,495 @@ def check_constraints(html: str) -> list[str]:
         html: The rendered document.
 
     Returns:
-        One message per violation. Empty means the page is publishable.
+        One message per violation, in a list rather than a generator: a caller
+        counts them and then prints them, and an exhausted generator reports
+        nothing the second time. Empty means the page is publishable.
 
-    Raises:
-        NotImplementedError: Always, until the checks land.
+    Known limits. The first group is reported loudly, so the failure is a page
+    that will not write rather than one that renders blank:
+
+        * Hosts are compared exactly, so a differing case or an explicit
+          ``:443`` is reported. Neither comes out of a generator.
+        * A comment inside script is still script, so a line saying the page
+          fetches nothing is reported.
+        * A ``}`` inside a CSS comment ends a block early, and an ``@media``
+          inside one truncates the stylesheet from that point, so a rule
+          carrying either reads as empty.
+
+    The second group is not detected, which is the expensive direction, and is
+    listed so that a page passing this check is not read as more than it is:
+
+        * ``srcset`` is not walked. ``image-set()`` is caught only where it
+          wraps a ``url()``, which is how a stylesheet normally writes it.
+        * A background set through a ``style=`` attribute rather than in a
+          stylesheet is not seen.
+        * ``http:`` on an allowed host is accepted here and blocked by the
+          browser as mixed content.
+        * The allow-lists are matched on host, so any path on an allowed host
+          is accepted. This module's header and ``docs/interfaces.md`` name
+          ``cdn.jsdelivr.net/npm/``, with a path, while `ALLOWED_SCRIPT_HOSTS`
+          holds a bare host. Host-only is what the constant says and what this
+          function implements rather than encoding the rule in a second place;
+          the discrepancy is open on issue #251.
 
     """
-    raise NotImplementedError(
-        "fbe.dashboard.build.check_constraints is scaffolded; "
-        "see docs/roadmap.md Phase 5"
-    )
+    document = _Document.of(html)
+    return [
+        *_truncation_violations(document),
+        *_size_violations(html),
+        *_reference_violations(document),
+        *_script_violations(document),
+        *_theme_violations(document),
+        *_title_violations(document),
+    ]
+
+
+_OFF_PAGE_CALLS: tuple[str, ...] = ("fetch", "XMLHttpRequest", "WebSocket")
+"""Inline-script names the sandbox blocks, each leaving the page rendering.
+
+Named here rather than inline so the message and the check read the same list,
+and so a fourth one is added in one place.
+"""
+
+_CSS_URL = re.compile(r"""url\(\s*(?P<quote>['"]?)(?P<target>[^'")]*)(?P=quote)\s*\)""")
+"""``url(...)`` inside a style block, with or without quotes.
+
+A font or an image referenced from CSS never appears as an attribute, so a
+check that walked only ``src`` and ``href`` would pass every externally hosted
+font ever embedded.
+"""
+
+_CUSTOM_PROPERTY = re.compile(r"--[\w-]+\s*:")
+"""One custom property declaration, which is what makes a block a palette."""
+
+
+class _Document:
+    """What the checks need from one rendered page, gathered in a single pass.
+
+    Attributes:
+        references: ``(tag, attribute, value)`` for every ``src`` and ``href``
+            in the markup, in document order.
+        css: Every inline ``<style>`` body, concatenated.
+        scripts: Every inline ``<script>`` body. A ``<script src>`` contributes
+            a reference instead, since its body is not in this document.
+        has_title: Whether a document ``<title>`` is present at all, which is a
+            different fact from whether it carries text. An SVG ``<title>``
+            does not count: it names a chart for a screen reader and does
+            nothing for the tab, and the page this module describes is drawn
+            in inline SVG, so the two are certain to meet.
+        title: The text inside it.
+        unterminated: The element the document ended inside, if any. A page
+            cut off mid-``<script>`` is not a page with no script in it, and
+            without this the two are the same value.
+
+    Parsed with `html.parser` rather than by pattern matching. The checks are
+    about elements and their attributes, and a regular expression over markup
+    reads an attribute inside a comment, misses one spread over two lines, and
+    is confident about both.
+
+    """
+
+    def __init__(self) -> None:
+        self.references: list[tuple[str, str, str]] = []
+        self.css: str = ""
+        self.scripts: list[str] = []
+        self.has_title: bool = False
+        self.title: str = ""
+        self.unterminated: str | None = None
+
+    @classmethod
+    def of(cls, html: str) -> _Document:
+        """Parse one document, tolerating markup a browser would tolerate.
+
+        Closed rather than only fed. ``HTMLParser`` buffers the body of a
+        ``<script>`` or ``<style>`` until it sees the closing tag, so a
+        document that ends inside one leaves that body unparsed and every
+        element after it unseen. The page then reports no violations, which is
+        the one answer a guard must never give for a document it could not
+        finish reading.
+        """
+        document = cls()
+        collector = _Collector(document)
+        collector.feed(html)
+        collector.close()
+        document.unterminated = collector.capturing
+        return document
+
+    def css_urls(self) -> list[tuple[str, str, str]]:
+        """``url(...)`` targets in the stylesheet, shaped like a reference."""
+        return [
+            ("style", "url()", match.group("target"))
+            for match in _CSS_URL.finditer(self.css)
+        ]
+
+
+class _Collector(HTMLParser):
+    """Fill a `_Document` from the markup.
+
+    Args:
+        document: The document to fill. Mutated rather than returned, because
+            `HTMLParser` drives the traversal and has nowhere to put a result.
+
+    """
+
+    def __init__(self, document: _Document) -> None:
+        super().__init__(convert_charrefs=True)
+        self._document = document
+        self._capturing: str | None = None
+        self._svg_depth = 0
+
+    @property
+    def capturing(self) -> str | None:
+        """The element still open when the parse ended, or ``None``."""
+        return self._capturing
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {name: value for name, value in attrs if value is not None}
+        for attribute in ("src", "href"):
+            if attribute in values:
+                self._document.references.append((tag, attribute, values[attribute]))
+        # An event handler is inline script written in an attribute, and the
+        # page carries a theme toggle, so this is where its script will be.
+        self._document.scripts.extend(
+            value for name, value in values.items() if name.startswith("on")
+        )
+        if tag == "svg":
+            self._svg_depth += 1
+        in_svg = self._svg_depth > 0
+        if tag in {"style"} or (tag == "script" and "src" not in values):
+            self._capturing = tag
+        elif tag == "title" and not in_svg:
+            self._capturing = tag
+            self._document.has_title = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "svg" and self._svg_depth:
+            self._svg_depth -= 1
+        if tag == self._capturing:
+            self._capturing = None
+
+    def handle_data(self, data: str) -> None:
+        if self._capturing == "style":
+            # Separated, so a selector at the end of one block and a brace at
+            # the start of the next cannot read as one rule.
+            self._document.css += data + "\n"
+        elif self._capturing == "script":
+            self._document.scripts.append(data)
+        elif self._capturing == "title":
+            self._document.title += data
+
+
+def _truncation_violations(document: _Document) -> list[str]:
+    """Refuse a document the parser could not finish reading.
+
+    Args:
+        document: The parsed page.
+
+    Returns:
+        One message when the markup ended inside an element whose body is
+        read here, else none.
+
+    A page cut off mid-``<script>``, because the renderer raised part way
+    through the write or the disk filled, has that script and everything after
+    it unparsed. Without this the result is an empty list, which is the same
+    answer a clean page gets, and
+    ``docs/decisions/0002-representing-not-known.md`` rule 4 is precisely that
+    a source that failed must be able to say so rather than returning nothing.
+
+    """
+    if document.unterminated is None:
+        return []
+    return [
+        f"The document ends inside an unclosed `<{document.unterminated}>`, so "
+        "the rest of it was never read. Nothing below that point has been "
+        "checked, and a partly written page is refused rather than reported "
+        "as clean."
+    ]
+
+
+def _size_violations(html: str) -> list[str]:
+    """Measure the page the way the host measures it.
+
+    Args:
+        html: The rendered document.
+
+    Returns:
+        One message when the page is at or over `MAX_RENDERED_BYTES`, else
+        none.
+
+    Measured in UTF-8 bytes rather than in characters, because bytes are what
+    the host downloads. A page of currency names and event titles from a feed
+    is not pure ASCII, and ``len(html)`` understates it by up to a third.
+
+    The comparison is strict, so a page of exactly `MAX_RENDERED_BYTES` is
+    reported. ``docs/interfaces.md`` and this module's own header both say
+    "under 16MB", and a ceiling that admits its own value is the off-by-one
+    discovered by the page that does not load.
+
+    """
+    size = len(html.encode("utf-8"))
+    if size < MAX_RENDERED_BYTES:
+        return []
+    return [
+        f"Rendered size is {size} bytes against the {MAX_RENDERED_BYTES} "
+        "ceiling the sandbox enforces, measured as UTF-8 because that is what "
+        "the host downloads. Embedded raster images are the only way a report "
+        "of G10 numbers gets near it."
+    ]
+
+
+def _allowed_hosts(tag: str) -> tuple[str, ...]:
+    """Name the hosts this element may point at.
+
+    Args:
+        tag: The element carrying the reference, or ``"style"`` for a CSS
+            ``url()``.
+
+    Returns:
+        The permitted hosts, empty when the element may not reach off the page
+        at all.
+
+    Scripts and stylesheets have separate allow-lists because the sandbox
+    treats them separately, and everything else, an image above all, has none:
+    an external image is blocked and leaves a gap rather than an error.
+
+    """
+    if tag == "script":
+        return ALLOWED_SCRIPT_HOSTS
+    if tag in {"link", "style"}:
+        return ALLOWED_STYLE_HOSTS
+    return ()
+
+
+def _reference_violations(document: _Document) -> list[str]:
+    """Check every reference the page makes against what the sandbox serves.
+
+    Args:
+        document: The parsed page.
+
+    Returns:
+        One message per reference that is neither inline, a ``data:`` URI, a
+        fragment, nor on a host allowed for that element.
+
+    The rule is applied to every ``src`` and ``href``, which includes an
+    ordinary link to another site. That is what the constraint says and it
+    errs loudly: a page that cannot be published is a worse outcome than a
+    link the guard asks about. ``tests/test_dashboard_constraints.py`` pins
+    that case so it reads as a decision rather than as an oversight.
+
+    The host is compared against the allow-list whole. A substring test would
+    accept ``cdnjs.cloudflare.com.example``, which is the usual way an
+    allow-list is got around, and that page would then fail the quiet way.
+
+    """
+    messages: list[str] = []
+    for tag, attribute, value in document.references + document.css_urls():
+        target = value.strip()
+        if target.startswith(("#", "data:")):
+            continue
+        allowed = _allowed_hosts(tag)
+        host = urlsplit(target).netloc
+        if host and host in allowed:
+            continue
+        permitted = ", ".join(allowed) if allowed else "nothing off the page"
+        messages.append(
+            f"External reference: `<{tag}>` {attribute} points at {target!r}. "
+            f"The page is published as one file, so this must be inline, a "
+            f"`data:` URI, a fragment, or on one of: {permitted}."
+        )
+    return messages
+
+
+def _script_violations(document: _Document) -> list[str]:
+    """Check inline script for calls that leave the page.
+
+    Args:
+        document: The parsed page.
+
+    Returns:
+        One message per blocked call found, in the order listed by
+        `_OFF_PAGE_CALLS`.
+
+    Only script bodies are searched, never the whole document. The report's own
+    footer says a calendar fetch failed, and a substring search over the page
+    reports that sentence as a violation.
+
+    A comment inside script is still script here, so a line saying the page
+    does not fetch anything is reported. That is a false rejection and it
+    fails loudly, which is the right side to be wrong on for a check whose
+    real failures are all silent.
+
+    """
+    body = "\n".join(document.scripts)
+    return [
+        f"Inline script calls `{call}`, which the sandbox blocks. The page "
+        "still renders and the panel that needed the data is empty, which "
+        "reads as no opinion rather than as a failure."
+        for call in _OFF_PAGE_CALLS
+        if re.search(rf"\b{call}\b", body)
+    ]
+
+
+def _blocks(css: str, selector: re.Pattern[str]) -> list[str]:
+    """Bodies of every rule whose selector matches, braces balanced.
+
+    Args:
+        css: The stylesheet.
+        selector: Pattern matched against the text preceding a ``{``.
+
+    Returns:
+        The text inside each matching block, nested blocks included.
+
+    Written out rather than taken from a CSS parser because the package has no
+    third-party dependency here, and because only three questions are asked of
+    the stylesheet: does this selector exist, what is inside it, and is it
+    nested in an ``@media``.
+
+    """
+    bodies: list[str] = []
+    for match in selector.finditer(css):
+        opening = css.find("{", match.end() - 1)
+        if opening == -1:
+            continue
+        depth = 0
+        for index in range(opening, len(css)):
+            if css[index] == "{":
+                depth += 1
+            elif css[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    bodies.append(css[opening + 1 : index])
+                    break
+    return bodies
+
+
+def _without_at_rules(css: str) -> str:
+    """Strip every ``@media`` and ``@supports`` block from the stylesheet.
+
+    Args:
+        css: The stylesheet.
+
+    Returns:
+        What is left, which is where a bare selector has to be found.
+
+    A palette whose only definition sits inside a media block leaves the light
+    page with no tokens at all, and that page renders unstyled rather than
+    erroring. Removing the conditional blocks first is what makes "bare" a
+    checkable property rather than a reading of the source order.
+
+    """
+    out = css
+    for rule in ("@media", "@supports"):
+        while True:
+            start = out.find(rule)
+            if start == -1:
+                break
+            opening = out.find("{", start)
+            if opening == -1:
+                out = out[:start]
+                break
+            depth = 0
+            end = len(out)
+            for index in range(opening, len(out)):
+                if out[index] == "{":
+                    depth += 1
+                elif out[index] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = index + 1
+                        break
+            out = out[:start] + out[end:]
+    return out
+
+
+_BARE_ROOT = re.compile(r"(?<![\w\]\)]):root\s*\{")
+_DARK_MEDIA = re.compile(r"@media[^{]*prefers-color-scheme\s*:\s*dark[^{]*\{")
+_DARK_ATTRIBUTE = re.compile(r"""\[data-theme\s*=\s*['"]?dark['"]?\][^{]*\{""")
+_BODY_RULE = re.compile(r"(?:^|[,{}\s])body\s*\{")
+_BODY_BACKGROUND = re.compile(r"\bbackground(?:-color)?\s*:")
+
+
+def _theme_violations(document: _Document) -> list[str]:
+    """Check the three theme states and the body's ground.
+
+    Args:
+        document: The parsed page.
+
+    Returns:
+        One message per missing piece: the bare palette, either dark override,
+        or the body background.
+
+    Every one of these renders. None of them errors. A palette defined only
+    inside a media block gives the light reader an unstyled page; a missing
+    override gives them the wrong theme; a transparent body inherits whatever
+    the host painted behind it.
+
+    Three of the four are looked for outside the at-rules: the palette, the
+    body background and the explicit toggle. A declaration whose only
+    definition sits inside a media block is absent for every reader the query
+    does not match, and the published contract says no colour may be defined
+    that way. The toggle is the case that reads as an exception and is not:
+    an override nested inside the preference query cannot win against that
+    preference, so a reader on a light system presses the toggle and nothing
+    happens, which is the failure its own message describes. Only the
+    preference override is looked for inside, because inside is where it
+    belongs.
+
+    """
+    messages: list[str] = []
+    css = document.css
+    bare_css = _without_at_rules(css)
+    bare = _blocks(bare_css, _BARE_ROOT)
+    if not any(_CUSTOM_PROPERTY.search(block) for block in bare):
+        messages.append(
+            "No palette on a bare `:root`: the light tokens must be defined "
+            "outside any media or `[data-theme]` block. A palette defined "
+            "only inside one leaves the page with no tokens at all, and it "
+            "renders unstyled rather than failing."
+        )
+    if not any(_CUSTOM_PROPERTY.search(block) for block in _blocks(css, _DARK_MEDIA)):
+        messages.append(
+            "No dark override under `prefers-color-scheme: dark`: a reader "
+            "whose system is dark gets the light palette against the host's "
+            "dark ground."
+        )
+    if not any(
+        _CUSTOM_PROPERTY.search(block) for block in _blocks(bare_css, _DARK_ATTRIBUTE)
+    ):
+        messages.append(
+            'No dark override under `[data-theme="dark"]`: the explicit '
+            "toggle then does nothing on a phone whose system theme already "
+            "matches, which reads as a broken control."
+        )
+    if not any(
+        _BODY_BACKGROUND.search(block) for block in _blocks(bare_css, _BODY_RULE)
+    ):
+        messages.append(
+            "No explicit background on `body`: the host paints its own ground "
+            "behind a transparent body, so the page inherits the wrong theme "
+            "and the text can land on a surface of the same colour."
+        )
+    return messages
+
+
+def _title_violations(document: _Document) -> list[str]:
+    """Check the page names itself.
+
+    Args:
+        document: The parsed page.
+
+    Returns:
+        One message when there is no ``<title>``, or when it is empty.
+
+    An untitled tab on a phone is the one the owner cannot find among the
+    others at six in the morning, which is the only moment this page exists
+    for.
+
+    """
+    if document.has_title and document.title.strip():
+        return []
+    missing = "is empty" if document.has_title else "is missing"
+    return [
+        f"The `<title>` {missing}: the page is opened on a phone alongside "
+        "other tabs, and an untitled one cannot be found among them."
+    ]

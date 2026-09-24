@@ -33,6 +33,7 @@ from fbe.calendar_guard import (
     is_blacked_out,
 )
 from fbe.config import DataConfig
+from fbe.datasources.calendar import IMPACT_LEVELS
 from fbe.types import CalendarEvent
 
 SCAFFOLDED: frozenset[str] = frozenset()
@@ -58,8 +59,24 @@ def _event(
         title=title,
         currency=currency,
         scheduled_for=scheduled_for,
-        impact="high",
+        impact="High",
     )
+
+
+def test_the_event_fixture_builds_a_rating_the_feed_can_emit() -> None:
+    """The fixture followed the contract, and the contract was wrong.
+
+    `_event` built ``impact="high"``, which is the spelling
+    `fbe.types.CalendarEvent.impact` used to document and the feed never sends.
+    Every test in this module passed anyway, because
+    `fbe.calendar_guard.is_high_impact` folds the case, so the fixture could
+    not have caught a consumer that stopped folding. A fixture that cannot
+    occur is not evidence about anything.
+
+    Tied to `IMPACT_LEVELS` rather than asserting ``"High"``, so the fixture
+    follows the feed if the feed's vocabulary moves.
+    """
+    assert _event("USD", MONDAY_9AM).impact in IMPACT_LEVELS
 
 
 def _assert_guarded_or(name: str, call: object, expected: object) -> None:
