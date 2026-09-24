@@ -223,17 +223,33 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
   <div class="card">
     {% for score in currencies %}
     <div class="rank-row{{ ' thin' if score.coverage < 1 }}">
+      {#- A currency the run scored on nothing gets no bar and no rank. Drawn
+          at zero the bar is indistinguishable from a currency the model
+          scored at the middle of its band, and a rank places it among the
+          currencies that were measured. Both are the opposite fact. -#}
       <div><strong>{{ score.currency }}</strong>
-        <span class="meta num">{{ score.rank }}</span></div>
+        {% if score.coverage > 0 %}<span class="meta num">{{ score.rank }}</span>{% endif %}</div>
+      {% if score.coverage <= 0 %}
+      <div class="rank-track"><span class="meta">not scored, no pillar data</span></div>
+      <div class="rank-value meta">n/a</div>
+      {% else %}
       <div class="rank-track">
         <div class="rank-bar {{ 'pos' if score.composite >= 0 else 'neg' }}"
              style="width: {{ view.bar_pct(score.composite) }}%"></div>
       </div>
-      <div class="rank-value num">{{ '%+.2f' | format(score.composite) }}</div>
+      <div class="rank-value num">
+        {{ '%+.2f' | format(score.composite) }}
+        {%- if score.coverage < 1 %}
+        <span class="meta">{{ view.pct(score.coverage) }}</span>
+        {%- endif %}
+      </div>
+      {% endif %}
     </div>
     {% endfor %}
     <p class="meta">
-      Composite on the -3 to +3 band. Faded rows had incomplete pillar coverage.
+      Composite on the -3 to +3 band, bars drawn against the widest score in
+      the run. A faded row carries the share of pillar weight that had data
+      beside its score; a row with no bar had none.
     </p>
   </div>
 
@@ -277,8 +293,8 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
     </div>
     <p class="meta">
       Read along the row: the cell is the row currency's composite minus the
-      column currency's. The ranked table below carries the same numbers for
-      anyone who cannot separate the colours.
+      column currency's. Every cell prints its own number, so nothing here is
+      carried by colour alone.
     </p>
   </div>
 
@@ -307,7 +323,7 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
         spread {{ '%+.2f' | format(idea.bias.spread) }}
         &middot; {{ idea.bias.base }} {{ '%+.2f' | format(idea.bias.base_score) }}
         vs {{ idea.bias.quote }} {{ '%+.2f' | format(idea.bias.quote_score) }}
-        &middot; {{ '%.0f%%' | format(idea.bias.agreement * 100) }} of pillar weight agrees
+        &middot; {{ view.pct(idea.bias.agreement) }} of pillar weight agrees
       </p>
       <p>{{ idea.rationale }}</p>
       {% if idea.size %}
@@ -318,9 +334,9 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
         {{ '%.1f' | format(idea.size.stop_distance_pips) }} pip stop,
         risking {{ idea.size.account_currency }}
         {{ '%.2f' | format(idea.size.realised_risk_amount) }}
-        ({{ '%.2f%%' | format(idea.size.realised_risk_fraction * 100) }}
+        ({{ view.pct(idea.size.realised_risk_fraction, 2) }}
         of balance) against an intended
-        {{ '%.1f%%' | format(idea.size.risk_fraction * 100) }} or
+        {{ view.pct(idea.size.risk_fraction, 1) }} or
         {{ idea.size.account_currency }}
         {{ '%.2f' | format(idea.size.risk_amount) }}
       </p>
@@ -471,9 +487,12 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
 </div>
 
 <script>
-/* Inline only. No fetch, no XHR, no external script: the sandbox blocks them
-   without a visible error. The toggle stamps data-theme on the root, which the
-   palette blocks above read in both directions. */
+/* Inline only. No network calls of any kind and no external script: the
+   sandbox blocks them without a visible error, and check_constraints reads the
+   name of a blocked call inside this comment as a call, which is the safer
+   direction for a check whose false negatives are invisible. The toggle stamps
+   data-theme on the root, which the palette blocks above read in both
+   directions. */
 (function () {
   var root = document.documentElement;
   var button = document.querySelector("[data-theme-toggle]");
