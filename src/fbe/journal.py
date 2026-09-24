@@ -40,6 +40,7 @@ __all__ = [
     "DATETIME_FIELDS",
     "ENUM_FIELDS",
     "PILLAR_FIELDS",
+    "TUPLE_FIELDS",
     "BlackoutCheck",
     "TradeRecord",
     "ConvictionStats",
@@ -157,20 +158,39 @@ class TradeRecord:
         target: Take-profit level as originally planned.
         units: Position size in base-currency units.
         lots: Same size in the broker's lots.
-        risk_amount: Money actually at risk in ZAR if the stop fills. Populate
-            this from ``PositionSize.realised_risk_amount``, never from
-            ``PositionSize.risk_amount``, which is the intended figure before
-            the lot size was rounded down. The two differ on almost every trade
-            at this account size, routinely by 10% or more, and the realised one
-            is what was on the book. Should land within 1-2% of
+        risk_amount: Money actually at risk in the account currency if the
+            stop fills, or ``None`` when the position could not be valued in
+            it. Populate this from ``PositionSize.realised_risk_amount``, never
+            from ``PositionSize.risk_amount``, which is the intended figure
+            before the lot size was rounded down. The two differ on almost
+            every trade at this account size, routinely by 10% or more, and the
+            realised one is what was on the book. Should land within 1-2% of
             ``account_balance_at_entry``.
+
+            ``None`` rather than ``0.0`` because the two are read the same way
+            by anything that compares sizes and mean opposite things: a trade
+            that risked nothing, and a trade whose risk nobody could price. It
+            is absent whenever `fbe.risk.pip_value` cannot reach the account
+            currency from the pair's quote currency, which today is every trade
+            on the owner's ZAR account, since nothing supplies a rate into ZAR.
+            Read by `discipline_flags`, which skips the comparison rather than
+            treating an unpriced trade as a small one.
         risk_fraction: ``risk_amount / account_balance_at_entry``, using the
             realised figure above. Stored explicitly so a breach of the band is
-            visible without arithmetic.
+            visible without arithmetic, and ``None`` exactly when
+            ``risk_amount`` is.
         account_balance_at_entry: Balance the size was derived from.
         account_currency: Denomination of every money figure here, ``"ZAR"``.
-        outcome_zar: Realised profit or loss in the account currency, net of
-            spread and commission. Negative for a loss. ``None`` while open.
+        outcome_zar: Realised profit or loss in the account currency. Negative
+            for a loss. ``None`` while open, and ``None`` when ``risk_amount``
+            is, for the reason given there.
+
+            Gross of costs as `fbe.cli.journal_add` writes it today, not net.
+            ``BrokerConfig.commission_per_lot`` and ``typical_spread_pips``
+            both exist and neither is read, so the figure is the price move on
+            the size traded. A Phase 6 reader must subtract costs itself rather
+            than assume they are already out, and the field is named here
+            rather than left to be discovered from a number that looks right.
         r_multiple: ``outcome_zar / risk_amount``, and therefore divided by the
             REALISED risk. The only comparable measure of a result across
             different position sizes and account balances: a +2R on a R2,000
@@ -204,6 +224,16 @@ class TradeRecord:
             ``PairBias.direction``. False marks a discretionary override, which
             is legitimate but must be counted separately, otherwise the model's
             record includes trades the model did not ask for.
+        followed_plan: Whether the trade obeyed the owner's plan, which is a
+            different question from whether it agreed with the engine and is
+            kept in a separate field for that reason. A trade can follow the
+            plan and disagree with the bias, or the reverse, and
+            ``docs/interfaces.md`` reports the two as separate splits because
+            they call for different fixes: one is a model problem and the other
+            is a discipline problem.
+        tags: Labels for grouping in review, as the trader wrote them. Free
+            text on purpose: a controlled vocabulary here would be one more
+            thing to maintain and the review groups on whatever is present.
         blackout_check: What the calendar guard was able to say before entry,
             as a `BlackoutCheck`. Three states rather than a boolean, because
             "consulted and the window was clear" and "consulted and blind, and
@@ -224,8 +254,8 @@ class TradeRecord:
     stop: float
     units: float
     lots: float
-    risk_amount: float
-    risk_fraction: float
+    risk_amount: float | None
+    risk_fraction: float | None
     account_balance_at_entry: float
     conviction: Conviction
     base_score: float
@@ -244,9 +274,11 @@ class TradeRecord:
     base_pillars: Mapping[PillarName, float] = field(default_factory=dict)
     quote_pillars: Mapping[PillarName, float] = field(default_factory=dict)
     agreed_with_bias: bool = True
+    followed_plan: bool = True
     blackout_check: BlackoutCheck = BlackoutCheck.NOT_RUN
     broker: str = ""
     notes: str = ""
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -524,6 +556,15 @@ nothing and reads an empty result as a period with no long trades in it.
 PILLAR_FIELDS: tuple[str, ...] = ("base_pillars", "quote_pillars")
 """`TradeRecord` fields holding a pillar map, keyed by `PillarName` value."""
 
+TUPLE_FIELDS: tuple[str, ...] = ("tags",)
+"""`TradeRecord` fields written as a JSON array and read back as a tuple.
+
+JSON has one sequence type and `TradeRecord` is frozen, so a field left as the
+list `json.loads` produces compares unequal to the tuple it was written from.
+A round-trip test comparing field by field catches that; a caller comparing two
+records does not, and neither does anything that only reads the values.
+"""
+
 
 def _cutoff(since: date | datetime | None) -> datetime | None:
     """Resolve ``since`` into the instant records are compared against.
@@ -630,6 +671,10 @@ def _from_line(line: str, number: int, path: Path) -> TradeRecord:
                     f"{path} line {number} has a {name} of {raw!r}, which is "
                     f"not one of {[member.value for member in enum_type]}"
                 ) from error
+    for name in TUPLE_FIELDS:
+        raw = decoded.get(name)
+        if isinstance(raw, list):
+            decoded[name] = tuple(raw)
     for name in PILLAR_FIELDS:
         raw = decoded.get(name)
         if isinstance(raw, dict):
@@ -768,7 +813,10 @@ def discipline_flags(records: Sequence[TradeRecord]) -> Sequence[DisciplineFlag]
         the loss, or carries a larger ``risk_amount`` than the trade that lost,
         both of which are the classic shape of trying to win it straight back.
         Compare realised risk against realised risk, since that is what both
-        records hold.
+        records hold, and skip the size half of the comparison when either
+        ``risk_amount`` is ``None``. An unpriced trade is not a small one, and
+        reading it as zero would rank every priced trade above it and report
+        the escalation backwards.
 
     Overtrading:
         More than `OVERTRADING_TRADES_PER_WEEK` entries in any rolling seven-day

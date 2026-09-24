@@ -564,12 +564,35 @@ lands rather than a surprise on the run after that.
 **Execution:** `trade_id`, `pair`, `direction`, `opened_at`, `closed_at`,
 `entry`, `exit_price`, `stop`, `target`, `units`, `lots`, `broker`.
 
-**Risk:** `risk_amount` and `risk_fraction` in ZAR, populated from
-`PositionSize.realised_risk_amount` and never from the intended `risk_amount`,
-plus `account_balance_at_entry` and `account_currency`.
+**Risk:** `risk_amount` and `risk_fraction` in the account currency, populated
+from `PositionSize.realised_risk_amount` and never from the intended
+`risk_amount`, plus `account_balance_at_entry` and `account_currency`.
+
+Both are absent, as `None`, when the position cannot be valued in the account
+currency at all. `fbe.risk.pip_value` reaches the account currency from the
+pair's quote currency or it raises, and nothing in this repository supplies a
+rate into ZAR: no G10 cross carries a ZAR leg, `fbe.datasources.prices` has no
+USDZAR series, and `data/manual` holds none either. So on the owner's own
+account every record written today carries an absent risk and an absent
+outcome, and that is the honest reading of it rather than a bug in the command.
+
+A zero would be worse than the gap. The revenge rule below compares one trade's
+`risk_amount` against another's, and a book of zeros ranks every unpriced trade
+as the smallest position ever taken, reporting the escalation backwards while
+looking complete. `docs/decisions/0002-representing-not-known.md` is the general
+form of this. Closing the gap means a ZAR rate source, which is data work and
+not a change to the journal.
+
+**Discipline flags read this.** `journal.discipline_flags` skips the size half
+of its revenge comparison when either record's `risk_amount` is absent, rather
+than treating an unpriced trade as a small one.
 
 **Outcome:** `outcome_zar` net of costs, and `r_multiple`, which is
-`outcome_zar` divided by the realised risk. R multiples are the only comparable
+`outcome_zar` divided by the realised risk. Both are `None` while the trade is
+open, and both are `None` when the risk is, for the reason above. `fbe journal
+add` computes the outcome gross today: `BrokerConfig.commission_per_lot` and
+`typical_spread_pips` exist and nothing reads them yet, so the figure the
+command writes is the price move alone. R multiples are the only comparable
 measure across different sizes and balances. A +2R on R2,000 and a +2R on
 R20,000 are the same trade well executed. Divide by the intended risk instead
 and every R-multiple in the file reads high by the rounding ratio, which
