@@ -643,6 +643,24 @@ Then z-score against that currency's own history over `lookback_years` (default
 This is the only pillar using time-series rather than cross-sectional
 normalisation, for the reason given in section 2.3.
 
+**`lookback_years` is the window requested; the history floor is the refusal.**
+They answer different questions and are not two floors competing. The lookback
+decides how far back to look, and "minimum 3 to be meaningful" above is advice
+on setting it. What comes back may still be too little to divide by, and that
+is decided separately, by `MIN_HISTORY_OBSERVATIONS` in
+`src/fbe/datasources/registry.py`: one year of that series' own prints, and
+never fewer than twelve observations. For this pillar's weekly series that is
+52 reports; for RISK's daily one it is 252 sessions; everything else takes the
+count floor of twelve.
+
+Below the floor `BasePillar.time_series_z` returns no reading, so the pillar is
+absent and the shortfall reaches coverage rather than arriving as a neutral
+zero. The floor is per cadence because "how many observations is enough" is
+decided by how often the series prints: twelve weekly reports is eleven weeks,
+which is not a history to z-score against, while twelve monthly prints is a
+year. It was a single count of twelve until issue #214, which carries the
+measurement and the ruling.
+
 **The shape function.** This pillar is the one whose sign is not monotonic in its
 input, so the function is specified explicitly rather than described:
 

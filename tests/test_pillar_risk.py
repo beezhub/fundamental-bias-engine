@@ -42,6 +42,7 @@ from fbe.datasources import registry
 from fbe.datasources.registry import (
     GLOBAL,
     INDICATORS,
+    MIN_HISTORY_OBSERVATIONS,
     UNCONSUMED_INDICATORS,
     coverage_report,
 )
@@ -138,7 +139,15 @@ def vol_series(values: Sequence[float], *, end: date = ASOF) -> list[Observation
     ]
 
 
-def steady_vol(latest: float, *, length: int = 41) -> list[float]:
+DAILY_FLOOR = MIN_HISTORY_OBSERVATIONS[Frequency.DAILY]
+"""One year of sessions, the fewest `BasePillar.time_series_z` will score.
+
+Read from the mapping rather than written as 252, so these fixtures follow the
+rule rather than today's number.
+"""
+
+
+def steady_vol(latest: float, *, length: int = DAILY_FLOOR + 1) -> list[float]:
     """A volatility history with real dispersion, ending at ``latest``.
 
     Alternating either side of 16.0 so the standard deviation is non-zero. The
@@ -147,6 +156,13 @@ def steady_vol(latest: float, *, length: int = 41) -> list[float]:
     has a z-score of exactly 0.0. An odd history left the mean a fortieth of a
     point below 16.0, which was small enough to look like nothing and large
     enough to move a hand-computed regime in the third decimal.
+
+    The default was 41 until #214 made the history floor frequency-aware.
+    ``vol_index`` is daily, so the floor is now a year of sessions and a
+    41-session fixture would be refused rather than scored, which would leave
+    every test here measuring the floor instead of the pillar. ``DAILY_FLOOR``
+    plus one keeps the history even, so the mean stays exactly 16.0 for the
+    reason above.
     """
     history = [16.0 + (1.0 if index % 2 else -1.0) for index in range(length - 1)]
     return [*history, latest]
@@ -797,10 +813,15 @@ def test_the_volatility_window_is_anchored_on_the_run_date(
     before *that* and keeps it. An earlier version of this test used sixty
     observations, which sit inside both windows, so the two answers were
     identical and it could not fail.
+
+    The recent stretch is a year of sessions because the anchored window sees
+    only that stretch, and since #214 a daily window under `DAILY_FLOOR` is
+    refused rather than scored. At sixty it returned ``None`` for both windows
+    and the test failed on the guard below rather than on the anchoring.
     """
     stale_end = ASOF - timedelta(days=200)
     old = [40.0 + (1.0 if index % 2 else -1.0) for index in range(60)]
-    recent = [16.0 + (1.0 if index % 2 else -1.0) for index in range(60)]
+    recent = [16.0 + (1.0 if index % 2 else -1.0) for index in range(DAILY_FLOOR)]
     # The old block has to land in the band between the two window starts:
     # after ``newest - 5y``, which is where the drifting window begins, and
     # before ``asof - 5y``, which is where the anchored one does. Outside that
@@ -838,8 +859,13 @@ def test_the_lookback_window_is_read_from_config() -> None:
     An earlier version of this test used eighty days of history, which fits
     inside both windows, so the two z-scores were identical and the assertion
     could not fail.
+
+    The recent stretch is a year of sessions because the one-year window sees
+    only that stretch, and since #214 a daily window under `DAILY_FLOOR` is
+    refused rather than scored. `sessions` steps one calendar day at a time, so
+    252 of them span 252 days and sit inside a one-year lookback with room.
     """
-    recent = [16.0 + (1.0 if index % 2 else -1.0) for index in range(40)]
+    recent = [16.0 + (1.0 if index % 2 else -1.0) for index in range(DAILY_FLOOR)]
     old = [30.0 + (1.0 if index % 2 else -1.0) for index in range(40)]
     observations = [
         *usable_equity([120.0, 100.0]),
@@ -975,8 +1001,13 @@ def test_a_short_equity_history_is_refused_rather_than_read_as_a_high() -> None:
     `_drawdown_pct` returns ``0.0`` for a market sitting at its high, which is
     the calmest reading this pillar has. A one-observation series produces that
     reading by construction rather than by observation, so the floor refuses it.
-    The volatility half has refused short histories since `MIN_TIME_SERIES_WINDOW`
-    existed; this is the same rule on the other half.
+    The volatility half has refused short histories since a floor existed under
+    `BasePillar.time_series_z`; this is the same idea on the other half, and
+    since #214 it is deliberately a different number. That floor is now a year
+    of the series' own prints, which for a daily series is `DAILY_FLOOR`. This
+    one stays at twelve sessions because it answers a different question: not
+    whether a standard deviation means anything, but how much of a 252-session
+    window must be present before a fall from its high is worth reporting.
     """
     short = equity_series([100.0] * (MIN_DRAWDOWN_WINDOW_SESSIONS - 1))
     assert _drawdown_pct(short) is None
@@ -1046,23 +1077,31 @@ def test_the_note_shows_both_halves_of_the_regime_and_the_beta(
     applied backwards. The whole string is asserted rather than each number in
     turn, because two unordered substring checks pass with the operands swapped.
 
-    Worked by hand. The volatility history alternates 10 and 20 twelve times and
-    ends on 20, so its mean is 15.0 and its sample standard deviation is
-    ``sqrt(300/11) = 5.2223``, giving a z of ``5/5.2223 = +0.9574``. Halved and
-    negated that is -0.4787. The equity series falls from 120 to 100, a 16.67%
-    drawdown, which saturates its component at -1.0. So ``R`` is
-    ``0.5 * -1.0 + 0.5 * -0.4787 = -0.7394``, and AUD's beta is +0.9.
+    Worked by hand. The volatility history alternates 10 and 20 for a year of
+    sessions and ends on 20, so its mean is 15.0 and its sample standard
+    deviation is ``sqrt(6300/251) = 5.00995``, giving a z of
+    ``5/5.00995 = +0.99801``. Halved and negated that is -0.49901. The equity
+    series falls from 120 to 100, a 16.67% drawdown, which saturates its
+    component at -1.0. So ``R`` is
+    ``0.5 * -1.0 + 0.5 * -0.49901 = -0.74950``, and AUD's beta is +0.9.
+
+    The history was twelve alternating values until #214 put a year of sessions
+    under a daily z-score. The shape is the same and every figure moved: at
+    twelve the standard deviation was ``sqrt(300/11) = 5.2223`` and the z was
+    +0.9574, which rounded to +0.96 on the note and gave a regime of -0.74. The
+    longer history has more values at the same two levels, so the deviation
+    settles nearer 5.0 and the z nearer 1.0.
     """
     observations = [
         *usable_equity([120.0, 100.0]),
-        *vol_series([10.0, 20.0] * 6),
+        *vol_series([10.0, 20.0] * (DAILY_FLOOR // 2)),
     ]
 
     scores = pillar.compute(observations, sorted(G10), ASOF)
 
     assert meta("AUD").risk_beta == pytest.approx(0.9)
     assert scores["AUD"].notes == (
-        "drawdown -16.7%, vol z +0.96, regime -0.74, beta +0.90"
+        "drawdown -16.7%, vol z +1.00, regime -0.75, beta +0.90"
     )
 
 
@@ -1076,7 +1115,7 @@ def test_a_calm_market_does_not_report_a_negative_zero(pillar: RiskPillar) -> No
     """
     observations = [
         *usable_equity([100.0, 105.0, 110.0]),
-        *vol_series([20.0, 10.0] * 6),
+        *vol_series([20.0, 10.0] * (DAILY_FLOOR // 2)),
     ]
 
     built = pillar._transform(pillar._extract(observations, sorted(G10), ASOF), ASOF)
