@@ -35,6 +35,7 @@ from fbe.datasources.curves import (
     RBA_F2_URL,
     RBA_SERIES_ID_ROW_LABEL,
     TWO_YEAR_REFS,
+    USER_AGENT,
     CurvesSource,
 )
 
@@ -77,6 +78,44 @@ def _curve_pairs() -> list[tuple[str, str]]:
         for currency, ref in spec.series.items()
         if ref.source in registry.CURVE_SOURCES
     ]
+
+
+# ---------------------------------------------------------------------------
+# The request itself: the header the Bank of England refuses without
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_every_request_names_the_project_in_its_user_agent(
+    source: CurvesSource,
+) -> None:
+    """The Bank of England answers the httpx default ``User-Agent`` with 403.
+
+    Probed live on 2026-09-24 on both of its endpoints (#273). The header is set
+    on the class so it reaches the one client the base builds, and this reads
+    it off the wire rather than off the class, because a header declared and
+    not sent is exactly the failure that produced the issue.
+    """
+    route = respx.get(url__startswith=BOC_BASE_URL).mock(
+        return_value=httpx.Response(200, text=BOC_BODY)
+    )
+    source.fetch_boc(BOC_SERIES, START, END)
+    assert route.calls.last.request.headers["User-Agent"] == USER_AGENT
+
+
+def test_the_user_agent_is_honest_and_not_a_python_client_string() -> None:
+    """It names this project, not a browser and not the client library.
+
+    The refusal keys on the word ``python``, so the client default can never
+    come back here under a refactor. A browser string would also pass the edge
+    and is refused by this test on purpose: the header is a statement about
+    who is asking, and the statement has to be true.
+    """
+    lowered = USER_AGENT.lower()
+    assert "python" not in lowered
+    assert "mozilla" not in lowered
+    assert lowered.startswith("fundamental-bias-engine/")
+    assert "github.com/beezhub/fundamental-bias-engine" in lowered
 
 
 # ---------------------------------------------------------------------------

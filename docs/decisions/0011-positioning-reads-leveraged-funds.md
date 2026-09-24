@@ -178,16 +178,27 @@ the registry's vocabulary and is not taken here.
 **The release stamp is derived from the period, which `BaseDataSource`
 forbids.** Its `_observation` docstring says `released_at` is "never derived
 from ``period``", because a lag assumed from a period is the look-ahead bias
-Phase 6 has to avoid. This source adds three days to the Tuesday. The exception
-is deliberate: the CFTC publishes on a fixed schedule, so the Friday is the
-release date rather than an assumption about it, and #174's second criterion
-requires it. What it costs is the case where the schedule does not hold.
-Publication has been suspended and backfilled before, and every Tuesday inside
-such a span is stamped as released three days later although none of them could
-be read until the catch-up. Closing that needs a published release calendar,
-which this dataset does not carry. The report date is checked to be a Tuesday so
-that the three-day addition cannot silently produce a release stamp on a day the
-CFTC never publishes on.
+Phase 6 has to avoid. This source stamps the release as the Friday of the
+report week. The exception is deliberate: the CFTC publishes on a fixed
+schedule, so the Friday is the release date rather than an assumption about it,
+and #174's second criterion requires it. What it costs is the case where the
+schedule does not hold. Publication has been suspended and backfilled before,
+and every report date inside such a span is stamped as released that Friday
+although none of them could be read until the catch-up. Closing that needs a
+published release calendar, which this dataset does not carry. The report date
+is checked to be a Tuesday, or the Monday of a week whose Tuesday is a US
+federal holiday, so that the Friday cannot silently be computed from a day the
+CFTC never snaps on.
+
+Amended 2026-09-24 by #274. As first written this paragraph said "adds three
+days to the Tuesday" and checked for Tuesday alone. The CFTC snaps on the
+Monday when the Tuesday is a federal holiday, twelve times since 2007 in the
+live dataset, and the Tuesday-only check failed the whole source on every
+refresh whose lookback reached one of those weeks. The rule is now the Friday
+of the report week for either snapshot day, and the accepted weekdays are
+bounded on both sides. A holiday may also delay the release by a day or two,
+which is the same cost as the suspended-publication case and is accepted for
+the same reason.
 
 ## What would reopen this
 
