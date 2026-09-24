@@ -696,12 +696,32 @@ force. A crowded long is a reason to be less long, not more.
 **What this pillar actually contributes, which is not 0.10.** POSITIONING is
 excluded from the section 2.3 re-standardisation, for the reason that section
 gives, so its declared weight is not its effective one. `f(p)` emits at a
-cross-sectional standard deviation of about **0.5885** under a normal `p`, a
-figure that simulation reproduces to three decimals over two million draws and
-whose fourth decimal is sampling noise rather than a constant, and **0.6437** on
-the section 7 fixture, which is exact because that fixture is eight fixed values.
+cross-sectional standard deviation of **0.5885** under a normal `p`, and
+**0.6437** on the section 7 fixture, which is exact because that fixture is
+eight fixed values.
 Both are against exactly 1.0 for the five pillars that do pass through section
 2.3. The declared 0.10 therefore buys roughly **0.059** of effective influence.
+
+**Both figures are exact, including the fourth decimal.** This section used to
+call the fourth decimal of 0.5885 sampling noise. It is not. `f(p)` is
+deterministic and piecewise linear and `p` is standard normal, so the spread is
+a definite integral:
+
+    var = E[f^2] = 2 * integral from 0 to inf of f(p)^2 * phi(p) dp
+
+`f` is odd, so the mean is zero and the second moment is the variance. The
+integrand is smooth on each of `[0, 1]`, `[1, 2]` and `[2, 10/3]`, and beyond
+the saturation point `f^2` is the constant `CONTRARIAN_CAP ** 2`, so that piece
+is a normal tail mass and closes in `erfc` with no quadrature. Split at those
+three corners the value is **0.5884755850860**, whose fourth decimal is 5.
+
+Integrating the half line in one pass without splitting at the corners is what
+made the figure look uncertain: Simpson's rule assumes a smooth integrand and
+converges badly across a kink. `tests/test_emit_sd.py` computes the split form
+and asserts it, and asserts separately that moving any of `MOMENTUM_PEAK_Z`,
+`SIGN_FLIP_Z`, `CONTRARIAN_SLOPE` or `CONTRARIAN_CAP` by 1% moves the answer
+past the tolerance, so the figure pins the shape rather than recording that a
+simulation was once run.
 
 That is a consequence of the exclusion in sections 2.2 and 2.3 rather than an
 oversight, and the shape constants are what make it so. It should not be repaired
