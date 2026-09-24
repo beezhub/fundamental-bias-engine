@@ -996,13 +996,40 @@ def test_the_printed_ranks_read_down_the_page_in_order(
 
     Two places, so they can drift, and the symptom is a ranking that reads
     1, 2, 4, 3 while every bar is the right length.
+
+    The unscored currency carries no rank, so the printed sequence is the
+    scored rows only and it climbs without being contiguous: the rank the
+    scorer gave the unscored one is skipped rather than reassigned, because
+    renumbering here would put this page's ranks out of step with the report's.
     """
     rows = re.findall(
         r"<strong>([A-Z]{3})</strong>\s*<span class=\"meta num\">(\d+)</span>", page
     )
+    scored = [row for row in report.currencies if row.coverage > 0]
+    ranks = [int(rank) for _, rank in rows]
 
-    assert len(rows) == len(report.currencies)
-    assert [int(rank) for _, rank in rows] == list(range(1, len(rows) + 1))
+    assert len(rows) == len(scored)
+    assert [code for code, _ in rows] == [row.currency for row in scored]
+    assert ranks == sorted(ranks)
+    assert len(set(ranks)) == len(ranks)
+
+
+def test_a_currency_the_run_could_not_score_carries_no_rank(
+    report: BiasReport, page: str
+) -> None:
+    """A rank places a currency among the ones that were measured.
+
+    The row already refuses to draw a bar for the same reason. Leaving the
+    rank on it says the run placed this currency fifth of eight, which is a
+    measurement the run did not make.
+    """
+    unscored = [row for row in report.currencies if row.coverage <= 0]
+    assert unscored
+
+    row = _ranking_row(page, unscored[0].currency)
+
+    assert str(unscored[0].rank) not in row
+    assert "not scored" in row
 
 
 def test_a_run_whose_config_changed_says_the_scores_are_not_comparable(

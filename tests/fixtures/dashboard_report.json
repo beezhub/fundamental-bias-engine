@@ -18,11 +18,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "employment",
-          "raw": null,
+          "raw": 5.024,
           "score": 1.84,
           "staleness_days": 3,
           "weight": 0.1,
-          "z": null
+          "z": 1.533
         },
         "external": {
           "asof": "2026-06-30",
@@ -33,11 +33,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "external",
-          "raw": null,
+          "raw": 6.024,
           "score": 2.04,
           "staleness_days": 4,
           "weight": 0.1,
-          "z": null
+          "z": 1.7
         },
         "growth": {
           "asof": "2026-06-30",
@@ -48,11 +48,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "growth",
-          "raw": null,
+          "raw": 4.024,
           "score": 1.64,
           "staleness_days": 2,
           "weight": 0.15,
-          "z": null
+          "z": 1.367
         },
         "inflation": {
           "asof": "2026-06-30",
@@ -63,11 +63,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "inflation",
-          "raw": null,
+          "raw": 3.024,
           "score": 1.44,
           "staleness_days": 1,
           "weight": 0.15,
-          "z": null
+          "z": 1.2
         },
         "monetary": {
           "asof": "2026-06-30",
@@ -78,11 +78,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "monetary",
-          "raw": null,
+          "raw": 2.024,
           "score": 1.24,
           "staleness_days": 0,
           "weight": 0.3,
-          "z": null
+          "z": 1.033
         },
         "positioning": {
           "asof": "2026-06-30",
@@ -93,11 +93,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "positioning",
-          "raw": null,
+          "raw": 7.024,
           "score": 2.24,
           "staleness_days": 5,
           "weight": 0.1,
-          "z": null
+          "z": 1.867
         },
         "risk": {
           "asof": "2026-06-30",
@@ -108,11 +108,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "risk",
-          "raw": null,
+          "raw": 8.024,
           "score": 2.44,
           "staleness_days": 6,
           "weight": 0.1,
-          "z": null
+          "z": 2.033
         }
       },
       "rank": 1
@@ -133,11 +133,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "employment",
-          "raw": null,
+          "raw": 4.067,
           "score": 0.97,
           "staleness_days": 3,
           "weight": 0.1,
-          "z": null
+          "z": 0.808
         },
         "external": {
           "asof": "2026-06-30",
@@ -148,11 +148,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "external",
-          "raw": null,
+          "raw": 5.067,
           "score": 1.17,
           "staleness_days": 4,
           "weight": 0.1,
-          "z": null
+          "z": 0.975
         },
         "growth": {
           "asof": "2026-06-30",
@@ -163,11 +163,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "growth",
-          "raw": null,
+          "raw": 3.067,
           "score": 0.77,
           "staleness_days": 2,
           "weight": 0.15,
-          "z": null
+          "z": 0.642
         },
         "inflation": {
           "asof": "2026-06-30",
@@ -178,11 +178,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "inflation",
-          "raw": null,
+          "raw": 2.067,
           "score": 0.57,
           "staleness_days": 1,
           "weight": 0.15,
-          "z": null
+          "z": 0.475
         },
         "monetary": {
           "asof": "2026-06-30",
@@ -193,11 +193,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "monetary",
-          "raw": null,
+          "raw": 1.067,
           "score": 0.37,
           "staleness_days": 0,
           "weight": 0.3,
-          "z": null
+          "z": 0.308
         },
         "positioning": {
           "asof": "2026-06-30",
@@ -208,11 +208,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "positioning",
-          "raw": null,
+          "raw": 6.067,
           "score": 1.37,
           "staleness_days": 5,
           "weight": 0.1,
-          "z": null
+          "z": 1.142
         },
         "risk": {
           "asof": "2026-06-30",
@@ -223,11 +223,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "risk",
-          "raw": null,
+          "raw": 7.067,
           "score": 1.57,
           "staleness_days": 6,
           "weight": 0.1,
-          "z": null
+          "z": 1.308
         }
       },
       "rank": 2
@@ -248,11 +248,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "employment",
-          "raw": null,
+          "raw": 3.451,
           "score": 0.41,
           "staleness_days": 3,
           "weight": 0.06,
-          "z": null
+          "z": 0.342
         },
         "external": {
           "asof": "2026-06-30",
@@ -263,11 +263,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "external",
-          "raw": null,
+          "raw": 4.451,
           "score": 0.61,
           "staleness_days": 4,
           "weight": 0.06,
-          "z": null
+          "z": 0.508
         },
         "growth": {
           "asof": "2026-06-30",
@@ -278,11 +278,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "growth",
-          "raw": null,
+          "raw": 2.451,
           "score": 0.21,
           "staleness_days": 2,
           "weight": 0.09,
-          "z": null
+          "z": 0.175
         },
         "inflation": {
           "asof": "2026-06-30",
@@ -293,11 +293,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "inflation",
-          "raw": null,
+          "raw": 1.451,
           "score": 0.01,
           "staleness_days": 1,
           "weight": 0.09,
-          "z": null
+          "z": 0.008
         },
         "monetary": {
           "asof": "2026-06-30",
@@ -308,11 +308,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "monetary",
-          "raw": null,
+          "raw": 0.451,
           "score": -0.19,
           "staleness_days": 0,
           "weight": 0.18,
-          "z": null
+          "z": -0.158
         },
         "positioning": {
           "asof": "2026-06-30",
@@ -323,11 +323,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "positioning",
-          "raw": null,
+          "raw": 5.451,
           "score": 0.81,
           "staleness_days": 5,
           "weight": 0.06,
-          "z": null
+          "z": 0.675
         },
         "risk": {
           "asof": "2026-06-30",
@@ -338,11 +338,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "risk",
-          "raw": null,
+          "raw": 6.451,
           "score": 1.01,
           "staleness_days": 6,
           "weight": 0.06,
-          "z": null
+          "z": 0.842
         }
       },
       "rank": 3
@@ -363,11 +363,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "employment",
-          "raw": null,
+          "raw": 3.055,
           "score": 0.05,
           "staleness_days": 3,
           "weight": 0.1,
-          "z": null
+          "z": 0.042
         },
         "external": {
           "asof": "2026-06-30",
@@ -378,11 +378,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "external",
-          "raw": null,
+          "raw": 4.055,
           "score": 0.25,
           "staleness_days": 4,
           "weight": 0.1,
-          "z": null
+          "z": 0.208
         },
         "growth": {
           "asof": "2026-06-30",
@@ -393,11 +393,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "growth",
-          "raw": null,
+          "raw": 2.055,
           "score": -0.15,
           "staleness_days": 2,
           "weight": 0.15,
-          "z": null
+          "z": -0.125
         },
         "inflation": {
           "asof": "2026-06-30",
@@ -408,11 +408,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "inflation",
-          "raw": null,
+          "raw": 1.055,
           "score": -0.35,
           "staleness_days": 1,
           "weight": 0.15,
-          "z": null
+          "z": -0.292
         },
         "monetary": {
           "asof": "2026-06-30",
@@ -423,11 +423,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "monetary",
-          "raw": null,
+          "raw": 0.055,
           "score": -0.55,
           "staleness_days": 0,
           "weight": 0.3,
-          "z": null
+          "z": -0.458
         },
         "positioning": {
           "asof": "2026-06-30",
@@ -438,11 +438,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "positioning",
-          "raw": null,
+          "raw": 5.055,
           "score": 0.45,
           "staleness_days": 5,
           "weight": 0.1,
-          "z": null
+          "z": 0.375
         },
         "risk": {
           "asof": "2026-06-30",
@@ -453,11 +453,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "risk",
-          "raw": null,
+          "raw": 6.055,
           "score": 0.65,
           "staleness_days": 6,
           "weight": 0.1,
-          "z": null
+          "z": 0.542
         }
       },
       "rank": 4
@@ -478,11 +478,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "employment",
-          "raw": null,
+          "raw": 2.637,
           "score": -0.33,
           "staleness_days": 3,
           "weight": 0.1,
-          "z": null
+          "z": -0.275
         },
         "external": {
           "asof": "2026-06-30",
@@ -493,11 +493,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "external",
-          "raw": null,
+          "raw": 3.637,
           "score": -0.13,
           "staleness_days": 4,
           "weight": 0.1,
-          "z": null
+          "z": -0.108
         },
         "growth": {
           "asof": "2026-06-30",
@@ -508,11 +508,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "growth",
-          "raw": null,
+          "raw": 1.637,
           "score": -0.53,
           "staleness_days": 2,
           "weight": 0.15,
-          "z": null
+          "z": -0.442
         },
         "inflation": {
           "asof": "2026-06-30",
@@ -523,11 +523,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "inflation",
-          "raw": null,
+          "raw": 0.637,
           "score": -0.73,
           "staleness_days": 1,
           "weight": 0.15,
-          "z": null
+          "z": -0.608
         },
         "monetary": {
           "asof": "2026-06-30",
@@ -538,11 +538,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "monetary",
-          "raw": null,
+          "raw": -0.363,
           "score": -0.93,
           "staleness_days": 0,
           "weight": 0.3,
-          "z": null
+          "z": -0.775
         },
         "positioning": {
           "asof": "2026-06-30",
@@ -553,11 +553,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "positioning",
-          "raw": null,
+          "raw": 4.637,
           "score": 0.07,
           "staleness_days": 5,
           "weight": 0.1,
-          "z": null
+          "z": 0.058
         },
         "risk": {
           "asof": "2026-06-30",
@@ -568,11 +568,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "risk",
-          "raw": null,
+          "raw": 5.637,
           "score": 0.27,
           "staleness_days": 6,
           "weight": 0.1,
-          "z": null
+          "z": 0.225
         }
       },
       "rank": 6
@@ -593,11 +593,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "employment",
-          "raw": null,
+          "raw": 2.032,
           "score": -0.88,
           "staleness_days": 3,
           "weight": 0.086,
-          "z": null
+          "z": -0.733
         },
         "external": {
           "asof": "2026-06-30",
@@ -608,11 +608,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "external",
-          "raw": null,
+          "raw": 3.032,
           "score": -0.68,
           "staleness_days": 4,
           "weight": 0.086,
-          "z": null
+          "z": -0.567
         },
         "growth": {
           "asof": "2026-06-30",
@@ -623,11 +623,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "growth",
-          "raw": null,
+          "raw": 1.032,
           "score": -1.08,
           "staleness_days": 2,
           "weight": 0.129,
-          "z": null
+          "z": -0.9
         },
         "inflation": {
           "asof": "2026-06-30",
@@ -638,11 +638,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "inflation",
-          "raw": null,
+          "raw": 0.032,
           "score": -1.28,
           "staleness_days": 1,
           "weight": 0.129,
-          "z": null
+          "z": -1.067
         },
         "monetary": {
           "asof": "2026-06-30",
@@ -653,11 +653,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "monetary",
-          "raw": null,
+          "raw": -0.968,
           "score": -1.48,
           "staleness_days": 0,
           "weight": 0.258,
-          "z": null
+          "z": -1.233
         },
         "positioning": {
           "asof": "2026-06-30",
@@ -668,11 +668,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "positioning",
-          "raw": null,
+          "raw": 4.032,
           "score": -0.48,
           "staleness_days": 5,
           "weight": 0.086,
-          "z": null
+          "z": -0.4
         },
         "risk": {
           "asof": "2026-06-30",
@@ -683,11 +683,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "risk",
-          "raw": null,
+          "raw": 5.032,
           "score": -0.28,
           "staleness_days": 6,
           "weight": 0.086,
-          "z": null
+          "z": -0.233
         }
       },
       "rank": 7
@@ -708,11 +708,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "employment",
-          "raw": null,
+          "raw": 1.328,
           "score": -1.52,
           "staleness_days": 3,
           "weight": 0.1,
-          "z": null
+          "z": -1.267
         },
         "external": {
           "asof": "2026-06-30",
@@ -723,11 +723,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "external",
-          "raw": null,
+          "raw": 2.328,
           "score": -1.32,
           "staleness_days": 4,
           "weight": 0.1,
-          "z": null
+          "z": -1.1
         },
         "growth": {
           "asof": "2026-06-30",
@@ -738,11 +738,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "growth",
-          "raw": null,
+          "raw": 0.328,
           "score": -1.72,
           "staleness_days": 2,
           "weight": 0.15,
-          "z": null
+          "z": -1.433
         },
         "inflation": {
           "asof": "2026-06-30",
@@ -753,11 +753,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "inflation",
-          "raw": null,
+          "raw": -0.672,
           "score": -1.92,
           "staleness_days": 1,
           "weight": 0.15,
-          "z": null
+          "z": -1.6
         },
         "monetary": {
           "asof": "2026-06-30",
@@ -768,11 +768,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "monetary",
-          "raw": null,
+          "raw": -1.672,
           "score": -2.12,
           "staleness_days": 0,
           "weight": 0.3,
-          "z": null
+          "z": -1.767
         },
         "positioning": {
           "asof": "2026-06-30",
@@ -783,11 +783,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "positioning",
-          "raw": null,
+          "raw": 3.328,
           "score": -1.12,
           "staleness_days": 5,
           "weight": 0.1,
-          "z": null
+          "z": -0.933
         },
         "risk": {
           "asof": "2026-06-30",
@@ -798,11 +798,11 @@
           "inputs": [],
           "notes": "",
           "pillar": "risk",
-          "raw": null,
+          "raw": 4.328,
           "score": -0.92,
           "staleness_days": 6,
           "weight": 0.1,
-          "z": null
+          "z": -0.767
         }
       },
       "rank": 8
@@ -852,7 +852,7 @@
   "generated_at": "2026-06-30T06:30:00+00:00",
   "pairs": [
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "AUD",
       "base_score": -0.88,
@@ -866,7 +866,7 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "AUD",
       "base_score": -0.88,
@@ -894,12 +894,12 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "AUD",
       "base_score": -0.88,
       "blockers": [],
-      "conviction": "low",
+      "conviction": "medium",
       "direction": "short",
       "pair": "AUDNZD",
       "quote": "NZD",
@@ -908,12 +908,12 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "AUD",
       "base_score": -0.88,
       "blockers": [],
-      "conviction": "low",
+      "conviction": "high",
       "direction": "short",
       "pair": "AUDUSD",
       "quote": "USD",
@@ -922,7 +922,7 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "CAD",
       "base_score": -0.33,
@@ -964,7 +964,7 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "EUR",
       "base_score": -1.52,
@@ -978,7 +978,7 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "EUR",
       "base_score": -1.52,
@@ -992,12 +992,12 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "EUR",
       "base_score": -1.52,
       "blockers": [],
-      "conviction": "low",
+      "conviction": "medium",
       "direction": "short",
       "pair": "EURCHF",
       "quote": "CHF",
@@ -1006,13 +1006,13 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "EUR",
       "base_score": -1.52,
       "blockers": [],
-      "conviction": "none",
-      "direction": "neutral",
+      "conviction": "low",
+      "direction": "short",
       "pair": "EURGBP",
       "quote": "GBP",
       "quote_score": 0.41,
@@ -1034,12 +1034,12 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "EUR",
       "base_score": -1.52,
       "blockers": [],
-      "conviction": "low",
+      "conviction": "medium",
       "direction": "short",
       "pair": "EURNZD",
       "quote": "NZD",
@@ -1048,12 +1048,12 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "EUR",
       "base_score": -1.52,
       "blockers": [],
-      "conviction": "low",
+      "conviction": "high",
       "direction": "short",
       "pair": "EURUSD",
       "quote": "USD",
@@ -1062,7 +1062,7 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "GBP",
       "base_score": 0.41,
@@ -1076,7 +1076,7 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "GBP",
       "base_score": 0.41,
@@ -1090,7 +1090,7 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "GBP",
       "base_score": 0.41,
@@ -1118,7 +1118,7 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "GBP",
       "base_score": 0.41,
@@ -1132,7 +1132,7 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "GBP",
       "base_score": 0.41,
@@ -1146,7 +1146,7 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "NZD",
       "base_score": 0.97,
@@ -1160,7 +1160,7 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "NZD",
       "base_score": 0.97,
@@ -1188,7 +1188,7 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "NZD",
       "base_score": 0.97,
@@ -1202,12 +1202,12 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "USD",
       "base_score": 1.84,
       "blockers": [],
-      "conviction": "low",
+      "conviction": "medium",
       "direction": "long",
       "pair": "USDCAD",
       "quote": "CAD",
@@ -1216,12 +1216,12 @@
       "tradeable": true
     },
     {
-      "agreement": 0.0,
+      "agreement": 1.0,
       "asof": "2026-06-30",
       "base": "USD",
       "base_score": 1.84,
       "blockers": [],
-      "conviction": "low",
+      "conviction": "medium",
       "direction": "long",
       "pair": "USDCHF",
       "quote": "CHF",
@@ -1247,12 +1247,12 @@
   "shortlist": [
     {
       "bias": {
-        "agreement": 0.0,
+        "agreement": 1.0,
         "asof": "2026-06-30",
         "base": "EUR",
         "base_score": -1.52,
         "blockers": [],
-        "conviction": "low",
+        "conviction": "high",
         "direction": "short",
         "pair": "EURUSD",
         "quote": "USD",
@@ -1267,27 +1267,27 @@
         "account_currency": "ZAR",
         "entry": 1.085,
         "lots": 0.01,
-        "notional": 1085.0,
+        "notional": 20072.5,
         "pair": "EURUSD",
-        "realised_risk_amount": 31.75,
+        "realised_risk_amount": 37.000000000000036,
         "risk_amount": 40.0,
         "risk_fraction": 0.02,
-        "stop": 1.092,
-        "stop_distance_pips": 70.0,
+        "stop": 1.087,
+        "stop_distance_pips": 20.000000000000018,
         "units": 1000.0,
         "warnings": [
-          "lot step rounded the size down from 0.0126"
+          "broker:unconfirmed: generic-retail-micro is an unconfirmed profile. Its min_lot 0.01, lot_step 0.01 and contract_size 100000 decide which pairs are tradeable and have not been checked against a broker contract specification; confirm them per docs/risk-and-execution.md section 7."
         ]
       }
     },
     {
       "bias": {
-        "agreement": 0.0,
+        "agreement": 1.0,
         "asof": "2026-06-30",
         "base": "AUD",
         "base_score": -0.88,
         "blockers": [],
-        "conviction": "low",
+        "conviction": "high",
         "direction": "short",
         "pair": "AUDUSD",
         "quote": "USD",

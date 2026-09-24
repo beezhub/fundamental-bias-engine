@@ -270,9 +270,13 @@ class _View:
                 fraction of pillar weight that agrees, or a risk fraction.
             places: Decimal places. Zero for a share of weight, where a tenth
                 of a percent means nothing and the extra digits cost a phone
-                screen its legibility. Two for a risk fraction, where the
-                plan's cap is 1-2% and a figure rounded to the nearest percent
-                cannot show a breach of it.
+                screen its legibility. Two for the realised risk fraction,
+                where the plan's cap is 1-2% and a figure rounded to the
+                nearest percent cannot show a breach of it. One for the
+                intended fraction beside it, which is a figure the ladder
+                chose rather than one the account is carrying, so its second
+                decimal would only compete for attention with the realised
+                one it is printed to be compared against.
 
         Returns:
             The figure with its sign of measurement attached, for example
@@ -450,7 +454,11 @@ def render_dashboard(
     Args:
         report: The run to render.
         diff: Optional diff against the previous run.
-        config: Optional effective config, used for the weights panel.
+        config: Optional effective config. This page reads the scoring section
+            for the heatmap's steps and the data section for the blackout
+            minutes, and renders no weights panel: `fbe.report.build_context`
+            supplies ``pillar_order`` for the Markdown report's weights table
+            and this template does not read it.
         template_dir: Override for the template search path. Defaults to
             ``fbe/dashboard/templates``.
 

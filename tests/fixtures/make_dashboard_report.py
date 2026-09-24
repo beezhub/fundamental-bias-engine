@@ -41,15 +41,21 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from fbe.bias import build_pair_biases  # noqa: E402
-from fbe.config import Config, DataConfig, RiskConfig, ScoringConfig  # noqa: E402
+from fbe.config import (  # noqa: E402
+    BrokerConfig,
+    Config,
+    DataConfig,
+    RiskConfig,
+    ScoringConfig,
+)
 from fbe.report import write_report  # noqa: E402
+from fbe.risk import position_size  # noqa: E402
 from fbe.types import (  # noqa: E402
     BiasReport,
     CalendarEvent,
     CurrencyScore,
     PillarName,
     PillarScore,
-    PositionSize,
     TradeIdea,
 )
 
@@ -99,8 +105,15 @@ def pillars(
         name: PillarScore(
             pillar=name,
             currency=code,
-            raw=None,
-            z=None,
+            raw=round(composite * 1.1 + index, 3),
+            # A real normalised value, not ``None``. `fbe.scoring.coverage`
+            # counts a pillar only when its ``z`` is set, and
+            # `fbe.bias.agreement` skips any pillar whose ``z`` is absent on
+            # either leg, so a fixture of ``None`` states one coverage and
+            # carries another: every pair would agree at 0% of pillar weight
+            # and every conviction would be capped there, which is not a run
+            # the engine can produce.
+            z=round((composite + 0.2 * index - 0.6) / 1.2, 3),
             score=round(composite + 0.2 * index - 0.6, 2),
             weight=round(WEIGHTS[name] * coverage, 4),
             asof=ASOF,
@@ -147,24 +160,41 @@ CONFIG = Config(risk=RiskConfig(), scoring=ScoringConfig(), data=DataConfig())
 PAIRS = tuple(build_pair_biases(CURRENCIES, CONFIG, ASOF))
 BY_PAIR = {row.pair: row for row in PAIRS}
 
-SIZE = PositionSize(
-    pair="EURUSD",
-    account_currency="ZAR",
-    account_balance=2000.0,
-    risk_fraction=0.02,
-    risk_amount=40.0,
-    # 0.0126 lots rounded down to 0.01 keeps 0.01 / 0.0126 of the intended
-    # risk, and every other field below is that same 0.01 lots: 1000 units at
-    # the shipped 100,000 contract size, and 1000 x 1.0850 of notional.
-    realised_risk_amount=round(40.0 * 0.01 / 0.0126, 2),
+RATES = {"USDZAR": 18.5}
+"""The rate the sizing needs, at the figure this repository's examples use.
+
+Every money field on `fbe.types.PositionSize` is in the account currency, ZAR
+here, and reaching ZAR from a EURUSD position needs a USD leg. Stated once so
+`fbe.risk.position_size` does the conversion, rather than this file doing it by
+hand and dropping the leg on ``notional``, which is the defect
+``tests/test_position_size.py`` already holds a test against.
+"""
+
+SIZE = position_size(
+    "EURUSD",
+    # A 20 pip stop, short, so the stop sits above the entry. The distance is
+    # what makes the ticket sizeable at all on this account: 2% of R2,000 is
+    # R40, a pip on one unit of EURUSD is R0.00185 at the rate above, and a
+    # stop much wider than this rounds to zero lots at the broker's 0.01 step
+    # and `position_size` refuses it rather than taking the minimum.
     entry=1.0850,
-    stop=1.0920,
-    stop_distance_pips=70.0,
-    units=1000.0,
-    lots=0.01,
-    notional=1085.0,
-    warnings=("lot step rounded the size down from 0.0126",),
+    stop=1.0870,
+    config=RiskConfig(),
+    rates=RATES,
+    broker=BrokerConfig(),
+    risk_fraction=0.02,
 )
+"""The ticket on the widest pair, sized by the function that sizes tickets.
+
+Built through `fbe.risk.position_size` for the same reason the pairs are built
+through `fbe.bias`: a sizing ladder written out here is a second copy of the
+rule, and a copy states a position the real function cannot produce on this
+account while the page prints a share of balance the account is not carrying.
+
+It carries the lot-step gap on purpose. The rule asks for R40 and the rounded
+size exposes R37, which is the difference the card prints side by side and the
+reason `realised_risk_amount` exists as its own field.
+"""
 
 EVENTS = (
     CalendarEvent(

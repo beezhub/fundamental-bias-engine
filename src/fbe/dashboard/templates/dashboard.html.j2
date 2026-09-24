@@ -223,11 +223,12 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
   <div class="card">
     {% for score in currencies %}
     <div class="rank-row{{ ' thin' if score.coverage < 1 }}">
+      {#- A currency the run scored on nothing gets no bar and no rank. Drawn
+          at zero the bar is indistinguishable from a currency the model
+          scored at the middle of its band, and a rank places it among the
+          currencies that were measured. Both are the opposite fact. -#}
       <div><strong>{{ score.currency }}</strong>
-        <span class="meta num">{{ score.rank }}</span></div>
-      {#- A currency the run scored on nothing gets no bar. Drawn at zero it
-          would be indistinguishable from a currency the model scored at the
-          middle of its band, which is the opposite fact. -#}
+        {% if score.coverage > 0 %}<span class="meta num">{{ score.rank }}</span>{% endif %}</div>
       {% if score.coverage <= 0 %}
       <div class="rank-track"><span class="meta">not scored, no pillar data</span></div>
       <div class="rank-value meta">n/a</div>
