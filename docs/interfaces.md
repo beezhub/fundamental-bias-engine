@@ -856,8 +856,15 @@ Single column, in the order the trading day needs it:
 
 1. **Header.** As-of date, generation time, config digest, theme toggle.
 2. **Currency ranking** as a horizontal bar ranking, strongest at the top, bars
-   growing left and right from a centre zero line. Diverging by sign, because
-   the sign is the whole message. Rows with incomplete coverage are faded.
+   growing left and right from a centre zero line, drawn against the widest
+   score in the run so a quiet day is legible rather than flat. Diverging by
+   sign, because the sign is the whole message. Every bar prints its own
+   number, so nothing is carried by width alone.
+
+   A row below full coverage is faded and prints the share of pillar weight
+   that had data. A row the run could not score at all gets no bar and says so:
+   drawn at the centre line it would be indistinguishable from a currency the
+   model placed at the middle of its band, which is the opposite fact.
 3. **The 28-pair matrix** as a heatmap, base down the rows and quote across the
    columns, cell colour by spread. Diverging scale centred on zero with a
    neutral grey midpoint, so a near-zero cell reads as "no view" rather than as

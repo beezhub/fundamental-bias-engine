@@ -225,15 +225,30 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
     <div class="rank-row{{ ' thin' if score.coverage < 1 }}">
       <div><strong>{{ score.currency }}</strong>
         <span class="meta num">{{ score.rank }}</span></div>
+      {#- A currency the run scored on nothing gets no bar. Drawn at zero it
+          would be indistinguishable from a currency the model scored at the
+          middle of its band, which is the opposite fact. -#}
+      {% if score.coverage <= 0 %}
+      <div class="rank-track"><span class="meta">not scored, no pillar data</span></div>
+      <div class="rank-value meta">n/a</div>
+      {% else %}
       <div class="rank-track">
         <div class="rank-bar {{ 'pos' if score.composite >= 0 else 'neg' }}"
              style="width: {{ view.bar_pct(score.composite) }}%"></div>
       </div>
-      <div class="rank-value num">{{ '%+.2f' | format(score.composite) }}</div>
+      <div class="rank-value num">
+        {{ '%+.2f' | format(score.composite) }}
+        {%- if score.coverage < 1 %}
+        <span class="meta">{{ '%.0f%%' | format(score.coverage * 100) }}</span>
+        {%- endif %}
+      </div>
+      {% endif %}
     </div>
     {% endfor %}
     <p class="meta">
-      Composite on the -3 to +3 band. Faded rows had incomplete pillar coverage.
+      Composite on the -3 to +3 band, bars drawn against the widest score in
+      the run. A faded row carries the share of pillar weight that had data
+      beside its score; a row with no bar had none.
     </p>
   </div>
 
@@ -471,9 +486,12 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
 </div>
 
 <script>
-/* Inline only. No fetch, no XHR, no external script: the sandbox blocks them
-   without a visible error. The toggle stamps data-theme on the root, which the
-   palette blocks above read in both directions. */
+/* Inline only. No network calls of any kind and no external script: the
+   sandbox blocks them without a visible error, and check_constraints reads the
+   name of a blocked call inside this comment as a call, which is the safer
+   direction for a check whose false negatives are invisible. The toggle stamps
+   data-theme on the root, which the palette blocks above read in both
+   directions. */
 (function () {
   var root = document.documentElement;
   var button = document.querySelector("[data-theme-toggle]");

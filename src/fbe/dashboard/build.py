@@ -78,21 +78,31 @@ is carried by colour alone.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
+from fbe.calendar_guard import blackout_windows, is_high_impact
+from fbe.config import Config, DataConfig, ScoringConfig
+from fbe.report import build_context
+
 if TYPE_CHECKING:
-    from fbe.config import Config
+    from collections.abc import Sequence
+
     from fbe.report import ReportDiff
-    from fbe.types import BiasReport
+    from fbe.types import BiasReport, CalendarEvent
 
 __all__ = [
     "TEMPLATE_NAME",
     "MAX_RENDERED_BYTES",
     "ALLOWED_SCRIPT_HOSTS",
     "ALLOWED_STYLE_HOSTS",
+    "STRIP_HOURS",
     "render_dashboard",
     "build_dashboard",
     "check_constraints",
@@ -116,6 +126,276 @@ ALLOWED_STYLE_HOSTS = (
     "fonts.gstatic.com",
 )
 """The only hosts a stylesheet or font file may come from."""
+
+STRIP_HOURS = 24
+"""Hours the calendar strip spans, starting at the run's generation time.
+
+Local to this view and not a threshold: it is how much of the day fits on a
+phone at arm's length, and `fbe.calendar_guard` decides what is actually in a
+blackout. Changing it changes the picture and no decision.
+"""
+
+_TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
+"""Where `TEMPLATE_NAME` lives, resolved from this module rather than from the
+working directory, so an installed package finds its own template."""
+
+_STRIP_MARK_HOURS = 6
+"""Spacing of the hour labels along the strip. Four labels over 24 hours is
+what fits at 400px without the text colliding."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Window:
+    """One blackout window, positioned and labelled for the strip.
+
+    Attributes:
+        start: Window opening, aware UTC, from `fbe.calendar_guard`.
+        end: Window closing, aware UTC.
+        label: What the reader sees on hover: the currencies whose releases
+            hold it open, and the window's own clock times.
+
+    A plain ``(start, end)`` tuple is what the guard returns. The label is added
+    here because a shaded band with no title is a band the reader cannot
+    account for, and guessing at it from the events underneath is arithmetic
+    the template would have to do.
+
+    """
+
+    start: datetime
+    end: datetime
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class _View:
+    """Everything the template needs that is arithmetic rather than a field.
+
+    Attributes:
+        title: The document title, which is the page's only ``<title>``.
+        widest: Largest absolute composite in the run, the scale the ranking
+            bars are drawn against. Zero when every currency scored zero, which
+            `bar_pct` reads as "draw nothing" rather than dividing by it.
+        bands: Spread magnitudes at which the heatmap changes step, ascending.
+        legend: Ordered ``(css class, label)`` pairs for the heatmap key.
+        origin: Left edge of the calendar strip, aware UTC.
+        horizon: Right edge, `STRIP_HOURS` later.
+        blackouts: Windows to shade, already merged by the guard.
+        hour_marks: ``(instant, label)`` pairs for the strip's hour ticks.
+
+    Every method here returns a finished value. The template does no
+    arithmetic, because arithmetic in a template cannot be unit tested and a
+    bar drawn at the wrong width still looks like a bar.
+
+    """
+
+    title: str
+    widest: float
+    bands: tuple[float, float, float]
+    legend: tuple[tuple[str, str], ...]
+    origin: datetime
+    horizon: datetime
+    blackouts: tuple[_Window, ...]
+    hour_marks: tuple[tuple[datetime, str], ...]
+
+    def bar_pct(self, value: float) -> float:
+        """Half-width of a ranking bar, as a percentage of the track.
+
+        Args:
+            value: A currency composite on the ``-3..+3`` band.
+
+        Returns:
+            A percentage in ``[0, 50]``, because the bar grows from the centre
+            line and the track's own half is 50% of it. The widest composite in
+            the run fills its half exactly, so the bars are read against each
+            other rather than against an absolute scale that would make a quiet
+            day look like a flat one.
+
+            ``0.0`` when the run's widest composite is zero. Dividing by it
+            would raise, and a bar of some default width would say the currency
+            scored something.
+
+        """
+        if self.widest <= 0.0:
+            return 0.0
+        return round(50.0 * abs(value) / self.widest, 2)
+
+    def heat(self, spread: float) -> str:
+        """CSS class for a heatmap cell, by the size of its spread.
+
+        Args:
+            spread: ``composite(base) - composite(quote)`` for the cell, signed
+                as the grid handed it over. Positive means the row currency is
+                the stronger one.
+
+        Returns:
+            ``"heat-p1"`` to ``"heat-p3"`` for a positive spread, ``"heat-n1"``
+            to ``"heat-n3"`` for a negative one, and ``""`` for a spread inside
+            the band where the engine grades a pair `fbe.types.Conviction.NONE`.
+            The empty class leaves the cell on the neutral grey, so a near-zero
+            cell reads as no view rather than as a weak signal, which is the
+            whole reason the scale is diverging rather than sequential.
+
+        The steps are the conviction bands from `fbe.config.ScoringConfig`,
+        so a cell's colour and the conviction printed beside it cannot
+        disagree. The palette defines a fourth step either side, ``heat-p4``
+        and ``heat-n4``, and nothing assigns it: a fourth step needs a fourth
+        threshold, the config carries three, and a number invented here to fill
+        the gap is a number nothing defends.
+
+        """
+        low, medium, high = self.bands
+        width = abs(spread)
+        if width < low:
+            return ""
+        side = "p" if spread > 0 else "n"
+        if width < medium:
+            return f"heat-{side}1"
+        if width < high:
+            return f"heat-{side}2"
+        return f"heat-{side}3"
+
+    def at_pct(self, when: datetime) -> float:
+        """Where an instant sits along the calendar strip.
+
+        Args:
+            when: An aware instant. Naive input would compare against an aware
+                origin and raise, which is the right failure: a naive timestamp
+                on this strip is a timestamp from an unknown zone.
+
+        Returns:
+            A percentage in ``[0, 100]``, clamped at both ends. An event before
+            the origin or past the horizon is pinned to the edge rather than
+            drawn off the strip, where it would be invisible and read as no
+            event at all.
+
+        """
+        span = (self.horizon - self.origin).total_seconds()
+        if span <= 0.0:
+            return 0.0
+        offset = (when - self.origin).total_seconds()
+        return round(min(100.0, max(0.0, 100.0 * offset / span)), 3)
+
+    def span_pct(self, start: datetime, end: datetime) -> float:
+        """Width of a window on the strip, in the same percentage units.
+
+        Args:
+            start: Window opening, aware.
+            end: Window closing, aware.
+
+        Returns:
+            The clamped distance between the two positions, so a window that
+            runs past the horizon is drawn to the edge and not beyond it.
+            Never negative.
+
+        """
+        return round(max(0.0, self.at_pct(end) - self.at_pct(start)), 3)
+
+
+def _view(
+    report: BiasReport,
+    scoring: ScoringConfig,
+    data: DataConfig,
+) -> _View:
+    """Derive the geometry and the colour steps for one run.
+
+    Args:
+        report: The run being rendered.
+        scoring: Supplies the conviction bands the heat steps follow.
+        data: Supplies the blackout minutes `fbe.calendar_guard` applies.
+
+    Returns:
+        The `_View` the template reads. The windows come from
+        `calendar_guard.blackout_windows` rather than being derived here: which
+        releases close the market and how wide a window is are that module's
+        rules, and a second copy of either would drift from the one the bias
+        layer actually consults.
+
+    """
+    origin = report.generated_at
+    horizon = origin + timedelta(hours=STRIP_HOURS)
+    widest = max((abs(row.composite) for row in report.currencies), default=0.0)
+    return _View(
+        title=f"G10 fundamental bias, {report.asof:%d %b %Y}",
+        widest=widest,
+        bands=(
+            scoring.min_spread_low,
+            scoring.min_spread_medium,
+            scoring.min_spread_high,
+        ),
+        legend=(
+            ("heat-n3", "quote stronger by more than the high band"),
+            ("heat-n2", "quote stronger, medium band"),
+            ("heat-n1", "quote stronger, low band"),
+            ("", "inside the band the engine calls no view"),
+            ("heat-p1", "base stronger, low band"),
+            ("heat-p2", "base stronger, medium band"),
+            ("heat-p3", "base stronger by more than the high band"),
+        ),
+        origin=origin,
+        horizon=horizon,
+        blackouts=_windows(report.events, data),
+        hour_marks=_hour_marks(origin, horizon),
+    )
+
+
+def _windows(events: Sequence[CalendarEvent], data: DataConfig) -> tuple[_Window, ...]:
+    """Label the guard's merged blackout windows for the strip.
+
+    Args:
+        events: The run's calendar events, as fetched.
+        data: Config supplying the blackout minutes.
+
+    Returns:
+        One `_Window` per merged window, in the guard's order. The label names
+        the currencies whose high-impact releases fall inside it, so a reader
+        hovering a shaded band learns which leg it applies to. A window with no
+        such release cannot arise, since the guard builds windows only from
+        them, and the label then says so rather than being empty.
+
+    """
+    windows = []
+    for start, end in blackout_windows(events, data):
+        currencies = sorted(
+            {
+                event.currency
+                for event in events
+                if is_high_impact(event) and start <= event.scheduled_for <= end
+            }
+        )
+        named = ", ".join(currencies) if currencies else "no release in range"
+        windows.append(
+            _Window(
+                start=start,
+                end=end,
+                label=f"{named}: {start:%H:%M} to {end:%H:%M} {start:%Z}",
+            )
+        )
+    return tuple(windows)
+
+
+def _hour_marks(
+    origin: datetime, horizon: datetime
+) -> tuple[tuple[datetime, str], ...]:
+    """Hour labels along the strip, from the origin to the horizon.
+
+    Args:
+        origin: Left edge of the strip.
+        horizon: Right edge.
+
+    Returns:
+        ``(instant, label)`` pairs every `_STRIP_MARK_HOURS`, the first on the
+        next whole hour after the origin so the labels sit on round times
+        rather than on whatever minute the run happened to start. The horizon
+        itself carries no label: it would sit on the edge and be clipped.
+
+    """
+    first = (origin + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    marks = []
+    cursor = first
+    while cursor < horizon:
+        marks.append((cursor, f"{cursor:%H:%M}"))
+        cursor += timedelta(hours=_STRIP_MARK_HOURS)
+    return tuple(marks)
 
 
 def render_dashboard(
@@ -142,15 +422,48 @@ def render_dashboard(
             ``fbe/dashboard/templates``.
 
     Returns:
-        The complete HTML document, with every asset inlined.
+        The complete HTML document, with every asset inlined. Run it through
+        `check_constraints` before writing it anywhere: the constraints it
+        checks fail silently at view time.
 
     Raises:
-        NotImplementedError: Always, until rendering lands.
+        jinja2.UndefinedError: When the template reads a name the context does
+            not carry. ``StrictUndefined`` is deliberate, as it is in
+            `fbe.report.render_report`: Jinja's default renders an unknown name
+            as an empty string, so a renamed key would empty a panel and the
+            page would still look like a dashboard.
+        jinja2.TemplateNotFound: When ``template_dir`` holds no
+            `TEMPLATE_NAME`.
+        ValueError: From `fbe.report.build_context`, when a pair has a leg
+            outside `fbe.universe.G10` or the run holds one pair twice.
+
+    Autoescaping is on, which is the one place this renderer differs from the
+    Markdown one. Every string on this page came from a feed: an event title,
+    a blocker, a size warning. Rendered raw into HTML, a stray angle bracket in
+    a publisher's headline silently swallows the rest of a panel.
+
+    ``config`` is optional because a report can be rendered without the config
+    that produced it, from the sidecar alone. When it is absent the shipped
+    `fbe.config.ScoringConfig` and `fbe.config.DataConfig` defaults are used
+    for the heat steps and the blackout minutes. That is a fallback to the
+    contract rather than to an invented number, and it is worth knowing about:
+    a run whose config moved those bands, rendered without that config, colours
+    its cells on the shipped bands while the convictions beside them came from
+    the moved ones.
 
     """
-    raise NotImplementedError(
-        "fbe.dashboard.build.render_dashboard is scaffolded; "
-        "see docs/roadmap.md Phase 5"
+    scoring = config.scoring if config is not None else ScoringConfig()
+    data = config.data if config is not None else DataConfig()
+    directory = template_dir if template_dir is not None else _TEMPLATE_DIR
+    environment = Environment(
+        loader=FileSystemLoader(directory),
+        undefined=StrictUndefined,
+        keep_trailing_newline=True,
+        autoescape=True,
+    )
+    context = build_context(report, diff=diff, config=config)
+    return environment.get_template(TEMPLATE_NAME).render(
+        **context, view=_view(report, scoring, data)
     )
 
 
