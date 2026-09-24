@@ -163,6 +163,28 @@ table.matrix td {
           font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
 .swatch { width: 22px; height: 12px; border-radius: 3px; display: inline-block; }
 
+/* The two marks the matrix carries. A dashed cell holds a marker of its own;
+   a faded one has a leg below full coverage, which is the same fading the
+   ranking uses for a thin row. Both are stated again in the pair detail, where
+   there is room to say which marker and whose coverage. Marked, not blocked:
+   three of the blocker kinds record a check rather than a refusal. */
+table.matrix td.marked { outline: 2px dashed var(--axis); outline-offset: -3px; }
+td.diag { color: var(--text-muted); text-align: center; }
+details.pair { border-top: 1px solid var(--hairline); padding: 6px 0; }
+details.pair summary { cursor: pointer; display: flex; flex-wrap: wrap;
+                       gap: 8px; align-items: baseline; }
+.pair-name { font-weight: 600; }
+table.pillars { border-collapse: collapse; width: 100%; font-size: 12px;
+                margin-top: 6px; }
+table.pillars th, table.pillars td { padding: 3px 6px; text-align: right; }
+table.pillars thead th:first-child,
+table.pillars th[scope="row"] { text-align: left; color: var(--text-secondary); }
+tr.obs td { text-align: left; color: var(--text-muted); }
+tr.obs ul { margin: 0 0 4px; padding-left: 18px; }
+/* A run condition wraps between conditions, never inside one: "event:unchecked,
+   28 of" on one line and "28" on the next is a count a reader has to reassemble. */
+.condition { white-space: nowrap; }
+
 .cards { display: grid; gap: 10px; }
 @media (min-width: 720px) { .cards { grid-template-columns: 1fr 1fr; } }
 .tag {
@@ -219,6 +241,22 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
     the 1h and 4h charts.
   </p>
 
+  {#- A blocker carried by every pair is one fact about the run, not 28 facts
+      about pairs, so it is printed here and not repeated in the matrix. Every
+      kind present carries its count against the total, because the same key on
+      3 of 28 and on 28 of 28 read differently. docs/interfaces.md, "A blocker
+      true for every pair is a run condition". -#}
+  {% if view.blocker_counts %}
+  <p class="meta run-conditions">
+    Run conditions:
+    {% for row in view.blocker_counts %}
+    <span class="condition">{{ row.kind }}, {{ row.count }} of {{ row.total }}</span>{% if not loop.last %} &middot;{% endif %}
+    {%- endfor %}
+    <br>Any condition carried by every pair is named here only, and not
+    repeated on the cells below.
+  </p>
+  {% endif %}
+
   <h2>Currency ranking</h2>
   <div class="card">
     {% for score in currencies %}
@@ -268,12 +306,19 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
             <th scope="row">{{ base }}</th>
             {% for quote, cell in row.items() %}
               {% if cell is none %}
-              <td class="diag"></td>
+              {#- The documented placeholder rather than an empty cell or a
+                  zero: a currency has no bias against itself, 0.00 there would
+                  read as two economies level, and a blank reads as a cell the
+                  run failed to fill. -#}
+              <td class="diag" title="{{ base }} against itself">.</td>
               {% else %}
               {#- Cells come from fbe.report._grid already oriented for their
                   row, mirrored halves included: spread negated, legs swapped,
-                  direction inverted. Colour and label them as they stand. -#}
-              <td class="num {{ view.heat(cell.spread) }}"
+                  direction inverted. Colour and label them as they stand.
+                  view.flags adds the marks: marked when the pair carries a
+                  marker that is not true of every pair, thin when a leg scored
+                  below full coverage. -#}
+              <td class="num {{ view.heat(cell.spread) }}{{ view.flags(cell) }}"
                   title="{{ cell.base }} vs {{ cell.quote }}: {{ cell.direction.value }} {{ cell.base }}, {{ cell.conviction.value }} conviction">
                 {{ '%+.1f' | format(cell.spread) }}
               </td>
@@ -294,8 +339,86 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
     <p class="meta">
       Read along the row: the cell is the row currency's composite minus the
       column currency's. Every cell prints its own number, so nothing here is
-      carried by colour alone.
+      carried by colour alone. A faded cell has a leg below full coverage and a
+      dashed cell carries a marker of its own; both are named in the pair
+      detail below.
     </p>
+  </div>
+
+  <h2>Pair detail</h2>
+  <div class="card">
+    <p class="meta">
+      Every pair in the run, widest spread first, each opening to the seven
+      pillar scores behind it and the series those were read from. The pairs
+      are in market convention here, so a mirrored cell in the matrix and its
+      panel below are the same two legs written the two ways round. The spread
+      is the matrix's own number to two decimals rather than one.
+    </p>
+    {% for bias in pairs %}
+    {%- set detail = view.expansion(bias) %}
+    <details class="pair">
+      <summary>
+        <span class="pair-name">{{ bias.pair }}</span>
+        <span class="num">{{ '%+.2f' | format(bias.spread) }}</span>
+        <span class="meta">{{ bias.direction.value }} {{ bias.base }} &middot;
+          {{ bias.conviction.value }} conviction</span>
+        {%- if detail.blockers %}
+        <span class="tag">marked</span>
+        {%- endif %}
+      </summary>
+      <p class="meta">
+        Coverage:
+        {% if detail.base_coverage is none %}{{ bias.base }} not scored{% else %}{{ bias.base }} {{ view.pct(detail.base_coverage) }}{% endif %}
+        &middot;
+        {% if detail.quote_coverage is none %}{{ bias.quote }} not scored{% else %}{{ bias.quote }} {{ view.pct(detail.quote_coverage) }}{% endif %}
+      </p>
+      {%- if detail.blockers %}
+      <p class="meta">On this pair: {{ detail.blockers | join(', ') }}</p>
+      {%- endif %}
+      <table class="pillars">
+        <thead>
+          <tr>
+            <th scope="col">Pillar</th>
+            <th scope="col">{{ bias.base }}</th>
+            <th scope="col">{{ bias.quote }}</th>
+            <th scope="col">Difference</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in detail.rows %}
+          {#- A dot, never 0.00: a pillar the run could not score on a leg and a
+              pillar that scored the economy mid-band are opposite facts. -#}
+          <tr>
+            <th scope="row">{{ line.pillar.value }}</th>
+            <td class="num">{% if line.base is none %}.{% else %}{{ '%+.2f' | format(line.base.score) }}{% endif %}</td>
+            <td class="num">{% if line.quote is none %}.{% else %}{{ '%+.2f' | format(line.quote.score) }}{% endif %}</td>
+            <td class="num">{% if line.difference is none %}.{% else %}{{ '%+.2f' | format(line.difference) }}{% endif %}</td>
+          </tr>
+          {%- if line.inputs %}
+          <tr class="obs">
+            <td colspan="4">
+              <ul>
+                {% for item in line.inputs %}
+                <li>{{ item.indicator }} ({{ item.currency }})
+                  <span class="num">{{ '%g' | format(item.value) }}</span>
+                  {{ item.unit }}, period {{ item.period }},
+                  {% if item.released_at is none %}release date not recorded{% else %}released {{ item.released_at.strftime('%Y-%m-%d') }}{% endif %},
+                  {{ item.source }} <span class="num">{{ item.series_id }}</span></li>
+                {% endfor %}
+              </ul>
+            </td>
+          </tr>
+          {%- endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="meta">
+        A dot is a pillar the run could not score on that leg, which is not a
+        score of zero. The difference is the base leg's score minus the quote
+        leg's, so a positive row prefers {{ bias.base }}.
+      </p>
+    </details>
+    {% endfor %}
   </div>
 
   <h2>Shortlist</h2>
