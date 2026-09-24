@@ -122,6 +122,7 @@ import re
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, timedelta
+from types import MappingProxyType
 
 import openpyxl
 
@@ -154,9 +155,27 @@ __all__ = [
     "RBNZ_UNIT_ROW_LABEL",
     "SNB_CUBE_URL",
     "TWO_YEAR_REFS",
+    "USER_AGENT",
     "CurvesSource",
 ]
 
+
+USER_AGENT = (
+    "fundamental-bias-engine/0.1 (+https://github.com/beezhub/fundamental-bias-engine)"
+)
+"""Sent on every request this source makes. The Bank of England's edge refuses
+any request whose ``User-Agent`` names a Python HTTP client, and does so on both
+endpoints this source reads, the interactive database and the yield curve
+archive, before a body is served. Probed live on 2026-09-24: ``python-httpx``
+and ``python-requests`` strings answered HTTP 403, this string, curl's default
+and a browser string all answered HTTP 200. Without it the 403 is classed as a
+wrong request and not retried, so GBP loses its policy rate and every provider
+here loses its two-year yield on every refresh (#273).
+
+The string names this project and its repository rather than a browser, so an
+operator on the other end can see who is asking. A browser string would also
+pass and is not used: the header is a statement, and this one is true. The
+other six providers accept either, so the same header goes to all seven."""
 
 BOC_BASE_URL = "https://www.bankofcanada.ca/valet/"
 """Verified live. ``observations/{series}/json`` and ``.../csv``; also
@@ -429,6 +448,12 @@ class CurvesSource(BaseDataSource):
     with a 302 on every request, so here the redirect is the endpoint rather
     than a moved one. Opted into per source, which leaves the base's refusal in
     place for every source whose provider does not do this."""
+
+    default_headers = MappingProxyType({"User-Agent": USER_AGENT})
+    """One header, and it is the difference between HTTP 200 and HTTP 403 at the
+    Bank of England. See `USER_AGENT` for the probe. Set on the class rather
+    than built per request so it reaches the one client the base constructs,
+    and therefore every provider this source talks to."""
 
     base_url = ""
     """Empty on purpose. This source reads from seven institutions, so there is
