@@ -585,7 +585,20 @@ not a change to the journal.
 
 **Discipline flags read this.** `journal.discipline_flags` skips the size half
 of its revenge comparison when either record's `risk_amount` is absent, rather
-than treating an unpriced trade as a small one.
+than treating an unpriced trade as a small one. The rest of the rule still
+fires, so the entry is still flagged and the flag simply says nothing about
+size.
+
+`discipline_flags` reads two overtrading limits and keeps them as separate
+flags. `OVERTRADING_TRADES_PER_WEEK` is a habit, counted over any rolling
+seven-day window rather than a calendar week, because three trades late on a
+Sunday and three early the following Tuesday are six inside six days and a
+calendar reading calls both weeks clean. `max_concurrent_positions` in section
+4 is a limit `check_limits` refuses before the trade is taken, so a journal
+holding a breach of it means the refusal was bypassed or never asked for, and
+the flag says so. The function takes a `RiskConfig` so a journal written under
+one limit can be read against that limit rather than against whatever the
+defaults say today.
 
 **Outcome:** `outcome_zar` net of costs, and `r_multiple`, which is
 `outcome_zar` divided by the realised risk. Both are `None` while the trade is

@@ -25,11 +25,11 @@ import json
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import Enum, StrEnum
 from pathlib import Path
 
-from fbe.config import DATA_DIR
+from fbe.config import DATA_DIR, RiskConfig
 from fbe.types import Conviction, Direction, PillarName
 
 __all__ = [
@@ -799,7 +799,9 @@ def evaluate(records: Sequence[TradeRecord]) -> Mapping[Conviction, ConvictionSt
     )
 
 
-def discipline_flags(records: Sequence[TradeRecord]) -> Sequence[DisciplineFlag]:
+def discipline_flags(
+    records: Sequence[TradeRecord], config: RiskConfig | None = None
+) -> Sequence[DisciplineFlag]:
     """Detect the behaviours the trading plan explicitly warns against.
 
     The plan names these three and this function looks for exactly them. It
@@ -834,14 +836,254 @@ def discipline_flags(records: Sequence[TradeRecord]) -> Sequence[DisciplineFlag]
         If they consistently lose, the discipline is.
 
     Args:
-        records: Journal records, typically from `load`, sorted or not.
+        records: Journal records, typically from `load`, sorted or not. They are
+            read, never altered.
+        config: Risk limits to read ``max_concurrent_positions`` from. Defaults
+            to `RiskConfig()`, which is the desk's own limit. It is a parameter
+            because a limit that cannot be moved cannot be tested, and because a
+            journal written under one limit should be readable against it rather
+            than against whatever the defaults say today.
 
     Returns:
         Flags in chronological order. An empty sequence means a clean run, which
         on a real trading record is worth noting in the review rather than
-        assuming.
+        assuming. Nothing here reports absence of data as a behaviour: too few
+        trades to judge reads in the review as a finding about the trader.
 
     """
-    raise NotImplementedError(
-        "fbe.journal.discipline_flags is scaffolded; see docs/roadmap.md Phase 6"
-    )
+    limits = RiskConfig() if config is None else config
+    ordered = sorted(records, key=lambda record: record.opened_at)
+    found = [
+        *_revenge_flags(ordered),
+        *_weekly_flags(ordered),
+        *_concurrent_flags(ordered, limits.max_concurrent_positions),
+        *_against_bias_flags(ordered),
+    ]
+    return tuple(sorted(found, key=lambda flag: flag.occurred_at))
+
+
+def _loss_closed_at(record: TradeRecord) -> datetime | None:
+    """When this record closed, if it closed as a loss.
+
+    Args:
+        record: One journal record.
+
+    Returns:
+        The close time of a closed trade with a negative result, otherwise
+        ``None``. An open position is not a loss whatever it is showing on the
+        screen, a closed one with no result recorded is an unknown rather than a
+        win, and a breakeven trade is neither: none of the three starts a
+        revenge window, because the window is about a loss the owner has taken.
+        The time rather than a flag, so the caller cannot ask when a trade that
+        did not lose closed.
+
+    Note:
+        `r_multiple` is preferred over `outcome_zar` because it is the same
+        number at any account size, and both carry the sign of the result:
+        negative is a loss, in the account currency for `outcome_zar`.
+
+    """
+    if record.closed_at is None:
+        return None
+    if record.r_multiple is not None:
+        return record.closed_at if record.r_multiple < 0.0 else None
+    if record.outcome_zar is not None and record.outcome_zar < 0.0:
+        return record.closed_at
+    return None
+
+
+def _revenge_flags(ordered: Sequence[TradeRecord]) -> list[DisciplineFlag]:
+    """Find entries opened inside `REVENGE_WINDOW_MINUTES` of a loss closing.
+
+    Args:
+        ordered: Records sorted by open time.
+
+    Returns:
+        One flag per qualifying entry, against the most recent loss that closed
+        inside the window, since that is the one being reacted to. The window is
+        inclusive at both ends: an entry in the same second as the close is the
+        behaviour rather than a coincidence, and one at exactly the boundary is
+        what the constant says.
+
+    Note:
+        The size half of the comparison is skipped when either ``risk_amount``
+        is ``None``, so the flag is still raised and simply says nothing about
+        size. Money figures in the detail carry the record's account currency.
+
+        A record is not excluded from its own search because it cannot match:
+        a trade opens before it closes, so the gap from its own close to its
+        own open is negative and falls outside the window at the lower end.
+
+    """
+    window = timedelta(minutes=REVENGE_WINDOW_MINUTES)
+    flags: list[DisciplineFlag] = []
+    for record in ordered:
+        loss: TradeRecord | None = None
+        lost_at: datetime | None = None
+        for candidate in ordered:
+            closed = _loss_closed_at(candidate)
+            if closed is None:
+                continue
+            if not timedelta(0) <= record.opened_at - closed <= window:
+                continue
+            if lost_at is None or closed > lost_at:
+                loss, lost_at = candidate, closed
+        if loss is None or lost_at is None:
+            continue
+        minutes = int((record.opened_at - lost_at).total_seconds() // 60)
+        result = "loss" if loss.r_multiple is None else f"{loss.r_multiple:.1f}R loss"
+        detail = (
+            f"entered {record.pair} {minutes} minutes after a {result} on {loss.pair}"
+        )
+        aggravations: list[str] = []
+        if record.pair == loss.pair:
+            aggravations.append("same pair")
+        if (
+            record.risk_amount is not None
+            and loss.risk_amount is not None
+            and record.risk_amount > loss.risk_amount
+        ):
+            aggravations.append(
+                f"larger risk than the trade that lost, "
+                f"{record.account_currency} {record.risk_amount:.2f} "
+                f"against {record.account_currency} {loss.risk_amount:.2f}"
+            )
+        if aggravations:
+            detail = f"{detail}, {' and '.join(aggravations)}"
+        flags.append(
+            DisciplineFlag(
+                kind="revenge",
+                trade_id=record.trade_id,
+                occurred_at=record.opened_at,
+                detail=detail,
+            )
+        )
+    return flags
+
+
+def _weekly_flags(ordered: Sequence[TradeRecord]) -> list[DisciplineFlag]:
+    """Find rolling seven-day windows holding more entries than the week allows.
+
+    Args:
+        ordered: Records sorted by open time.
+
+    Returns:
+        One flag per breaching window, keyed on the entry that opens it, after
+        which the entries inside it are not counted again. Reporting every
+        overlapping window would turn one busy fortnight into a page of flags
+        saying the same thing.
+
+    Note:
+        The window is rolling rather than a calendar week on purpose. Three
+        trades late on a Sunday and three early the following Tuesday are six
+        inside six days, and a calendar reading calls both weeks clean.
+
+    """
+    allowed = OVERTRADING_TRADES_PER_WEEK
+    window = timedelta(days=7)
+    flags: list[DisciplineFlag] = []
+    index = 0
+    while index < len(ordered):
+        first = ordered[index]
+        inside = [
+            record
+            for record in ordered[index:]
+            if record.opened_at - first.opened_at <= window
+        ]
+        if len(inside) > allowed:
+            flags.append(
+                DisciplineFlag(
+                    kind="overtrading",
+                    trade_id=first.trade_id,
+                    occurred_at=first.opened_at,
+                    detail=(
+                        f"{len(inside)} entries in the seven days from "
+                        f"{first.opened_at:%Y-%m-%d %H:%M}, above the {allowed} "
+                        f"a selective week is expected to hold"
+                    ),
+                )
+            )
+            index += len(inside)
+        else:
+            index += 1
+    return flags
+
+
+def _concurrent_flags(
+    ordered: Sequence[TradeRecord], allowed: int
+) -> list[DisciplineFlag]:
+    """Find the moments when more positions were open at once than allowed.
+
+    Args:
+        ordered: Records sorted by open time.
+        allowed: ``RiskConfig.max_concurrent_positions``.
+
+    Returns:
+        One flag per entry that pushed the count above the limit. This is the
+        harder of the two overtrading readings and stays a separate flag from
+        the weekly count: a busy week is a habit, while this is a limit that
+        `check_limits` refuses before the trade is taken, so finding it in the
+        journal means the refusal was bypassed or never asked for.
+
+    Note:
+        A position counts as open from its ``opened_at`` until its ``closed_at``,
+        and a record with no ``closed_at`` is open from then on.
+
+    """
+    flags: list[DisciplineFlag] = []
+    for record in ordered:
+        moment = record.opened_at
+        open_now = [
+            other
+            for other in ordered
+            if other.opened_at <= moment
+            and (other.closed_at is None or other.closed_at > moment)
+        ]
+        if len(open_now) <= allowed:
+            continue
+        flags.append(
+            DisciplineFlag(
+                kind="overtrading",
+                trade_id=record.trade_id,
+                occurred_at=moment,
+                detail=(
+                    f"{len(open_now)} positions open at once on entering "
+                    f"{record.pair}, above the {allowed} in "
+                    f"RiskConfig.max_concurrent_positions, which check_limits "
+                    f"refuses before a trade is taken"
+                ),
+            )
+        )
+    return flags
+
+
+def _against_bias_flags(ordered: Sequence[TradeRecord]) -> list[DisciplineFlag]:
+    """Find the entries taken against the engine's lean.
+
+    Args:
+        ordered: Records sorted by open time.
+
+    Returns:
+        One flag per record with ``agreed_with_bias`` false.
+
+    Note:
+        The wording says what happened and stops there. Whether fading the lean
+        helps or hurts is a question about a group of trades that nobody here
+        has measured, and a flag that called each one an error would be
+        answering it.
+
+    """
+    return [
+        DisciplineFlag(
+            kind="against_bias",
+            trade_id=record.trade_id,
+            occurred_at=record.opened_at,
+            detail=(
+                f"entered {record.pair} {record.direction.name.lower()} against "
+                f"the engine's lean, flagged so the overrides can be counted "
+                f"and read as their own group"
+            ),
+        )
+        for record in ordered
+        if not record.agreed_with_bias
+    ]
