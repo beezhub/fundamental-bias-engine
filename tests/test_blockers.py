@@ -31,13 +31,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 import fbe
 from fbe.bias import BLOCKERS, UNCHECKED_SUFFIX, UNKNOWN_SUFFIX
+from fbe.dashboard.build import render_dashboard
 from fbe.report import render_report
-from fbe.types import BiasReport, Conviction, Direction, PairBias
+from fbe.types import BiasReport, Conviction, Direction, PairBias, TradeIdea
 
 PACKAGE_ROOT = Path(fbe.__file__).resolve().parent
 SPEC = Path(__file__).resolve().parents[1] / "docs" / "scoring-spec.md"
@@ -301,45 +301,31 @@ def test_the_shortlist_does_not_call_an_unchecked_marker_a_blocker() -> None:
 # --- the dashboard ----------------------------------------------------------
 
 
-def _render_dashboard(idea: SimpleNamespace) -> str:
-    """Render the dashboard around a single shortlist card.
+def _render_dashboard(idea: TradeIdea) -> str:
+    """Render the dashboard the way ``fbe dashboard`` renders it.
 
-    The ``view`` namespace is whatever the template calls for arithmetic, per
-    the contract in its own header comment. Stubbed to fixed numbers here: this
-    test is about one label, and the positioning maths has its own owner.
+    Through `fbe.dashboard.build.render_dashboard` rather than through the
+    template with a hand-built context. It was the second for as long as the
+    render path was scaffolded, and the tripwire below was what said to change
+    it once the path existed.
+
+    The report carries the card's own pair and nothing else, so the shortlist
+    is the only populated section and the grid is the one cell that pair makes.
     """
-    context: dict[str, Any] = {
-        "report": SimpleNamespace(
+    return render_dashboard(
+        BiasReport(
             asof=ASOF,
             generated_at=GENERATED_AT,
-            config_digest="abc123",
+            currencies=(),
+            pairs=(idea.bias,),
             shortlist=(idea,),
-            events=(),
-            warnings=(),
-        ),
-        "diff": None,
-        "config": None,
-        "grid": {},
-        "pillar_order": (),
-        "currencies": (),
-        "pairs": (),
-        "view": SimpleNamespace(
-            title="FX bias",
-            bar_pct=lambda value: 50.0,
-            heat=lambda spread: "heat-p1",
-            at_pct=lambda when: 50.0,
-            span_pct=lambda a, b: 10.0,
-            legend=(),
-            hour_marks=(),
-            blackouts=(),
-        ),
-    }
-    environment = _environment(PACKAGE_ROOT / "dashboard" / "templates")
-    return environment.get_template("dashboard.html.j2").render(**context)
+            config_digest="abc123",
+        )
+    )
 
 
-def _idea(tradeable: bool, blockers: tuple[str, ...]) -> SimpleNamespace:
-    return SimpleNamespace(
+def _idea(tradeable: bool, blockers: tuple[str, ...]) -> TradeIdea:
+    return TradeIdea(
         bias=_bias(tradeable=tradeable, blockers=blockers),
         rationale="Rates gap is wide and the pillars agree.",
         size=None,
@@ -396,39 +382,21 @@ def test_the_dashboard_says_an_unknown_marker_was_not_checked_too() -> None:
     assert f"<li>{reason}</li>" in rendered
 
 
-# --- the dashboard renderer is still a stub ----------------------------------
+# --- both renderers are the real ones now -----------------------------------
 
 
-@pytest.mark.parametrize(
-    "module_name, attribute",
-    [("fbe.dashboard.build", "render_dashboard")],
-)
-def test_the_render_entry_points_are_still_scaffolded(
-    module_name: str, attribute: str
-) -> None:
-    """Guard against fixing the test by implementing the layer under it.
+def test_the_dashboard_assertions_go_through_the_real_render_path() -> None:
+    """The move the tripwire here asked for, pinned so it cannot go back.
 
-    The dashboard assertions reach its template directly, which is the only
-    way to assert anything about it today. That is a workaround for its render
-    path not existing, and when it does exist those assertions should move
-    onto it. This test failing is the signal to do that, not a reason to
-    delete it.
-
-    `fbe.report.render_report` and `fbe.report.build_context` were in this list
-    and have landed, so the report assertions above now go through them. The
-    dashboard is the only entry left.
-
-    Read from the source rather than called, because these take arguments a
-    caller would have to invent, and inventing them is how a test starts
-    asserting something other than what it says.
+    This file used to carry `test_the_render_entry_points_are_still_scaffolded`,
+    which failed the day `fbe.dashboard.build.render_dashboard` landed and said
+    to move these assertions onto it. They have moved, so the tripwire has done
+    its job and this is what replaces it: a later change that reverted
+    `_render_dashboard` to rendering the template with a hand-built context
+    would keep every dashboard assertion in this file green while proving
+    nothing about the page ``fbe dashboard`` writes.
     """
-    module = pytest.importorskip(module_name)
-    source = inspect.getsource(getattr(module, attribute))
-
-    assert "is scaffolded;" in source, (
-        f"{module_name}.{attribute} has landed. Move the blocker assertions in "
-        "this file onto the real render path."
-    )
+    assert "render_dashboard(" in inspect.getsource(_render_dashboard)
 
 
 def test_the_report_assertions_go_through_the_real_render_path() -> None:
