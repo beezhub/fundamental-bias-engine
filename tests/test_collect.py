@@ -31,7 +31,7 @@ from fbe.config import DataConfig
 from fbe.datasources import collect as collect_module
 from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy, SourceError
 from fbe.datasources.cache import BODY_SUFFIX, META_SUFFIX
-from fbe.datasources.curves import RBA_F2_URL, CurvesSource
+from fbe.datasources.curves import RBA_F2_URL, RbaSource
 from fbe.datasources.fred import FredSource
 from fbe.datasources.oecd import BASE_URL as OECD_BASE_URL
 from fbe.datasources.oecd import OecdSource
@@ -1467,14 +1467,14 @@ def test_the_three_sources_landed_in_208_are_asked_rather_than_skipped(
         data_config,
         start=date(2026, 5, 1),
         end=date(2026, 9, 30),
-        sources=(OecdSource, CurvesSource, PricesSource),
+        sources=(OecdSource, RbaSource, PricesSource),
         indicators=["cpi_yoy", "yield_2y"],
         currencies=["AUD"],
     )
 
     by_name = {o.source: o for o in result.outcomes}
     assert by_name["oecd"].status is collect_module.SourceStatus.COMPLETED
-    assert by_name["curves"].status is collect_module.SourceStatus.COMPLETED
+    assert by_name["rba"].status is collect_module.SourceStatus.COMPLETED
     assert {(o.indicator, o.currency) for o in result.observations} == {
         ("cpi_yoy", "AUD"),
         ("yield_2y", "AUD"),

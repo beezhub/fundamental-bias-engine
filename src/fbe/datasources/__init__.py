@@ -1,6 +1,6 @@
 """Data sources: everything that turns the outside world into `Observation`s.
 
-Seven sources, mapped onto the seven pillars:
+Thirteen sources, mapped onto the seven pillars:
 
 ===============  ==========================================  ==================
 Source           Backs                                       Credential
@@ -10,8 +10,13 @@ Source           Backs                                       Credential
 `OecdSource`     INFLATION for six currencies, and the       none
                  parts of MONETARY and RISK where FRED's
                  mirror runs months behind
-`CurvesSource`   the 2-year yields at the heart of           none
-                 MONETARY, from central banks direct
+`EcbSource`,     the 2-year yields at the heart of           none
+`BocSource`,     MONETARY, one source per central bank or
+`MofJpSource`,   debt office, so that one of them being
+`BoeSource`,     down costs its own currency and no other
+`RbaSource`,     (ADR 0013). `CurvesSource` is their shared
+`SnbSource`,     base and is not itself a source in a run.
+`RbnzSource`
 `CotSource`      POSITIONING                                 none
 `PricesSource`   RISK, EXTERNAL commodity proxies            none
 `CalendarSource` no pillar; feeds the news blackout          none
@@ -52,7 +57,17 @@ from fbe.datasources.base import (
 from fbe.datasources.cache import CacheEntry, CacheMiss, DiskCache
 from fbe.datasources.calendar import CalendarSource
 from fbe.datasources.cot import CotSource
-from fbe.datasources.curves import CurvesSource
+from fbe.datasources.curves import (
+    PROVIDER_SOURCES,
+    BocSource,
+    BoeSource,
+    CurvesSource,
+    EcbSource,
+    MofJpSource,
+    RbaSource,
+    RbnzSource,
+    SnbSource,
+)
 from fbe.datasources.fred import FredSource
 from fbe.datasources.manual import ManualSource
 from fbe.datasources.oecd import OecdSource
@@ -75,18 +90,26 @@ __all__ = [
     "BaseDataSource",
     "CacheEntry",
     "CacheMiss",
+    "BocSource",
+    "BoeSource",
     "CalendarSource",
     "CotSource",
     "CurvesSource",
     "DiskCache",
+    "EcbSource",
     "FredSource",
     "GLOBAL",
     "INDICATORS",
     "IndicatorSpec",
     "ManualSource",
+    "MofJpSource",
     "OecdSource",
+    "PROVIDER_SOURCES",
     "PricesSource",
     "RateLimit",
+    "RbaSource",
+    "RbnzSource",
+    "SnbSource",
     "RetryPolicy",
     "SeriesRef",
     "SourceError",
@@ -101,13 +124,17 @@ __all__ = [
 ALL_SOURCES: tuple[type[BaseDataSource], ...] = (
     FredSource,
     OecdSource,
-    CurvesSource,
+    *PROVIDER_SOURCES,
     CotSource,
     PricesSource,
     CalendarSource,
     ManualSource,
 )
 """Every source class, in the order a collector should try them.
+
+The seven curve providers sit where the one ``curves`` fan-out used to, so a
+refresh prints one line per central bank and one of them failing is recorded
+under its own name while the other six still fill the cache (ADR 0013, #218).
 
 Order matters in one place: `ManualSource` is last so that an operator's entry
 overrides a fetched value for the same ``(indicator, currency, period)``. That
