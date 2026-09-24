@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 
 from fbe.datasources.registry import GLOBAL
-from fbe.pillars.base import MIN_TIME_SERIES_WINDOW, BasePillar
+from fbe.pillars.base import BasePillar
 from fbe.types import Observation, PillarName
 from fbe.universe import meta
 
@@ -37,11 +37,19 @@ __all__ = [
 DRAWDOWN_WINDOW_SESSIONS: int = 252
 """Trailing sessions defining the 52-week high the drawdown is measured from."""
 
-MIN_DRAWDOWN_WINDOW_SESSIONS: int = MIN_TIME_SERIES_WINDOW
+MIN_DRAWDOWN_WINDOW_SESSIONS: int = 12
 """Fewest observations `_drawdown_pct` will measure a drawdown from.
 
-Borrowed from the floor `BasePillar.time_series_z` puts under the other half of
-the regime, so neither half answers from less data than the other.
+Its own literal, deliberately. It used to alias the single count that
+`BasePillar.time_series_z` applied to every cadence, and when #214 made that
+floor frequency-aware the alias would have dragged this minimum from twelve
+sessions to 252 as a side effect of a change about z-scores. The two answer
+different questions. The z-score floor asks whether a standard deviation
+computed from this window means anything. This asks how much of a 252-session
+window must be present before a fall from its high is worth reporting at all.
+Whether twelve sessions is the right answer to the second question is open and
+was explicitly not ruled on with #214; what is settled is that it does not move
+because the first answer did.
 
 It is not a claim that a window this short is a 52-week high. It is not. A short
 window finds a lower high than the real one and so reports a smaller fall, and

@@ -273,19 +273,25 @@ class PositioningPillar(BasePillar):
             was measured over, both so `_notes` can show its working and a
             reader can check it.
 
-        **The floor is twelve observations, not twelve months.** An earlier
-        version of this paragraph said a currency with fewer than two years of
-        weekly reports returns ``None``, and that is not what happens.
-        `BasePillar.time_series_z` refuses a window under
-        `MIN_TIME_SERIES_WINDOW`, which is a count with no notion of the
-        series' frequency, so on a weekly series it is about eleven weeks. A
-        contract with twelve prints therefore scores, at full weight, and with
-        ``ddof=1`` over twelve readings ``|p|`` can reach 3.17, which is inside
-        the contrarian branch and close to its saturation. The freshness ramp
-        does not cover this: it ages the newest print and has nothing to say
-        about a short history. Issue #214 is the defect, and `window_reports`
-        is on the note so the case is visible to the one person who would
-        catch it.
+        **The floor is 52 weekly reports, one year of this series' prints.**
+        `BasePillar.time_series_z` refuses a shorter window through
+        `fbe.datasources.registry.MIN_HISTORY_OBSERVATIONS`, so a contract with
+        twelve prints returns ``None`` and the component does not blend. The
+        absence reaches coverage rather than arriving as a score.
+
+        It was a bare count of twelve until #214, which on a weekly series is
+        eleven weeks rather than the year the count was reasoned for. Over
+        twelve readings with ``ddof=1`` the reachable ``|p|`` runs to 3.17,
+        inside the contrarian branch and close to its saturation, so a rebuilt
+        cache or a backfill that stopped after its first page could put this
+        pillar near the loudest value it can emit. The freshness ramp does not
+        cover it: it ages the newest print and has nothing to say about a short
+        history, and a twelve-week window's newest print is current. Age and
+        length are different facts.
+
+        Real history clears the floor easily, since the CFTC series runs from
+        2006. `window_reports` stays on the note so a reader is told how many
+        prints the mean is over rather than assuming the configured years.
 
         """
         transformed: dict[str, dict[str, float | None]] = {}

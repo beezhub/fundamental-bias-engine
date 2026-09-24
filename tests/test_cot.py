@@ -609,9 +609,18 @@ def test_summing_and_averaging_the_legs_give_the_same_pillar_reading() -> None:
     against its own history, and dividing every point of a series by the same
     constant leaves every z-score unchanged. So this module sums, and nothing
     downstream can tell.
+
+    The fourteen readings repeat until the window clears `WEEKLY_FLOOR`, which
+    since #214 is a year of weekly prints rather than a bare count of twelve.
+    Repetition is harmless here because the claim under test is that a constant
+    factor cancels, and it cancels whatever the history is, so long as the
+    standard deviation is not zero.
     """
+    from fbe.datasources.registry import MIN_HISTORY_OBSERVATIONS
     from fbe.pillars.base import BasePillar
     from fbe.types import Frequency, Observation
+
+    WEEKLY_FLOOR = MIN_HISTORY_OBSERVATIONS[Frequency.WEEKLY]
 
     summed = [
         -0.30,
@@ -629,6 +638,8 @@ def test_summing_and_averaging_the_legs_give_the_same_pillar_reading() -> None:
         0.35,
         -0.25,
     ]
+    repeats = -(-WEEKLY_FLOOR // len(summed))
+    summed = summed * repeats
     averaged = [value / len(CONTRACT_CODES) for value in summed]
 
     def series(values: list[float]) -> list[Observation]:
@@ -637,7 +648,7 @@ def test_summing_and_averaging_the_legs_give_the_same_pillar_reading() -> None:
                 indicator="cot_net_pct_oi",
                 currency="USD",
                 value=value,
-                period=date(2026, 1, 6) + timedelta(weeks=index),
+                period=date(2024, 1, 2) + timedelta(weeks=index),
                 source="test",
                 series_id="derived",
                 unit="percent_of_open_interest",
