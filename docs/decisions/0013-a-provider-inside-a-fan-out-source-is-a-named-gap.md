@@ -124,3 +124,11 @@ fan-out unprobed by doctor.
 Accepted, 2026-09-21. Ruled on #212; work in #218. Question 3 on #212, whether
 the fan-out should override `probe_request` for doctor, is answered by this
 record as unnecessary under the preferred shape and deferred otherwise.
+
+Implemented 2026-09-24 in #218, in the preferred shape. `CurvesSource` is the
+shared base and seven subclasses are the sources; each names its own root and
+its own doctor probe. The fan-out is not probed, because it is no longer a
+source. One thing the record did not weigh: doctor's probe went out without the
+source's headers or its redirect setting, so the Bank of England read as
+refused on the day the split made it probeable. The probe now takes both off
+the source.
