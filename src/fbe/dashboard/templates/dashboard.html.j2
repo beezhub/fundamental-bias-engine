@@ -239,7 +239,7 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
       <div class="rank-value num">
         {{ '%+.2f' | format(score.composite) }}
         {%- if score.coverage < 1 %}
-        <span class="meta">{{ '%.0f%%' | format(score.coverage * 100) }}</span>
+        <span class="meta">{{ view.pct(score.coverage) }}</span>
         {%- endif %}
       </div>
       {% endif %}
@@ -292,8 +292,8 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
     </div>
     <p class="meta">
       Read along the row: the cell is the row currency's composite minus the
-      column currency's. The ranked table below carries the same numbers for
-      anyone who cannot separate the colours.
+      column currency's. Every cell prints its own number, so nothing here is
+      carried by colour alone.
     </p>
   </div>
 
@@ -322,7 +322,7 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
         spread {{ '%+.2f' | format(idea.bias.spread) }}
         &middot; {{ idea.bias.base }} {{ '%+.2f' | format(idea.bias.base_score) }}
         vs {{ idea.bias.quote }} {{ '%+.2f' | format(idea.bias.quote_score) }}
-        &middot; {{ '%.0f%%' | format(idea.bias.agreement * 100) }} of pillar weight agrees
+        &middot; {{ view.pct(idea.bias.agreement) }} of pillar weight agrees
       </p>
       <p>{{ idea.rationale }}</p>
       {% if idea.size %}
@@ -333,9 +333,9 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
         {{ '%.1f' | format(idea.size.stop_distance_pips) }} pip stop,
         risking {{ idea.size.account_currency }}
         {{ '%.2f' | format(idea.size.realised_risk_amount) }}
-        ({{ '%.2f%%' | format(idea.size.realised_risk_fraction * 100) }}
+        ({{ view.pct(idea.size.realised_risk_fraction, 2) }}
         of balance) against an intended
-        {{ '%.1f%%' | format(idea.size.risk_fraction * 100) }} or
+        {{ view.pct(idea.size.risk_fraction, 1) }} or
         {{ idea.size.account_currency }}
         {{ '%.2f' | format(idea.size.risk_amount) }}
       </p>

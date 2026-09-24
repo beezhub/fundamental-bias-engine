@@ -235,12 +235,20 @@ class _View:
             cell reads as no view rather than as a weak signal, which is the
             whole reason the scale is diverging rather than sequential.
 
-        The steps are the conviction bands from `fbe.config.ScoringConfig`,
-        so a cell's colour and the conviction printed beside it cannot
-        disagree. The palette defines a fourth step either side, ``heat-p4``
-        and ``heat-n4``, and nothing assigns it: a fourth step needs a fourth
-        threshold, the config carries three, and a number invented here to fill
-        the gap is a number nothing defends.
+        The steps are the spread bands from `fbe.config.ScoringConfig`, the
+        same ones `fbe.bias.conviction_for` grades on, so the colour is the
+        conviction's **ceiling** rather than its equal. It is read from the
+        spread alone, while the conviction beside it is that tier after the
+        agreement, coverage, dispersion and calendar caps have been applied,
+        and every one of those only demotes. So a cell coloured for the high
+        band can be labelled medium, and that is the engine working; a cell
+        coloured for the low band and labelled high is impossible and means
+        one of the two was produced against different thresholds.
+
+        The palette defines a fourth step either side, ``heat-p4`` and
+        ``heat-n4``, and nothing assigns it: a fourth step needs a fourth
+        threshold, the config carries three, and a number invented here to
+        fill the gap is a number nothing defends.
 
         """
         low, medium, high = self.bands
@@ -253,6 +261,31 @@ class _View:
         if width < high:
             return f"heat-{side}2"
         return f"heat-{side}3"
+
+    def pct(self, fraction: float, places: int = 0) -> str:
+        """Render a fraction as a percentage.
+
+        Args:
+            fraction: A value in ``[0, 1]``, such as a coverage share, the
+                fraction of pillar weight that agrees, or a risk fraction.
+            places: Decimal places. Zero for a share of weight, where a tenth
+                of a percent means nothing and the extra digits cost a phone
+                screen its legibility. Two for a risk fraction, where the
+                plan's cap is 1-2% and a figure rounded to the nearest percent
+                cannot show a breach of it.
+
+        Returns:
+            The figure with its sign of measurement attached, for example
+            ``"60%"`` or ``"1.42%"``.
+
+        Here rather than in the template because ``value * 100`` written into
+        markup is arithmetic no test can reach, and a coverage figure printed
+        one point high overstates how much data the call underneath it rests
+        on. The precision stays at the call site, because it is a statement
+        about what the number means rather than a calculation.
+
+        """
+        return f"{fraction * 100:.{places}f}%"
 
     def at_pct(self, when: datetime) -> float:
         """Where an instant sits along the calendar strip.

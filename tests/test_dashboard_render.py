@@ -35,7 +35,13 @@ import pytest
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, UndefinedError
 
 from fbe.config import Config, DataConfig, RiskConfig, ScoringConfig
-from fbe.dashboard.build import TEMPLATE_NAME, check_constraints, render_dashboard
+from fbe.dashboard.build import (
+    TEMPLATE_NAME,
+    _View,
+    _view,
+    check_constraints,
+    render_dashboard,
+)
 from fbe.report import (
     CurrencyChange,
     ReportDiff,
@@ -195,6 +201,9 @@ class _StubView:
     def bar_pct(self, value: float) -> float:
         return 37.25
 
+    def pct(self, fraction: float, places: int = 0) -> str:
+        return f"19.{places}%"
+
     def heat(self, spread: float) -> str:
         return "heat-n2"
 
@@ -221,6 +230,8 @@ def test_the_template_renders_the_geometry_it_is_handed(report: BiasReport) -> N
     assert "width: 37.25%" in rendered
     assert "heat-n2" in rendered
     assert "left: 11.5%" in rendered
+    assert "19.0%" in rendered
+    assert "19.2%" in rendered
 
 
 def test_a_context_key_the_template_needs_and_does_not_get_raises(
@@ -308,8 +319,34 @@ def test_the_bars_grow_from_a_centre_line_and_are_coloured_by_sign(
 
     sheet = styles(page)
     assert ".rank-track::before" in sheet
-    assert ".rank-bar.pos" in sheet and "left: 50%" in sheet
-    assert ".rank-bar.neg" in sheet and "right: 50%" in sheet
+
+    positive_rule = _rule(sheet, ".rank-bar.pos")
+    negative_rule = _rule(sheet, ".rank-bar.neg")
+
+    assert "left: 50%" in positive_rule and "right:" not in positive_rule
+    assert "right: 50%" in negative_rule and "left:" not in negative_rule
+    assert _colour(positive_rule) != _colour(negative_rule)
+
+
+def _rule(sheet: str, selector: str) -> str:
+    """The declarations inside one CSS rule, and only that rule.
+
+    Asserting a selector and a declaration are both somewhere in the
+    stylesheet is four independent searches, not one test of which rule
+    carries which: it holds with ``left`` and ``right`` swapped between the
+    positive and negative bars, which draws the strongest currency's bar
+    pointing the way the weakest one should and still looks like a ranking.
+    """
+    match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", sheet)
+    assert match is not None, f"no rule for {selector}"
+    return match.group(1)
+
+
+def _colour(rule: str) -> str:
+    """The background token a rule paints with."""
+    match = re.search(r"background:\s*([^;]+);", rule)
+    assert match is not None, rule
+    return match.group(1).strip()
 
 
 def _ranking_row(page: str, currency: str) -> str:
@@ -332,7 +369,7 @@ def test_the_palette_is_defined_on_bare_root_and_overridden_in_both_ways(
     would drive are present, so the button is asserted here.
     """
     assert check_constraints(page) == []
-    assert "data-theme-toggle" in page
+    assert re.search(r"<button[^>]*data-theme-toggle", page) is not None
     assert 'setAttribute("data-theme"' in page
 
 
@@ -355,7 +392,14 @@ def test_the_gutter_is_set_once_and_the_page_never_scrolls_sideways(
     assert "padding:" not in body
     assert re.search(r"--gutter:\s*16px", sheet)
     assert sheet.count("padding-inline: var(--gutter)") == 1
-    assert ".scroll-x" in sheet and "overflow-x: auto" in sheet
+    assert "overflow-x: auto" in _rule(sheet, ".scroll-x")
+
+    # The rule existing is not the matrix using it, and the matrix is the one
+    # element wider than a phone. Outside a scrolling container it is the page
+    # that scrolls sideways, which is the criterion this is here for.
+    container = re.search(r'<div class="scroll-x">(.*?)</div>', page, flags=re.S)
+    assert container is not None
+    assert '<table class="matrix">' in container.group(1)
 
 
 # --- the footer --------------------------------------------------------------
@@ -504,13 +548,38 @@ def test_a_spread_inside_the_no_view_band_carries_no_heat_class(
 # --- the strip is positioned in Python ---------------------------------------
 
 
-def test_the_calendar_strip_places_events_inside_it(
+def test_the_strip_carries_one_band_per_window_and_one_tick_per_event(
     report: BiasReport, page: str
 ) -> None:
-    """Percentages, clamped, so an event outside the horizon pins to the edge
-    rather than being drawn where nobody can see it and read as no event."""
-    positions = [float(value) for value in re.findall(r"left: ([\d.]+)%", page)]
+    """The question the page exists to answer four hours after the desk work.
 
+    Counted against the guard's own merged windows rather than against the
+    events, because two releases inside one window are one band and a strip
+    drawing two would say the market reopens in between.
+    """
+    strip = _strip(page)
+    view = _view_of(report)
+
+    assert len(re.findall(r'class="window"', strip)) == len(view.blackouts)
+    assert len(re.findall(r'class="tick"', strip)) == len(report.events)
+    assert len(re.findall(r'class="hour"', strip)) == len(view.hour_marks)
+    assert 'class="now"' in strip
+
+
+def test_every_band_and_tick_sits_where_the_view_put_it(
+    report: BiasReport, page: str
+) -> None:
+    """Positions come from Python, and the strip is where they land."""
+    strip = _strip(page)
+    view = _view_of(report)
+
+    for window in view.blackouts:
+        assert f"left: {view.at_pct(window.start)}%" in strip
+        assert f"width: {view.span_pct(window.start, window.end)}%" in strip
+    for event in report.events:
+        assert f"left: {view.at_pct(event.scheduled_for)}%" in strip
+
+    positions = [float(value) for value in re.findall(r"left: ([\d.]+)%", strip)]
     assert positions
     assert all(0.0 <= value <= 100.0 for value in positions)
 
@@ -525,11 +594,112 @@ def test_an_event_past_the_horizon_is_pinned_to_the_edge(report: BiasReport) -> 
         ),
     )
 
-    rendered = render_dashboard(far)
-    positions = [float(value) for value in re.findall(r"left: ([\d.]+)%", rendered)]
+    strip = _strip(render_dashboard(far))
+    positions = [float(value) for value in re.findall(r"left: ([\d.]+)%", strip)]
 
     assert positions
     assert max(positions) == pytest.approx(100.0)
+
+
+def test_the_blackout_minutes_come_from_the_data_config(report: BiasReport) -> None:
+    """The only config input to the strip, and the one that sets its width.
+
+    A band drawn from the shipped minutes on a desk that widened them says the
+    market reopens before it does, which is the same defect as a window built
+    from the listed slice rather than the whole week.
+    """
+    wide = Config(
+        risk=RiskConfig(),
+        scoring=ScoringConfig(),
+        data=DataConfig(
+            calendar_blackout_before_min=120, calendar_blackout_after_min=180
+        ),
+    )
+
+    default = _view_of(report)
+    widened = _view(report, ScoringConfig(), wide.data)
+
+    assert widened.blackouts
+    assert len(widened.blackouts) == len(default.blackouts)
+    for narrow_window, wide_window in zip(
+        default.blackouts, widened.blackouts, strict=True
+    ):
+        assert (
+            wide_window.end - wide_window.start
+            > narrow_window.end - narrow_window.start
+        )
+
+    first = widened.blackouts[0]
+    rendered = render_dashboard(report, config=wide)
+
+    assert f"width: {widened.span_pct(first.start, first.end)}%" in _strip(rendered)
+
+
+def test_a_blackout_band_names_the_currency_holding_it_open(
+    report: BiasReport, page: str
+) -> None:
+    """A shaded band with no title is a band the reader cannot account for."""
+    view = _view_of(report)
+    assert view.blackouts
+
+    strip = _strip(page)
+    for window in view.blackouts:
+        assert window.label in strip
+
+    # Asserted against the events rather than against the label the same view
+    # produced: comparing the label to itself holds with the currency dropped
+    # from it, and the currency is the whole reason the window is labelled.
+    holders = {
+        event.currency
+        for event in report.events
+        for window in view.blackouts
+        if window.start <= event.scheduled_for <= window.end
+    }
+    assert holders
+    for code in holders:
+        assert any(code in window.label for window in view.blackouts), code
+
+
+def test_a_naive_instant_on_the_strip_raises(report: BiasReport) -> None:
+    """Documented behaviour, pinned. A naive timestamp on a 24 hour axis is a
+    timestamp from an unknown zone, and placing it would be a guess."""
+    view = _view_of(report)
+
+    with pytest.raises(TypeError):
+        view.at_pct(datetime(2026, 6, 30, 12, 0))
+
+
+def test_the_hour_labels_start_on_a_whole_hour_and_stop_before_the_edge(
+    report: BiasReport,
+) -> None:
+    """A label on the horizon sits on the edge and is clipped, and a label on
+    the minute the run happened to start reads as a time that means something."""
+    view = _view_of(report)
+
+    assert view.hour_marks
+    first, _ = view.hour_marks[0]
+    assert first.minute == 0 and first.second == 0
+    assert first > view.origin
+    assert all(instant < view.horizon for instant, _ in view.hour_marks)
+    gaps = {
+        (later - earlier).total_seconds()
+        for (earlier, _), (later, _) in zip(
+            view.hour_marks, view.hour_marks[1:], strict=False
+        )
+    }
+    assert gaps == {6 * 3600}
+
+
+def _strip(page: str) -> str:
+    """The calendar strip's own markup.
+
+    Scoped apart from the document because the stylesheet carries its own
+    ``left: 50%`` rules for the ranking, so a position search over the whole
+    page finds them whether or not the strip rendered at all.
+    """
+    match = re.search(r'<div class="strip">(.*?)\n    </div>', page, flags=re.S)
+    assert match is not None, "the page carries no calendar strip"
+    return match.group(1)
 
 
 # --- the gaps a mutation sweep found -----------------------------------------
@@ -596,13 +766,115 @@ def test_the_heat_class_carries_the_sign_of_the_spread(report: BiasReport) -> No
     same, and every mirrored cell would agree with its twin while saying the
     opposite thing.
     """
-    cells = _matrix(render_dashboard(report))
-    positive = [row for row in report.pairs if row.spread > 0]
-    negative = [row for row in report.pairs if row.spread < 0]
-    assert positive and negative
+    cells = _cells(render_dashboard(report))
+    assert len(cells) == 56
 
-    assert "heat-p" in cells
-    assert "heat-n" in cells
+    for heat, printed in cells:
+        if printed.startswith("+"):
+            assert heat.startswith("heat-p") or heat == "", printed
+        else:
+            assert heat.startswith("heat-n") or heat == "", printed
+
+    assert any(heat.startswith("heat-p") for heat, _ in cells)
+    assert any(heat.startswith("heat-n") for heat, _ in cells)
+
+
+def _cells(page: str) -> list[tuple[str, str]]:
+    """Every matrix cell as ``(heat class, printed number)``.
+
+    The diagonal is excluded: a currency has no bias against itself and the
+    template renders it as a placeholder rather than as a number.
+    """
+    found = re.findall(r'<td class="num ?([^"]*)"[^>]*>\s*([+-][\d.]+)\s*</td>', page)
+    return [(heat.strip(), printed) for heat, printed in found]
+
+
+def test_a_mirrored_cell_carries_the_opposite_colour(report: BiasReport) -> None:
+    """The lower triangle is the upper one negated, and the colour follows.
+
+    The template's own comment says re-deriving a mirrored cell would invert
+    the lower triangle twice over and every number would still look plausible.
+    This is the assertion that comment asks for.
+    """
+    page = render_dashboard(report)
+    classes = {
+        f"{base}{quote}": heat
+        for heat, base, quote in re.findall(
+            r'<td class="num ?([^"]*)"\s+title="(\w{3}) vs (\w{3})',
+            page,
+            flags=re.S,
+        )
+    }
+
+    assert len(classes) == 56
+    for pair, heat in classes.items():
+        mirrored = classes[pair[3:] + pair[:3]]
+        if heat == "":
+            assert mirrored == ""
+        else:
+            assert heat[:6] != mirrored[:6], pair
+            assert heat[6:] == mirrored[6:], pair
+
+
+def test_no_cell_is_coloured_below_the_conviction_beside_it(
+    report: BiasReport,
+) -> None:
+    """The colour is the conviction's ceiling, never less.
+
+    `heat` reads the spread alone; the conviction beside it is that same tier
+    after the agreement, coverage, dispersion and calendar caps, and every one
+    of those only demotes. A cell painted for the low band and labelled high
+    means the two were produced against different thresholds, which is the
+    config-drift defect rendered as a picture.
+    """
+    view = _view_of(report)
+    ladder = {
+        Conviction.NONE: 0,
+        Conviction.LOW: 1,
+        Conviction.MEDIUM: 2,
+        Conviction.HIGH: 3,
+    }
+    tiers = {"": 0, "1": 1, "2": 2, "3": 3}
+
+    for row in report.pairs:
+        heat = view.heat(row.spread)
+        assert tiers[heat[-1] if heat else ""] >= ladder[row.conviction], row.pair
+
+
+def test_the_band_boundaries_are_the_configured_ones(report: BiasReport) -> None:
+    """Which band is which, not merely that the bands are read.
+
+    Reading them in the wrong order still produces some cells at every step
+    and still responds to a config change, so a counting test cannot tell.
+    """
+    view = _view_of(report)
+    bands = ScoringConfig()
+
+    assert view.heat(bands.min_spread_low - 0.01) == ""
+    assert view.heat(bands.min_spread_low) == "heat-p1"
+    assert view.heat(bands.min_spread_medium - 0.01) == "heat-p1"
+    assert view.heat(bands.min_spread_medium) == "heat-p2"
+    assert view.heat(bands.min_spread_high - 0.01) == "heat-p2"
+    assert view.heat(bands.min_spread_high) == "heat-p3"
+    assert view.heat(-bands.min_spread_high) == "heat-n3"
+
+
+def test_every_cell_prints_its_number(report: BiasReport) -> None:
+    """No value carried by colour alone, on the panel that is all colour."""
+    cells = _cells(render_dashboard(report))
+
+    assert len(cells) == 56
+    assert all(printed for _, printed in cells)
+
+
+def test_the_legend_names_both_ends_and_carries_a_swatch_each(page: str) -> None:
+    """A key that vanished leaves a grid of colours with no scale."""
+    legend = re.search(r'<div class="legend">(.*?)</div>', page, flags=re.S)
+    assert legend is not None
+
+    body = legend.group(1)
+    assert body.count('class="swatch') == 7
+    assert body.index("quote stronger") < body.index("base stronger")
 
 
 def test_a_window_that_closes_before_it_opens_takes_no_width(
@@ -620,10 +892,8 @@ def test_a_window_that_closes_before_it_opens_takes_no_width(
     assert view.span_pct(view.origin, view.horizon) == pytest.approx(100.0)
 
 
-def _view_of(report: BiasReport):
+def _view_of(report: BiasReport) -> _View:
     """The view `render_dashboard` builds for a run, for the unit assertions."""
-    from fbe.dashboard.build import _view
-
     return _view(report, ScoringConfig(), DataConfig())
 
 
@@ -670,3 +940,262 @@ def test_the_title_names_the_run_it_belongs_to(report: BiasReport, page: str) ->
 
     assert f"{report.asof:%d %b %Y}" in title
     assert "G10" in title
+
+
+# --- the gaps the second review found ----------------------------------------
+
+
+def test_the_composites_match_the_markdown_report_currency_for_currency(
+    report: BiasReport,
+) -> None:
+    """The criterion names the Markdown report, so the comparison is against it.
+
+    Comparing the page to the `BiasReport` it came from checks the page; it
+    does not check that the two views agree, which is the thing a shared
+    context is for and the thing that goes wrong quietly when one of them
+    starts formatting or rounding on its own.
+    """
+    markdown = dict(
+        re.findall(
+            r"^\| *\d+ \| ([A-Z]{3}) \| ([+-][\d.]+) \|", render_report(report), re.M
+        )
+    )
+    page = render_dashboard(report)
+
+    assert len(markdown) == len(report.currencies)
+    for row in report.currencies:
+        if row.coverage <= 0:
+            continue
+        assert markdown[row.currency] in _ranking_row(page, row.currency), row.currency
+
+
+def test_every_thin_currency_prints_its_own_coverage(
+    report: BiasReport, page: str
+) -> None:
+    """Its own, not the first one's.
+
+    Checking a single thin row passes on a page that prints one currency's
+    coverage against every thin row, and coverage stated higher than it is
+    overstates how much data the call underneath it rests on.
+    """
+    thin = [row for row in report.currencies if 0 < row.coverage < 1]
+    assert len(thin) >= 2, "the fixture no longer carries two thin currencies"
+
+    figures = {row.currency: row.coverage for row in thin}
+
+    assert figures == {"GBP": 0.6, "AUD": 0.86}
+    assert "60%" in _ranking_row(page, "GBP")
+    assert "86%" in _ranking_row(page, "AUD")
+    assert "86%" not in _ranking_row(page, "GBP")
+
+
+def test_the_printed_ranks_read_down_the_page_in_order(
+    report: BiasReport, page: str
+) -> None:
+    """`rank` comes from the scorer and the order comes from `build_context`.
+
+    Two places, so they can drift, and the symptom is a ranking that reads
+    1, 2, 4, 3 while every bar is the right length.
+    """
+    rows = re.findall(
+        r"<strong>([A-Z]{3})</strong>\s*<span class=\"meta num\">(\d+)</span>", page
+    )
+
+    assert len(rows) == len(report.currencies)
+    assert [int(rank) for _, rank in rows] == list(range(1, len(rows) + 1))
+
+
+def test_a_run_whose_config_changed_says_the_scores_are_not_comparable(
+    report: BiasReport,
+) -> None:
+    """A re-weighting moves every currency at once.
+
+    Rendered as a delta table it reads as a market move, and this is the one
+    run where a reader most needs the page not to imply one.
+    """
+    diff = ReportDiff(
+        previous_asof=date(2026, 6, 29),
+        current_asof=report.asof,
+        currencies=(
+            CurrencyChange(
+                currency="USD",
+                previous_composite=1.20,
+                current_composite=1.84,
+                delta=0.64,
+            ),
+        ),
+        pairs=(),
+        shortlist_added=(),
+        shortlist_removed=(),
+        config_changed=True,
+    )
+
+    since = render_dashboard(report, diff=diff).split("<h2>Since the last run</h2>", 1)[
+        1
+    ]
+
+    assert "not comparable" in since
+    assert "<th>Delta</th>" not in since
+    assert "+0.64" not in since
+
+
+def test_the_delta_is_in_the_delta_column(report: BiasReport) -> None:
+    """Not merely somewhere in the row. Three numbers, one of which is the move.
+
+    A page printing "then" where it promises the delta is a page saying the
+    currency moved by its own previous score.
+    """
+    diff = ReportDiff(
+        previous_asof=date(2026, 6, 29),
+        current_asof=report.asof,
+        currencies=(
+            CurrencyChange(
+                currency="USD",
+                previous_composite=1.20,
+                current_composite=1.84,
+                delta=0.64,
+            ),
+        ),
+        pairs=(),
+        shortlist_added=(),
+        shortlist_removed=(),
+        config_changed=False,
+    )
+
+    rendered = render_dashboard(report, diff=diff)
+    # Scoped to the diff section: the events table carries its own USD rows,
+    # and a search over the document finds one of those first.
+    since = rendered.split("<h2>Since the last run</h2>", 1)[1]
+    row = re.search(r"<td>USD</td>(.*?)</tr>", since, flags=re.S)
+    assert row is not None
+
+    numbers = [
+        value.strip()
+        for value in re.findall(
+            r'<td class="num">\s*([+-][\d.]+)\s*</td>', row.group(1), flags=re.S
+        )
+    ]
+
+    assert numbers == ["+1.20", "+1.84", "+0.64"]
+
+
+def test_the_shortlist_card_leads_with_the_realised_risk(report: BiasReport) -> None:
+    """What the rounded lot size actually exposes, not what the rule asked for.
+
+    The two differ on almost every trade at this account size, and the
+    intended figure printed as the risk is the cap breach that reads as
+    compliance. `fbe.types.PositionSize` sets out the same distinction.
+    """
+    sized = [idea for idea in report.shortlist if idea.size is not None]
+    assert sized, "the fixture no longer carries a sized idea"
+    size = sized[0].size
+    assert size is not None
+    assert size.realised_risk_amount != pytest.approx(size.risk_amount)
+
+    card = _card(render_dashboard(report), sized[0].bias.pair)
+
+    assert f"{size.realised_risk_amount:.2f}" in card
+    assert card.index(f"{size.realised_risk_amount:.2f}") < card.index(
+        f"{size.risk_amount:.2f}"
+    )
+
+
+def test_the_shortlist_card_carries_the_size_warnings(report: BiasReport) -> None:
+    """The marker reaching the dataclass and stopping before the reader is the
+    defect this surface has its own copy of."""
+    sized = [idea for idea in report.shortlist if idea.size is not None]
+    size = sized[0].size
+    assert size is not None and size.warnings
+
+    card = _card(render_dashboard(report), sized[0].bias.pair)
+
+    for warning in size.warnings:
+        assert warning in card
+
+
+def test_a_card_under_a_blackout_says_to_stand_aside(report: BiasReport) -> None:
+    """The one line on the card that says do not take this now."""
+    blacked = [idea for idea in report.shortlist if idea.blackout_until is not None]
+    assert blacked, "the fixture no longer carries a blacked-out idea"
+
+    card = _card(render_dashboard(report), blacked[0].bias.pair)
+
+    assert "Stand aside until" in card
+    assert "tag block" in card
+
+
+def _card(page: str, pair: str) -> str:
+    """The shortlist card for one pair."""
+    cards = re.findall(r'<article class="card">(.*?)</article>', page, flags=re.S)
+    matching = [card for card in cards if pair in card]
+    assert len(matching) == 1, f"{pair}: {len(matching)} cards"
+    return matching[0]
+
+
+def test_the_template_does_no_arithmetic_of_its_own() -> None:
+    """The complement to the stub-view test, which can only see ``view.*``.
+
+    A template doing ``score.coverage * 100`` is arithmetic on a context object
+    the stub never touches, so the stub cannot observe it. This reads the
+    template instead. Jinja's own loop and filter syntax is left alone; what is
+    banned is a number or an operator doing work in the markup.
+    """
+    source = (TEMPLATE_DIR / TEMPLATE_NAME).read_text(encoding="utf-8")
+    expressions = re.findall(r"\{\{(.*?)\}\}", source, flags=re.S)
+
+    for expression in expressions:
+        assert "*" not in expression, expression
+        assert "/" not in expression, expression
+        assert " + " not in expression, expression
+        assert " - " not in expression, expression
+
+
+def test_a_cell_tooltip_names_its_legs_in_the_order_the_row_reads(
+    report: BiasReport,
+) -> None:
+    """The only place the matrix says a direction in words.
+
+    Row currency first, because the cell is the row's composite minus the
+    column's and the tooltip is what a reader checks their reading against. The
+    legs swapped give a tooltip that agrees with the colour and contradicts the
+    number, which is the shape `docs/methodology.md` calls the inverted pair.
+    """
+    page = render_dashboard(report)
+    titles = re.findall(r'title="(\w{3}) vs (\w{3}): (\w+) \1, (\w+) conviction"', page)
+
+    assert len(titles) == 56
+
+    by_pair = {row.pair: row for row in report.pairs}
+    for base, quote, direction, conviction in titles:
+        row = by_pair.get(f"{base}{quote}") or by_pair[f"{quote}{base}"]
+        assert direction in {"long", "short", "neutral"}
+        if f"{base}{quote}" in by_pair:
+            assert direction == row.direction.value
+            assert conviction == row.conviction.value
+
+
+def test_a_risk_fraction_keeps_the_decimals_a_coverage_share_does_not(
+    report: BiasReport,
+) -> None:
+    """The plan's cap is 1-2%, so a risk figure rounded to the nearest percent
+    cannot show a breach of it, while a tenth of a percent of pillar weight
+    means nothing and costs a phone screen its legibility.
+
+    Asserted on the rendered card as well as on the view, because the card is
+    where the two precisions sit side by side and the stub-view test in this
+    file cannot see the real one.
+    """
+    view = _view_of(report)
+
+    assert view.pct(0.0142, 2) == "1.42%"
+    assert view.pct(0.0142) == "1%"
+    assert view.pct(0.6) == "60%"
+
+    sized = [idea for idea in report.shortlist if idea.size is not None]
+    size = sized[0].size
+    assert size is not None
+
+    card = _card(render_dashboard(report), sized[0].bias.pair)
+
+    assert f"{size.realised_risk_fraction * 100:.2f}%" in card
+    assert f"{size.risk_fraction * 100:.1f}%" in card
