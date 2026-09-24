@@ -509,10 +509,22 @@ The CFTC's own wording: released "each Friday at 3:30 pm Eastern Time (US),
 using the data from the immediately preceding Tuesday of that week". Positions
 are snapped at Tuesday's close and take three days to process.
 
+When the Tuesday is a US federal holiday the snapshot moves to the Monday. The
+TFF dataset carries twelve Monday report dates since 2007, each the day before
+Christmas Day, New Year's Day, Independence Day or Veterans Day fell on a
+Tuesday, and no weekday other than Monday and Tuesday ever appears (queried
+live 2026-09-24, #274). The source accepts both and stamps the release as the
+Friday of the report week; any other weekday is refused as a misread column.
+The CFTC adds that federal holidays "may delay release by one or two days",
+which the dataset does not record, so a holiday week's reading can carry a
+Friday stamp a day or two before anyone could read it. That is the cost ADR
+0011 already names for a suspended publication, and it is accepted here for
+the same reason: closing it needs a release calendar this dataset lacks.
+
 So on any Wednesday the freshest number is eight days old, and by the next
 Friday morning it is ten. Nothing fixes that. What matters is that the engine
-never treats a COT reading as current: the `Observation` period is the Tuesday,
-`released_at` is the Friday, and the staleness penalty sees the real age.
+never treats a COT reading as current: the `Observation` period is the snapshot
+day, `released_at` is the Friday, and the staleness penalty sees the real age.
 
 ### Deriving a dollar position
 
@@ -1564,9 +1576,17 @@ difference is in the reason string, not in whether the pair is marked
 tradeable.
 
 **COT data is over a week old**
-Expected and structural. Positions are snapped Tuesday and published Friday
-15:30 ET. If it is more than two weeks old, check
-`CotSource.latest_report_date`; publication has been interrupted before.
+Expected and structural. Positions are snapped Tuesday, or Monday when the
+Tuesday is a US holiday, and published Friday 15:30 ET. If it is more than two
+weeks old, check `CotSource.latest_report_date`; publication has been
+interrupted before.
+
+**cftc failed with a report date "rather than a Tuesday"**
+The source refuses a report date on any weekday but Monday or Tuesday, because
+the CFTC has never snapped on another day and a new weekday means the date
+column has been renamed or misread. A Monday is accepted and is a holiday
+week, not a fault. Check the dataset's `report_date_as_yyyy_mm_dd` column by
+hand before changing the accepted weekdays.
 
 **A currency scores with low coverage**
 `CurrencyScore.coverage` below 1.0 means part of the pillar weight had no usable

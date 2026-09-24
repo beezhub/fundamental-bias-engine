@@ -45,7 +45,7 @@ from fbe.datasources.cot import (
     DATASETS,
     DEFAULT_DATASET,
     ROW_LIMIT,
-    SNAPSHOT_WEEKDAY,
+    SNAPSHOT_WEEKDAYS,
     TFF_FIELDS,
     CotSource,
 )
@@ -479,23 +479,68 @@ def test_the_release_instant_is_1530_eastern_in_both_halves_of_the_year(
     assert published == datetime.fromisoformat(instant)
 
 
-def test_a_report_date_that_is_not_a_tuesday_is_refused(source: CotSource) -> None:
-    """The release stamp is the report date plus three days, unconditionally.
+def test_a_monday_snapshot_in_a_holiday_week_is_released_that_friday(
+    source: CotSource,
+) -> None:
+    """Veterans Day 2025 fell on a Tuesday, so the CFTC snapped on the Monday.
 
-    Positions are snapped at Tuesday's close, and five docstrings in the module
-    say so. A Wednesday report date would therefore be stamped as released on a
-    Saturday, and the stamp is what the visibility rule reads, so the reading
-    would age from a day the CFTC never published on. A non-Tuesday means a
-    renamed or misread column rather than a week snapped on another day.
+    The live dataset carries 2025-11-10 as a report date, one of twelve Mondays
+    since 2007 and every one the day before a Tuesday federal holiday (#274).
+    Before that issue the source refused any non-Tuesday, and because the
+    default lookback reaches 2023-07-03, the refusal fired on every refresh.
+
+    The period is the Monday, because that is when the positions were snapped.
+    The release is the Friday of the same week, four days on rather than three,
+    which is why the stamp is computed from the weekday rather than by adding a
+    lag. The instant is pinned in UTC so a fixed offset cannot pass.
     """
-    wednesday = date(2026, 9, 9)
-    assert wednesday.weekday() != SNAPSHOT_WEEKDAY
+    monday = date(2025, 11, 10)
+    assert monday.strftime("%A") == "Monday"
+    assert monday.weekday() in SNAPSHOT_WEEKDAYS
+
+    with route_every_contract(
+        {"EUR": [row(CONTRACT_CODES["EUR"], report_date=monday)]}
+    ):
+        observations = source.fetch(
+            ["cot_net_pct_oi"], ["EUR"], date(2025, 1, 1), date(2025, 12, 31)
+        )
+
+    assert len(observations) == 1
+    assert observations[0].period == monday
+    published = observations[0].released_at
+    assert published is not None
+    assert published.date() == date(2025, 11, 14)
+    assert published.date().strftime("%A") == "Friday"
+    assert published == datetime.fromisoformat("2025-11-14T20:30:00+00:00")
+
+
+@pytest.mark.parametrize(
+    ("report_date", "weekday"),
+    [
+        (date(2026, 9, 9), "Wednesday"),
+        (date(2026, 9, 13), "Sunday"),
+    ],
+)
+def test_a_report_date_on_any_other_weekday_is_refused(
+    source: CotSource, report_date: date, weekday: str
+) -> None:
+    """Monday and Tuesday are the only days the CFTC has ever snapped on.
+
+    The Friday is computed from the weekday, so a Wednesday would be stamped
+    two days on and a Sunday five days earlier than its own period, and the
+    stamp is what the visibility rule reads. Neither day appears in the
+    dataset, so either means a renamed or misread column rather than a week
+    snapped on another day. Both sides of the accepted pair are asserted so
+    that widening it to a range cannot pass silently.
+    """
+    assert report_date.strftime("%A") == weekday
+    assert report_date.weekday() not in SNAPSHOT_WEEKDAYS
 
     with (
         route_every_contract(
-            {"EUR": [row(CONTRACT_CODES["EUR"], report_date=wednesday)]}
+            {"EUR": [row(CONTRACT_CODES["EUR"], report_date=report_date)]}
         ),
-        pytest.raises(SourceError, match="rather than a Tuesday"),
+        pytest.raises(SourceError, match=f"a {weekday} rather than a Tuesday"),
     ):
         source.fetch(["cot_net_pct_oi"], ["EUR"], START, END)
 
