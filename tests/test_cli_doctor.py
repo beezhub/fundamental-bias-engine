@@ -17,6 +17,7 @@ import logging
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from types import MappingProxyType
 
 import httpx
 import pytest
@@ -478,6 +479,40 @@ def test_an_available_source_is_probed_and_timed(
     assert route.call_count == 1
     assert "reachable" in result.stdout
     assert "ms" in result.stdout
+
+
+@respx.mock
+def test_the_probe_is_the_sources_own_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The probe carries the source's headers and follows its redirects.
+
+    The Bank of England refuses the client default User-Agent with a 403 and
+    answers its database URL with a 302 on every request. A bare GET therefore
+    printed a healthy provider as "refused the request: check the credential",
+    which is the wrong diagnosis on the day the operator runs doctor (#218).
+    Both settings are read off the source, so the probe cannot drift from the
+    fetch.
+    """
+
+    class _Particular(_Reachable):
+        name = "particular"
+        default_headers = MappingProxyType({"User-Agent": "fbe-test/1"})
+        follow_redirects = True
+
+    moved = respx.get(PROBE_URL).mock(
+        return_value=httpx.Response(302, headers={"Location": SECOND_URL})
+    )
+    landed = respx.get(SECOND_URL).mock(return_value=httpx.Response(200))
+    monkeypatch.setattr("fbe.cli.ALL_SOURCES", (_Particular,))
+
+    result = _run(_config_file(tmp_path))
+
+    assert moved.calls.last.request.headers["User-Agent"] == "fbe-test/1"
+    assert landed.call_count == 1
+    assert "particular" in result.stdout
+    assert "ms" in result.stdout
+    assert "302" not in result.stdout
 
 
 @respx.mock
@@ -1005,8 +1040,25 @@ def test_the_real_registry_reports_every_source_offline(tmp_path: Path) -> None:
 
     assert result.exit_code == EXIT_OK
     assert "Traceback" not in result.stdout
-    for name in ("fred", "oecd", "curves", "cftc", "stooq", "forexfactory", "manual"):
+    for name in (
+        "fred",
+        "oecd",
+        "ecb",
+        "boc",
+        "mof_jp",
+        "boe",
+        "rba",
+        "snb",
+        "rbnz",
+        "cftc",
+        "stooq",
+        "forexfactory",
+        "manual",
+    ):
         assert name in result.stdout
+    # The fan-out is the providers' base and not a source in a run, so its
+    # name must not appear as a line of its own (ADR 0013, #218).
+    assert "curves" not in result.stdout
 
 
 # --- the worked example in docs/interfaces.md -------------------------------
@@ -1516,5 +1568,5 @@ def test_no_shipped_source_reports_as_scaffolded(tmp_path: Path) -> None:
 
     assert route.call_count == 0
     assert "scaffolded" not in result.stdout
-    for name in ("curves", "oecd", "stooq"):
+    for name in ("ecb", "boc", "rba", "oecd", "stooq"):
         assert f"{name} available, offline so no probe" in result.stdout
