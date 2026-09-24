@@ -147,6 +147,9 @@ def _render_dashboard() -> str:
         heat=lambda spread: "heat-p1",
         at_pct=lambda when: 50.0,
         span_pct=lambda a, b: 10.0,
+        # Formatting a percentage is the renderer's job, not the
+        # template's, so the stub view has to supply it too.
+        pct=lambda fraction, places=0: f"{fraction * 100:.{places}f}%",
         legend=(),
         hour_marks=(),
         blackouts=(),
