@@ -581,6 +581,14 @@ def check_constraints(html: str) -> list[str]:
           wraps a ``url()``, which is how a stylesheet normally writes it.
         * A background set through a ``style=`` attribute rather than in a
           stylesheet is not seen.
+        * An ``@import`` inside a CSS string, such as a ``content`` value, is
+          reported as though it were real. Telling the two apart needs a CSS
+          parser rather than a pattern, which is a larger change than #278
+          asked for. A commented-out one is handled and is not reported.
+        * ``@import layer(name) "sheet.css"`` and the ``supports()`` form are
+          not matched, because the quote no longer follows the keyword. Both
+          are rare in a hand-written template, which is what this checker
+          guards.
         * ``http:`` on an allowed host is accepted here and blocked by the
           browser as mixed content.
         * The allow-lists are matched on host, so any path on an allowed host
@@ -615,6 +623,31 @@ _CSS_URL = re.compile(r"""url\(\s*(?P<quote>['"]?)(?P<target>[^'")]*)(?P=quote)\
 A font or an image referenced from CSS never appears as an attribute, so a
 check that walked only ``src`` and ``href`` would pass every externally hosted
 font ever embedded.
+"""
+
+_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+"""One CSS comment, stripped before the ``@import`` scan and nothing else.
+
+Only that scan, deliberately. A ``url()`` inside a comment was reported before
+#278 and still is, which is arguably a false positive of its own, but it is the
+behaviour on ``main`` and widening the strip to cover it would weaken a check
+that works while fixing one that did not.
+``tests/test_dashboard_constraints.py`` pins both halves.
+"""
+
+_CSS_IMPORT = re.compile(r"""@import\s+(?P<quote>['"])(?P<target>[^'"]*)(?P=quote)""")
+"""``@import`` naming its stylesheet directly, without wrapping it in ``url()``.
+
+Both are valid CSS and mean the same thing, and the bare form is the one a
+hand-written template is likelier to carry because it is shorter. `_CSS_URL`
+matches on ``url(``, so it caught one and not the other, and a stylesheet the
+checker cannot see is a page that publishes with an unreachable stylesheet:
+the sandbox blocks the request, the page still renders, and the panel that
+stylesheet styled is unstyled or absent. Nothing raises at either end. Issue
+#278 carries the reproduction.
+
+Requiring a quote immediately after the whitespace is what keeps this from
+also matching ``@import url(...)`` and reporting that target twice.
 """
 
 _CUSTOM_PROPERTY = re.compile(r"--[\w-]+\s*:")
@@ -678,6 +711,22 @@ class _Document:
         return [
             ("style", "url()", match.group("target"))
             for match in _CSS_URL.finditer(self.css)
+        ]
+
+    def css_imports(self) -> list[tuple[str, str, str]]:
+        """``@import "..."`` targets, shaped like a reference.
+
+        Separate from `css_urls` rather than folded into one pattern, so the
+        message can name the construct the reader wrote. An ``@import`` and a
+        ``url()`` are different things to go and look for in a template.
+
+        Comments are stripped first, so a commented-out import is not reported.
+        `build_dashboard` refuses to write a page that breaks a constraint, so
+        a false positive here costs a run rather than a warning.
+        """
+        return [
+            ("style", "@import", match.group("target"))
+            for match in _CSS_IMPORT.finditer(_CSS_COMMENT.sub("", self.css))
         ]
 
 
@@ -841,7 +890,8 @@ def _reference_violations(document: _Document) -> list[str]:
 
     """
     messages: list[str] = []
-    for tag, attribute, value in document.references + document.css_urls():
+    references = document.references + document.css_urls() + document.css_imports()
+    for tag, attribute, value in references:
         target = value.strip()
         if target.startswith(("#", "data:")):
             continue
