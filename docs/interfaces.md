@@ -923,15 +923,41 @@ Single column, in the order the trading day needs it:
 3. **The 28-pair matrix** as a heatmap, base down the rows and quote across the
    columns, cell colour by spread. Diverging scale centred on zero with a
    neutral grey midpoint, so a near-zero cell reads as "no view" rather than as
-   a weak signal. The ranked table underneath carries the same numbers, so no
-   value is available only through colour.
-4. **Shortlist as cards**, one per idea: pair, direction, conviction, reasoning,
+   a weak signal. Every cell prints its own spread and the pair detail below
+   lists all 28 with the same numbers, so no value is available only through
+   colour.
+
+   The diagonal prints `.`, the same placeholder the `--matrix` view uses: a
+   currency has no bias against itself and `0.00` there would read as the
+   engine finding two economies level.
+
+   A cell is faded when either leg scored below full coverage and outlined when
+   the pair carries a marker of its own. Marked rather than blocked: three of
+   the kinds in `fbe.bias.BLOCKERS` record a check that did not run rather than
+   a refusal, and a cell drawn as blocked for one of those says the engine
+   refused the pair. A leg the run holds no score for is neither mark: unknown
+   coverage and reduced coverage are different facts, the cell has room for one
+   mark, and the pair detail says which of the two this is.
+4. **Pair detail**, one disclosure per pair, widest spread first, opening to
+   the seven pillar scores on both legs, the difference each pillar makes to
+   the spread, and the observations behind them with their period, release date
+   and series id. This is the Phase 5 criterion that the dashboard shows its
+   working.
+
+   A pillar the run could not score on a leg prints `.` rather than `0.00`, for
+   the reason the diagonal does. Native `<details>` rather than script, so the
+   panel opens on a page whose script was blocked; the data is inlined at build
+   time and nothing is fetched when it opens.
+
+   Pairs are in market convention here while the matrix mirrors half its cells,
+   so one pair has one panel rather than two that differ only in sign.
+5. **Shortlist as cards**, one per idea: pair, direction, conviction, reasoning,
    size if attached, blackout if any. Cards rather than a table because this is
    the part read on a phone at arm's length.
-5. **Calendar strip.** A 24 hour axis with blackout windows shaded, events
+6. **Calendar strip.** A 24 hour axis with blackout windows shaded, events
    ticked and the current time marked, so "is the window clear" is answered by
    looking rather than by reading.
-6. **Coverage, warnings and the run-to-run diff** in the footer. Both matter and
+7. **Coverage, warnings and the run-to-run diff** in the footer. Both matter and
    neither should be the first thing on the screen.
 
 Colour and layout follow the repository's data visualisation conventions: a
@@ -953,6 +979,22 @@ It matters more here than in the report. This is the layout Phase 5 asks to be
 readable at arm's length on a phone, and two or three markers repeated down 28
 rows is the density at which the morning review carries on in form and stops in
 substance.
+
+The run conditions render in the header as one line per kind, `kind, n of 28`,
+ordered by how many pairs carry each. A kind on every pair is not repeated on
+the cells; a kind on fewer stays on the cells it belongs to and is named again
+in that pair's detail. `fbe.bias.kind_of` maps an emitted marker back to its
+kind by longest matching prefix, so `event: Core CPI at 12:30` counts as
+`event` and `event:unchecked` counts as itself rather than as a hard block.
+
+**The cards are the half of this rule the dashboard does not yet follow.** A
+shortlist card still lists every marker its pair carries, including one the
+whole run carries. The shortlist is a handful of cards rather than 28 rows, so
+the density argument above does not reach it, and
+`tests/test_blockers.py::test_the_dashboard_says_an_unchecked_marker_was_not_checked`
+pins the card's label on a single-pair run, where every marker is carried by
+every pair. Whether the rule should reach the cards, and what that test should
+then say, is a decision rather than an oversight and is recorded here as one.
 
 ### Publishing constraints
 

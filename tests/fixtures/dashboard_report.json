@@ -15,7 +15,21 @@
           "currency": "USD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "USD",
+              "frequency": "monthly",
+              "indicator": "unemployment_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "UNRATE",
+              "source": "fred",
+              "unit": "percent",
+              "value": 7.836
+            }
+          ],
           "notes": "",
           "pillar": "employment",
           "raw": 5.024,
@@ -30,7 +44,21 @@
           "currency": "USD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "USD",
+              "frequency": "quarterly",
+              "indicator": "current_account_gdp",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "USAB6BLTT02STSAQ",
+              "source": "fred",
+              "unit": "percent_of_gdp",
+              "value": 9.336
+            }
+          ],
           "notes": "",
           "pillar": "external",
           "raw": 6.024,
@@ -45,7 +73,21 @@
           "currency": "USD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "USD",
+              "frequency": "quarterly",
+              "indicator": "gdp_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "GDPC1",
+              "source": "fred",
+              "unit": "percent",
+              "value": 6.336
+            }
+          ],
           "notes": "",
           "pillar": "growth",
           "raw": 4.024,
@@ -60,7 +102,21 @@
           "currency": "USD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "USD",
+              "frequency": "monthly",
+              "indicator": "cpi_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "CPIAUCSL",
+              "source": "fred",
+              "unit": "percent",
+              "value": 4.836
+            }
+          ],
           "notes": "",
           "pillar": "inflation",
           "raw": 3.024,
@@ -75,7 +131,21 @@
           "currency": "USD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "USD",
+              "frequency": "daily",
+              "indicator": "policy_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "DFEDTARU",
+              "source": "fred",
+              "unit": "percent",
+              "value": 3.336
+            }
+          ],
           "notes": "",
           "pillar": "monetary",
           "raw": 2.024,
@@ -90,7 +160,21 @@
           "currency": "USD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "USD",
+              "frequency": "weekly",
+              "indicator": "cot_net_pct_oi",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "098662",
+              "source": "cftc",
+              "unit": "percent_of_open_interest",
+              "value": 10.836
+            }
+          ],
           "notes": "",
           "pillar": "positioning",
           "raw": 7.024,
@@ -105,7 +189,21 @@
           "currency": "USD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GLOBAL",
+              "frequency": "daily",
+              "indicator": "world_equity_index",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "SP500",
+              "source": "fred",
+              "unit": "index",
+              "value": 12.336
+            }
+          ],
           "notes": "",
           "pillar": "risk",
           "raw": 8.024,
@@ -130,7 +228,21 @@
           "currency": "NZD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "NZD",
+              "frequency": "monthly",
+              "indicator": "unemployment_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "LRHUTTTTNZQ156S",
+              "source": "fred",
+              "unit": "percent",
+              "value": 6.401
+            }
+          ],
           "notes": "",
           "pillar": "employment",
           "raw": 4.067,
@@ -145,7 +257,21 @@
           "currency": "NZD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "NZD",
+              "frequency": "quarterly",
+              "indicator": "current_account_gdp",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "NZLB6BLTT02STSAQ",
+              "source": "fred",
+              "unit": "percent_of_gdp",
+              "value": 7.901
+            }
+          ],
           "notes": "",
           "pillar": "external",
           "raw": 5.067,
@@ -160,7 +286,21 @@
           "currency": "NZD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "NZD",
+              "frequency": "quarterly",
+              "indicator": "gdp_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "NZLGDPRQPSMEI",
+              "source": "fred",
+              "unit": "percent",
+              "value": 4.901
+            }
+          ],
           "notes": "",
           "pillar": "growth",
           "raw": 3.067,
@@ -175,7 +315,21 @@
           "currency": "NZD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "NZD",
+              "frequency": "monthly",
+              "indicator": "cpi_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "DSD_PRICES@DF_PRICES_ALL/NZL.Q.N.CPI.PA._T.N.GY",
+              "source": "oecd",
+              "unit": "percent",
+              "value": 3.401
+            }
+          ],
           "notes": "",
           "pillar": "inflation",
           "raw": 2.067,
@@ -190,7 +344,21 @@
           "currency": "NZD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "NZD",
+              "frequency": "daily",
+              "indicator": "policy_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "DSD_STES@DF_FINMARK/NZL.M.IRSTCI.PA......",
+              "source": "oecd",
+              "unit": "percent",
+              "value": 1.9
+            }
+          ],
           "notes": "",
           "pillar": "monetary",
           "raw": 1.067,
@@ -205,7 +373,21 @@
           "currency": "NZD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "NZD",
+              "frequency": "weekly",
+              "indicator": "cot_net_pct_oi",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "112741",
+              "source": "cftc",
+              "unit": "percent_of_open_interest",
+              "value": 9.401
+            }
+          ],
           "notes": "",
           "pillar": "positioning",
           "raw": 6.067,
@@ -220,7 +402,21 @@
           "currency": "NZD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GLOBAL",
+              "frequency": "daily",
+              "indicator": "world_equity_index",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "SP500",
+              "source": "fred",
+              "unit": "index",
+              "value": 10.901
+            }
+          ],
           "notes": "",
           "pillar": "risk",
           "raw": 7.067,
@@ -245,7 +441,21 @@
           "currency": "GBP",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GBP",
+              "frequency": "monthly",
+              "indicator": "unemployment_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "LRHUTTTTGBM156S",
+              "source": "fred",
+              "unit": "percent",
+              "value": 5.476
+            }
+          ],
           "notes": "",
           "pillar": "employment",
           "raw": 3.451,
@@ -260,7 +470,21 @@
           "currency": "GBP",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GBP",
+              "frequency": "quarterly",
+              "indicator": "current_account_gdp",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "GBRB6BLTT02STSAQ",
+              "source": "fred",
+              "unit": "percent_of_gdp",
+              "value": 6.976
+            }
+          ],
           "notes": "",
           "pillar": "external",
           "raw": 4.451,
@@ -275,7 +499,21 @@
           "currency": "GBP",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GBP",
+              "frequency": "quarterly",
+              "indicator": "gdp_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "NGDPRSAXDCGBQ",
+              "source": "fred",
+              "unit": "percent",
+              "value": 3.976
+            }
+          ],
           "notes": "",
           "pillar": "growth",
           "raw": 2.451,
@@ -290,7 +528,21 @@
           "currency": "GBP",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GBP",
+              "frequency": "monthly",
+              "indicator": "cpi_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "DSD_PRICES@DF_PRICES_ALL/GBR.M.N.CPI.PA._T.N.GY",
+              "source": "oecd",
+              "unit": "percent",
+              "value": 2.476
+            }
+          ],
           "notes": "",
           "pillar": "inflation",
           "raw": 1.451,
@@ -305,7 +557,21 @@
           "currency": "GBP",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GBP",
+              "frequency": "daily",
+              "indicator": "policy_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "IUDBEDR",
+              "source": "boe",
+              "unit": "percent",
+              "value": 0.976
+            }
+          ],
           "notes": "",
           "pillar": "monetary",
           "raw": 0.451,
@@ -320,7 +586,21 @@
           "currency": "GBP",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GBP",
+              "frequency": "weekly",
+              "indicator": "cot_net_pct_oi",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "096742",
+              "source": "cftc",
+              "unit": "percent_of_open_interest",
+              "value": 8.476
+            }
+          ],
           "notes": "",
           "pillar": "positioning",
           "raw": 5.451,
@@ -335,7 +615,21 @@
           "currency": "GBP",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GLOBAL",
+              "frequency": "daily",
+              "indicator": "world_equity_index",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "SP500",
+              "source": "fred",
+              "unit": "index",
+              "value": 9.976
+            }
+          ],
           "notes": "",
           "pillar": "risk",
           "raw": 6.451,
@@ -360,7 +654,21 @@
           "currency": "CHF",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "CHF",
+              "frequency": "monthly",
+              "indicator": "unemployment_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "LRUN64TTCHQ156S",
+              "source": "fred",
+              "unit": "percent",
+              "value": 4.883
+            }
+          ],
           "notes": "",
           "pillar": "employment",
           "raw": 3.055,
@@ -375,7 +683,21 @@
           "currency": "CHF",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "CHF",
+              "frequency": "quarterly",
+              "indicator": "current_account_gdp",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "CHEB6BLTT02STSAQ",
+              "source": "fred",
+              "unit": "percent_of_gdp",
+              "value": 6.382
+            }
+          ],
           "notes": "",
           "pillar": "external",
           "raw": 4.055,
@@ -390,7 +712,21 @@
           "currency": "CHF",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "CHF",
+              "frequency": "quarterly",
+              "indicator": "gdp_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "CLVMNACSCAB1GQCH",
+              "source": "fred",
+              "unit": "percent",
+              "value": 3.383
+            }
+          ],
           "notes": "",
           "pillar": "growth",
           "raw": 2.055,
@@ -405,7 +741,21 @@
           "currency": "CHF",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "CHF",
+              "frequency": "monthly",
+              "indicator": "cpi_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "DSD_PRICES_COICOP2018@DF_PRICES_C2018_ALL/CHE.M.N.CPI.PA._T.N.GY",
+              "source": "oecd",
+              "unit": "percent",
+              "value": 1.883
+            }
+          ],
           "notes": "",
           "pillar": "inflation",
           "raw": 1.055,
@@ -420,7 +770,21 @@
           "currency": "CHF",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "CHF",
+              "frequency": "daily",
+              "indicator": "policy_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "DSD_STES@DF_FINMARK/CHE.M.IRSTCI.PA......",
+              "source": "oecd",
+              "unit": "percent",
+              "value": 0.383
+            }
+          ],
           "notes": "",
           "pillar": "monetary",
           "raw": 0.055,
@@ -435,7 +799,21 @@
           "currency": "CHF",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "CHF",
+              "frequency": "weekly",
+              "indicator": "cot_net_pct_oi",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "092741",
+              "source": "cftc",
+              "unit": "percent_of_open_interest",
+              "value": 7.882
+            }
+          ],
           "notes": "",
           "pillar": "positioning",
           "raw": 5.055,
@@ -450,7 +828,21 @@
           "currency": "CHF",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GLOBAL",
+              "frequency": "daily",
+              "indicator": "world_equity_index",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "SP500",
+              "source": "fred",
+              "unit": "index",
+              "value": 9.383
+            }
+          ],
           "notes": "",
           "pillar": "risk",
           "raw": 6.055,
@@ -475,7 +867,21 @@
           "currency": "CAD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "CAD",
+              "frequency": "monthly",
+              "indicator": "unemployment_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "LRHUTTTTCAM156S",
+              "source": "fred",
+              "unit": "percent",
+              "value": 4.255
+            }
+          ],
           "notes": "",
           "pillar": "employment",
           "raw": 2.637,
@@ -490,7 +896,21 @@
           "currency": "CAD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "CAD",
+              "frequency": "quarterly",
+              "indicator": "current_account_gdp",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "CANB6BLTT02STSAQ",
+              "source": "fred",
+              "unit": "percent_of_gdp",
+              "value": 5.755
+            }
+          ],
           "notes": "",
           "pillar": "external",
           "raw": 3.637,
@@ -505,7 +925,21 @@
           "currency": "CAD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "CAD",
+              "frequency": "quarterly",
+              "indicator": "gdp_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "NGDPRSAXDCCAQ",
+              "source": "fred",
+              "unit": "percent",
+              "value": 2.755
+            }
+          ],
           "notes": "",
           "pillar": "growth",
           "raw": 1.637,
@@ -520,7 +954,21 @@
           "currency": "CAD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "CAD",
+              "frequency": "monthly",
+              "indicator": "cpi_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "DSD_PRICES@DF_PRICES_ALL/CAN.M.N.CPI.PA._T.N.GY",
+              "source": "oecd",
+              "unit": "percent",
+              "value": 1.256
+            }
+          ],
           "notes": "",
           "pillar": "inflation",
           "raw": 0.637,
@@ -535,7 +983,21 @@
           "currency": "CAD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "CAD",
+              "frequency": "daily",
+              "indicator": "policy_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "DSD_STES@DF_FINMARK/CAN.M.IRSTCI.PA......",
+              "source": "oecd",
+              "unit": "percent",
+              "value": -0.244
+            }
+          ],
           "notes": "",
           "pillar": "monetary",
           "raw": -0.363,
@@ -550,7 +1012,21 @@
           "currency": "CAD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "CAD",
+              "frequency": "weekly",
+              "indicator": "cot_net_pct_oi",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "090741",
+              "source": "cftc",
+              "unit": "percent_of_open_interest",
+              "value": 7.255
+            }
+          ],
           "notes": "",
           "pillar": "positioning",
           "raw": 4.637,
@@ -565,7 +1041,21 @@
           "currency": "CAD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GLOBAL",
+              "frequency": "daily",
+              "indicator": "world_equity_index",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "SP500",
+              "source": "fred",
+              "unit": "index",
+              "value": 8.755
+            }
+          ],
           "notes": "",
           "pillar": "risk",
           "raw": 5.637,
@@ -590,7 +1080,21 @@
           "currency": "AUD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "AUD",
+              "frequency": "monthly",
+              "indicator": "unemployment_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "LRHUTTTTAUM156S",
+              "source": "fred",
+              "unit": "percent",
+              "value": 3.348
+            }
+          ],
           "notes": "",
           "pillar": "employment",
           "raw": 2.032,
@@ -605,7 +1109,21 @@
           "currency": "AUD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "AUD",
+              "frequency": "quarterly",
+              "indicator": "current_account_gdp",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "AUSB6BLTT02STSAQ",
+              "source": "fred",
+              "unit": "percent_of_gdp",
+              "value": 4.848
+            }
+          ],
           "notes": "",
           "pillar": "external",
           "raw": 3.032,
@@ -620,7 +1138,21 @@
           "currency": "AUD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "AUD",
+              "frequency": "quarterly",
+              "indicator": "gdp_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "NGDPRSAXDCAUQ",
+              "source": "fred",
+              "unit": "percent",
+              "value": 1.848
+            }
+          ],
           "notes": "",
           "pillar": "growth",
           "raw": 1.032,
@@ -635,7 +1167,21 @@
           "currency": "AUD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "AUD",
+              "frequency": "monthly",
+              "indicator": "cpi_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "DSD_PRICES@DF_PRICES_ALL/AUS.Q.N.CPI.PA._T.N.GY",
+              "source": "oecd",
+              "unit": "percent",
+              "value": 0.348
+            }
+          ],
           "notes": "",
           "pillar": "inflation",
           "raw": 0.032,
@@ -650,7 +1196,21 @@
           "currency": "AUD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "AUD",
+              "frequency": "daily",
+              "indicator": "policy_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "DSD_STES@DF_FINMARK/AUS.M.IRSTCI.PA......",
+              "source": "oecd",
+              "unit": "percent",
+              "value": -1.152
+            }
+          ],
           "notes": "",
           "pillar": "monetary",
           "raw": -0.968,
@@ -665,7 +1225,21 @@
           "currency": "AUD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "AUD",
+              "frequency": "weekly",
+              "indicator": "cot_net_pct_oi",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "232741",
+              "source": "cftc",
+              "unit": "percent_of_open_interest",
+              "value": 6.348
+            }
+          ],
           "notes": "",
           "pillar": "positioning",
           "raw": 4.032,
@@ -680,7 +1254,21 @@
           "currency": "AUD",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GLOBAL",
+              "frequency": "daily",
+              "indicator": "world_equity_index",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "SP500",
+              "source": "fred",
+              "unit": "index",
+              "value": 7.848
+            }
+          ],
           "notes": "",
           "pillar": "risk",
           "raw": 5.032,
@@ -705,7 +1293,21 @@
           "currency": "EUR",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "EUR",
+              "frequency": "monthly",
+              "indicator": "unemployment_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "LRHUTTTTDEM156S",
+              "source": "fred",
+              "unit": "percent",
+              "value": 2.292
+            }
+          ],
           "notes": "",
           "pillar": "employment",
           "raw": 1.328,
@@ -720,7 +1322,21 @@
           "currency": "EUR",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "EUR",
+              "frequency": "quarterly",
+              "indicator": "current_account_gdp",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "DEUB6BLTT02STSAQ",
+              "source": "fred",
+              "unit": "percent_of_gdp",
+              "value": 3.792
+            }
+          ],
           "notes": "",
           "pillar": "external",
           "raw": 2.328,
@@ -735,7 +1351,21 @@
           "currency": "EUR",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "EUR",
+              "frequency": "quarterly",
+              "indicator": "gdp_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "CLVMNACSCAB1GQEA19",
+              "source": "fred",
+              "unit": "percent",
+              "value": 0.792
+            }
+          ],
           "notes": "",
           "pillar": "growth",
           "raw": 0.328,
@@ -750,7 +1380,21 @@
           "currency": "EUR",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "EUR",
+              "frequency": "monthly",
+              "indicator": "cpi_yoy",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "CP0000EZ19M086NEST",
+              "source": "fred",
+              "unit": "percent",
+              "value": -0.708
+            }
+          ],
           "notes": "",
           "pillar": "inflation",
           "raw": -0.672,
@@ -765,7 +1409,21 @@
           "currency": "EUR",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "EUR",
+              "frequency": "daily",
+              "indicator": "policy_rate",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "ECBDFR",
+              "source": "fred",
+              "unit": "percent",
+              "value": -2.208
+            }
+          ],
           "notes": "",
           "pillar": "monetary",
           "raw": -1.672,
@@ -780,7 +1438,21 @@
           "currency": "EUR",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "EUR",
+              "frequency": "weekly",
+              "indicator": "cot_net_pct_oi",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "099741",
+              "source": "cftc",
+              "unit": "percent_of_open_interest",
+              "value": 5.292
+            }
+          ],
           "notes": "",
           "pillar": "positioning",
           "raw": 3.328,
@@ -795,7 +1467,21 @@
           "currency": "EUR",
           "diagnostics": {},
           "freshness_factor": null,
-          "inputs": [],
+          "inputs": [
+            {
+              "currency": "GLOBAL",
+              "frequency": "daily",
+              "indicator": "world_equity_index",
+              "meta": {},
+              "period": "2026-05-31",
+              "released_at": "2026-06-15T12:30:00+00:00",
+              "revision": 0,
+              "series_id": "SP500",
+              "source": "fred",
+              "unit": "index",
+              "value": 6.792
+            }
+          ],
           "notes": "",
           "pillar": "risk",
           "raw": 4.328,
