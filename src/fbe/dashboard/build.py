@@ -87,6 +87,7 @@ from urllib.parse import urlsplit
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
+from fbe.bias import UNCHECKED_SUFFIX, UNKNOWN_SUFFIX
 from fbe.calendar_guard import blackout_windows, is_high_impact
 from fbe.config import Config, DataConfig, ScoringConfig
 from fbe.report import build_context
@@ -95,7 +96,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from fbe.report import ReportDiff
-    from fbe.types import BiasReport, CalendarEvent
+    from fbe.types import BiasReport, CalendarEvent, PairBias
 
 __all__ = [
     "TEMPLATE_NAME",
@@ -167,6 +168,39 @@ class _Window:
 
 
 @dataclass(frozen=True, slots=True)
+class _CalendarNote:
+    """What the run can say about the calendar the strip is drawn from.
+
+    Attributes:
+        unchecked: Pairs carrying an ``event:unchecked`` marker, meaning no
+            calendar was consulted for them at all.
+        unknown: Pairs carrying an ``event:unknown`` marker, meaning a guard
+            ran and could not answer: a failed fetch, or a cached week that
+            does not reach the date.
+        reasons: The distinct reasons behind the unknown markers, in the order
+            first seen. Distinct because one failed fetch is one reason on 28
+            pairs, and printed 28 times it fills the panel and stops being
+            read.
+        total: Pairs in the run, so a count is read against something.
+
+    Both counts zero is the only state in which the strip stands on its own. An
+    empty strip otherwise is a check that did not run rather than a clear 24
+    hours, and those are opposite facts: `docs/decisions/0002-representing-not-known.md`
+    rule 3 for why an unrendered marker does not exist, and rule 4 for why the
+    two states are counted apart rather than together. The dashboard reads them
+    off `fbe.types.PairBias.blockers` because a `fbe.types.BiasReport` carries
+    the run's pairs and not the `fbe.calendar_guard.CalendarCoverage` behind
+    them.
+
+    """
+
+    unchecked: int
+    unknown: int
+    reasons: tuple[str, ...]
+    total: int
+
+
+@dataclass(frozen=True, slots=True)
 class _View:
     """Everything the template needs that is arithmetic rather than a field.
 
@@ -181,6 +215,8 @@ class _View:
         horizon: Right edge, `STRIP_HOURS` later.
         blackouts: Windows to shade, already merged by the guard.
         hour_marks: ``(instant, label)`` pairs for the strip's hour ticks.
+        calendar: What the run can say about the calendar behind the strip,
+            which is not the same question as what the strip draws.
 
     Every method here returns a finished value. The template does no
     arithmetic, because arithmetic in a template cannot be unit tested and a
@@ -196,6 +232,7 @@ class _View:
     horizon: datetime
     blackouts: tuple[_Window, ...]
     hour_marks: tuple[tuple[datetime, str], ...]
+    calendar: _CalendarNote
 
     def bar_pct(self, value: float) -> float:
         """Half-width of a ranking bar, as a percentage of the track.
@@ -372,6 +409,64 @@ def _view(
         horizon=horizon,
         blackouts=_windows(report.events, data),
         hour_marks=_hour_marks(origin, horizon),
+        calendar=_calendar_note(report.pairs),
+    )
+
+
+def _calendar_note(pairs: Sequence[PairBias]) -> _CalendarNote:
+    """Read what the run's pairs say about the calendar behind them.
+
+    Args:
+        pairs: The run's pairs in market convention. Counting the grid instead
+            would count every pair twice and report 56 of 56 for a run of 28.
+
+    Returns:
+        The `_CalendarNote`. A pair carrying several markers of one kind counts
+        once for it: the figure answers how many pairs are affected, and a pair
+        with two calendar reasons is still one pair.
+
+        The reasons come from the ``event:unknown`` markers, whose format is
+        ``"event:unknown: <reason>"``, and are deduplicated in first-seen
+        order. One failed fetch is one reason however many pairs it touched.
+        An unknown marker carrying no reason contributes to ``unknown`` and
+        nothing to ``reasons``, and the page says the reason was not recorded
+        rather than printing an empty one: a caveat with a blank reason reads
+        as a caveat whose reason the reader missed.
+
+        A pair carrying markers of both kinds counts in both figures. Each is
+        "pairs carrying at least one marker of this kind", and the two states
+        are different questions rather than two halves of one.
+
+    Nothing here decides whether a window exists. It decides whether an empty
+    strip is an answer, which is the question `fbe.calendar_guard.coverage_gap`
+    answers for a live run and which a rendered report can only answer from the
+    markers its pairs carry.
+
+    """
+    unknown_prefix = "event" + UNKNOWN_SUFFIX
+    unchecked_marker = "event" + UNCHECKED_SUFFIX
+    unchecked = 0
+    unknown = 0
+    reasons: list[str] = []
+    for row in pairs:
+        blind = [marker for marker in row.blockers if marker.startswith(unknown_prefix)]
+        if blind:
+            unknown += 1
+            for marker in blind:
+                reason = marker[len(unknown_prefix) :].lstrip(": ").strip()
+                if reason and reason not in reasons:
+                    reasons.append(reason)
+        # Prefixed rather than equal. `apply_filters` emits this kind as the
+        # key itself, so equality is correct today, and a variant carrying a
+        # reason would then be counted as nothing at all: an undercount is the
+        # quiet failure, and a marker nobody rendered does not exist.
+        if any(marker.startswith(unchecked_marker) for marker in row.blockers):
+            unchecked += 1
+    return _CalendarNote(
+        unchecked=unchecked,
+        unknown=unknown,
+        reasons=tuple(reasons),
+        total=len(pairs),
     )
 
 
@@ -430,7 +525,7 @@ def _hour_marks(
     marks = []
     cursor = first
     while cursor < horizon:
-        marks.append((cursor, f"{cursor:%H:%M}"))
+        marks.append((cursor, f"{cursor:%H:%M %Z}"))
         cursor += timedelta(hours=_STRIP_MARK_HOURS)
     return tuple(marks)
 

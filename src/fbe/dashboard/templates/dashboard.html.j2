@@ -383,6 +383,29 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
 
   <h2>Next 24 hours</h2>
   <div class="card">
+    {#- An empty strip is not a clear strip. The windows are drawn from the
+        events this run held, and a run whose calendar was not consulted, or was
+        consulted and could not answer, holds none. Both states are counted off
+        the pairs' own markers and printed here, because a reader given a blank
+        24 hours reads it as nothing scheduled. ADR 0002 rules 3 and 4. -#}
+    {% if view.calendar.unknown %}
+    <p class="meta calendar-note">
+      Calendar unknown on {{ view.calendar.unknown }} of
+      {{ view.calendar.total }} pairs{% if view.calendar.reasons %}:
+      {{ view.calendar.reasons | join('; ') }}{% else %}, with no reason
+      recorded{% endif %}.
+      The strip draws what this run held, so a window may be missing rather
+      than absent. Check the calendar by hand before acting on it.
+    </p>
+    {% endif %}
+    {% if view.calendar.unchecked %}
+    <p class="meta calendar-note">
+      Not checked on this run, on {{ view.calendar.unchecked }} of
+      {{ view.calendar.total }} pairs. No calendar was consulted for those, so
+      a quiet stretch on the strip below may be a stretch nobody looked at
+      rather than a clear 24 hours.
+    </p>
+    {% endif %}
     <div class="strip">
       {% for window in view.blackouts %}
       <div class="window"
@@ -406,7 +429,7 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
       <tbody>
         {% for event in report.events %}
         <tr>
-          <td class="num">{{ event.scheduled_for.strftime('%a %H:%M') }}</td>
+          <td class="num">{{ event.scheduled_for.strftime('%a %H:%M %Z') }}</td>
           <td>{{ event.currency }}</td>
           <td>{{ event.title }}</td>
           <td>{{ event.impact }}</td>

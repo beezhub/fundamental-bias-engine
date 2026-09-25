@@ -928,9 +928,28 @@ Single column, in the order the trading day needs it:
 4. **Shortlist as cards**, one per idea: pair, direction, conviction, reasoning,
    size if attached, blackout if any. Cards rather than a table because this is
    the part read on a phone at arm's length.
-5. **Calendar strip.** A 24 hour axis with blackout windows shaded, events
-   ticked and the current time marked, so "is the window clear" is answered by
-   looking rather than by reading.
+5. **Calendar strip.** A 24 hour axis from the run's generation time, with
+   blackout windows shaded, events ticked and the current time marked, so "is
+   the window clear" is answered by looking rather than by reading. The event
+   list under it carries the same releases, because a band is thin on a phone
+   and a value only available by hovering is a value a phone cannot read.
+
+   Every time on this page prints its zone. The instants are aware UTC and the
+   page is read away from the machine that built it, where nothing else on
+   screen fixes the zone: a bare `13:00` read in Johannesburg stands aside two
+   hours late. The strip prints UTC rather than converting, because the
+   renderer cannot know where the page will be opened. `fbe calendar` does
+   convert, because it runs on the owner's own machine.
+
+   **An empty strip is not a clear strip.** The windows are drawn from the
+   events the run held, and a run whose calendar was not consulted, or was
+   consulted and could not answer, holds none. Both states are named above the
+   strip with the number of pairs carrying them, read from the pairs' own
+   `event:unchecked` and `event:unknown` markers, because a `BiasReport` holds
+   its pairs and not the `CalendarCoverage` behind them. An unknown marker
+   carrying no reason says so rather than printing an empty one. A run whose
+   calendar answered carries no caveat at all: a caveat on every page is a
+   caveat nobody reads.
 6. **Coverage, warnings and the run-to-run diff** in the footer. Both matter and
    neither should be the first thing on the screen.
 
