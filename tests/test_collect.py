@@ -1839,15 +1839,24 @@ def test_the_failures_are_ordered_so_two_runs_print_the_same(
     data_config: DataConfig,
 ) -> None:
     """A refresh line that reorders between runs cannot be diffed, and the
-    operator comparing this morning against yesterday is the reader."""
+    operator comparing this morning against yesterday is the reader.
+
+    Eight pairs rather than three on purpose. The routed pairs arrive as a
+    frozenset, whose iteration order depends on the hash seed and so differs
+    between processes; with three pairs an unsorted implementation agrees with
+    this assertion about one run in six, which is how it survived the first
+    mutation sweep. With eight the agreement is about one run in forty
+    thousand.
+    """
+    pairs = [
+        (indicator, currency)
+        for indicator in ("yield_2y", "cpi_yoy")
+        for currency in ("JPY", "AUD", "GBP", "NZD")
+    ]
     alpha, _ = _series_source(
         "alpha",
-        refs=[("yield_2y", "JPY"), ("cpi_yoy", "JPY"), ("cpi_yoy", "AUD")],
-        fails={
-            ("yield_2y", "JPY"): SourceError("one"),
-            ("cpi_yoy", "JPY"): SourceError("two"),
-            ("cpi_yoy", "AUD"): SourceError("three"),
-        },
+        refs=pairs,
+        fails={pair: SourceError("down") for pair in pairs},
     )
 
     result = collect_module.collect(
@@ -1856,14 +1865,11 @@ def test_the_failures_are_ordered_so_two_runs_print_the_same(
         end=END,
         sources=(alpha,),
         indicators=["cpi_yoy", "yield_2y"],
-        currencies=["AUD", "JPY"],
+        currencies=["AUD", "GBP", "JPY", "NZD"],
     )
 
-    assert [(f.indicator, f.currency) for f in result.outcomes[0].failures] == [
-        ("cpi_yoy", "AUD"),
-        ("cpi_yoy", "JPY"),
-        ("yield_2y", "JPY"),
-    ]
+    named = [(f.indicator, f.currency) for f in result.outcomes[0].failures]
+    assert named == sorted(pairs)
 
 
 # --- #275, through the source that produced the evidence --------------------
