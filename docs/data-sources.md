@@ -55,7 +55,7 @@ reaches after the retries are spent.
 | OECD SDMX | series | That `(indicator, currency)`, named on the refresh line. The others are served and cached. |
 | FRED | source | Every series the run asked FRED for. |
 | Central banks and debt offices | source | That provider's series. Each institution is its own source class, so one bank being down is already one named gap: ADR 0013. |
-| CFTC COT | source | Every COT series, which arrive in one file. |
+| CFTC COT | source | Every COT series the run asked for. It has the OECD's shape, one Socrata request per contract code, so the question of series scope arises here too and ADR 0015 leaves it unruled. |
 | Stooq | source | Every price proxy the run asked for. |
 | Forex Factory | source | The calendar. No pillar reads it. |
 | Manual | source | The operator's overrides for the run. |

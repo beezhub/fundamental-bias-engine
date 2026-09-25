@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -2413,11 +2413,13 @@ def test_the_other_currencies_move_only_by_the_renormalisation(
         moved = abs(
             float(degraded[currency][MONETARY]) - float(baseline[currency][MONETARY])
         )
-        # The measured moves are 0.01 on the rendered two decimals, and the
-        # case this separates them from is a currency dropping out of the
-        # cross-section entirely, which moves the others by 0.06 to 0.13.
-        # Three hundredths of the -3..+3 band sits between the two with room
-        # on both sides, rather than being tuned to either.
+        # The measured moves are 0.01 on the rendered two decimals. The case
+        # this separates them from is a currency dropping out of the
+        # cross-section entirely, which was measured at 0.06 to 0.13 by
+        # running this fixture against a deliberately wrong implementation
+        # during verification: one where a failed series cost that currency's
+        # whole answer. Three hundredths of the -3..+3 band sits between the
+        # two with room on both sides, rather than being tuned to either.
         assert moved <= 0.03, (currency, moved)
 
 
@@ -2448,6 +2450,44 @@ def test_losing_enough_components_takes_the_currency_to_n_a(
         if currency == "JPY":
             continue
         assert degraded[currency][MONETARY] != "n/a", currency
+
+
+def test_a_source_that_fails_midway_through_yielding_serves_nothing(
+    data_config: DataConfig,
+) -> None:
+    """A series is served or it is lost, never both.
+
+    `DataSource.fetch` is typed to return a sequence and every source here
+    returns a list, so this cannot happen today. It is one word of defence
+    against the day one of them yields instead: `list.extend` keeps what it
+    consumed before the iterator raised, and those observations would then sit
+    in the result beside the same series recorded as a failure. Half a series'
+    history scored as though it were the whole is a wrong number that looks
+    right, and an untested guard is one somebody deletes.
+    """
+    emitted = _observation("cpi_yoy", "JPY", 0.9)
+
+    def half_a_series() -> Iterator[Observation]:
+        yield emitted
+        raise SourceError("died after the first row")
+
+    alpha, _ = _series_source("alpha", refs=[("cpi_yoy", "JPY")])
+    alpha.fetch = lambda *_args, **_kwargs: half_a_series()  # type: ignore[method-assign]
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(alpha,),
+        indicators=["cpi_yoy"],
+        currencies=["JPY"],
+    )
+
+    assert result.observations == ()
+    assert result.outcomes[0].status is collect_module.SourceStatus.FAILED
+    assert [(f.indicator, f.currency) for f in result.outcomes[0].failures] == [
+        ("cpi_yoy", "JPY")
+    ]
 
 
 def test_force_still_clears_the_cache_for_a_series_scoped_source(

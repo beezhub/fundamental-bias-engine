@@ -79,7 +79,18 @@ band and leaves five unchanged. That residual is the model working as designed.
 What must not happen, and no longer does, is another currency losing its score
 or its coverage.
 
-`prices` and `cot` are not ruled on. FRED needs the same treatment and not in
-#275: the refs its `fetch` passes over with `continue`, from the #169 fix,
-would become a daily failure line under rule 3, and that needs its own
-decision.
+Rule 3 reasons about the default window, which is
+`ScoringConfig.lookback_years`. A window narrower than a series' own period is
+outside that reasoning: `fbe refresh --since` a few days ago asks every
+quarterly series for a span it cannot hold a print in, and each is then named
+as dead. The observations are unaffected and the empty bodies cache under their
+own period keys, so the cost is a false cause on the refresh line and a wasted
+run rather than a wrong number. Filed rather than guessed at, because a gate on
+the window is a second rule and the wrong one would restore the silent empty
+success.
+
+`prices` and `cot` are not ruled on, and `cot` is worth a look: it issues one
+request per contract code, so it has the shape this record is about. FRED needs
+the same treatment and not in #275: the refs its `fetch` passes over with
+`continue`, from the #169 fix, would become a daily failure line under rule 3,
+and that needs its own decision.

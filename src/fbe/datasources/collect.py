@@ -188,7 +188,14 @@ class CollectionResult:
 
     @property
     def failed(self) -> tuple[SourceOutcome, ...]:
-        """The sources that raised, in the order they were tried."""
+        """The sources that served nothing, in the order they were tried.
+
+        A series-scoped source that lost some series but not all of them is
+        `SourceStatus.PARTIAL` and is not here: it filled most of the cache and
+        the scorer has something to read. The distinction matters to anything
+        that treats this as "what went wrong today", which would under-report
+        a partial morning, so read ``outcomes`` for that.
+        """
         return tuple(
             outcome
             for outcome in self.outcomes
@@ -463,7 +470,13 @@ def _collect_per_series(
     started = time.monotonic()
     for indicator, currency in sorted(pairs):
         try:
-            served.extend(source.fetch([indicator], [currency], start, end))
+            # Bound before extending. `list.extend` keeps what it consumed
+            # before an iterator raised, so a source that yielded two
+            # observations and then failed would leave both in the result
+            # while the same series is recorded as lost. No source does that
+            # today, since `fetch` is typed to return a sequence, and the
+            # whole-source path below is already safe for the same reason.
+            served.extend(tuple(source.fetch([indicator], [currency], start, end)))
         except Exception as error:  # noqa: BLE001
             # Not only SourceError, for the same reason the whole-source catch
             # below takes everything: a parser raising ValueError on one bad

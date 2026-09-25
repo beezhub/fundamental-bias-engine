@@ -555,6 +555,23 @@ class OecdSource(BaseDataSource):
                 a case this registry has. Contrast `fbe.datasources.cot`, which
                 documents empty as a reading.
 
+                That reasoning is about the default window, which is
+                ``ScoringConfig.lookback_years``. It does not hold for a window
+                narrower than the series' own period: ``fbe refresh --since``
+                a few days ago asks every quarterly series for a window it
+                cannot have a print in, and each one is named here as dead. The
+                observations are unaffected and the empty bodies cache under
+                their own period keys, so the cost is a false cause on the
+                refresh line rather than a wrong number. Loud and wrong about
+                the cause beats the silent empty success this replaced, and the
+                narrow-window case is filed rather than guessed at.
+
+                This assumes the caller asks for one series at a time, which
+                `fbe.datasources.collect` does because this source declares
+                `fbe.datasources.base.FailureScope.SERIES`. Under one wide call
+                the raise would discard the series that had already answered,
+                which is #275 one level down.
+
         """
         wanted_indicators = set(indicators)
         wanted_currencies = set(currencies)
