@@ -79,7 +79,11 @@ SNB_LAST = (date(2025, 7, 31), -0.083)
 
 @pytest.fixture
 def source(tmp_path: Path) -> Iterator[CurvesSource]:
-    curves = CurvesSource(DataConfig(cache_dir=tmp_path / "cache"))
+    # manual_dir under tmp_path as well: provider_health asks the RBNZ, which
+    # reads any workbook dropped into the repository's data/manual (#283).
+    curves = CurvesSource(
+        DataConfig(cache_dir=tmp_path / "cache", manual_dir=tmp_path / "manual")
+    )
     yield curves
     curves.close()
 

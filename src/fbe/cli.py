@@ -751,9 +751,23 @@ def _probe(source: object, timeout: float) -> tuple[CheckStatus, str]:
     # when it builds its own client; this call does not go through that client.
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
+    # The probe is the source's own request or it proves nothing. The Bank of
+    # England refuses the client default User-Agent with a 403 and answers its
+    # database URL with a redirect on every request, so a bare GET reads a
+    # healthy provider as refused or as moved. Both settings come off the
+    # source, never from here, so the probe and the fetch cannot drift.
+    headers: Mapping[str, str] = dict(getattr(source, "default_headers", {}))
+    follow_redirects = bool(getattr(source, "follow_redirects", False))
+
     started = time.monotonic()
     try:
-        response = httpx.get(url, params=params, timeout=timeout)
+        response = httpx.get(
+            url,
+            params=params,
+            headers=headers,
+            follow_redirects=follow_redirects,
+            timeout=timeout,
+        )
     except httpx.TimeoutException:
         return CheckStatus.WARN, f"{name} unreachable (timeout after {timeout}s)"
     except Exception as error:  # noqa: BLE001

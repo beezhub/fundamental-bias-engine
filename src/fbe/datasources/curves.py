@@ -18,7 +18,24 @@ That is the trade this module encapsulates.
 
 Each provider covers exactly one currency. None can substitute for another, so
 losing one provider is losing a currency's heaviest pillar rather than
-degrading a series. Fail loudly here.
+degrading a series. What fails loudly, and at what scope: a provider that
+raises, or answers with no rows, is a raised `SourceError` for that provider,
+and the collector records it as a failed source under the provider's own name.
+It costs that provider's currencies and nothing else. Until #218 every
+provider lived behind one ``curves`` source, so one central bank's website
+being down cost every two-year yield in the run and MONETARY printed n/a for
+six currencies; ADR 0013 rules that the loud failure belongs one level down.
+
+The shape that follows
+----------------------
+`CurvesSource` is the shared base. It holds every parser and every fetcher,
+because the seven formats are the knowledge worth keeping in one file. Seven
+thin subclasses, `EcbSource` through `RbnzSource`, each carry one provider
+key as their ``name``, that provider's root as their ``base_url``, and a
+`refs()` filtered to that key, and those seven are what `ALL_SOURCES` lists.
+The base itself is not in that tuple: with an empty ``base_url`` it can still
+fetch from every provider, which `provider_health` and the tests use, but as a
+source in a run it would be the fan-out this module no longer is.
 
 The providers
 -------------
@@ -122,6 +139,7 @@ import re
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from types import MappingProxyType
 
 import openpyxl
@@ -129,34 +147,54 @@ import openpyxl
 from fbe.config import DataConfig
 from fbe.datasources.base import (
     BaseDataSource,
+    ProbeRequest,
     RateLimit,
     RetryPolicy,
     SourceError,
 )
-from fbe.datasources.registry import CURVE_SOURCES, INDICATORS, SeriesRef
+from fbe.datasources.registry import (
+    CURVE_SOURCES,
+    INDICATORS,
+    SeriesRef,
+    staleness_allowance,
+)
 from fbe.types import Observation
 
 __all__ = [
     "BOC_BASE_URL",
+    "BOE_BASE_URL",
     "BOE_GLC_SERIES_PREFIX",
     "BOE_IADB_URL",
     "BOE_YIELD_CURVE_ZIP",
     "ECB_BASE_URL",
+    "MOF_JP_BASE_URL",
     "MOF_JP_CURRENT_URL",
     "MOF_JP_HISTORY_URL",
     "POLICY_RATE_CODES",
     "PROVIDER_FOR_CURRENCY",
+    "PROVIDER_SOURCES",
     "RATE_LIMIT",
+    "RBA_BASE_URL",
     "RBA_F2_URL",
     "RBNZ_B2_URL",
+    "RBNZ_BASE_URL",
     "RBNZ_DATA_SHEET",
+    "RBNZ_DROP_IN_FILENAME",
     "RBNZ_SERIES_ID_ROW_LABEL",
     "RBNZ_UNIT",
     "RBNZ_UNIT_ROW_LABEL",
+    "SNB_BASE_URL",
     "SNB_CUBE_URL",
     "TWO_YEAR_REFS",
     "USER_AGENT",
+    "BocSource",
+    "BoeSource",
     "CurvesSource",
+    "EcbSource",
+    "MofJpSource",
+    "RbaSource",
+    "RbnzSource",
+    "SnbSource",
 ]
 
 
@@ -184,26 +222,31 @@ BOC_BASE_URL = "https://www.bankofcanada.ca/valet/"
 ECB_BASE_URL = "https://data-api.ecb.europa.eu/service/data/"
 """Verified live. Append the SDMX key, then ``?format=csvdata``."""
 
-MOF_JP_CURRENT_URL = (
-    "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/jgbcme.csv"
-)
+MOF_JP_BASE_URL = "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/"
+"""The directory both Ministry of Finance files sit under, and `MofJpSource`'s
+``base_url``. Answers a bare GET with the index page, which is enough for
+``fbe doctor`` to tell the site is up; the probe asks for the current-month file
+so that a body is judged rather than a status."""
+
+MOF_JP_CURRENT_URL = f"{MOF_JP_BASE_URL}jgbcme.csv"
 """Current month only. Verified live."""
 
-MOF_JP_HISTORY_URL = (
-    "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/"
-    "historical/jgbcme_all.csv"
-)
+MOF_JP_HISTORY_URL = f"{MOF_JP_BASE_URL}historical/jgbcme_all.csv"
 """1974 to the end of last month. Verified live. Both files are needed: neither
 covers the full range on its own, and the current-month file is the only place
 today's number appears."""
 
-BOE_IADB_URL = "https://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp"
+BOE_BASE_URL = "https://www.bankofengland.co.uk/"
+"""`BoeSource`'s ``base_url``. The site root rather than either endpoint,
+because the two paths this source reads share nothing below the host."""
+
+BOE_IADB_URL = f"{BOE_BASE_URL}boeapps/iadb/fromshowcolumns.asp"
 """Verified live. Query: ``csv.x=yes``, ``Datefrom``/``Dateto`` as
 ``DD/Mon/YYYY``, ``SeriesCodes`` comma separated, ``CSVF=TN``, ``UsingCodes=Y``,
 ``VPD=Y``, ``VFD=N``. Follows a redirect, so the client must allow one."""
 
 BOE_YIELD_CURVE_ZIP = (
-    "https://www.bankofengland.co.uk/-/media/boe/files/statistics/"
+    f"{BOE_BASE_URL}-/media/boe/files/statistics/"
     "yield-curves/latest-yield-curve-data.zip"
 )
 """Verified live. Members: ``GLC Nominal daily data current month.xlsx``,
@@ -211,20 +254,34 @@ BOE_YIELD_CURVE_ZIP = (
 month.xlsx``, ``OIS daily data current month.xlsx``. The nominal one holds the
 2-year gilt spot rate."""
 
+BOE_PROBE_WINDOW_DAYS = 14
+"""How far back `BoeSource.probe_request` asks the database for Bank Rate.
+Two weeks always holds at least one business day, so a healthy database
+answers with a row rather than an empty table, and the body is small."""
+
 BOE_GLC_SHEET = "3. spot, short end"
 BOE_GLC_MEMBER = "GLC Nominal daily data current month.xlsx"
 BOE_GLC_DATE_EPOCH = date(1899, 12, 30)
 """Column A of the sheet is days since this date, the Excel serial convention."""
 
-RBA_F2_URL = "https://www.rba.gov.au/statistics/tables/csv/f2-data.csv"
+RBA_BASE_URL = "https://www.rba.gov.au/statistics/tables/csv/"
+"""`RbaSource`'s ``base_url``. The directory itself answers a bare GET with
+HTTP 403, so the probe names the table rather than the root."""
+
+RBA_F2_URL = f"{RBA_BASE_URL}f2-data.csv"
 """Verified live. Capital market yields, government bonds."""
 
 RBA_SERIES_ID_ROW_LABEL = "Series ID"
 """The row that carries the machine-readable series IDs. Find it by label; the
 number of metadata rows above it is not stable."""
 
+RBNZ_BASE_URL = "https://www.rbnz.govt.nz/"
+"""`RbnzSource`'s ``base_url``. From a blocked vantage the root answers 403
+exactly as the workbook does, so a doctor line here reads the same as a refresh
+failure would, which is the point."""
+
 RBNZ_B2_URL = (
-    "https://www.rbnz.govt.nz/-/media/project/sites/rbnz/files/statistics/"
+    f"{RBNZ_BASE_URL}-/media/project/sites/rbnz/files/statistics/"
     "series/b/b2/hb2-daily-close.xlsx"
 )
 """Table B2, daily wholesale interest rates, the daily close workbook from 2018.
@@ -232,6 +289,15 @@ Taken from the owner's browser download history on 2026-09-16: the filename is
 ``hb2-daily-close.xlsx``, and the two paths guessed before it were wrong on the
 filename alone. Reachable from a residential or mobile connection only; see the
 module docstring."""
+
+RBNZ_DROP_IN_FILENAME = "rbnz-hb2-daily-close.xlsx"
+"""The workbook's name under ``DataConfig.manual_dir`` when the owner has
+downloaded it by hand. `RbnzSource` reads that file first and makes no request
+while it exists (#282). The RBNZ refuses this engine's HTTP client on the TLS
+handshake from the owner's own connection, while a browser on the same
+connection is served, so the file is the one route the number reliably has.
+Git-ignored: it is public data reproducible by one download, and 430 kilobytes
+that change weekly are not the audit trail."""
 
 RBNZ_DATA_SHEET = "Data"
 RBNZ_SERIES_ID_ROW_LABEL = "Series Id"
@@ -242,7 +308,10 @@ Checked on every read rather than assumed, because the neighbouring columns
 carry the same unit and a similar range, so a unit change is the one thing
 a plausibility check on the value would not catch."""
 
-SNB_CUBE_URL = "https://data.snb.ch/api/cube/{cube}/data/csv/en"
+SNB_BASE_URL = "https://data.snb.ch/api/cube/"
+"""`SnbSource`'s ``base_url``. The cube API root; every cube hangs off it."""
+
+SNB_CUBE_URL = f"{SNB_BASE_URL}{{cube}}/data/csv/en"
 """Verified live as an endpoint. See the module docstring on why the bond
 cubes cannot currently be used."""
 
@@ -432,17 +501,28 @@ class CurvesSource(BaseDataSource):
     Dispatches per currency to whichever provider publishes that curve, since
     no two of them share a format.
 
+    This is the shared base and the fan-out. It is not in `ALL_SOURCES`: the
+    seven subclasses below are, one per provider, and each is what a run
+    constructs. Constructed directly, with its empty ``base_url``, it can still
+    fetch from every provider, which is what `provider_health` needs and what
+    the parser tests use; as a source in a run it would be the whole-source
+    failure ADR 0013 rules out.
+
     Attributes:
-        name: ``"curves"``. Note that individual `SeriesRef` entries carry the
-            specific provider key (``"boc"``, ``"ecb"``, ``"mof_jp"``,
-            ``"boe"``, ``"rba"``, ``"snb"``, ``"rbnz"``) rather than this name, so an
-            `Observation` records which institution published it. A report that
-            said only "curves" would lose the one fact a reader wants when a
-            number looks wrong.
+        name: ``"curves"`` on the base; each subclass sets its provider key.
+            Individual `SeriesRef` entries carry the provider key regardless,
+            so an `Observation` records which institution published it. A
+            report that said only "curves" would lose the one fact a reader
+            wants when a number looks wrong.
+        providers: The registry provider keys this source serves. The base
+            serves all of `CURVE_SOURCES`; a subclass narrows it to its own
+            key, and `refs()` is filtered by it, so the collector asks each
+            provider only for the currencies it publishes.
 
     """
 
     name = "curves"
+    providers: frozenset[str] = CURVE_SOURCES
     follow_redirects = True
     """The Bank of England's interactive database answers its documented URL
     with a 302 on every request, so here the redirect is the endpoint rather
@@ -456,11 +536,11 @@ class CurvesSource(BaseDataSource):
     and therefore every provider this source talks to."""
 
     base_url = ""
-    """Empty on purpose. This source reads from seven institutions, so there is
-    no
-    one root to hang a path off; each provider method passes its whole URL as
-    the path instead. That also means `fbe doctor` has no single base URL to
-    probe for this source, which is the honest answer for a fan-out."""
+    """Empty on the base, which reads from seven institutions and so has no one
+    root. Each subclass sets its provider's root, and every fetcher expresses
+    its URL through `_path`, which is the whole URL here and the part below the
+    root there. That is also what gives `fbe doctor` a base URL per provider
+    to probe, which the fan-out never had."""
 
     rate_limit = RATE_LIMIT
     retry = RetryPolicy(attempts=3, backoff_seconds=2.0)
@@ -532,12 +612,45 @@ class CurvesSource(BaseDataSource):
             f"how several of these report an unknown series code, at HTTP 200."
         )
 
+    def _path(self, url: str) -> str:
+        """Express a provider URL relative to this source's ``base_url``.
+
+        Every fetcher is written against a whole URL, because the constants
+        are what the docs, the tests and an operator's browser share. On the
+        base, whose ``base_url`` is empty, the path is the whole URL and the
+        request goes out unchanged. On a provider subclass the root is
+        stripped, so `BaseDataSource._request` rebuilds the same URL from
+        ``base_url`` plus this.
+
+        Args:
+            url: The whole URL a fetcher wants.
+
+        Returns:
+            What `_request` should be handed so that it asks for ``url``.
+
+        Raises:
+            SourceError: When this source names a root and ``url`` is not
+                under it. Appending the whole URL to the root would produce a
+                request to nowhere that the provider might still answer with
+                a 404 page, and a fetcher on the wrong subclass is a defect
+                worth naming rather than a slow way to fetch nothing.
+
+        """
+        if not self.base_url:
+            return url
+        if not url.startswith(self.base_url):
+            raise SourceError(
+                f"{self.name} was asked for {url}, which is not under its root "
+                f"{self.base_url}; a fetcher is running on the wrong provider"
+            )
+        return url.removeprefix(self.base_url)
+
     def _body(self, path: str, params: Mapping[str, str | int | float]) -> str:
         """Fetch one URL through the shared request path and return its text.
 
         Args:
-            path: The whole URL. ``base_url`` is empty on this source, so the
-                path carries the host as well.
+            path: What `_path` returned for the URL wanted: the whole URL on
+                the base, the part below the root on a provider subclass.
             params: Query parameters.
 
         Returns:
@@ -707,15 +820,28 @@ class CurvesSource(BaseDataSource):
             SourceError: When the provider fails, naming the provider and the
                 currency. No other provider is tried: each publishes only its
                 own country, so a fallback would be a different country's
-                curve presented as this one's.
+                curve presented as this one's. Also when the provider answers
+                and the answer holds no session inside the window: silence
+                from a single-currency provider is that currency's heaviest
+                pillar gone, and an empty success would let it go quietly.
+                ADR 0013's third rule, enforced here so that it holds for
+                every provider source at once.
 
         """
         try:
-            return self._dispatch(ref.source, ref.series_id, start, end)
+            readings = self._dispatch(ref.source, ref.series_id, start, end)
         except SourceError as error:
             raise SourceError(
                 f"{ref.source} could not supply {currency}: {error}"
             ) from error
+        if not readings:
+            raise SourceError(
+                f"{ref.source} answered but served no session for {currency} "
+                f"between {start} and {end}. That is a lost pillar for "
+                f"{currency}, not an empty series, so it is reported as a "
+                "failure of this provider."
+            )
+        return readings
 
     def _dispatch(
         self, provider: str, series_id: str, start: date, end: date
@@ -771,17 +897,21 @@ class CurvesSource(BaseDataSource):
         return fetcher(series_id, start, end)
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
-        """Return every registry entry whose source is one of the curve providers.
+        """Return every registry entry whose source is one of this source's providers.
 
         Returns:
-            Mapping from ``(indicator, currency)`` to its `SeriesRef`.
+            Mapping from ``(indicator, currency)`` to its `SeriesRef`. All
+            seven providers' entries on the base; one provider's on a
+            subclass, which is what makes the collector ask `EcbSource` for
+            the euro and nothing else, and what makes one provider's failure
+            cost its own currencies and no other's.
 
         """
         return {
             (spec.key, currency): ref
             for spec in INDICATORS.values()
             for currency, ref in spec.series.items()
-            if ref.source in CURVE_SOURCES
+            if ref.source in self.providers
         }
 
     def fetch_boc(
@@ -802,7 +932,7 @@ class CurvesSource(BaseDataSource):
 
         """
         text = self._body(
-            f"{BOC_BASE_URL}observations/{series_id}/json",
+            self._path(f"{BOC_BASE_URL}observations/{series_id}/json"),
             {"start_date": start.isoformat(), "end_date": end.isoformat()},
         )
         try:
@@ -852,7 +982,7 @@ class CurvesSource(BaseDataSource):
 
         """
         text = self._body(
-            f"{ECB_BASE_URL}{key}",
+            self._path(f"{ECB_BASE_URL}{key}"),
             {
                 "format": "csvdata",
                 "startPeriod": start.isoformat(),
@@ -928,7 +1058,7 @@ class CurvesSource(BaseDataSource):
                 no such tenor, or when a value is present and unreadable.
 
         """
-        raw = self._request(url, {})
+        raw = self._request(self._path(url), {})
         if not isinstance(raw, bytes):
             raise SourceError(f"{self.name} decoded {url} into something unusable")
         try:
@@ -1007,7 +1137,7 @@ class CurvesSource(BaseDataSource):
 
         """
         raw = self._request(
-            BOE_IADB_URL,
+            self._path(BOE_IADB_URL),
             {
                 "csv.x": "yes",
                 "Datefrom": start.strftime(BOE_IADB_DATE_FORMAT),
@@ -1077,7 +1207,7 @@ class CurvesSource(BaseDataSource):
                 or when no header maturity is within tolerance of the request.
 
         """
-        raw = self._request(BOE_YIELD_CURVE_ZIP, {})
+        raw = self._request(self._path(BOE_YIELD_CURVE_ZIP), {})
         if not isinstance(raw, bytes):
             raise SourceError(
                 f"{self.name} decoded the archive into something unusable"
@@ -1220,7 +1350,7 @@ class CurvesSource(BaseDataSource):
                 and have changed between releases.
 
         """
-        text = self._body(RBA_F2_URL, {})
+        text = self._body(self._path(RBA_F2_URL), {})
         rows = list(csv.reader(io.StringIO(text)))
         header = next(
             (row for row in rows if row and row[0].strip() == RBA_SERIES_ID_ROW_LABEL),
@@ -1283,7 +1413,7 @@ class CurvesSource(BaseDataSource):
             SourceError: On repeated request failure or an unreadable body.
 
         """
-        raw = self._request(SNB_CUBE_URL.format(cube=cube), {})
+        raw = self._request(self._path(SNB_CUBE_URL.format(cube=cube)), {})
         if not isinstance(raw, bytes):
             raise SourceError(f"{self.name} decoded the cube into something unusable")
         text = raw.decode("utf-8-sig", errors="replace")
@@ -1345,14 +1475,18 @@ class CurvesSource(BaseDataSource):
                 cloud egress is HTTP 403 with the RBNZ's own challenge page;
                 on a body that is not a workbook; on a missing data sheet or
                 series-ID row; on an ID the sheet does not carry; or on a
-                column published in a unit other than `RBNZ_UNIT`.
+                column published in a unit other than `RBNZ_UNIT`. Also when
+                the workbook came from the drop-in file and its newest
+                session is older, at ``end``, than the registry's staleness
+                allowance for the NZD two-year: a stale download must be a
+                loud absence, not a quiet month-old yield (#283).
+
+        The workbook comes from the drop-in file when one exists and from the
+        wire otherwise; see `_rbnz_workbook`. The parse is the same either way,
+        so a wrong file is refused by the same checks as a wrong body.
 
         """
-        raw = self._request(RBNZ_B2_URL, {})
-        if not isinstance(raw, bytes):
-            raise SourceError(
-                f"{self.name} decoded the workbook into something unusable"
-            )
+        raw, drop_in = self._rbnz_workbook()
         try:
             workbook = openpyxl.load_workbook(
                 io.BytesIO(raw), read_only=True, data_only=True
@@ -1366,7 +1500,17 @@ class CurvesSource(BaseDataSource):
                 f"rbnz workbook holds no {RBNZ_DATA_SHEET!r} sheet; it holds "
                 f"{', '.join(workbook.sheetnames)}"
             )
-        rows = list(workbook[RBNZ_DATA_SHEET].iter_rows(values_only=True))
+        sheet = workbook[RBNZ_DATA_SHEET]
+        # The RBNZ publishes the workbook with every sheet's dimension element
+        # declared as a single cell, "A1". In read-only mode openpyxl trusts
+        # that declaration and yields one empty row, so the labelled-row
+        # search reported the file as carrying no series-ID row (#283, found
+        # on the first real download). Resetting makes the reader walk the
+        # cells that are actually there. The test fixture had been re-saved
+        # by openpyxl with a correct dimension, which is why the tests passed
+        # against a file the parser could not read.
+        sheet.reset_dimensions()
+        rows = list(sheet.iter_rows(values_only=True))
         id_row = self._rbnz_labelled_row(rows, RBNZ_SERIES_ID_ROW_LABEL)
         ids = rows[id_row]
         try:
@@ -1384,11 +1528,20 @@ class CurvesSource(BaseDataSource):
                 "the registry promises percent and no conversion is applied"
             )
         parsed: list[tuple[date, float]] = []
+        newest: date | None = None
         for row in rows[id_row + 1 :]:
             if not row or len(row) <= column:
                 continue
             session = self._curve_session(row[0])
-            if session is None or not start <= session <= end:
+            if session is None:
+                continue
+            if row[column] is not None and (newest is None or session > newest):
+                # Newest priced session in the whole file, window or not: the
+                # freshness of a download is a fact about the file, and a
+                # backtest window that ends years ago must not read a current
+                # file as stale.
+                newest = session
+            if not start <= session <= end:
                 continue
             cell = row[column]
             value = self._reading(
@@ -1396,8 +1549,90 @@ class CurvesSource(BaseDataSource):
             )
             if value is not None:
                 parsed.append((session, value))
+        if drop_in is not None:
+            self._refuse_stale_drop_in(drop_in, newest, end)
         parsed.sort()
         return parsed
+
+    def _rbnz_workbook(self) -> tuple[bytes, Path | None]:
+        """Return the B2 workbook's bytes, and where they came from.
+
+        The drop-in file under ``DataConfig.manual_dir`` wins whenever it
+        exists, and no request is made. Predictable beats adaptive: reading
+        the file only when the RBNZ refused would make a run's behaviour
+        depend on the provider's mood that morning, and an operator could not
+        say from the output which route produced the number. The file is not
+        the cache: it is read on every run, offline or not, and is subject to
+        the freshness rule in `_refuse_stale_drop_in` rather than to the
+        cache's lifetime.
+
+        Returns:
+            The bytes and the file's path, or the bytes and ``None`` when they
+            came off the wire.
+
+        Raises:
+            SourceError: From `_request` on the wire route, or when the file
+                exists and cannot be read, which is a permissions or disk
+                problem worth naming rather than a reason to fall back to a
+                request the RBNZ will refuse.
+
+        """
+        drop_in = Path(self.config.manual_dir) / RBNZ_DROP_IN_FILENAME
+        if drop_in.exists():
+            try:
+                return drop_in.read_bytes(), drop_in
+            except OSError as error:
+                raise SourceError(
+                    f"rbnz could not read the drop-in workbook {drop_in}: {error}"
+                ) from error
+        raw = self._request(self._path(RBNZ_B2_URL), {})
+        if not isinstance(raw, bytes):
+            raise SourceError(
+                f"{self.name} decoded the workbook into something unusable"
+            )
+        return raw, None
+
+    def _refuse_stale_drop_in(
+        self, drop_in: Path, newest: date | None, end: date
+    ) -> None:
+        """Raise when the drop-in file is too old to carry weight at ``end``.
+
+        The allowance is the registry's own for the NZD two-year, the same
+        number past which `fbe.scoring.freshness` gives the leg no weight, so
+        the file is refused at exactly the age at which its number would have
+        stopped counting. Measured against ``end`` rather than today so a
+        backtest as of an earlier date reads the file as of that date.
+
+        Args:
+            drop_in: The file, named in the error so the operator knows what
+                to replace.
+            newest: The newest priced session in the file, or ``None`` when
+                the two-year column holds no value at all.
+            end: The run's as-of date.
+
+        Raises:
+            SourceError: Naming the file, its newest session, the allowance
+                and the URL to download a fresh copy from. A stale download
+                that scored quietly would be a wrong number that looks right,
+                which is the failure this whole codebase is built to avoid.
+
+        """
+        ref = INDICATORS["yield_2y"].series["NZD"]
+        allowance = staleness_allowance(ref, ref.frequency)
+        if newest is None:
+            raise SourceError(
+                f"rbnz drop-in workbook {drop_in} carries no priced two-year "
+                f"session at all; download a fresh copy from {RBNZ_B2_URL}"
+            )
+        age = (end - newest).days
+        if age > allowance:
+            raise SourceError(
+                f"rbnz drop-in workbook {drop_in} is stale: its newest session "
+                f"is {newest}, {age} days before {end}, and the allowance for "
+                f"the NZD two-year is {allowance} days. Download a fresh copy "
+                f"from {RBNZ_B2_URL} and replace the file, or delete it to "
+                "fetch from the wire."
+            )
 
     def _rbnz_labelled_row(self, rows: Sequence[Sequence[object]], label: str) -> int:
         """Find the header row of the B2 sheet that starts with ``label``.
@@ -1480,3 +1715,169 @@ class CurvesSource(BaseDataSource):
         # it, which is the answer the method exists to distinguish.
         end = date.today()
         return self._dispatch(provider, series_id, start, end)
+
+    def _probe_for(self, url: str, params: Mapping[str, str]) -> ProbeRequest:
+        """Describe a doctor probe against one of this provider's real URLs.
+
+        Args:
+            url: The whole URL, as the fetchers write it.
+            params: Query parameters, all strings, never a credential.
+
+        Returns:
+            A `ProbeRequest` whose body check is `_decode`: the same shape
+            test every fetched body passes before it is cached. A 200 that
+            carries an HTML page, which is how several of these providers
+            report a block or an unknown series, is refused by it, so doctor
+            cannot print a blocked provider as healthy with a latency.
+
+        """
+        return ProbeRequest(
+            path=self._path(url), params=dict(params), verify=self._decode
+        )
+
+
+class EcbSource(CurvesSource):
+    """The ECB Data Portal, which serves the euro two-year and nothing else here.
+
+    One of the seven provider sources `ALL_SOURCES` lists in place of the
+    fan-out; see the module docstring for why the split exists.
+    """
+
+    name = "ecb"
+    base_url = ECB_BASE_URL
+    providers = frozenset({"ecb"})
+
+    def probe_request(self) -> ProbeRequest:
+        """Ask for the newest point of the series the monetary pillar reads."""
+        return self._probe_for(
+            f"{ECB_BASE_URL}{TWO_YEAR_REFS['EUR'][1]}",
+            {"format": "csvdata", "lastNObservations": "1"},
+        )
+
+
+class BocSource(CurvesSource):
+    """Bank of Canada Valet, which serves the Canadian two-year."""
+
+    name = "boc"
+    base_url = BOC_BASE_URL
+    providers = frozenset({"boc"})
+
+    def probe_request(self) -> ProbeRequest:
+        """Ask for the newest point of the series the monetary pillar reads."""
+        return self._probe_for(
+            f"{BOC_BASE_URL}observations/{TWO_YEAR_REFS['CAD'][1]}/json",
+            {"recent": "1"},
+        )
+
+
+class MofJpSource(CurvesSource):
+    """Japan's Ministry of Finance, which serves the JGB two-year."""
+
+    name = "mof_jp"
+    base_url = MOF_JP_BASE_URL
+    providers = frozenset({"mof_jp"})
+
+    def probe_request(self) -> ProbeRequest:
+        """Ask for the current-month file, the only one carrying today's number."""
+        return self._probe_for(MOF_JP_CURRENT_URL, {})
+
+
+class BoeSource(CurvesSource):
+    """The Bank of England, the only provider here serving two indicators.
+
+    Bank Rate comes from the interactive database and the gilt two-year from
+    the yield curve archive, two paths that share nothing below the host.
+    """
+
+    name = "boe"
+    base_url = BOE_BASE_URL
+    providers = frozenset({"boe"})
+
+    def probe_request(self) -> ProbeRequest:
+        """Ask the database for two weeks of Bank Rate.
+
+        The database rather than the archive, because the archive is a
+        400-kilobyte ZIP and a probe should be cheap. Bank Rate rather than a
+        gilt because the database carries no two-year, and this is the series
+        the run actually reads from it.
+        """
+        end = date.today()
+        start = end - timedelta(days=BOE_PROBE_WINDOW_DAYS)
+        return self._probe_for(
+            BOE_IADB_URL,
+            {
+                "csv.x": "yes",
+                "Datefrom": start.strftime(BOE_IADB_DATE_FORMAT),
+                "Dateto": end.strftime(BOE_IADB_DATE_FORMAT),
+                "SeriesCodes": POLICY_RATE_CODES["GBP"],
+                "CSVF": "TN",
+                "UsingCodes": "Y",
+                "VPD": "Y",
+                "VFD": "N",
+            },
+        )
+
+
+class RbaSource(CurvesSource):
+    """The Reserve Bank of Australia's table F2, the Australian two-year."""
+
+    name = "rba"
+    base_url = RBA_BASE_URL
+    providers = frozenset({"rba"})
+
+    def probe_request(self) -> ProbeRequest:
+        """Ask for the table itself: the directory above it answers 403."""
+        return self._probe_for(RBA_F2_URL, {})
+
+
+class SnbSource(CurvesSource):
+    """The Swiss National Bank's cube API.
+
+    Listed although the registry routes no series to it today: the cube is
+    frozen, so CHF's two-year comes from the manual source. The collector
+    reports this source as "no series routed to it", which is true, and
+    `provider_health` still asks it for the frozen cube so an operator can see
+    the date it stopped on.
+    """
+
+    name = "snb"
+    base_url = SNB_BASE_URL
+    providers = frozenset({"snb"})
+
+    def probe_request(self) -> ProbeRequest:
+        """Ask for the bond cube, frozen or not: reachable is the question."""
+        return self._probe_for(SNB_CUBE_URL.format(cube=SNB_BOND_CUBE), {})
+
+
+class RbnzSource(CurvesSource):
+    """The Reserve Bank of New Zealand's table B2 workbook, the NZ two-year.
+
+    Reachable from a residential or mobile connection only, and from some of
+    those only by a browser or curl: the block keys on the client's TLS
+    handshake rather than on any header. From a blocked vantage this source
+    fails, is reported by name, and costs NZD its two-year and nothing else,
+    which is the whole point of it being its own source.
+    """
+
+    name = "rbnz"
+    base_url = RBNZ_BASE_URL
+    providers = frozenset({"rbnz"})
+
+    def probe_request(self) -> ProbeRequest:
+        """Ask for the workbook: the root answers 403 from the same vantages."""
+        return self._probe_for(RBNZ_B2_URL, {})
+
+
+PROVIDER_SOURCES: tuple[type[CurvesSource], ...] = (
+    EcbSource,
+    BocSource,
+    MofJpSource,
+    BoeSource,
+    RbaSource,
+    SnbSource,
+    RbnzSource,
+)
+"""The seven provider sources, in the order `ALL_SOURCES` lists them. One per
+key in `CURVE_SOURCES`, and a test holds the two sets equal so a provider added
+to the registry cannot be forgotten here, where forgetting it means its
+currency is never fetched and nothing says so."""
