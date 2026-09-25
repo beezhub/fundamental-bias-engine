@@ -44,13 +44,14 @@ from enum import StrEnum
 
 from fbe.config import DataConfig
 from fbe.datasources import ALL_SOURCES
-from fbe.datasources.base import BaseDataSource
+from fbe.datasources.base import BaseDataSource, FailureScope
 from fbe.datasources.registry import GLOBAL, INDICATORS, SOURCE_MANUAL, stale_refs
 from fbe.types import Observation
 from fbe.universe import G10
 
 __all__ = [
     "CollectionResult",
+    "SeriesFailure",
     "SourceOutcome",
     "SourceStatus",
     "collect",
@@ -70,8 +71,45 @@ class SourceStatus(StrEnum):
     SKIPPED = "skipped"
     """It was never asked: not selected, not configured, or not yet built."""
 
+    PARTIAL = "partial"
+    """It answered, and named series are gone.
+
+    Only a source declaring `fbe.datasources.base.FailureScope.SERIES` can
+    reach this. A member rather than prose on ``COMPLETED``, per ADR 0015: a
+    completed outcome carrying its losses in ``detail`` is a fact nothing can
+    group and nothing reads, and the refresh line would print as success. What
+    was lost is in ``SourceOutcome.failures``.
+    """
+
     FAILED = "failed"
-    """It was asked and it raised. A named gap, not a reason to stop."""
+    """It was asked and it raised. A named gap, not a reason to stop.
+
+    Also where a series-scoped source ends up when every series it was asked
+    for failed. Thirty named gaps and a source that did not fail is honest and
+    useless: it buries the one fact the operator needs, which is that the
+    provider is unavailable. There is no threshold between this and
+    ``PARTIAL``: all served is completed, some served is partial, none served
+    is failed.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class SeriesFailure:
+    """One series a source was asked for and could not serve.
+
+    Attributes:
+        indicator: Canonical indicator key, as `SeriesRef` names it.
+        currency: ISO 4217 code, or ``GLOBAL``.
+        detail: The exception type and message, so the refresh line says what
+            went wrong rather than that something did. Prose, and the only
+            field here that is: the pair above it is what anything grouping or
+            counting these reads.
+
+    """
+
+    indicator: str
+    currency: str
+    detail: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,8 +127,14 @@ class SourceOutcome:
             override is applied, so a source's own line says what it served
             rather than what survived.
         elapsed_seconds: Wall-clock time inside ``fetch``. Zero for a source
-            that was never asked.
+            that was never asked. For a series-scoped source, the time across
+            every call it took to ask for each series.
         detail: Why it was skipped, or what it raised. Empty when it completed.
+        failures: The series this source was asked for and could not serve,
+            ordered by indicator then currency so two runs print the same.
+            Empty for every status but ``PARTIAL`` and a series-scoped
+            ``FAILED``: a whole source that raised has no per-series detail to
+            give, and its one reason is in ``detail``.
 
     """
 
@@ -100,6 +144,7 @@ class SourceOutcome:
     observations: int
     elapsed_seconds: float
     detail: str = ""
+    failures: tuple[SeriesFailure, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +367,9 @@ def _collect_one(
         # rather than serving the copy the operator asked to be rid of.
         source.cache.clear(name)
 
+    if source.failure_scope is FailureScope.SERIES:
+        return _collect_per_series(source, pairs, start, end)
+
     started = time.monotonic()
     try:
         observations = tuple(
@@ -355,6 +403,104 @@ def _collect_one(
         ),
         observations,
     )
+
+
+def _collect_per_series(
+    source: BaseDataSource,
+    pairs: frozenset[tuple[str, str]],
+    start: date,
+    end: date,
+) -> tuple[SourceOutcome, Sequence[Observation]]:
+    """Ask a series-scoped source for one series at a time.
+
+    The narrowing lives here rather than in the source, per ADR 0015. ``fetch``
+    keeps its contract of returning or raising, so no adapter has to report its
+    own partial failures and none can forget to, and the same catch that covers
+    a whole fetch covers each call.
+
+    Args:
+        source: The constructed source, declaring
+            `fbe.datasources.base.FailureScope.SERIES`.
+        pairs: The ``(indicator, currency)`` pairs routed to it, already
+            narrowed to what this run asked for.
+        start: Earliest period, inclusive.
+        end: Latest period, inclusive.
+
+    Returns:
+        One outcome and every observation the series that answered returned.
+        ``COMPLETED`` when none failed, ``PARTIAL`` when some did, ``FAILED``
+        when all did, with each failure named either way. No threshold sits
+        between the three.
+
+        A series that answers with nothing and does not raise is served, not
+        failed. Whether an empty window is data or a dead series is the
+        source's call and not the collector's: COT documents empty as a
+        reading, and `fbe.datasources.oecd.OecdSource` raises on it.
+
+    """
+    served: list[Observation] = []
+    failures: list[SeriesFailure] = []
+    started = time.monotonic()
+    for indicator, currency in sorted(pairs):
+        try:
+            served.extend(source.fetch([indicator], [currency], start, end))
+        except Exception as error:  # noqa: BLE001
+            # Not only SourceError, for the same reason the whole-source catch
+            # below takes everything: a parser raising ValueError on one bad
+            # row is that series' problem, and letting it out would cost the
+            # other thirty-eight.
+            failures.append(
+                SeriesFailure(
+                    indicator=indicator,
+                    currency=currency,
+                    detail=f"{type(error).__name__}: {error}",
+                )
+            )
+
+    elapsed = time.monotonic() - started
+    observations = tuple(served)
+    if not failures:
+        status = SourceStatus.COMPLETED
+    elif len(failures) == len(pairs):
+        status = SourceStatus.FAILED
+    else:
+        status = SourceStatus.PARTIAL
+    return (
+        SourceOutcome(
+            source=source.name,
+            status=status,
+            # Counted from what came back, as a completed source's count is,
+            # so the line reconciles with the observations beside it rather
+            # than reporting what was asked for.
+            series=len({(o.indicator, o.currency) for o in observations}),
+            observations=len(observations),
+            elapsed_seconds=elapsed,
+            detail=_series_detail(failures, len(pairs)),
+            failures=tuple(failures),
+        ),
+        observations,
+    )
+
+
+def _series_detail(failures: Sequence[SeriesFailure], asked: int) -> str:
+    """Return the one-line summary beside a series-scoped outcome.
+
+    Args:
+        failures: What could not be served.
+        asked: How many series the source was asked for.
+
+    Returns:
+        Empty when nothing failed, so a completed source's line is unchanged.
+        Otherwise the count against the number asked for, which is the figure
+        that says whether this was one bad series or an outage. The series
+        themselves are in ``SourceOutcome.failures`` rather than here: a reader
+        that has to parse this sentence to find out what was lost is the shape
+        ADR 0015 rejected.
+
+    """
+    if not failures:
+        return ""
+    return f"{len(failures)} of {asked} series failed"
 
 
 def collect(

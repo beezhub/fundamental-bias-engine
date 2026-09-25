@@ -29,7 +29,13 @@ from typer.testing import CliRunner, Result
 from fbe.cli import EXIT_OK, EXIT_UNUSABLE, app
 from fbe.config import DataConfig
 from fbe.datasources import collect as collect_module
-from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy, SourceError
+from fbe.datasources.base import (
+    BaseDataSource,
+    FailureScope,
+    RateLimit,
+    RetryPolicy,
+    SourceError,
+)
 from fbe.datasources.cache import BODY_SUFFIX, META_SUFFIX
 from fbe.datasources.curves import RBA_F2_URL, RbaSource
 from fbe.datasources.fred import FredSource
@@ -1483,3 +1489,852 @@ def test_the_three_sources_landed_in_208_are_asked_rather_than_skipped(
     # it today, which is a different line from "not yet built".
     assert by_name["stooq"].status is collect_module.SourceStatus.SKIPPED
     assert by_name["stooq"].detail == "no series routed to it"
+
+
+# --- #275: a series inside a source is a named gap --------------------------
+#
+# `_collect_one` called `fetch` once for the whole request, so the first series
+# to fail after its retries cost every series the source was asked for. On
+# 2026-09-24 and again on the 25th the OECD answered 38 series and cached every
+# one of them, then `JPN.M.IRSTCI.PA` failed and the source was recorded as
+# failed with zero observations: coverage fell from 64-96% to 34-51% and every
+# pair went neutral. ADR 0015 extends ADR 0013's three rules to series scope.
+
+
+def _series_source(
+    name: str,
+    *,
+    refs: Iterable[tuple[str, str]] = (),
+    observations: Sequence[Observation] = (),
+    fails: Mapping[tuple[str, str], Exception] | None = None,
+    scope: FailureScope = FailureScope.SERIES,
+) -> tuple[type[BaseDataSource], list[_Ask]]:
+    """A source asked one series at a time, failing the pairs named in ``fails``.
+
+    Returns only the observations whose ``(indicator, currency)`` matches the
+    call, so a test can tell what each individual call served rather than only
+    what the run ended with.
+    """
+    asked: list[_Ask] = []
+    ref_map = {pair: _ref(name) for pair in refs}
+    failures = dict(fails or {})
+
+    class _Built(BaseDataSource):
+        """A series-scoped source under test."""
+
+        rate_limit = RateLimit(requests=1000, per_seconds=60.0)
+        retry = RetryPolicy(attempts=1)
+        failure_scope = scope
+
+        def available(self) -> bool:
+            return True
+
+        def fetch(
+            self,
+            indicators: Iterable[str],
+            currencies: Iterable[str],
+            start: date,
+            end: date,
+        ) -> Sequence[Observation]:
+            wanted_indicators = tuple(sorted(indicators))
+            wanted_currencies = tuple(sorted(currencies))
+            asked.append(_Ask(wanted_indicators, wanted_currencies, start, end))
+            for pair, error in failures.items():
+                if pair[0] in wanted_indicators and pair[1] in wanted_currencies:
+                    raise error
+            return [
+                observation
+                for observation in observations
+                if observation.indicator in wanted_indicators
+                and observation.currency in wanted_currencies
+            ]
+
+        def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
+            return ref_map
+
+    _Built.name = name
+    return _Built, asked
+
+
+def test_a_series_scoped_source_is_asked_one_series_at_a_time(
+    data_config: DataConfig,
+) -> None:
+    """The mechanism the ruling chose: the collector narrows the request, so
+    `fetch` keeps its contract of returning or raising and no source has to
+    report its own partial failures."""
+    alpha, asked = _series_source(
+        "alpha", refs=[("cpi_yoy", "GBP"), ("cpi_yoy", "AUD"), ("yield_2y", "GBP")]
+    )
+
+    collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(alpha,),
+        indicators=["cpi_yoy", "yield_2y"],
+        currencies=["GBP", "AUD"],
+    )
+
+    assert [(ask.indicators, ask.currencies) for ask in asked] == [
+        (("cpi_yoy",), ("AUD",)),
+        (("cpi_yoy",), ("GBP",)),
+        (("yield_2y",), ("GBP",)),
+    ]
+
+
+def test_a_source_scoped_source_is_still_asked_once(
+    data_config: DataConfig,
+) -> None:
+    """The default is unchanged, so a source that has not declared series
+    scope fails whole exactly as it did before."""
+    alpha, asked = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP"), ("cpi_yoy", "AUD")],
+        scope=FailureScope.SOURCE,
+    )
+
+    collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(alpha,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP", "AUD"],
+    )
+
+    assert [(ask.indicators, ask.currencies) for ask in asked] == [
+        (("cpi_yoy",), ("AUD", "GBP"))
+    ]
+
+
+def test_one_series_failing_leaves_every_other_series_served(
+    data_config: DataConfig,
+) -> None:
+    """The defect, at its own scale. Two series survive one failing."""
+    served = [
+        _observation("cpi_yoy", "GBP", 2.1),
+        _observation("yield_2y", "GBP", 3.4),
+    ]
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP"), ("cpi_yoy", "JPY"), ("yield_2y", "GBP")],
+        observations=served,
+        fails={("cpi_yoy", "JPY"): SourceError("HTTP 500 after 3 attempts")},
+    )
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(alpha,),
+        indicators=["cpi_yoy", "yield_2y"],
+        currencies=["GBP", "JPY"],
+    )
+
+    outcome = result.outcomes[0]
+    assert {(o.indicator, o.currency) for o in result.observations} == {
+        ("cpi_yoy", "GBP"),
+        ("yield_2y", "GBP"),
+    }
+    assert outcome.status is collect_module.SourceStatus.PARTIAL
+    assert [(f.indicator, f.currency) for f in outcome.failures] == [("cpi_yoy", "JPY")]
+    assert "HTTP 500 after 3 attempts" in outcome.failures[0].detail
+
+
+def test_a_completed_outcome_never_carries_failures(
+    data_config: DataConfig,
+) -> None:
+    """`COMPLETED` is the status every consumer reads as "this source is fine",
+    so a completed outcome holding losses is the ADR 0002 shape: the fact is
+    present and nothing reads it."""
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP")],
+        observations=[_observation("cpi_yoy", "GBP", 2.1)],
+    )
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(alpha,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP"],
+    )
+
+    assert result.outcomes[0].status is collect_module.SourceStatus.COMPLETED
+    assert result.outcomes[0].failures == ()
+
+
+def test_partial_is_not_completed(data_config: DataConfig) -> None:
+    """The status is a member rather than prose on `COMPLETED` precisely so
+    that this comparison can be made, and so that a partial run cannot be
+    grouped with the healthy ones."""
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP"), ("cpi_yoy", "JPY")],
+        observations=[_observation("cpi_yoy", "GBP", 2.1)],
+        fails={("cpi_yoy", "JPY"): SourceError("down")},
+    )
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(alpha,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP", "JPY"],
+    )
+
+    status = result.outcomes[0].status
+    assert status is collect_module.SourceStatus.PARTIAL
+    assert status is not collect_module.SourceStatus.COMPLETED
+    assert status != collect_module.SourceStatus.COMPLETED
+
+
+def test_every_series_failing_is_a_failed_source_naming_all_of_them(
+    data_config: DataConfig,
+) -> None:
+    """No threshold anywhere, and the one place the old behaviour is right:
+    thirty named gaps and a source that did not fail is honest and useless,
+    because it buries the fact the operator needs."""
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP"), ("cpi_yoy", "JPY")],
+        fails={
+            ("cpi_yoy", "GBP"): SourceError("gbp is down"),
+            ("cpi_yoy", "JPY"): SourceError("jpy is down"),
+        },
+    )
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(alpha,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP", "JPY"],
+    )
+
+    outcome = result.outcomes[0]
+    assert outcome.status is collect_module.SourceStatus.FAILED
+    assert [(f.indicator, f.currency) for f in outcome.failures] == [
+        ("cpi_yoy", "GBP"),
+        ("cpi_yoy", "JPY"),
+    ]
+    assert result.observations == ()
+
+
+def test_a_source_that_does_not_declare_series_scope_still_fails_whole(
+    data_config: DataConfig,
+) -> None:
+    """The default is opt-in for a reason: a source whose provider fails as one
+    thing has nothing to gain from being asked one series at a time, and the
+    request count would rise for every one of them."""
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP"), ("cpi_yoy", "JPY")],
+        observations=[_observation("cpi_yoy", "GBP", 2.1)],
+        fails={("cpi_yoy", "JPY"): SourceError("jpy is down")},
+        scope=FailureScope.SOURCE,
+    )
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(alpha,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP", "JPY"],
+    )
+
+    outcome = result.outcomes[0]
+    assert outcome.status is collect_module.SourceStatus.FAILED
+    assert outcome.failures == ()
+    assert result.observations == ()
+
+
+def test_the_failed_sources_include_the_partial_ones_nowhere(
+    data_config: DataConfig,
+) -> None:
+    """`CollectionResult.failed` is documented as the sources that raised, and
+    a partial source did not. Keeping it that way matters because the refresh
+    exit code is about whether anything was collected, and a partial run has
+    filled most of the cache."""
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP"), ("cpi_yoy", "JPY")],
+        observations=[_observation("cpi_yoy", "GBP", 2.1)],
+        fails={("cpi_yoy", "JPY"): SourceError("jpy is down")},
+    )
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(alpha,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP", "JPY"],
+    )
+
+    assert result.failed == ()
+    assert result.usable
+
+
+def test_a_partial_source_counts_only_the_series_it_served(
+    data_config: DataConfig,
+) -> None:
+    """The counts line reconciles with the observations beside it, as it does
+    for a completed source. A partial source reporting the series it was asked
+    for would overstate what reached the cache."""
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP"), ("cpi_yoy", "JPY"), ("yield_2y", "GBP")],
+        observations=[
+            _observation("cpi_yoy", "GBP", 2.1),
+            _observation("yield_2y", "GBP", 3.4),
+        ],
+        fails={("cpi_yoy", "JPY"): SourceError("jpy is down")},
+    )
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(alpha,),
+        indicators=["cpi_yoy", "yield_2y"],
+        currencies=["GBP", "JPY"],
+    )
+
+    assert result.outcomes[0].series == 2
+    assert result.outcomes[0].observations == 2
+
+
+def test_a_series_that_serves_nothing_without_raising_is_not_a_failure(
+    data_config: DataConfig,
+) -> None:
+    """Whether an empty window is data or a fault is the source's call, not the
+    collector's: COT documents empty as a reading and the OECD treats it as a
+    dead series. The collector records what it was told."""
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP"), ("cpi_yoy", "JPY")],
+        observations=[_observation("cpi_yoy", "GBP", 2.1)],
+    )
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(alpha,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP", "JPY"],
+    )
+
+    assert result.outcomes[0].status is collect_module.SourceStatus.COMPLETED
+    assert result.outcomes[0].failures == ()
+
+
+def test_the_failures_are_ordered_so_two_runs_print_the_same(
+    data_config: DataConfig,
+) -> None:
+    """A refresh line that reorders between runs cannot be diffed, and the
+    operator comparing this morning against yesterday is the reader."""
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("yield_2y", "JPY"), ("cpi_yoy", "JPY"), ("cpi_yoy", "AUD")],
+        fails={
+            ("yield_2y", "JPY"): SourceError("one"),
+            ("cpi_yoy", "JPY"): SourceError("two"),
+            ("cpi_yoy", "AUD"): SourceError("three"),
+        },
+    )
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(alpha,),
+        indicators=["cpi_yoy", "yield_2y"],
+        currencies=["AUD", "JPY"],
+    )
+
+    assert [(f.indicator, f.currency) for f in result.outcomes[0].failures] == [
+        ("cpi_yoy", "AUD"),
+        ("cpi_yoy", "JPY"),
+        ("yield_2y", "JPY"),
+    ]
+
+
+# --- #275, through the source that produced the evidence --------------------
+
+OECD_ROWS = "REF_AREA,TIME_PERIOD,OBS_VALUE\nGBR,2026-06,2.1\n"
+"""A minimal SDMX CSV. The decoder reads two columns by name, so this stands in
+for any series."""
+
+OECD_EMPTY = "REF_AREA,TIME_PERIOD,OBS_VALUE\n"
+"""Well formed, and no rows in the window."""
+
+
+@pytest.fixture
+def prompt_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The OECD's real backoff is 5s doubling, so a test that waits it out
+    takes fifteen seconds. The attempt count is what matters here and is kept."""
+    monkeypatch.setattr(
+        OecdSource, "retry", RetryPolicy(attempts=3, backoff_seconds=0.0)
+    )
+
+
+def _oecd_routes(failing: str, status: int = 500) -> None:
+    """Serve every OECD series but the one whose key holds ``failing``."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if failing in str(request.url):
+            return httpx.Response(status, text="upstream error")
+        return httpx.Response(200, text=OECD_ROWS)
+
+    respx.get(url__startswith=OECD_BASE_URL).mock(side_effect=answer)
+
+
+@respx.mock
+def test_one_oecd_series_failing_does_not_cost_the_others(
+    data_config: DataConfig, prompt_retries: None
+) -> None:
+    """The reported defect. One series failing after its retries cost every
+    OECD-backed indicator for every currency, twice in two days."""
+    _oecd_routes("JPN")
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(OecdSource,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP", "JPY"],
+    )
+
+    outcome = result.outcomes[0]
+    assert {(o.indicator, o.currency) for o in result.observations} == {
+        ("cpi_yoy", "GBP")
+    }
+    assert outcome.status is collect_module.SourceStatus.PARTIAL
+    assert [(f.indicator, f.currency) for f in outcome.failures] == [("cpi_yoy", "JPY")]
+    assert "500" in outcome.failures[0].detail
+
+
+@respx.mock
+def test_every_oecd_series_failing_is_a_failed_source(
+    data_config: DataConfig, prompt_retries: None
+) -> None:
+    """A whole provider outage still reads as one, rather than as a list of
+    thirty-eight gaps beside a source that did not fail."""
+    respx.get(url__startswith=OECD_BASE_URL).mock(
+        return_value=httpx.Response(500, text="upstream error")
+    )
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(OecdSource,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP", "JPY"],
+    )
+
+    outcome = result.outcomes[0]
+    assert outcome.status is collect_module.SourceStatus.FAILED
+    assert [(f.indicator, f.currency) for f in outcome.failures] == [
+        ("cpi_yoy", "GBP"),
+        ("cpi_yoy", "JPY"),
+    ]
+    assert result.observations == ()
+
+
+@respx.mock
+def test_an_oecd_series_with_no_rows_in_the_window_is_a_named_failure(
+    data_config: DataConfig,
+) -> None:
+    """Rule 3 of ADR 0013 at series scope, and it stays in the source: the
+    collector cannot tell a dead series from a quiet one, and an OECD key aimed
+    at the wrong dataflow answers exactly like a series that holds nothing."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if "JPN" in str(request.url):
+            return httpx.Response(200, text=OECD_EMPTY)
+        return httpx.Response(200, text=OECD_ROWS)
+
+    respx.get(url__startswith=OECD_BASE_URL).mock(side_effect=answer)
+
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(OecdSource,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP", "JPY"],
+    )
+
+    outcome = result.outcomes[0]
+    assert outcome.status is collect_module.SourceStatus.PARTIAL
+    assert [(f.indicator, f.currency) for f in outcome.failures] == [("cpi_yoy", "JPY")]
+    assert "SourceError" in outcome.failures[0].detail
+    assert {(o.indicator, o.currency) for o in result.observations} == {
+        ("cpi_yoy", "GBP")
+    }
+
+
+@respx.mock
+def test_an_offline_run_serves_the_cached_series_and_names_the_missing_one(
+    data_config: DataConfig, prompt_retries: None
+) -> None:
+    """The second half of the report: 38 series were cached and the offline
+    refresh afterwards refused on the one entry that was never written, so the
+    38 bodies on disk were unusable too."""
+    _oecd_routes("JPN")
+    collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(OecdSource,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP", "JPY"],
+    )
+
+    offline = collect_module.collect(
+        replace(data_config, offline=True),
+        start=START,
+        end=END,
+        sources=(OecdSource,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP", "JPY"],
+    )
+
+    outcome = offline.outcomes[0]
+    assert {(o.indicator, o.currency) for o in offline.observations} == {
+        ("cpi_yoy", "GBP")
+    }
+    assert outcome.status is collect_module.SourceStatus.PARTIAL
+    assert [(f.indicator, f.currency) for f in outcome.failures] == [("cpi_yoy", "JPY")]
+
+
+@respx.mock
+def test_the_oecd_still_makes_one_request_per_series(
+    data_config: DataConfig,
+) -> None:
+    """Narrowing the request must not widen the request count. The OECD already
+    issued one narrow request per series, because broad queries are what trigger
+    its throttle."""
+    route = respx.get(url__startswith=OECD_BASE_URL).mock(
+        return_value=httpx.Response(200, text=OECD_ROWS)
+    )
+
+    collect_module.collect(
+        data_config,
+        start=START,
+        end=END,
+        sources=(OecdSource,),
+        indicators=["cpi_yoy", "core_cpi_yoy"],
+        currencies=["GBP", "JPY"],
+    )
+
+    assert route.call_count == 4
+
+
+# --- #275: what a partial source looks like on the refresh line -------------
+
+
+def _partial_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, type[BaseDataSource]]:
+    """A run whose only source serves one series and loses another."""
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP"), ("cpi_yoy", "JPY")],
+        observations=[_observation("cpi_yoy", "GBP", 2.4)],
+        fails={("cpi_yoy", "JPY"): SourceError("HTTP 500 after 3 attempts")},
+    )
+    _cli_sources(monkeypatch, alpha)
+    return _config_file(tmp_path), alpha
+
+
+def test_a_partial_source_prints_its_counts_and_is_marked_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The counts still print, because most of the cache was filled, and the
+    word says the line is not a clean one. A partial run rendered like a
+    completed one is the refresh reading as success, which is the whole defect
+    one layer up."""
+    path, _ = _partial_cli(tmp_path, monkeypatch)
+
+    result = _run(path)
+
+    line = next(row for row in result.stdout.splitlines() if row.startswith("alpha"))
+    assert "1 series" in line
+    assert "1 observations" in line
+    assert "partial" in line
+
+
+def test_a_partial_source_prints_one_line_per_failed_series(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Criterion: the source, the currency, the indicator, the word failed and
+    the error, so the operator chasing a missing currency reads it here rather
+    than diffing two days of coverage."""
+    path, _ = _partial_cli(tmp_path, monkeypatch)
+
+    result = _run(path)
+
+    failure = next(
+        row for row in result.stdout.splitlines() if "cpi_yoy" in row and "JPY" in row
+    )
+    assert "alpha" in failure
+    assert "failed" in failure
+    assert "HTTP 500 after 3 attempts" in failure
+
+
+def test_a_partial_refresh_exits_the_same_as_a_completed_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Most of the cache is filled and the scorer has something to read, so
+    this is a run worth looking at rather than one that could not happen."""
+    path, _ = _partial_cli(tmp_path, monkeypatch)
+
+    result = _run(path)
+
+    assert result.exit_code == EXIT_OK
+
+
+def test_a_completed_source_prints_no_failure_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The block appears only when there is something in it. A heading with
+    nothing under it teaches the reader to skip the place the losses print."""
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP")],
+        observations=[_observation("cpi_yoy", "GBP", 2.4)],
+    )
+    _cli_sources(monkeypatch, alpha)
+
+    result = _run(_config_file(tmp_path))
+
+    assert "failed" not in result.stdout
+    assert "partial" not in result.stdout
+
+
+def test_a_source_that_lost_every_series_prints_them_and_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failed rather than partial, and the series still print: the operator
+    needs both that the provider is gone and which currencies went with it."""
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP"), ("cpi_yoy", "JPY")],
+        fails={
+            ("cpi_yoy", "GBP"): SourceError("gbp is down"),
+            ("cpi_yoy", "JPY"): SourceError("jpy is down"),
+        },
+    )
+    _cli_sources(monkeypatch, alpha)
+
+    result = _run(_config_file(tmp_path))
+
+    assert result.exit_code == EXIT_UNUSABLE
+    assert "gbp is down" in result.stdout
+    assert "jpy is down" in result.stdout
+
+
+def test_the_partial_line_says_how_many_series_were_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One of thirty-eight and thirty-seven of thirty-eight are different
+    mornings, and the count is what tells them apart at a glance."""
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP"), ("cpi_yoy", "JPY"), ("cpi_yoy", "AUD")],
+        observations=[_observation("cpi_yoy", "GBP", 2.4)],
+        fails={
+            ("cpi_yoy", "JPY"): SourceError("jpy is down"),
+            ("cpi_yoy", "AUD"): SourceError("aud is down"),
+        },
+    )
+    _cli_sources(monkeypatch, alpha)
+
+    line = next(
+        row
+        for row in _run(_config_file(tmp_path)).stdout.splitlines()
+        if row.startswith("alpha")
+    )
+
+    assert "2 of 3 series failed" in line
+
+
+def test_the_failure_lines_do_not_claim_anything_about_the_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`fbe refresh` fills a cache and measures nothing, and these lines are
+    new prose on the one command an operator reads when data is missing."""
+    path, _ = _partial_cli(tmp_path, monkeypatch)
+
+    printed = _run(path).stdout.lower()
+
+    for word in FORBIDDEN:
+        assert word not in printed
+
+
+# --- #275: how far one lost series reaches into the score -------------------
+#
+# The point of the whole change, measured where the trader sees it. On
+# 2026-09-25 one OECD series failing took coverage from 64-96% to 34-51% and
+# put every pair at neutral. These live here rather than in
+# ``tests/test_cli_score.py`` because the failure is built with this module's
+# series-scoped fake, and the fake is the thing under test.
+
+MONETARY_INDICATORS = (
+    "policy_rate",
+    "yield_2y",
+    "yield_2y_chg_1m",
+    "yield_2y_chg_3m",
+    "cpi_yoy",
+)
+"""What `fbe.pillars.monetary.MonetaryPillar` requires, restated so this test
+fails loudly if the pillar's inputs change rather than silently covering less."""
+
+G10_CODES = ("USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD")
+SCORE_ASOF = date(2026, 6, 30)
+SCORE_STAMP = datetime(2026, 6, 30, 12, tzinfo=UTC)
+LOST = {("policy_rate", "JPY"): SourceError("HTTP 500 after 3 attempts")}
+
+
+def _score_pillars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fails: Mapping[tuple[str, str], Exception] | None = None,
+) -> dict[str, list[str]]:
+    """Run ``fbe score --pillars`` over a source that loses ``fails``.
+
+    Returns:
+        One row of fields per currency, keyed by code. The columns are rank,
+        code, composite, dispersion, coverage, then one per pillar in the
+        header's order, so ``row[COMPOSITE]`` and ``row[MONETARY]`` below read
+        the same cells a person would.
+    """
+    observations = [
+        _observation(
+            indicator,
+            currency,
+            1.0 + index * 0.5 + offset,
+            period=SCORE_ASOF,
+            released_at=SCORE_STAMP,
+        )
+        for offset, indicator in enumerate(MONETARY_INDICATORS)
+        for index, currency in enumerate(G10_CODES)
+    ]
+    alpha, _ = _series_source(
+        "alpha",
+        refs=[
+            (indicator, currency)
+            for indicator in MONETARY_INDICATORS
+            for currency in G10_CODES
+        ],
+        observations=observations,
+        fails=fails,
+    )
+    _cli_sources(monkeypatch, alpha)
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(_config_file(tmp_path)),
+            "score",
+            "--asof",
+            SCORE_ASOF.isoformat(),
+            "--pillars",
+        ],
+    )
+    assert result.exit_code == EXIT_OK, result.stdout
+    return {
+        fields[1]: fields
+        for line in result.stdout.splitlines()
+        if len(fields := line.split()) > 6 and fields[1] in G10_CODES
+    }
+
+
+COVERAGE = 4
+MONETARY = 5
+"""Field positions in a ``--pillars`` row: rank, code, composite, dispersion,
+coverage, then the seven pillars in header order."""
+
+
+def test_a_lost_series_lands_on_the_currency_it_belonged_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The loss has to be visible where it happened. A pillar that reads the
+    same with the series and without it would mean the failure changed nothing,
+    which is its own defect."""
+    baseline = _score_pillars(tmp_path, monkeypatch)
+    degraded = _score_pillars(tmp_path, monkeypatch, fails=LOST)
+
+    assert degraded["JPY"][MONETARY] != baseline["JPY"][MONETARY]
+
+
+def test_no_other_currency_loses_its_monetary_score(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reported defect, as a property. One OECD series failing took every
+    currency's pillars to n/a, because the whole source was recorded as failed.
+    Seven currencies never touched that series and must keep their scores."""
+    degraded = _score_pillars(tmp_path, monkeypatch, fails=LOST)
+
+    for currency in G10_CODES:
+        if currency == "JPY":
+            continue
+        assert degraded[currency][MONETARY] != "n/a", currency
+
+
+def test_no_other_currency_loses_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Coverage is per currency, so this is the figure that must not move for
+    the seven. It is also the figure the report leads with, and the one that
+    fell from 64-96% to 34-51% on the morning this was filed."""
+    baseline = _score_pillars(tmp_path, monkeypatch)
+    degraded = _score_pillars(tmp_path, monkeypatch, fails=LOST)
+
+    for currency in G10_CODES:
+        if currency == "JPY":
+            continue
+        assert degraded[currency][COVERAGE] == baseline[currency][COVERAGE], currency
+
+
+def test_the_other_currencies_move_only_by_the_renormalisation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one place the issue's wording cannot be met literally, pinned so it
+    is a decision rather than a surprise.
+
+    The criterion asks that only the currency that lost the series changes.
+    Scoring is cross-sectional by design, so a component computed over seven
+    currencies instead of eight has a different mean and spread, and every
+    currency's z-score on that component moves a little. Measured here, USD
+    goes from -1.53 to -1.52 and CAD from +0.65 to +0.66 while five others do
+    not move at all.
+
+    What must not happen is a currency losing its score or its coverage, and
+    the two tests above pin that. This one pins the size of what is left, so a
+    change that made the residual large would fail here rather than passing as
+    "cross-sectional".
+    """
+    baseline = _score_pillars(tmp_path, monkeypatch)
+    degraded = _score_pillars(tmp_path, monkeypatch, fails=LOST)
+
+    for currency in G10_CODES:
+        if currency == "JPY":
+            continue
+        moved = abs(
+            float(degraded[currency][MONETARY]) - float(baseline[currency][MONETARY])
+        )
+        # One fiftieth of the -3..+3 band. Not a tuned threshold: the measured
+        # moves are 0.01 and the band is 6.0, so anything approaching this is a
+        # different mechanism rather than a rounding of the same one.
+        assert moved <= 0.06, (currency, moved)

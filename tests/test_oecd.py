@@ -30,7 +30,7 @@ import respx
 
 from fbe.config import DataConfig
 from fbe.datasources import registry
-from fbe.datasources.base import SourceError
+from fbe.datasources.base import BaseDataSource, FailureScope, SourceError
 from fbe.datasources.oecd import (
     BASE_URL,
     BTS_ACTIVITY_MANUFACTURING,
@@ -898,3 +898,73 @@ def test_offline_on_a_cold_cache_is_available_and_fetch_raises(
     with pytest.raises(SourceError, match="offline"):
         offline.fetch(["cpi_yoy"], ["GBP"], START, END)
     assert route.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# #275: the unit of failure is the leg, and the unit of a source class is the
+# provider. The OECD's legs share one base URL, one rate limit and one
+# available(), so one class per leg would be dozens of classes for one
+# endpoint. The source declares the scope instead and the collector narrows.
+# ---------------------------------------------------------------------------
+
+
+def test_the_oecd_declares_series_scope() -> None:
+    """Read by `fbe.datasources.collect`, which is what decides how widely it
+    asks. On 2026-09-24 the JPN leg answered HTTP 500 after 30 seconds and the
+    DEU leg answered HTTP 200 in under six, at the same moment."""
+    assert OecdSource.failure_scope is FailureScope.SERIES
+
+
+def test_a_source_declares_source_scope_unless_it_says_otherwise() -> None:
+    """The default has to stay put: a provider that fails as one thing gains
+    nothing from being asked one series at a time, and its request count would
+    rise for every series it serves."""
+    assert BaseDataSource.failure_scope is FailureScope.SOURCE
+
+
+@respx.mock
+def test_a_requested_series_with_no_rows_raises_and_names_it(
+    source: OecdSource,
+) -> None:
+    """Rule 3 of ADR 0013 at series scope. A key aimed at the wrong dataflow
+    answers exactly like a live series that holds nothing, which is how an
+    unrouted currency came to read as uncovered rather than as an error."""
+    _route().mock(
+        return_value=httpx.Response(200, text="REF_AREA,TIME_PERIOD,OBS_VALUE\n")
+    )
+
+    with pytest.raises(SourceError) as raised:
+        source.fetch(["cpi_yoy"], ["GBP"], START, END)
+
+    message = str(raised.value)
+    assert "cpi_yoy" in message
+    assert "GBP" in message
+    assert "GBR.M.N.CPI.PA._T.N.GY" in message
+
+
+@respx.mock
+def test_the_decoder_still_reads_an_empty_body_as_an_empty_series(
+    source: OecdSource,
+) -> None:
+    """The raise belongs to `fetch`, which knows a series was asked for, and
+    not to the decoder, which is only told what came back. Moving it down would
+    make a body with no rows unreadable rather than empty, and the two are
+    different findings."""
+    _route().mock(
+        return_value=httpx.Response(200, text="REF_AREA,TIME_PERIOD,OBS_VALUE\n")
+    )
+
+    assert source.fetch_key(PRICES_FLOW, GBR_CPI_KEY, START, END) == []
+
+
+@respx.mock
+def test_a_series_with_rows_is_returned_rather_than_refused(
+    source: OecdSource,
+) -> None:
+    """The guard above must not swallow the ordinary case."""
+    _route().mock(return_value=httpx.Response(200, text=GBR_MONTHLY))
+
+    observations = source.fetch(["cpi_yoy"], ["GBP"], START, END)
+
+    assert observations
+    assert {o.indicator for o in observations} == {"cpi_yoy"}

@@ -188,6 +188,17 @@ raised it. A source that is not configured, or whose code has not landed yet,
 is printed as skipped with the reason, because a source missing from the output
 and a source that returned nothing are different facts.
 
+The same holds one level down for a source that declares series scope, which
+today is the OECD. One series failing costs that series and nothing else: the
+counts line prints what did reach the cache, marked `partial` with how many
+series were lost, and each lost series takes its own line naming the source,
+the currency, the indicator and what went wrong. A partial refresh exits 0,
+because most of the cache is filled and the scorer has something to read. When
+every series fails the source is `failed` rather than partial, and the lines
+still print: the status says the provider is gone and the lines say which
+currencies went with it. `docs/data-sources.md` gives the scope of every
+source, and ADR 0015 the reasoning.
+
 The closing block lists every indicator that `registry.stale_refs` reports a gap
 for, aged against the run date rather than against the date the registry was
 last verified. A registry that has not been re-checked in a year reports its
@@ -197,9 +208,10 @@ Exit 1 means the run reconciled no observations at all, which covers both every
 source failing and coverage collapsing.
 
 ```console
-$ fbe refresh -s fred -s ecb -s cftc
+$ fbe refresh -s fred -s oecd -s ecb -s cftc
 fred          142 series       1,284 observations     8.2s
-oecd          skipped (not selected)
+oecd          37 series        1,204 observations     9.1s  partial, 1 of 38 series failed
+  oecd          JPY     policy_rate             failed (SourceError: oecd could not fetch data/OECD.SDD.STES,DSD_STES@DF_FINMARK,4.0/JPN.M.IRSTCI.PA...... after 3 attempts, last failure HTTP 500)
 ecb           failed (SourceError: ecb could not supply EUR: ... after 3 attempts)
 boc           skipped (not selected)
 mof_jp        skipped (not selected)

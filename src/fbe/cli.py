@@ -172,6 +172,16 @@ SOURCE_WIDTH = 14
 """Column width for the ``refresh`` per-source lines. Wide enough for
 ``forexfactory``, which is the longest source key in ``ALL_SOURCES``."""
 
+CURRENCY_WIDTH = 8
+"""Column width for a currency on a per-series failure line. Wide enough for
+``GLOBAL``, which is what the registry calls a series belonging to no one
+currency, plus a space."""
+
+INDICATOR_WIDTH = 24
+"""Column width for an indicator key on a per-series failure line. Wide enough
+for ``business_confidence_mfg``, the longest key in the registry, so the reason
+column starts in the same place on every line."""
+
 COUNT_WIDTH = 10
 """Column width for the series and observation counts on a ``refresh`` line, so
 the two numbers stay in their columns when one source returns far more than
@@ -1236,6 +1246,8 @@ def _render_refresh(result: CollectionResult, config: Config, asof: date) -> Non
     """
     for outcome in result.outcomes:
         typer.echo(_render_outcome(outcome))
+        for line in _render_series_failures(outcome):
+            typer.echo(line)
     for line in _render_gaps(result.gaps, asof):
         typer.echo(line)
     typer.echo(_render_cache(config))
@@ -1249,18 +1261,54 @@ def _render_outcome(outcome: SourceOutcome) -> str:
 
     Returns:
         For a completed source, its series and observation counts and the time
-        inside its fetch. For anything else, the word and the reason, because a
-        source that was skipped and a source that returned nothing are
-        different facts and an operator chasing a missing currency needs to
-        know which one they have.
+        inside its fetch. For a partial one the same counts, which are what
+        reached the cache, then the word and how many series were lost: a
+        partial run rendered like a completed one is a refresh that reads as
+        success, which is the defect this status exists to end. For anything
+        else, the word and the reason, because a source that was skipped and a
+        source that returned nothing are different facts and an operator
+        chasing a missing currency needs to know which one they have.
+
+        The lost series themselves are not on this line. They are one line
+        each, from `_render_series_failures`.
 
     """
     label = outcome.source.ljust(SOURCE_WIDTH)
-    if outcome.status is SourceStatus.COMPLETED:
+    if outcome.status in (SourceStatus.COMPLETED, SourceStatus.PARTIAL):
         series = f"{outcome.series:,} series".ljust(COUNT_WIDTH + 7)
         observations = f"{outcome.observations:,} observations".ljust(COUNT_WIDTH + 13)
-        return f"{label}{series}{observations}{outcome.elapsed_seconds:.1f}s"
+        counts = f"{label}{series}{observations}{outcome.elapsed_seconds:.1f}s"
+        if outcome.status is SourceStatus.COMPLETED:
+            return counts
+        return f"{counts}  {outcome.status.value}, {outcome.detail}"
     return f"{label}{outcome.status.value} ({outcome.detail})"
+
+
+def _render_series_failures(outcome: SourceOutcome) -> list[str]:
+    """Return one line per series this source could not serve.
+
+    Args:
+        outcome: What that source did.
+
+    Returns:
+        A line per failure naming the source, the currency, the indicator and
+        what went wrong, in the order `fbe.datasources.collect` recorded them,
+        which is by indicator then currency so two mornings can be compared.
+        Empty for a source that lost nothing, because a heading with nothing
+        under it teaches the reader to skip the place the losses print.
+
+        Printed for a failed source as well as a partial one: the status says
+        the provider is gone and these say which currencies went with it, and
+        an operator whose JPY pillars are n/a is looking for the second.
+
+    """
+    return [
+        f"  {outcome.source.ljust(SOURCE_WIDTH)}"
+        f"{failure.currency.ljust(CURRENCY_WIDTH)}"
+        f"{failure.indicator.ljust(INDICATOR_WIDTH)}"
+        f"failed ({failure.detail})"
+        for failure in outcome.failures
+    ]
 
 
 def _render_gaps(gaps: Mapping[str, tuple[str, ...]], asof: date) -> list[str]:

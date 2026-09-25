@@ -30,6 +30,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from enum import StrEnum
 from types import MappingProxyType
 
 import httpx
@@ -41,11 +42,44 @@ from fbe.types import Observation
 
 __all__ = [
     "BaseDataSource",
+    "FailureScope",
     "ProbeRequest",
     "RateLimit",
     "RetryPolicy",
     "SourceError",
 ]
+
+
+class FailureScope(StrEnum):
+    """How much one failed request inside a source costs.
+
+    Declared by the source and read by `fbe.datasources.collect`, which is what
+    decides how widely it asks. A source does not report its own partial
+    failures: `fetch` returns or it raises, and the collector narrows the
+    request instead, so no adapter can forget to.
+
+    See ADR 0015, which extends ADR 0013's three rules from provider scope to
+    series scope.
+    """
+
+    SOURCE = "source"
+    """One failure costs everything the source was asked for.
+
+    The default, and right wherever the provider fails as one thing: a dead
+    host or a refused credential is not per series, and asking one series at a
+    time would multiply the request count for no gain.
+    """
+
+    SERIES = "series"
+    """One failure costs that series and nothing else.
+
+    For a provider that serves each series from its own request and degrades
+    per series rather than as a whole. On 2026-09-24 the OECD answered one leg
+    with HTTP 500 after 30 seconds and another with HTTP 200 in under six, at
+    the same moment, so "the OECD is down" was false and the source said it
+    anyway.
+    """
+
 
 REQUEST_TIMEOUT_SECONDS = 30.0
 """Per-request timeout. The engine runs from a morning routine against a
@@ -171,6 +205,12 @@ class BaseDataSource(ABC):
             everyone. Never put a credential here: it would reach the cache
             sidecar and the logs, which is what ``api_key_param`` exists to
             prevent.
+        failure_scope: How much one failed request inside this source costs,
+            per `FailureScope`. ``SOURCE`` by default, so a source that says
+            nothing keeps the behaviour it had before ADR 0015. ``SERIES``
+            makes the collector ask one series at a time and record each
+            failure by name, which is what keeps one dead series from costing
+            the other thirty-eight.
         follow_redirects: Whether this source's client follows a 3xx. False by
             default, which is what makes `_fetch_with_retries` treat a redirect
             as a moved endpoint rather than parsing its empty body as no rows.
@@ -188,6 +228,7 @@ class BaseDataSource(ABC):
     api_key_param: str | None = None
     default_headers: Mapping[str, str] = MappingProxyType({})
     follow_redirects: bool = False
+    failure_scope: FailureScope = FailureScope.SOURCE
     rate_limit: RateLimit = RateLimit()
     retry: RetryPolicy = RetryPolicy()
 

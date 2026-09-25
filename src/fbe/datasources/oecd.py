@@ -82,6 +82,7 @@ from types import MappingProxyType
 from fbe.config import DataConfig
 from fbe.datasources.base import (
     BaseDataSource,
+    FailureScope,
     RateLimit,
     RetryPolicy,
     SourceError,
@@ -385,6 +386,7 @@ class OecdSource(BaseDataSource):
     name = "oecd"
     base_url = BASE_URL
     default_headers = MappingProxyType({"Accept": CSV_ACCEPT})
+    failure_scope = FailureScope.SERIES
     rate_limit = RATE_LIMIT
     retry = RetryPolicy(attempts=3, backoff_seconds=5.0)
 
@@ -514,11 +516,24 @@ class OecdSource(BaseDataSource):
             end: Latest period wanted, passed as ``endPeriod``.
 
         Returns:
-            Observations keyed by canonical indicator.
+            Observations keyed by canonical indicator. Never an empty result
+            for a series that was asked for: see below.
 
         Raises:
             SourceError: On repeated request failure, on an unparseable body,
-                or when the body contains `THROTTLE_MARKER`.
+                when the body contains `THROTTLE_MARKER`, or when a series this
+                was asked for held no rows in the window.
+
+                The last is rule 3 of ADR 0013 at series scope, and it lives
+                here rather than in the collector because only the source knows
+                what empty means for it. For this API it means a dead or
+                misrouted series: a key aimed at the wrong price dataflow
+                answers ``NoRecordsFound`` or an empty body, which is
+                indistinguishable from a live series on the wire and is how an
+                unrouted currency came to read as uncovered. A monthly series
+                that genuinely holds nothing across a multi-year window is not
+                a case this registry has. Contrast `fbe.datasources.cot`, which
+                documents empty as a reading.
 
         """
         wanted_indicators = set(indicators)
@@ -531,7 +546,14 @@ class OecdSource(BaseDataSource):
                 continue
             flow, key = self.split_series_id(ref.series_id)
             frequency = self._key_frequency(key, ref.series_id)
-            for period, value in self.fetch_key(flow, key, start, end):
+            rows = self.fetch_key(flow, key, start, end)
+            if not rows:
+                raise SourceError(
+                    f"{self.name} served no rows for {indicator} {currency} "
+                    f"({ref.series_id}) between {start} and {end}, so the "
+                    "series is dead or misrouted rather than empty"
+                )
+            for period, value in rows:
                 emitted.append(
                     self._observation(
                         indicator,

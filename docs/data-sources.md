@@ -43,6 +43,42 @@ score.
 
 Only FRED needs a credential. Everything else is open, which also means anyone
 reading this can check any claim in it without asking for access first.
+
+### What one failure costs, per source
+
+Every source declares a failure scope, read by `collect` and recorded on
+`BaseDataSource.failure_scope`. It decides how widely one failed request
+reaches after the retries are spent.
+
+| Source | Scope | What one failed request costs |
+| --- | --- | --- |
+| OECD SDMX | series | That `(indicator, currency)`, named on the refresh line. The others are served and cached. |
+| FRED | source | Every series the run asked FRED for. |
+| Central banks and debt offices | source | That provider's series. Each institution is its own source class, so one bank being down is already one named gap: ADR 0013. |
+| CFTC COT | source | Every COT series, which arrive in one file. |
+| Stooq | source | Every price proxy the run asked for. |
+| Forex Factory | source | The calendar. No pillar reads it. |
+| Manual | source | The operator's overrides for the run. |
+
+The OECD is series-scoped because it degrades per series: on 2026-09-24 the
+Japanese policy rate answered HTTP 500 after 30 seconds while the German long
+yield answered HTTP 200 in under six, at the same moment, and the source
+reported "the OECD is down" for both. Source scope is the default and is right
+wherever a provider fails as one thing, since a dead host or a refused
+credential is not per series and asking one series at a time would multiply the
+request count for nothing.
+
+A series-scoped source that loses some series is `partial`, one that loses all
+of them is `failed`, and there is no threshold between the two: thirty named
+gaps and a source that did not fail buries the one fact the operator needs.
+`fbe refresh` prints each lost series on its own line; `docs/interfaces.md`
+shows the shape.
+
+FRED is not series-scoped yet and should be. Its `refs` loop passes over a
+missing series with `continue`, from the #169 fix, so adopting series scope
+would turn those into daily failure lines and that needs its own decision.
+`prices` and `cot` have not been ruled on. ADR 0015 records the reasoning and
+what is left.
 ---
 
 ## FRED
