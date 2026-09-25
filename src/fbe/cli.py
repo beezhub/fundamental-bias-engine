@@ -1022,16 +1022,20 @@ def _check_record(sidecars: Sequence[Path], today: date) -> list[CheckLine]:
 
     Presence is read from the filename and nothing else. Decoding a sidecar to
     establish that it exists would file a damaged report as a morning nobody
-    ran, and the digest line above already reports that case as its own
-    finding.
+    ran, which is a worse answer than either finding on its own: the file is
+    there and the day was not missed. The digest line above reports a damaged
+    sidecar when it is the newest one, which is the case an operator hits
+    first; an older one it does not read is reported by neither line, and that
+    gap is `_check_reports`'s rather than this function's.
 
     Args:
         sidecars: Every path under `fbe.report.SIDECAR_GLOB`, in any order.
         today: The day the window stops before. Excluded, because doctor runs
             before the morning's report at least as often as after it, and a
             check that reports today as missing every morning is one nobody
-            reads by Wednesday. It also absorbs the difference between the
-            local date a report is named with and the UTC date read here.
+            reads by Wednesday. For a zone at or ahead of UTC that also
+            absorbs the hours-wide difference between the local date a report
+            is named with and the UTC date read here.
 
     Returns:
         One continuation line under the reports check. ``ok`` when every
@@ -1069,7 +1073,8 @@ def _check_record(sidecars: Sequence[Path], today: date) -> list[CheckLine]:
             CheckLine(
                 "",
                 CheckStatus.OK,
-                f"forward record unbroken, {len(present)} reports from "
+                f"forward record unbroken, {len(present)} "
+                f"report{'s' if len(present) != 1 else ''} from "
                 f"{start.isoformat()} to {max(present).isoformat()}",
             )
         ]

@@ -941,8 +941,11 @@ def test_an_unbroken_record_says_so(
     block = _block(_run(path), "reports")
 
     assert "unbroken" in block[-1]
-    assert "2026-09-22" in block[-1]
-    assert "ok" in block[-1]
+    # The whole span and the count, not just that a date appears: an unbroken
+    # record reported as one day long is a different claim from the true one,
+    # and it is the claim a reader would act on.
+    assert "3 reports from 2026-09-22 to 2026-09-24" in block[-1]
+    assert block[-1][LABEL_WIDTH:].startswith("ok")
 
 
 @respx.mock
@@ -963,7 +966,13 @@ def test_a_long_gap_prints_a_count_and_a_bounded_sample(
     assert "82 weekdays" in gap
     assert len(block) == 2
     assert gap.count("2026-") == GAP_SAMPLE_LIMIT
-    assert f"{82 - GAP_SAMPLE_LIMIT} more" in gap
+    # The first eight, in order, not any eight. The operator reads the sample
+    # as where the hole starts, so a tail slice satisfies the count assertions
+    # above while answering a different question.
+    assert gap.endswith(
+        "2026-06-02, 2026-06-03, 2026-06-04, 2026-06-05, "
+        "2026-06-08, 2026-06-09, 2026-06-10, 2026-06-11 and 74 more"
+    )
 
 
 @respx.mock
@@ -1100,6 +1109,141 @@ def test_a_name_with_no_date_withholds_the_gap_list(
     assert named[LABEL_WIDTH:].startswith("warn")
     assert not any("missing" in line for line in block)
     assert "2026-09-22" not in named
+
+
+@respx.mock
+def test_a_record_that_stopped_weeks_ago_is_reported_to_today(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """The case the issue is about. A routine host that stopped running leaves
+    a record whose newest report is old, and a window that ended at the last
+    report rather than at today would call that record complete: every day it
+    knows about has a file. The gap is exactly the days it does not know about.
+    """
+    path = _config_file(tmp_path)
+    _record(path, tmp_path, "2026-09-11")
+
+    gap = _block(_run(path), "reports")[-1]
+
+    # 09-14 to 09-24 inclusive is nine weekdays, none of them on disk, and
+    # 09-25 is today and so outside the window. Counted here by hand.
+    assert "9 weekdays missing" in gap
+    assert gap.endswith(
+        "2026-09-14, 2026-09-15, 2026-09-16, 2026-09-17, "
+        "2026-09-18, 2026-09-21, 2026-09-22, 2026-09-23 and 1 more"
+    )
+
+
+@respx.mock
+def test_the_window_ends_at_the_pinned_clock_and_not_at_the_real_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The clock is read through `fbe.cli._now`, the seam every command uses.
+
+    Pinned far from any real today on purpose. The other tests here pin a date
+    that happens to be the day they were written, so a `date.today()` call in
+    place of the seam would agree with them by coincidence and stop agreeing
+    silently later.
+    """
+    monkeypatch.setattr("fbe.cli.ALL_SOURCES", (_Scaffolded,))
+    monkeypatch.setattr("fbe.cli._now", lambda: datetime(2031, 4, 10, 6, 0, tzinfo=UTC))
+    path = _config_file(tmp_path)
+    _record(path, tmp_path, "2031-04-07")
+
+    gap = _block(_run(path), "reports")[-1]
+
+    # 2031-04-07 is a Monday and 2031-04-10 a Thursday, so the window holds
+    # the Tuesday and the Wednesday.
+    assert "2 weekdays missing" in gap
+    assert "2031-04-08" in gap and "2031-04-09" in gap
+
+
+@respx.mock
+def test_exactly_the_sample_limit_prints_no_remainder(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """The boundary the sample rule turns on. "and 0 more" is the wrong answer
+    that an off-by-one here produces, and it reads as a bug to the one person
+    who has to trust this line."""
+    path = _config_file(
+        tmp_path,
+    )
+    _record(path, tmp_path, "2026-09-11", "2026-09-24")
+
+    gap = _block(_run(path), "reports")[-1]
+
+    # Ten weekdays from 09-11 to 09-24, two of them on disk.
+    assert f"{GAP_SAMPLE_LIMIT} weekdays missing" in gap
+    assert "more" not in gap
+
+
+@respx.mock
+def test_a_report_dated_ahead_of_today_leaves_an_empty_window(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """A hand-dated file or a skewed clock puts the earliest report after
+    today. There is nothing behind it to be missing, and a window measured
+    without regard to the sign would walk forward from it and call a fortnight
+    of days missing that have not happened yet."""
+    path = _config_file(tmp_path)
+    _record(path, tmp_path, "2026-10-05")
+
+    gap = _block(_run(path), "reports")[-1]
+
+    assert "unbroken" in gap
+    assert "1 report from" in gap
+    assert "missing" not in gap
+
+
+@respx.mock
+def test_the_expected_weekdays_are_read_from_the_constant(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """`RECORD_WEEKDAYS` carries the reasoning about weekends and holidays, and
+    a hardcoded comparison beside it is the config-drift defect this project
+    keeps filing: the constant and the code disagree and nothing says so."""
+    path = _config_file(tmp_path)
+    _record(
+        path,
+        tmp_path,
+        "2026-09-17",
+        "2026-09-18",
+        "2026-09-21",
+        "2026-09-22",
+        "2026-09-23",
+        "2026-09-24",
+    )
+
+    unchanged = _block(_run(path), "reports")[-1]
+    assert "unbroken" in unchanged
+
+    with pytest.MonkeyPatch.context() as patch:
+        # Monday to Saturday. The Saturday in this record then has no report.
+        patch.setattr("fbe.cli.RECORD_WEEKDAYS", frozenset(range(6)))
+        widened = _block(_run(path), "reports")[-1]
+
+    assert "1 weekday missing" in widened
+    assert "2026-09-19" in widened
+
+
+@respx.mock
+def test_the_sidecar_glob_is_read_from_the_report_module(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """Criterion 6's other half. Every fixture here writes the literal name,
+    so an implementation restating the pattern inline would pass the rest of
+    this module. `fbe.report` owns the filename convention and this check has
+    to follow it there, or the two drift and doctor reports on files nobody
+    writes."""
+    path = _config_file(tmp_path)
+    _record(path, tmp_path, "2026-09-21", "2026-09-24")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("fbe.report.SIDECAR_GLOB", "sidecar-*.json")
+        block = _block(_run(path), "reports")
+
+    assert len(block) == 1
+    assert "no previous report" in block[0]
 
 
 @respx.mock
