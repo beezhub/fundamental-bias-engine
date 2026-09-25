@@ -197,10 +197,16 @@ Exit 1 means the run reconciled no observations at all, which covers both every
 source failing and coverage collapsing.
 
 ```console
-$ fbe refresh -s fred -s cftc
+$ fbe refresh -s fred -s ecb -s cftc
 fred          142 series       1,284 observations     8.2s
 oecd          skipped (not selected)
-curves        skipped (not selected)
+ecb           failed (SourceError: ecb could not supply EUR: ... after 3 attempts)
+boc           skipped (not selected)
+mof_jp        skipped (not selected)
+boe           skipped (not selected)
+rba           skipped (not selected)
+snb           skipped (not selected)
+rbnz          skipped (not selected)
 cftc          failed (SourceError: cftc could not fetch ... after 3 attempts)
 Coverage gaps, aged at 2026-09-15:
   pmi_composite         USD, EUR, GBP, JPY, CHF, CAD, AUD, NZD
