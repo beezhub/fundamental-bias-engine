@@ -27,6 +27,7 @@ from typer.testing import CliRunner, Result
 from fbe.cli import (
     EXIT_OK,
     EXIT_UNUSABLE,
+    GAP_SAMPLE_LIMIT,
     KEY_PREFIX_LENGTH,
     LABEL_WIDTH,
     CheckStatus,
@@ -822,6 +823,344 @@ def test_a_reports_path_that_is_not_a_directory_is_a_failure(
     assert result.exit_code == EXIT_UNUSABLE
 
 
+# --- gaps in the forward record (issue #284) --------------------------------
+#
+# `_check_reports` read only the newest sidecar, so a month with eleven missing
+# mornings printed exactly like a month with none. The cost of finding out late
+# is asymmetric: a bias cannot be recorded after the outcome is known, so a gap
+# noticed in month six is a hole in the record for good. These tests pin the
+# clock, because the window the check measures ends at today and every
+# expectation below would otherwise move one day per day.
+
+GAP_TODAY = datetime(2026, 9, 25, 9, 0, tzinfo=UTC)
+"""A Friday, pinned. Chosen as a weekday so that "today is not reported as
+missing" is a real assertion rather than one the weekend satisfies."""
+
+
+@pytest.fixture
+def today_is_fixed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the clock doctor reads, through the one seam every command uses."""
+    monkeypatch.setattr("fbe.cli._now", lambda: GAP_TODAY)
+
+
+def _record(path: Path, tmp_path: Path, *days: str) -> Path:
+    """Write one readable sidecar per named day, carrying the live digest.
+
+    The digest matches deliberately, so the first reports line stays ``ok`` and
+    a test reading the gap line is not also reading a digest complaint.
+    """
+    digest = load_config(path).digest()
+    reports = tmp_path / "reports"
+    reports.mkdir(exist_ok=True)
+    for day in days:
+        (reports / f"bias-{day}.json").write_text(
+            json.dumps({"asof": day, "config_digest": digest})
+        )
+    return reports
+
+
+@respx.mock
+def test_a_missing_weekday_is_named_and_counted(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """Criterion 1, on a fixture directory holding one deliberate gap."""
+    path = _config_file(tmp_path)
+    _record(path, tmp_path, "2026-09-21", "2026-09-22", "2026-09-24")
+
+    block = _block(_run(path), "reports")
+
+    gap = block[-1]
+    # "1 weekday missing", not "1 weekdays missing": the substring without the
+    # next word is satisfied by the plural, so it pins nothing.
+    assert "1 weekday missing" in gap
+    assert "2026-09-23" in gap
+
+
+@respx.mock
+def test_a_weekend_is_not_reported_as_a_gap(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """Criterion 2, first half. 19 and 20 September 2026 are a Saturday and a
+    Sunday, and the engine is not run on either."""
+    path = _config_file(tmp_path)
+    _record(
+        path,
+        tmp_path,
+        "2026-09-17",
+        "2026-09-18",
+        "2026-09-21",
+        "2026-09-22",
+        "2026-09-23",
+        "2026-09-24",
+    )
+
+    result = _run(path)
+
+    assert "2026-09-19" not in result.stdout
+    assert "2026-09-20" not in result.stdout
+    assert "unbroken" in _block(result, "reports")[-1]
+
+
+@respx.mock
+def test_a_weekday_that_has_a_report_is_not_named(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """Criterion 2, second half. The days on either side of the gap are on
+    disk, and naming them would send the owner looking for a report that is
+    already there."""
+    path = _config_file(tmp_path)
+    _record(
+        path,
+        tmp_path,
+        "2026-09-14",
+        "2026-09-18",
+        "2026-09-21",
+        "2026-09-22",
+        "2026-09-23",
+        "2026-09-24",
+    )
+
+    gap = _block(_run(path), "reports")[-1]
+
+    assert "3 weekdays" in gap
+    for missing in ("2026-09-15", "2026-09-16", "2026-09-17"):
+        assert missing in gap
+    for present in ("2026-09-14", "2026-09-18", "2026-09-21", "2026-09-24"):
+        assert present not in gap
+
+
+@respx.mock
+def test_an_unbroken_record_says_so(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """Criterion 1's other half. Silence would be indistinguishable from a
+    check that did not run, which is the state this issue is about."""
+    path = _config_file(tmp_path)
+    _record(path, tmp_path, "2026-09-22", "2026-09-23", "2026-09-24")
+
+    block = _block(_run(path), "reports")
+
+    assert "unbroken" in block[-1]
+    assert "2026-09-22" in block[-1]
+    assert "ok" in block[-1]
+
+
+@respx.mock
+def test_a_long_gap_prints_a_count_and_a_bounded_sample(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """Criterion 3. Eighty-two missing weekdays is the case the criterion
+    names, and a check that answers it with eighty-two lines is a check the
+    owner scrolls past."""
+    path = _config_file(tmp_path)
+    _record(path, tmp_path, "2026-06-01", "2026-09-24")
+
+    block = _block(_run(path), "reports")
+
+    gap = block[-1]
+    # 84 weekdays from 1 June to 24 September inclusive, two of which have a
+    # report. Counted here by hand rather than from the implementation.
+    assert "82 weekdays" in gap
+    assert len(block) == 2
+    assert gap.count("2026-") == GAP_SAMPLE_LIMIT
+    assert f"{82 - GAP_SAMPLE_LIMIT} more" in gap
+
+
+@respx.mock
+def test_an_empty_reports_directory_checks_no_record(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """Criterion 4. Every routine host clones fresh and sees this, so a check
+    that reported every weekday since the epoch would be muted within a week,
+    taking the real gaps with it."""
+    result = _run(_config_file(tmp_path))
+
+    block = _block(result, "reports")
+
+    assert len(block) == 1
+    assert "2026-" not in block[0]
+    assert "missing" not in block[0]
+
+
+def _clean_but_for_the_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *days: str
+) -> Path:
+    """A run where the forward record is the only thing that can warn.
+
+    Sources answer, the credential is present, the cache is fresh and the
+    broker profile is confirmed. The three exit-code tests below differ only in
+    which days are on disk, so an exit code that moves between them moves on
+    the record check and on nothing else. Without this the broker profile is
+    unconfirmed by default, its warning alone turns ``--strict`` to exit 1, and
+    the criterion-5 assertions would pass with no record check at all.
+    """
+    respx.get(PROBE_URL).mock(return_value=httpx.Response(200))
+    monkeypatch.setattr("fbe.cli.ALL_SOURCES", (_Reachable,))
+    path = _config_file(tmp_path, "broker:\n  confirmed: true\n", with_key=True)
+    _record(path, tmp_path, *days)
+    _fill_cache(tmp_path)
+    return path
+
+
+@respx.mock
+def test_a_gap_warns_and_doctor_still_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, today_is_fixed: None
+) -> None:
+    """Criterion 5. A hole in the record is worth acting on and is not a reason
+    to call the install unusable."""
+    path = _clean_but_for_the_record(tmp_path, monkeypatch, "2026-09-21", "2026-09-24")
+
+    result = _run(path)
+
+    assert "warn" in _block(result, "reports")[-1]
+    assert result.exit_code == EXIT_OK
+
+
+@respx.mock
+def test_a_gap_is_a_failure_under_strict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, today_is_fixed: None
+) -> None:
+    """Criterion 5's other half, and the behaviour every other warning here
+    already has."""
+    path = _clean_but_for_the_record(tmp_path, monkeypatch, "2026-09-21", "2026-09-24")
+
+    result = _run(path, "--strict")
+
+    assert result.exit_code == EXIT_UNUSABLE
+
+
+@respx.mock
+def test_an_unbroken_record_survives_strict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, today_is_fixed: None
+) -> None:
+    """The control for the two above. Same install, same flags, no gap, and the
+    run stands, so the exit code they assert is this check's and not a warning
+    that would have been there anyway."""
+    path = _clean_but_for_the_record(
+        tmp_path, monkeypatch, "2026-09-22", "2026-09-23", "2026-09-24"
+    )
+
+    assert _run(path, "--strict").exit_code == EXIT_OK
+
+
+@respx.mock
+def test_presence_is_read_from_the_name_and_not_from_the_sidecar(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """Criterion 6. A damaged report is a separate finding the digest line
+    already makes, and decoding a file to establish that it exists would file a
+    corrupt sidecar as a morning nobody ran."""
+    path = _config_file(tmp_path)
+    reports = _record(path, tmp_path, "2026-09-22", "2026-09-24")
+    (reports / "bias-2026-09-23.json").write_text("{ truncated")
+
+    block = _block(_run(path), "reports")
+
+    assert "unbroken" in block[-1]
+    assert "2026-09-23" not in block[-1]
+
+
+@respx.mock
+def test_today_is_not_reported_as_missing(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """doctor runs before the morning report as often as after it, and a check
+    that cries wolf every morning is one nobody reads by Wednesday."""
+    path = _config_file(tmp_path)
+    _record(path, tmp_path, "2026-09-23", "2026-09-24")
+
+    result = _run(path)
+
+    assert "2026-09-25" not in result.stdout
+    assert "unbroken" in _block(result, "reports")[-1]
+
+
+@respx.mock
+def test_a_name_with_no_date_withholds_the_gap_list(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """A file the glob matches but the name convention cannot date could be any
+    morning, so the days around it cannot be called missing. Naming the file
+    and withholding the list says what is known; listing the gaps anyway would
+    report a morning that may well be on disk."""
+    path = _config_file(tmp_path)
+    reports = _record(path, tmp_path, "2026-09-21", "2026-09-24")
+    # Readable, and carrying the live digest, so the digest line stays ok and
+    # the only thing wrong with this file is that its name says no day.
+    (reports / "bias-backup.json").write_text(
+        json.dumps({"asof": "2026-09-24", "config_digest": load_config(path).digest()})
+    )
+
+    block = _block(_run(path), "reports")
+
+    named = block[-1]
+    assert len(block) == 2
+    assert "bias-backup.json" in named
+    assert "as-of date" in named
+    assert named[LABEL_WIDTH:].startswith("warn")
+    assert not any("missing" in line for line in block)
+    assert "2026-09-22" not in named
+
+
+@respx.mock
+def test_a_damaged_newest_sidecar_does_not_suppress_the_record_check(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """The two findings are independent, and this is the pairing that matters:
+    one unreadable file would otherwise hide every missing morning behind it,
+    which is the failure this check exists to end rather than a second copy of
+    it."""
+    path = _config_file(tmp_path)
+    reports = _record(path, tmp_path, "2026-09-21")
+    (reports / "bias-2026-09-24.json").write_text("{ truncated")
+
+    block = _block(_run(path), "reports")
+
+    assert "could not be read" in block[0]
+    assert len(block) == 2
+    assert "2 weekdays missing" in block[-1]
+    assert "2026-09-22" in block[-1]
+    assert "2026-09-23" in block[-1]
+
+
+@respx.mock
+def test_a_digest_that_no_longer_matches_does_not_suppress_the_record_check(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """Moving a weight changes the digest, so this is the ordinary state of a
+    project still setting its priors rather than a corner case. A record check
+    that went quiet on it would be quiet for weeks at a time."""
+    path = _config_file(tmp_path)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    for day in ("2026-09-21", "2026-09-24"):
+        (reports / f"bias-{day}.json").write_text(
+            json.dumps({"asof": day, "config_digest": "000000000000"})
+        )
+
+    block = _block(_run(path), "reports")
+
+    assert "not comparable" in block[0]
+    assert len(block) == 2
+    assert "2 weekdays missing" in block[-1]
+
+
+@respx.mock
+def test_the_digest_line_still_prints_beside_a_gap(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """The gap lines are additions. Losing the digest line to gain them would
+    trade one silent failure for another."""
+    path = _config_file(tmp_path)
+    _record(path, tmp_path, "2026-09-21", "2026-09-22", "2026-09-24")
+
+    block = _block(_run(path), "reports")
+
+    assert "digest matches" in block[0]
+    assert "2026-09-24" in block[0]
+    assert len(block) == 2
+
+
 @respx.mock
 def test_a_source_whose_constructor_raises_is_a_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -929,11 +1268,10 @@ def test_strict_does_not_turn_a_clean_run_into_a_failure(
     # a strict failure, which is the broker check working rather than this test
     # breaking.
     path = _config_file(tmp_path, "broker:\n  confirmed: true\n", with_key=True)
-    reports = tmp_path / "reports"
-    reports.mkdir()
-    (reports / "bias-2026-09-08.json").write_text(
-        json.dumps({"asof": "2026-09-08", "config_digest": load_config(path).digest()})
-    )
+    # Dated today, not in the past: the forward-record check measures from the
+    # earliest report to today, so a fixture dated three weeks back is a record
+    # with three weeks of holes in it, and this run would not be clean.
+    _record(path, tmp_path, date.today().isoformat())
     _fill_cache(tmp_path)
 
     assert _run(path, "--strict").exit_code == EXIT_OK
@@ -952,11 +1290,10 @@ def _otherwise_clean(
     respx.get(PROBE_URL).mock(return_value=httpx.Response(200))
     monkeypatch.setattr("fbe.cli.ALL_SOURCES", (_Reachable,))
     path = _config_file(tmp_path, body, with_key=True)
-    reports = tmp_path / "reports"
-    reports.mkdir()
-    (reports / "bias-2026-09-08.json").write_text(
-        json.dumps({"asof": "2026-09-08", "config_digest": load_config(path).digest()})
-    )
+    # Today's date, so the forward record is one morning long and unbroken. A
+    # report dated in the past would add a gap warning here, and the exit-code
+    # tests below would stop turning on the broker line alone.
+    _record(path, tmp_path, date.today().isoformat())
     _fill_cache(tmp_path)
     return path
 
@@ -1111,14 +1448,14 @@ def test_the_published_console_block_reproduces(
     respx.get(_Ff.base_url).mock(side_effect=httpx.ReadTimeout("slow"))
     monkeypatch.setattr("fbe.cli.ALL_SOURCES", (_Fred, _Stooq, _Cftc, _Ff))
 
+    # The published block names the days missing from the forward record, and
+    # those depend on what today is. Pinned here, and the doc's scenario is
+    # that Tuesday: one report a week old, and the four weekdays since.
+    monkeypatch.setattr("fbe.cli._now", lambda: datetime(2026, 9, 15, 7, 0, tzinfo=UTC))
     path = _config_file(tmp_path, with_key=True)
     _fill_cache(tmp_path, entries=37)
     _age_every_entry(tmp_path, hours=18.5)
-    reports = tmp_path / "reports"
-    reports.mkdir()
-    (reports / "bias-2026-09-08.json").write_text(
-        json.dumps({"asof": "2026-09-08", "config_digest": load_config(path).digest()})
-    )
+    _record(path, tmp_path, "2026-09-08")
 
     produced = _run(path).stdout.rstrip("\n").split("\n")
 
