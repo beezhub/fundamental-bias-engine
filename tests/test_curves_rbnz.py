@@ -19,6 +19,8 @@ cache lives under ``tmp_path``.
 from __future__ import annotations
 
 import io
+import re
+import zipfile
 from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
@@ -29,18 +31,20 @@ import pytest
 import respx
 
 from fbe.config import DataConfig
-from fbe.datasources import registry
+from fbe.datasources import collect, registry
 from fbe.datasources.base import SourceError
 from fbe.datasources.curves import (
     PROVIDER_FETCHERS,
     PROVIDER_FOR_CURRENCY,
     RBNZ_B2_URL,
     RBNZ_DATA_SHEET,
+    RBNZ_DROP_IN_FILENAME,
     RBNZ_SERIES_ID_ROW_LABEL,
     RBNZ_UNIT,
     RBNZ_UNIT_ROW_LABEL,
     TWO_YEAR_REFS,
     CurvesSource,
+    RbnzSource,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -77,7 +81,11 @@ BLOCK_PAGE = (
 
 @pytest.fixture
 def source(tmp_path: Path) -> Iterator[CurvesSource]:
-    curves = CurvesSource(DataConfig(cache_dir=tmp_path / "cache"))
+    # manual_dir under tmp_path as well, or the fetch reads whatever workbook
+    # the owner has dropped into the repository's own data/manual (#283).
+    curves = CurvesSource(
+        DataConfig(cache_dir=tmp_path / "cache", manual_dir=tmp_path / "manual")
+    )
     yield curves
     curves.close()
 
@@ -338,3 +346,223 @@ def test_the_docs_record_the_vantage_and_the_verdict() -> None:
     assert "residential" in text
     assert "| `yield_2y` | 7/8 |" in text
     assert "worth one attempt from another network" not in text
+
+
+# ---------------------------------------------------------------------------
+# The drop-in file: the owner's browser download, read before the wire (#283)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def rbnz(tmp_path: Path) -> Iterator[RbnzSource]:
+    """The provider source, with a manual directory the tests can drop into."""
+    (tmp_path / "manual").mkdir()
+    provider = RbnzSource(
+        DataConfig(cache_dir=tmp_path / "cache", manual_dir=tmp_path / "manual")
+    )
+    yield provider
+    provider.close()
+
+
+def _drop_in(tmp_path: Path, content: bytes = WORKBOOK) -> Path:
+    path = tmp_path / "manual" / RBNZ_DROP_IN_FILENAME
+    path.write_bytes(content)
+    return path
+
+
+@respx.mock
+def test_the_drop_in_file_is_read_and_no_request_is_made(
+    rbnz: RbnzSource, tmp_path: Path
+) -> None:
+    """With the file in place the RBNZ's refusal is never even seen.
+
+    The block keys on the TLS handshake, so no request the engine can make
+    will pass; the file is the route, and the wire is not tried while it
+    exists. Every route answers 403 here to prove no request goes out.
+    """
+    _drop_in(tmp_path)
+    route = respx.route().mock(return_value=httpx.Response(403, text=BLOCK_PAGE))
+
+    emitted = rbnz.fetch(["yield_2y"], ["NZD"], START, END)
+
+    assert route.call_count == 0
+    assert {o.period: o.value for o in emitted} == PUBLISHED_CLOSES
+    assert {o.source for o in emitted} == {"rbnz"}
+
+
+@respx.mock
+def test_without_the_file_the_wire_is_fetched_as_before(rbnz: RbnzSource) -> None:
+    route = respx.get(RBNZ_B2_URL).mock(
+        return_value=httpx.Response(200, content=WORKBOOK)
+    )
+
+    emitted = rbnz.fetch(["yield_2y"], ["NZD"], START, END)
+
+    assert route.call_count == 1
+    assert {o.period: o.value for o in emitted} == PUBLISHED_CLOSES
+
+
+@respx.mock
+def test_the_drop_in_file_is_served_offline(tmp_path: Path) -> None:
+    """The file is not the cache. An offline run with a cold cache reads it."""
+    (tmp_path / "manual").mkdir()
+    path = _drop_in(tmp_path)
+    route = respx.route().mock(return_value=httpx.Response(403, text=BLOCK_PAGE))
+    offline = RbnzSource(
+        DataConfig(
+            cache_dir=tmp_path / "cache", manual_dir=tmp_path / "manual", offline=True
+        )
+    )
+    try:
+        emitted = offline.fetch(["yield_2y"], ["NZD"], START, END)
+    finally:
+        offline.close()
+
+    assert path.exists()
+    assert route.call_count == 0
+    assert {o.period: o.value for o in emitted} == PUBLISHED_CLOSES
+
+
+@respx.mock
+def test_a_stale_drop_in_file_is_refused_by_name(
+    rbnz: RbnzSource, tmp_path: Path
+) -> None:
+    """A download nobody refreshed must be a loud absence, not a quiet yield.
+
+    The fixture's newest session is 2026-09-14. As of 2026-12-01 that is 78
+    days old against a 9-day allowance, which is the age at which the leg
+    would carry no weight anyway; refusing it there means the operator is
+    told to download a fresh copy rather than left reading a coverage figure.
+    """
+    path = _drop_in(tmp_path)
+    respx.route().mock(return_value=httpx.Response(403, text=BLOCK_PAGE))
+
+    with pytest.raises(SourceError) as excinfo:
+        rbnz.fetch(["yield_2y"], ["NZD"], date(2026, 11, 1), date(2026, 12, 1))
+
+    message = str(excinfo.value)
+    assert "stale" in message
+    assert str(path) in message
+    assert "2026-09-14" in message
+    assert "9 days" in message
+    assert RBNZ_B2_URL in message
+
+
+@respx.mock
+def test_a_backtest_window_before_the_newest_session_is_not_stale(
+    rbnz: RbnzSource, tmp_path: Path
+) -> None:
+    """Freshness is the file's newest session against ``end``, not the window's.
+
+    A current file asked for 2026-09-01 to 2026-09-10 is not stale: its newest
+    session is after ``end``. Only a file whose newest session is too far
+    before ``end`` is refused.
+    """
+    _drop_in(tmp_path)
+    respx.route().mock(return_value=httpx.Response(403, text=BLOCK_PAGE))
+
+    emitted = rbnz.fetch(["yield_2y"], ["NZD"], date(2026, 9, 1), date(2026, 9, 10))
+
+    assert {o.period for o in emitted} == {
+        d for d in PUBLISHED_CLOSES if d <= date(2026, 9, 10)
+    }
+
+
+@respx.mock
+def test_a_stale_drop_in_file_is_a_failed_source_through_the_collector(
+    tmp_path: Path,
+) -> None:
+    """The refresh line reads ``rbnz failed (...)`` and NZD lands nowhere."""
+    (tmp_path / "manual").mkdir()
+    _drop_in(tmp_path)
+    respx.route().mock(return_value=httpx.Response(403, text=BLOCK_PAGE))
+
+    result = collect.collect(
+        DataConfig(cache_dir=tmp_path / "cache", manual_dir=tmp_path / "manual"),
+        start=date(2026, 11, 1),
+        end=date(2026, 12, 1),
+        sources=(RbnzSource,),
+        indicators=["yield_2y"],
+        currencies=["NZD"],
+    )
+
+    outcome = {o.source: o for o in result.outcomes}["rbnz"]
+    assert outcome.status is collect.SourceStatus.FAILED
+    assert "stale" in outcome.detail
+    assert RBNZ_DROP_IN_FILENAME in outcome.detail
+    assert result.observations == ()
+
+
+@respx.mock
+def test_a_drop_in_file_that_is_not_table_b2_is_refused_by_the_parser(
+    rbnz: RbnzSource, tmp_path: Path
+) -> None:
+    """The same checks that refuse a wrong body refuse a wrong file.
+
+    The series ID is looked up by name, so a workbook without it is named as
+    such rather than read by column position.
+    """
+    _drop_in(tmp_path)
+    respx.route().mock(return_value=httpx.Response(403, text=BLOCK_PAGE))
+
+    with pytest.raises(SourceError, match="does not carry NOT.A.SERIES"):
+        rbnz.fetch_rbnz("NOT.A.SERIES", START, END)
+
+
+@respx.mock
+def test_a_drop_in_file_that_is_not_a_workbook_is_refused_not_fallen_back(
+    rbnz: RbnzSource, tmp_path: Path
+) -> None:
+    """A broken file is a broken file, not a reason to try the wire.
+
+    Falling back would hide the broken file behind a 403 the operator has
+    already learned to ignore.
+    """
+    _drop_in(tmp_path, content=b"not a workbook")
+    route = respx.route().mock(return_value=httpx.Response(200, content=WORKBOOK))
+
+    with pytest.raises(SourceError, match="not a workbook"):
+        rbnz.fetch(["yield_2y"], ["NZD"], START, END)
+    assert route.call_count == 0
+
+
+def _with_single_cell_dimension(content: bytes) -> bytes:
+    """Return the workbook with every sheet's dimension declared as ``A1``.
+
+    That is how the RBNZ actually publishes the file. The fixture was re-saved
+    by openpyxl, which wrote the true dimension, so nothing before #283 read a
+    file shaped like the real download.
+    """
+    out = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(content)) as source,
+        zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as target,
+    ):
+        for item in source.infolist():
+            body = source.read(item.filename)
+            if item.filename.startswith("xl/worksheets/sheet"):
+                body = re.sub(
+                    rb"<dimension ref=\"[^\"]*\"/>", b'<dimension ref="A1"/>', body
+                )
+            target.writestr(item, body)
+    return out.getvalue()
+
+
+@respx.mock
+def test_the_published_file_declares_one_cell_and_is_still_read(
+    rbnz: RbnzSource, tmp_path: Path
+) -> None:
+    """The real download says each sheet is one cell; the parser must not trust it.
+
+    Found on the first real drop-in, 2026-09-24: 2190 rows and 48 columns
+    behind a ``<dimension ref="A1"/>``, and the read-only reader yielded one
+    empty row, so the file was refused as carrying no series-ID row.
+    """
+    shaped_like_the_download = _with_single_cell_dimension(WORKBOOK)
+    assert shaped_like_the_download != WORKBOOK
+    _drop_in(tmp_path, content=shaped_like_the_download)
+    respx.route().mock(return_value=httpx.Response(403, text=BLOCK_PAGE))
+
+    emitted = rbnz.fetch(["yield_2y"], ["NZD"], START, END)
+
+    assert {o.period: o.value for o in emitted} == PUBLISHED_CLOSES
