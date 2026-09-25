@@ -541,11 +541,28 @@ def _with_single_cell_dimension(content: bytes) -> bytes:
         for item in source.infolist():
             body = source.read(item.filename)
             if item.filename.startswith("xl/worksheets/sheet"):
-                body = re.sub(
-                    rb"<dimension ref=\"[^\"]*\"/>", b'<dimension ref="A1"/>', body
+                # openpyxl writes the tag as ``<dimension ref="A1:H11" />``,
+                # space included, so the match is on the element and not on
+                # one spelling of it. An earlier pattern without the space
+                # matched nothing and the test passed anyway, because
+                # re-zipping changed other bytes.
+                body, count = re.subn(
+                    rb"<dimension\b[^>]*>", b'<dimension ref="A1"/>', body
                 )
+                assert count == 1, item.filename
             target.writestr(item, body)
     return out.getvalue()
+
+
+def _declared_dimensions(content: bytes) -> set[bytes]:
+    with zipfile.ZipFile(io.BytesIO(content)) as book:
+        return {
+            match.group(0)
+            for name in book.namelist()
+            if name.startswith("xl/worksheets/sheet")
+            for match in [re.search(rb"<dimension\b[^>]*>", book.read(name))]
+            if match is not None
+        }
 
 
 @respx.mock
@@ -559,7 +576,11 @@ def test_the_published_file_declares_one_cell_and_is_still_read(
     empty row, so the file was refused as carrying no series-ID row.
     """
     shaped_like_the_download = _with_single_cell_dimension(WORKBOOK)
-    assert shaped_like_the_download != WORKBOOK
+    # Asserted on the tag, not on the bytes: a re-zipped file differs in
+    # bytes whether or not the tag changed, which is how the first version of
+    # this test passed on Windows with a pattern that matched nothing.
+    assert _declared_dimensions(WORKBOOK) != {b'<dimension ref="A1"/>'}
+    assert _declared_dimensions(shaped_like_the_download) == {b'<dimension ref="A1"/>'}
     _drop_in(tmp_path, content=shaped_like_the_download)
     respx.route().mock(return_value=httpx.Response(403, text=BLOCK_PAGE))
 
