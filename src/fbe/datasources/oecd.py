@@ -63,6 +63,26 @@ lives only in the dedicated core dataflow
 ``DSD_PRICES_COICOP2018@DF_PRICES_C2018_N_TXCP01_NRG``. That is the only free
 Swiss core inflation series found anywhere.
 
+Failure scope
+-------------
+This source declares `fbe.datasources.base.FailureScope.SERIES`, so the
+collector asks it for one series at a time and one series failing costs that
+series and nothing else. The provider degrades per series rather than as a
+whole: on 2026-09-24 the Japanese policy rate answered HTTP 500 after thirty
+seconds while the German long yield answered HTTP 200 in under six, at the same
+moment, and the whole source was recorded as failed for both.
+
+Two things fail loudly here, and both are this module's rather than the
+collector's. A throttle is prose served where CSV was asked for, and parsing it
+as zero rows would report a live currency as uncovered. A series asked for that
+holds no rows in the window is dead or misrouted rather than quiet: a key aimed
+at the wrong price dataflow answers ``NoRecordsFound`` or an empty body, which
+is indistinguishable from a live series on the wire. Only the source knows
+that, which is why the raise is in `OecdSource.fetch` and not in the collector;
+`fbe.datasources.cot` documents empty as a reading and is right to. The decoder
+below is a layer lower again and reads an empty body as an empty series, which
+is a different finding. ADR 0015 records the reasoning.
+
 Terms
 -----
 OECD data is published under its own terms at https://www.oecd.org/termsandconditions/.
@@ -657,6 +677,11 @@ class OecdSource(BaseDataSource):
             ``(time_period, value)`` pairs with the period left as the API's
             own string, since monthly is ``2026-07`` and quarterly is
             ``2026-Q2`` and only the caller knows which it asked for.
+
+            An empty list for a well-formed body with no rows. What that means
+            is the caller's to decide and not this method's: `fetch` treats it
+            as a dead or misrouted series and raises, because it knows a series
+            was asked for, and this method is only told what came back.
 
         Raises:
             SourceError: On repeated failure, on a throttle, or on a body that

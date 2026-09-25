@@ -26,6 +26,7 @@ import pytest
 import respx
 from typer.testing import CliRunner, Result
 
+from fbe import cli as cli_module
 from fbe.cli import EXIT_OK, EXIT_UNUSABLE, app
 from fbe.config import DataConfig
 from fbe.datasources import collect as collect_module
@@ -1666,6 +1667,29 @@ def test_a_completed_outcome_never_carries_failures(
     assert result.outcomes[0].failures == ()
 
 
+def test_a_completed_outcome_carrying_losses_cannot_be_built(
+    data_config: DataConfig,
+) -> None:
+    """The invariant, rather than one scenario that happens to hold it.
+
+    `_collect_per_series` never builds this, and a test over its output says
+    only that today's code does not. The contradiction is what matters:
+    `COMPLETED` is what every consumer reads as "this source is fine", so an
+    outcome carrying losses under it is a fact nothing reads.
+    """
+    with pytest.raises(ValueError, match="cannot both be true"):
+        collect_module.SourceOutcome(
+            source="alpha",
+            status=collect_module.SourceStatus.COMPLETED,
+            series=1,
+            observations=1,
+            elapsed_seconds=0.0,
+            failures=(
+                collect_module.SeriesFailure("cpi_yoy", "JPY", "SourceError: down"),
+            ),
+        )
+
+
 def test_partial_is_not_completed(data_config: DataConfig) -> None:
     """The status is a member rather than prose on `COMPLETED` precisely so
     that this comparison can be made, and so that a partial run cannot be
@@ -1808,6 +1832,10 @@ def test_a_partial_source_counts_only_the_series_it_served(
 
     assert result.outcomes[0].series == 2
     assert result.outcomes[0].observations == 2
+    # Measured across the calls, not per call and not dropped. The field's
+    # docstring was widened for series scope, and a source that took three
+    # minutes printing 0.0s tells the operator the provider is fine.
+    assert result.outcomes[0].elapsed_seconds > 0.0
 
 
 def test_a_series_that_serves_nothing_without_raising_is_not_a_failure(
@@ -1883,32 +1911,42 @@ OECD_EMPTY = "REF_AREA,TIME_PERIOD,OBS_VALUE\n"
 
 
 @pytest.fixture
-def prompt_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The OECD's real backoff is 5s doubling, so a test that waits it out
-    takes fifteen seconds. The attempt count is what matters here and is kept."""
-    monkeypatch.setattr(
-        OecdSource, "retry", RetryPolicy(attempts=3, backoff_seconds=0.0)
-    )
+def no_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the sleeping, keep every policy that decides behaviour.
+
+    The OECD's real backoff is 5s doubling and its rate limiter holds 3s
+    between requests, so these tests wait about forty-six seconds for nothing.
+    Patching ``time.sleep`` rather than replacing `RetryPolicy` leaves the
+    shipped attempt count and the shipped interval in the path, so a test that
+    counts requests is counting what the source really does. Restating
+    ``attempts=3`` in a fixture would have made the shipped policy look covered
+    while nothing pinned it, which is the config-drift shape this repository
+    keeps filing defects about.
+    """
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
 
 
-def _oecd_routes(failing: str, status: int = 500) -> None:
-    """Serve every OECD series but the one whose key holds ``failing``."""
+def _oecd_routes(failing: str, status: int = 500) -> respx.Route:
+    """Serve every OECD series but the one whose key holds ``failing``.
+
+    Returns the route, so a test can count what actually reached the wire.
+    """
 
     def answer(request: httpx.Request) -> httpx.Response:
         if failing in str(request.url):
             return httpx.Response(status, text="upstream error")
         return httpx.Response(200, text=OECD_ROWS)
 
-    respx.get(url__startswith=OECD_BASE_URL).mock(side_effect=answer)
+    return respx.get(url__startswith=OECD_BASE_URL).mock(side_effect=answer)
 
 
 @respx.mock
 def test_one_oecd_series_failing_does_not_cost_the_others(
-    data_config: DataConfig, prompt_retries: None
+    data_config: DataConfig, no_waiting: None
 ) -> None:
     """The reported defect. One series failing after its retries cost every
     OECD-backed indicator for every currency, twice in two days."""
-    _oecd_routes("JPN")
+    route = _oecd_routes("JPN")
 
     result = collect_module.collect(
         data_config,
@@ -1926,11 +1964,16 @@ def test_one_oecd_series_failing_does_not_cost_the_others(
     assert outcome.status is collect_module.SourceStatus.PARTIAL
     assert [(f.indicator, f.currency) for f in outcome.failures] == [("cpi_yoy", "JPY")]
     assert "500" in outcome.failures[0].detail
+    # One request for the series that answered and three for the one that did
+    # not, which is `OecdSource.retry.attempts` as shipped. Counted rather than
+    # assumed: "after its retries" is half the criterion, and a source giving
+    # up on the first 500 satisfies every assertion above.
+    assert route.call_count == 1 + OecdSource.retry.attempts
 
 
 @respx.mock
 def test_every_oecd_series_failing_is_a_failed_source(
-    data_config: DataConfig, prompt_retries: None
+    data_config: DataConfig, no_waiting: None
 ) -> None:
     """A whole provider outage still reads as one, rather than as a list of
     thirty-eight gaps beside a source that did not fail."""
@@ -1991,12 +2034,12 @@ def test_an_oecd_series_with_no_rows_in_the_window_is_a_named_failure(
 
 @respx.mock
 def test_an_offline_run_serves_the_cached_series_and_names_the_missing_one(
-    data_config: DataConfig, prompt_retries: None
+    data_config: DataConfig, no_waiting: None
 ) -> None:
     """The second half of the report: 38 series were cached and the offline
     refresh afterwards refused on the one entry that was never written, so the
     38 bodies on disk were unusable too."""
-    _oecd_routes("JPN")
+    route = _oecd_routes("JPN")
     collect_module.collect(
         data_config,
         start=START,
@@ -2005,6 +2048,8 @@ def test_an_offline_run_serves_the_cached_series_and_names_the_missing_one(
         indicators=["cpi_yoy"],
         currencies=["GBP", "JPY"],
     )
+
+    after_filling = route.call_count
 
     offline = collect_module.collect(
         replace(data_config, offline=True),
@@ -2021,6 +2066,25 @@ def test_an_offline_run_serves_the_cached_series_and_names_the_missing_one(
     }
     assert outcome.status is collect_module.SourceStatus.PARTIAL
     assert [(f.indicator, f.currency) for f in outcome.failures] == [("cpi_yoy", "JPY")]
+    # The route is still installed, so an offline run that went to the network
+    # would serve GBP and fail JPY exactly as the online one did and satisfy
+    # every assertion above. These two are what separate "served from the
+    # cache" from "fetched again and failed the same way".
+    assert route.call_count == after_filling
+    assert "offline" in outcome.failures[0].detail
+
+
+def test_the_oecd_retries_three_times_with_five_seconds_between() -> None:
+    """The shipped policy, pinned rather than restated in a fixture.
+
+    `test_one_oecd_series_failing_does_not_cost_the_others` counts requests
+    against `OecdSource.retry.attempts`, which is the right way to express
+    "after its retries" and says nothing about what the attempts are. Dropping
+    them to one would satisfy that test and quietly turn a momentary 5xx into
+    a named gap every morning, which is the opposite of what the retry is for.
+    """
+    assert OecdSource.retry.attempts == 3
+    assert OecdSource.retry.backoff_seconds == 5.0
 
 
 @respx.mock
@@ -2090,12 +2154,16 @@ def test_a_partial_source_prints_one_line_per_failed_series(
 
     result = _run(path)
 
-    failure = next(
-        row for row in result.stdout.splitlines() if "cpi_yoy" in row and "JPY" in row
-    )
+    rows = result.stdout.splitlines()
+    failure = next(row for row in rows if "cpi_yoy" in row and "JPY" in row)
     assert "alpha" in failure
     assert "failed" in failure
     assert "HTTP 500 after 3 attempts" in failure
+    # Under the counts line, not above it. A loss printed before the line it
+    # belongs to reads as belonging to the source above, which on a real run
+    # is a different provider.
+    counts = next(row for row in rows if row.startswith("alpha"))
+    assert rows.index(failure) > rows.index(counts)
 
 
 def test_a_partial_refresh_exits_the_same_as_a_completed_one(
@@ -2282,6 +2350,11 @@ def test_a_lost_series_lands_on_the_currency_it_belonged_to(
     degraded = _score_pillars(tmp_path, monkeypatch, fails=LOST)
 
     assert degraded["JPY"][MONETARY] != baseline["JPY"][MONETARY]
+    # And it lands as a component lost, not as the currency lost. Without
+    # these two the assertion above is satisfied by JPY collapsing to n/a,
+    # which is the defect this issue is about arriving one level down.
+    assert degraded["JPY"][MONETARY] != "n/a"
+    assert degraded["JPY"][COVERAGE] == baseline["JPY"][COVERAGE]
 
 
 def test_no_other_currency_loses_its_monetary_score(
@@ -2340,7 +2413,135 @@ def test_the_other_currencies_move_only_by_the_renormalisation(
         moved = abs(
             float(degraded[currency][MONETARY]) - float(baseline[currency][MONETARY])
         )
-        # One fiftieth of the -3..+3 band. Not a tuned threshold: the measured
-        # moves are 0.01 and the band is 6.0, so anything approaching this is a
-        # different mechanism rather than a rounding of the same one.
-        assert moved <= 0.06, (currency, moved)
+        # The measured moves are 0.01 on the rendered two decimals, and the
+        # case this separates them from is a currency dropping out of the
+        # cross-section entirely, which moves the others by 0.06 to 0.13.
+        # Three hundredths of the -3..+3 band sits between the two with room
+        # on both sides, rather than being tuned to either.
+        assert moved <= 0.03, (currency, moved)
+
+
+def test_losing_enough_components_takes_the_currency_to_n_a(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the criterion, which one lost series does not reach.
+
+    A pillar survives while its served components clear
+    `fbe.pillars.base.MIN_COMPONENT_WEIGHT`. One series leaves JPY at 0.70 of
+    the monetary sub-weight, which clears it; two take it under, and the
+    currency reads n/a rather than being scored on what is left. That is the
+    floor doing its job, and it is worth pinning because the alternative, a
+    score built on half a pillar, is a plausible number with nothing behind
+    it.
+    """
+    degraded = _score_pillars(
+        tmp_path,
+        monkeypatch,
+        fails={
+            ("policy_rate", "JPY"): SourceError("down"),
+            ("yield_2y_chg_3m", "JPY"): SourceError("down"),
+        },
+    )
+
+    assert degraded["JPY"][MONETARY] == "n/a"
+    for currency in G10_CODES:
+        if currency == "JPY":
+            continue
+        assert degraded[currency][MONETARY] != "n/a", currency
+
+
+def test_force_still_clears_the_cache_for_a_series_scoped_source(
+    data_config: DataConfig, no_waiting: None
+) -> None:
+    """``--force`` exists so a request inside the TTL goes back to the
+    provider, after a data correction or an outage.
+
+    The clearing happens before the collector decides how widely to ask, and
+    nothing said so until this test: moving the two apart would leave
+    ``fbe refresh -s oecd --force`` serving the cache it was told to drop and
+    reporting a successful refresh of stale data, which is a wrong number that
+    looks right.
+    """
+    with respx.mock:
+        first = respx.get(url__startswith=OECD_BASE_URL).mock(
+            return_value=httpx.Response(200, text=OECD_ROWS)
+        )
+        collect_module.collect(
+            data_config,
+            start=START,
+            end=END,
+            sources=(OecdSource,),
+            indicators=["cpi_yoy"],
+            currencies=["GBP"],
+        )
+        assert first.call_count == 1
+
+        collect_module.collect(
+            data_config,
+            start=START,
+            end=END,
+            sources=(OecdSource,),
+            indicators=["cpi_yoy"],
+            currencies=["GBP"],
+        )
+        assert first.call_count == 1, "the second run should have read the cache"
+
+        collect_module.collect(
+            data_config,
+            start=START,
+            end=END,
+            sources=(OecdSource,),
+            indicators=["cpi_yoy"],
+            currencies=["GBP"],
+            force=True,
+        )
+        assert first.call_count == 2
+
+
+def test_the_published_refresh_block_reproduces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The partial lines in ``docs/interfaces.md``, rebuilt and compared.
+
+    A worked example in the docs is a fixture here, and an example that does
+    not reproduce is worse than none. This pins what nothing else does: the
+    two-space indent on a failure line, the column widths either side of the
+    indicator, and that the failure lines come after the counts line they
+    belong to rather than before it. Four separate mutations of the renderer
+    survive the rest of this module and die here.
+    """
+    published = _published_refresh_lines()
+    outcome = collect_module.SourceOutcome(
+        source="oecd",
+        status=collect_module.SourceStatus.PARTIAL,
+        series=37,
+        observations=1204,
+        elapsed_seconds=9.1,
+        detail="1 of 38 series failed",
+        failures=(
+            collect_module.SeriesFailure(
+                indicator="policy_rate",
+                currency="JPY",
+                detail=published[1].split("failed (", 1)[1].rstrip(")"),
+            ),
+        ),
+    )
+
+    produced = [cli_module._render_outcome(outcome)]
+    produced.extend(cli_module._render_series_failures(outcome))
+
+    assert produced == published
+
+
+def _published_refresh_lines() -> list[str]:
+    """Return the two OECD lines from the ``fbe refresh`` console block.
+
+    Read out of the document rather than restated, so the two cannot drift
+    apart silently. Located by the source key at the start of the line, which
+    is how the block is laid out, and the indented line that follows it.
+    """
+    text = (Path(__file__).resolve().parents[1] / "docs" / "interfaces.md").read_text()
+    block = text.index("$ fbe refresh -s fred")
+    lines = text[block : text.index("```", block)].splitlines()
+    start = next(index for index, line in enumerate(lines) if line.startswith("oecd "))
+    return [lines[start], lines[start + 1]]

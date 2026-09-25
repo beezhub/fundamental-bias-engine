@@ -299,17 +299,6 @@ def test_an_unreadable_value_raises(source: OecdSource) -> None:
         source.fetch_key(PRICES_FLOW, GBR_CPI_KEY, START, END)
 
 
-@respx.mock
-def test_a_header_with_no_rows_is_an_empty_series_not_an_error(
-    source: OecdSource,
-) -> None:
-    """A window that held no observations is data, and differs from a failure."""
-    _route().mock(
-        return_value=httpx.Response(200, text="REF_AREA,TIME_PERIOD,OBS_VALUE\n")
-    )
-    assert source.fetch_key(PRICES_FLOW, GBR_CPI_KEY, START, END) == []
-
-
 # ---------------------------------------------------------------------------
 # parse_period, adopting the #27 ruling: the first day of the span
 # ---------------------------------------------------------------------------

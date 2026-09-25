@@ -146,6 +146,26 @@ class SourceOutcome:
     detail: str = ""
     failures: tuple[SeriesFailure, ...] = ()
 
+    def __post_init__(self) -> None:
+        """Refuse a completed outcome that is carrying losses.
+
+        The state is contradictory rather than merely unlikely: ``COMPLETED``
+        is what every consumer reads as "this source is fine", and the refresh
+        line prints it as a clean run. Making it unconstructible costs one
+        comparison and removes the ADR 0002 shape at the source, rather than
+        leaving a test to notice it later.
+
+        Raises:
+            ValueError: When ``COMPLETED`` carries failures.
+
+        """
+        if self.status is SourceStatus.COMPLETED and self.failures:
+            raise ValueError(
+                f"{self.source} is completed and carries "
+                f"{len(self.failures)} failed series, which cannot both be "
+                "true: some served is PARTIAL and none served is FAILED"
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class CollectionResult:

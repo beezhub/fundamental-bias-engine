@@ -79,6 +79,7 @@ missing series with `continue`, from the #169 fix, so adopting series scope
 would turn those into daily failure lines and that needs its own decision.
 `prices` and `cot` have not been ruled on. ADR 0015 records the reasoning and
 what is left.
+
 ---
 
 ## FRED
