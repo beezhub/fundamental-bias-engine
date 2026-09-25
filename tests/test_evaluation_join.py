@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 from fbe.config import ScoringConfig
+from fbe.datasources.prices import FRED_SPOT_SERIES
 from fbe.evaluation import ForwardRow, join_report, join_reports
 from fbe.report import load_report, write_report
 from fbe.risk import MissingRateError
@@ -43,8 +44,13 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "dashboard_report.json"
 ASOF = date(2026, 6, 30)
 """The committed fixture's as-of date, and the line every test is about."""
 
-MAJORS = ("EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "USDJPY", "USDCHF", "USDCAD")
-"""The seven pairs FRED publishes. Every cross is derived from these."""
+MAJORS = tuple(sorted(FRED_SPOT_SERIES))
+"""The pairs FRED publishes, taken from the source layer rather than retyped.
+
+Written out here, a rename or a re-keying on that side would leave this suite
+green while the real wiring inverted, which is the defect this whole file is
+about.
+"""
 
 BASE_RATES = {
     "EURUSD": 1.0850,
@@ -56,6 +62,11 @@ BASE_RATES = {
     "USDCAD": 1.3600,
 }
 """One session's fixings, in market convention, as `FRED_SPOT_SERIES` keys them."""
+
+
+def test_the_fixture_prices_are_the_pairs_the_source_layer_serves() -> None:
+    """Otherwise this file tests a join against prices nothing produces."""
+    assert set(BASE_RATES) == set(FRED_SPOT_SERIES)
 
 
 @pytest.fixture(scope="module")
@@ -152,6 +163,52 @@ def test_the_move_closes_on_the_last_session_inside_the_horizon(
     assert {row.closed_at for row in rows} == {ASOF + timedelta(days=9)}
 
 
+def test_sessions_given_out_of_order_are_read_in_time_order(
+    report: BiasReport,
+) -> None:
+    """Insertion order is not time order, and most price APIs answer newest first.
+
+    Taken as given, the open and the close swap and every move on the page is
+    inverted, which is a plausible number in the right range and the exact
+    failure this module's docstring is about.
+    """
+    ascending = {
+        ASOF + timedelta(days=1): dict(BASE_RATES),
+        ASOF + timedelta(days=10): {**BASE_RATES, "EURUSD": 1.1000},
+    }
+    descending = dict(reversed(list(ascending.items())))
+
+    row = rows_by_pair(join_report(report, descending).rows)["EURUSD"]
+
+    assert list(descending) != sorted(descending)
+    assert row.opened_at < row.closed_at
+    assert row.open_rate == pytest.approx(1.0850)
+    assert row.move == pytest.approx((1.1000 / 1.0850) - 1.0)
+    assert row.move > 0
+
+
+def test_a_move_the_size_of_a_real_week_survives_to_the_row(
+    report: BiasReport,
+) -> None:
+    """Forty pips on EURUSD is an ordinary ten days, and it is 0.4 per cent.
+
+    Rounded anywhere on the way through, every ordinary move collapses to a
+    flat result, which is the same defect criterion four is about arriving
+    through a different door: an unremarkable fortnight would enter the sample
+    as twenty-eight pairs that did not move.
+    """
+    rates = {
+        ASOF + timedelta(days=1): dict(BASE_RATES),
+        ASOF + timedelta(days=10): {**BASE_RATES, "EURUSD": 1.0890},
+    }
+
+    row = rows_by_pair(join_report(report, rates).rows)["EURUSD"]
+
+    assert row.move == pytest.approx((1.0890 / 1.0850) - 1.0)
+    assert row.move != 0.0
+    assert abs(row.move) < 0.005
+
+
 # --- the horizon --------------------------------------------------------------
 
 
@@ -177,6 +234,84 @@ def test_the_default_horizon_is_the_configured_one(report: BiasReport) -> None:
     assert {row.closed_at for row in rows} == {
         ASOF + timedelta(days=ScoringConfig().horizon_days)
     }
+
+
+def test_the_reach_test_reads_the_same_horizon_as_the_window(
+    report: BiasReport,
+) -> None:
+    """A number in two places will disagree, and here the disagreement is silent.
+
+    With the horizon at twenty days and prices stopping on day twelve, the
+    answer is that nothing can be said yet. Half the function reading the
+    packaged ten instead publishes an eleven-day move stamped as the twenty-day
+    one, and every figure downstream is computed over the wrong window.
+    """
+    rates = rates_on(range(1, 13), drift=0.005)
+    scoring = replace(ScoringConfig(), horizon_days=20)
+
+    joined = join_report(report, rates, scoring=scoring)
+
+    assert joined.rows == ()
+    assert any("20-day horizon" in problem for problem in joined.problems)
+
+
+def test_prices_stopping_a_day_short_of_the_horizon_are_not_enough(
+    report: BiasReport,
+) -> None:
+    """The boundary between "the market was shut" and "we cannot say yet".
+
+    A grace window of even a day or two here publishes a nine-day move as the
+    ten-day result, and the reader has nothing on the row to tell them.
+    """
+    rates = rates_on((1, 5, 9), drift=0.005)
+    scoring = replace(ScoringConfig(), horizon_days=10)
+
+    joined = join_report(report, rates, scoring=scoring)
+
+    assert joined.rows == ()
+    assert any("horizon" in problem for problem in joined.problems)
+
+
+def test_prices_that_miss_the_window_entirely_produce_no_row(
+    report: BiasReport,
+) -> None:
+    """A table reaching past the horizon with nothing inside it.
+
+    Falling back to whatever the table does hold would open on a price dated
+    before the as-of, which is the one thing this module exists to refuse.
+    """
+    rates = {
+        ASOF - timedelta(days=5): dict(BASE_RATES),
+        ASOF + timedelta(days=40): {**BASE_RATES, "EURUSD": 1.2000},
+    }
+
+    joined = join_report(report, rates)
+
+    assert joined.rows == ()
+    assert joined.problems
+
+
+def test_a_pair_that_stops_being_quoted_is_not_carried_forward(
+    report: BiasReport,
+) -> None:
+    """A hole in one pair's series is not a session where it did not move.
+
+    Measured to its last quote while the row still says it closed on the
+    horizon, the move is real and the window it is labelled with is not.
+    """
+    rates = {
+        ASOF + timedelta(days=1): dict(BASE_RATES),
+        ASOF + timedelta(days=4): {**BASE_RATES, "EURUSD": 1.2000},
+        ASOF + timedelta(days=10): {
+            pair: rate for pair, rate in BASE_RATES.items() if pair != "EURUSD"
+        },
+    }
+
+    joined = join_report(report, rates)
+    named = {problem.split(":")[0].split()[-1] for problem in joined.problems}
+
+    assert "EURUSD" not in rows_by_pair(joined.rows)
+    assert "EURUSD" in named
 
 
 # --- the sign -----------------------------------------------------------------
@@ -270,7 +405,15 @@ def test_a_pair_with_no_derivable_rate_is_named_rather_than_dropped(
 
     assert rows_by_pair(joined.rows).keys() == {"EURGBP", "EURUSD", "GBPUSD"}
     assert len(joined.problems) == len(report.pairs) - 3
-    assert any("AUDCAD" in problem for problem in joined.problems)
+    # Each line opens with the day and the pair it is about. Leaving the pair
+    # to whatever the underlying error happens to mention makes the gap
+    # unreadable at a glance and unsortable by anything downstream.
+    named = {problem.split(":")[0].split()[-1] for problem in joined.problems}
+    assert named == {
+        bias.pair
+        for bias in report.pairs
+        if bias.pair not in {"EURGBP", "EURUSD", "GBPUSD"}
+    }
 
 
 def test_a_missing_session_is_not_treated_as_an_unchanged_price(
@@ -341,16 +484,57 @@ def test_a_row_carries_the_bias_as_it_was_recorded(report: BiasReport) -> None:
     assert row.agreement == pytest.approx(recorded.agreement)
     assert row.asof == report.asof
 
+    # Across every pair, not just this one. EURUSD's agreement is 1.0 in this
+    # fixture and USDJPY's is 0.0, so a row hardcoding either would pass a
+    # single-pair check.
+    recorded_all = {pair.pair: pair for pair in report.pairs}
+    for other in join_report(report, rates).rows:
+        assert other.agreement == pytest.approx(recorded_all[other.pair].agreement)
+        assert other.spread == pytest.approx(recorded_all[other.pair].spread)
+        assert other.direction is recorded_all[other.pair].direction
+        assert other.conviction is recorded_all[other.pair].conviction
 
-def test_coverage_is_the_weaker_of_the_two_legs(report: BiasReport) -> None:
-    """A pair is only as well evidenced as its thinner side, and GBP in this
-    fixture is scored on 60% of its pillars."""
+
+@pytest.mark.parametrize("pair", ["EURGBP", "GBPUSD", "AUDUSD"])
+def test_coverage_is_the_weaker_of_the_two_legs(report: BiasReport, pair: str) -> None:
+    """A pair is only as well evidenced as its thinner side.
+
+    Both sides are tested because in this fixture EURGBP's thin leg is the
+    quote and GBPUSD's is the base, so a join reading one leg rather than the
+    minimum passes on whichever of the two it happens to match. Four GBP pairs
+    scored on 60% of their pillars would then be published at full coverage,
+    and a reader filtering on evidence would admit them.
+    """
     rates = rates_on(range(1, 15), drift=0.01)
 
-    row = rows_by_pair(join_report(report, rates).rows)["EURGBP"]
+    row = rows_by_pair(join_report(report, rates).rows)[pair]
     coverage = {score.currency: score.coverage for score in report.currencies}
 
-    assert row.coverage == pytest.approx(min(coverage["EUR"], coverage["GBP"]))
+    assert row.coverage == pytest.approx(
+        min(coverage[row.pair[:3]], coverage[row.pair[3:]])
+    )
+
+
+def test_a_leg_the_report_did_not_score_yields_no_row(report: BiasReport) -> None:
+    """Absent coverage is not full coverage.
+
+    Defaulting it to 1.0 is the missing-conversion-rate defect in the standards
+    table, one module along: a pair whose leg lost every pillar would publish
+    as the best evidenced row on the page.
+    """
+    thinned = replace(
+        report,
+        currencies=tuple(
+            score for score in report.currencies if score.currency != "GBP"
+        ),
+    )
+    rates = rates_on(range(1, 15), drift=0.01)
+
+    joined = join_report(thinned, rates)
+    named = {problem.split(":")[0].split()[-1] for problem in joined.problems}
+
+    assert not [row for row in joined.rows if "GBP" in row.pair]
+    assert {pair.pair for pair in report.pairs if "GBP" in pair.pair} <= named
 
 
 # --- a directory of reports ---------------------------------------------------
@@ -375,6 +559,160 @@ def test_a_directory_joins_in_date_order(report: BiasReport, tmp_path: Path) -> 
         date(2026, 6, 24),
         date(2026, 6, 26),
     }
+
+
+def test_the_order_is_the_as_of_in_the_file_rather_than_the_name_on_it(
+    report: BiasReport, tmp_path: Path
+) -> None:
+    """`load_report` reads the as-of from the body and nothing checks the name.
+
+    `data/reports/` is committed and hand-editable, and the glob matches a name
+    without zero padding, which sorts after a padded one from a later month. So
+    file order and record order can disagree, and rows ordered by the directory
+    listing would hand the evaluation a record that runs backwards in places.
+    """
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    written(reports, report, date(2026, 6, 26))
+    later = written(reports, report, date(2026, 6, 28))
+    misnamed = reports / "bias-2026-06-20.json"
+    misnamed.write_text(later.with_suffix(".json").read_text(encoding="utf-8"))
+    later.with_suffix(".json").unlink()
+    later.unlink()
+    rates = rates_on(range(-10, 20), drift=0.005, start=date(2026, 6, 20))
+
+    rows = join_reports(reports, rates).rows
+
+    assert sorted(path.name for path in reports.glob("bias-*.json")) == [
+        "bias-2026-06-20.json",
+        "bias-2026-06-26.json",
+    ]
+    assert [row.asof for row in rows] == sorted(row.asof for row in rows)
+    assert rows[0].asof == date(2026, 6, 26)
+
+
+def test_rows_come_back_in_pair_order_within_a_day(
+    report: BiasReport, tmp_path: Path
+) -> None:
+    """The other half of the ordering contract.
+
+    `ALL_PAIRS` is alphabetical today and `CLAUDE.md` calls its ordering
+    load-bearing, which is a reason to assert the contract rather than to lean
+    on the coincidence.
+    """
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    shuffled = replace(report, pairs=tuple(reversed(list(report.pairs))))
+    write_report(replace(shuffled, asof=date(2026, 6, 24)), reports)
+    rates = rates_on(range(-2, 20), drift=0.005, start=date(2026, 6, 24))
+
+    rows = join_reports(reports, rates).rows
+
+    assert [row.pair for row in rows] == sorted(row.pair for row in rows)
+
+
+def test_the_horizon_reaches_every_report_in_a_directory(
+    report: BiasReport, tmp_path: Path
+) -> None:
+    """The config has to reach the reports, not only the single-report call.
+
+    An operator passing their own scoring config to the directory join and
+    silently getting the packaged ten-day window on every row is the same
+    defect as the literal, one function further out.
+    """
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    written(reports, report, date(2026, 6, 24))
+    rates = rates_on(range(1, 30), drift=0.005, start=date(2026, 6, 24))
+
+    short = join_reports(
+        reports, rates, scoring=replace(ScoringConfig(), horizon_days=3)
+    )
+    long = join_reports(
+        reports, rates, scoring=replace(ScoringConfig(), horizon_days=20)
+    )
+
+    assert {row.closed_at for row in short.rows} == {date(2026, 6, 27)}
+    assert {row.closed_at for row in long.rows} == {date(2026, 7, 14)}
+
+
+def test_a_gap_inside_a_report_reaches_the_directory_level(
+    report: BiasReport, tmp_path: Path
+) -> None:
+    """Otherwise a thin cross vanishes from the record once a day, for years.
+
+    On a 250-day record that is 250 missing lines while every count downstream
+    reads as complete, which is exactly what reporting a gap is for.
+    """
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    written(reports, report, date(2026, 6, 24))
+    rates = rates_on(
+        range(-2, 20), drift=0.005, only=("EURUSD", "GBPUSD"), start=date(2026, 6, 24)
+    )
+
+    joined = join_reports(reports, rates)
+    named = {problem.split(":")[0].split()[-1] for problem in joined.problems}
+
+    assert "AUDCAD" in named
+    assert len(joined.problems) == len(report.pairs) - 3
+
+
+def test_each_report_is_joined_under_its_own_digest(
+    report: BiasReport, tmp_path: Path
+) -> None:
+    """Two runs under different weights are not poolable, and the row is where
+    a later reader finds that out."""
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    write_report(replace(report, asof=date(2026, 6, 24)), reports)
+    write_report(
+        replace(report, asof=date(2026, 6, 26), config_digest="ffffffffffff"), reports
+    )
+    rates = rates_on(range(-2, 20), drift=0.005, start=date(2026, 6, 24))
+
+    rows = join_reports(reports, rates).rows
+    digests = {row.asof: row.config_digest for row in rows}
+
+    assert digests[date(2026, 6, 24)] == report.config_digest
+    assert digests[date(2026, 6, 26)] == "ffffffffffff"
+
+
+def test_a_file_the_sidecar_glob_does_not_name_is_left_alone(
+    report: BiasReport, tmp_path: Path
+) -> None:
+    """`data/reports/` is committed and shared with whatever else lands there.
+
+    A wider glob turns every stray JSON into a decode problem, which trains the
+    reader to ignore the one list that exists to be read.
+    """
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    written(reports, report, date(2026, 6, 24))
+    (reports / "notes.json").write_text('{"note": "not a report"}')
+    rates = rates_on(range(-2, 20), drift=0.005, start=date(2026, 6, 24))
+
+    joined = join_reports(reports, rates)
+
+    assert joined.rows
+    assert not any("notes.json" in problem for problem in joined.problems)
+
+
+def test_a_sidecar_that_cannot_be_opened_is_reported(
+    report: BiasReport, tmp_path: Path
+) -> None:
+    """Unreadable and undecodable are the same answer to the record: that day
+    is missing from it rather than absent from it."""
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    written(reports, report, date(2026, 6, 24))
+    (reports / "bias-2026-06-25.json").mkdir()
+    rates = rates_on(range(-2, 20), drift=0.005, start=date(2026, 6, 24))
+
+    joined = join_reports(reports, rates)
+
+    assert {row.asof for row in joined.rows} == {date(2026, 6, 24)}
+    assert any("bias-2026-06-25.json" in problem for problem in joined.problems)
 
 
 def test_a_report_that_cannot_be_decoded_is_reported_rather_than_skipped(

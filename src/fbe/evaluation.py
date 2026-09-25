@@ -263,6 +263,9 @@ def join_reports(
         )
     rows: list[ForwardRow] = []
     problems: list[str] = []
+    # Sorted for the problem lines, which come back in the order the files were
+    # read. The rows' own order does not depend on it: the as-of in the file is
+    # what orders those, and a name can disagree with the body it holds.
     sidecars = sorted(directory.glob(SIDECAR_GLOB))
     if not sidecars:
         return ForwardJoin(problems=(f"{directory} holds no reports to join.",))
@@ -278,5 +281,9 @@ def join_reports(
         joined = join_report(report, rates, scoring=scoring)
         rows.extend(joined.rows)
         problems.extend(joined.problems)
-    rows.sort(key=lambda row: (row.asof, row.pair))
+    # By as-of only, and the sort is stable, so the pair order each report was
+    # given above survives it. Sorting by both here would make that one
+    # redundant, and a redundant guarantee is one nothing can test: either
+    # could then be dropped and the other would hide it.
+    rows.sort(key=lambda row: row.asof)
     return ForwardJoin(rows=tuple(rows), problems=tuple(problems))
