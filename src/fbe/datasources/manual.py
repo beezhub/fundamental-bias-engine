@@ -110,7 +110,13 @@ from typing import Any
 
 import yaml
 
-from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy, SourceError
+from fbe.datasources.base import (
+    BaseDataSource,
+    RateLimit,
+    RetryPolicy,
+    SourceError,
+    checked_vintage,
+)
 from fbe.datasources.registry import (
     INDICATORS,
     SeriesRef,
@@ -732,18 +738,25 @@ class ManualSource(BaseDataSource):
         self._agrees(row, "unit", unit, where)
         self._agrees(row, "frequency", frequency, where)
 
-        return Observation(
-            indicator=indicator,
-            currency=currency,
-            value=self._value(row["value"], where),
-            period=self._period(row["period"], where),
-            source=self.name,
-            series_id=indicator,
-            unit=unit,
-            frequency=frequency,
-            released_at=self._released_at(row.get("released_at"), where),
-            revision=self._revision(row.get("revision"), where),
-            meta=self._meta(row.get("meta"), where),
+        # Through the shared gate, which every source's construction path
+        # calls: a revision nothing can date is refused here rather than read
+        # from the original print's date two months early. The locator goes
+        # with it, because the response to this one is to edit the row.
+        return checked_vintage(
+            Observation(
+                indicator=indicator,
+                currency=currency,
+                value=self._value(row["value"], where),
+                period=self._period(row["period"], where),
+                source=self.name,
+                series_id=indicator,
+                unit=unit,
+                frequency=frequency,
+                released_at=self._released_at(row.get("released_at"), where),
+                revision=self._revision(row.get("revision"), where),
+                meta=self._meta(row.get("meta"), where),
+            ),
+            where,
         )
 
     @staticmethod
