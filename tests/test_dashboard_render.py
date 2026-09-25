@@ -30,6 +30,7 @@ import re
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, UndefinedError
@@ -197,6 +198,9 @@ class _StubView:
     legend = (("heat-p1", "stub legend"),)
     blackouts = ()
     hour_marks = ()
+    # Counts no run would produce, so the calendar note's figures are proven to
+    # come from the view rather than from the template counting markers itself.
+    calendar = SimpleNamespace(unchecked=7, unknown=0, reasons=(), total=9)
 
     def bar_pct(self, value: float) -> float:
         return 37.25
@@ -228,6 +232,7 @@ def test_the_template_renders_the_geometry_it_is_handed(report: BiasReport) -> N
 
     assert "<title>stub title</title>" in rendered
     assert "width: 37.25%" in rendered
+    assert "on 7 of" in rendered
     assert "heat-n2" in rendered
     assert "left: 11.5%" in rendered
     assert "19.0%" in rendered

@@ -153,6 +153,9 @@ def _render_dashboard() -> str:
         legend=(),
         hour_marks=(),
         blackouts=(),
+        # The calendar note over the strip, stubbed to a run that
+        # consulted its calendar: this test is about one label.
+        calendar=SimpleNamespace(unchecked=0, unknown=0, reasons=(), total=0),
     )
     environment = _environment(PACKAGE_ROOT / "dashboard" / "templates")
     return environment.get_template("dashboard.html.j2").render(**context)
