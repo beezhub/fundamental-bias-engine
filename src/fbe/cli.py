@@ -184,11 +184,14 @@ GAP_SAMPLE_LIMIT = 8
 """How many missing mornings the forward-record line names before it stops
 listing them and counts the rest.
 
-Eight fits the published column layout on one line and is enough to show the
-shape of a gap, a scattered week against a solid month. The alternative is the
-whole list, and a check that answers a three-month hole with eighty-two lines
-is one an operator scrolls past, which is the same silence this check exists to
-end. The count is always exact; only the listing is bounded."""
+Eight is enough to show the shape of a gap, a scattered week against a solid
+month, and enough to show where the hole starts, which is what the sample is
+read for. It does not fit the column layout on one line: a full eight-date
+sample runs to about 177 characters and wraps. That is the cost of the
+alternative being worse, since a check that answers a three-month hole with
+eighty-two lines is one an operator scrolls past, which is the same silence
+this check exists to end. The count is always exact; only the listing is
+bounded."""
 
 
 SOURCE_WIDTH = 14
@@ -1045,27 +1048,49 @@ def _check_record(sidecars: Sequence[Path], today: date) -> list[CheckLine]:
         gap is worth acting on and is not a reason to call the install
         unusable, so it becomes an exit 1 only under ``--strict``.
 
-        ``warn`` naming the file, and no gap list at all, when a name the glob
-        matched carries no date. Such a file could be any morning, so the days
-        around it cannot honestly be called missing, and listing them anyway
-        would report a morning that may well be on disk.
+        ``warn`` naming the files, and no gap list at all, when a name the
+        glob matched carries no date or carries one after ``today``. An
+        undated file could be any morning, so the days around it cannot
+        honestly be called missing; a file dated ahead of today sits outside
+        the window, and reporting the record around it would assert an
+        unbroken span over days nothing examined. Both are reported rather
+        than skipped, and the listing is bounded the same way the gap list is.
 
     """
-    dated: list[date] = []
+    dated: list[tuple[date, Path]] = []
+    undateable: list[str] = []
     for sidecar in sidecars:
         try:
-            dated.append(report_module.asof_in(sidecar))
+            dated.append((report_module.asof_in(sidecar), sidecar))
         except ValueError:
-            return [
-                CheckLine(
-                    "",
-                    CheckStatus.WARN,
-                    f"{sidecar.name} carries no as-of date, so the forward "
-                    f"record cannot be checked until it is renamed or moved",
-                )
-            ]
+            undateable.append(sidecar.name)
 
-    present = set(dated)
+    if undateable:
+        return [
+            CheckLine(
+                "",
+                CheckStatus.WARN,
+                f"{_bounded(undateable)} {_is_are(undateable)} not dated, so "
+                f"the forward record cannot be checked",
+            )
+        ]
+
+    ahead = [path.name for day, path in dated if day > today]
+    if ahead:
+        # Not a gap and not a missing morning: a file that should not exist
+        # yet. Reporting the record around it would mean asserting an
+        # unbroken span over days nothing has looked at, which is the one
+        # sentence this check exists to make trustworthy.
+        return [
+            CheckLine(
+                "",
+                CheckStatus.WARN,
+                f"{_bounded(ahead)} {_is_are(ahead)} dated after "
+                f"{today.isoformat()}, so the forward record cannot be checked",
+            )
+        ]
+
+    present = {day for day, _ in dated}
     start = min(present)
     missing = [day for day in _weekdays(start, today) if day not in present]
     if not missing:
@@ -1079,17 +1104,47 @@ def _check_record(sidecars: Sequence[Path], today: date) -> list[CheckLine]:
             )
         ]
 
-    listed = ", ".join(day.isoformat() for day in missing[:GAP_SAMPLE_LIMIT])
-    if len(missing) > GAP_SAMPLE_LIMIT:
-        listed += f" and {len(missing) - GAP_SAMPLE_LIMIT} more"
     return [
         CheckLine(
             "",
             CheckStatus.WARN,
             f"{len(missing)} weekday{'s' if len(missing) != 1 else ''} missing "
-            f"from the forward record: {listed}",
+            f"from the forward record: "
+            f"{_bounded([day.isoformat() for day in missing])}",
         )
     ]
+
+
+def _bounded(items: Sequence[str]) -> str:
+    """Join ``items`` for one printed line, listing at most the sample limit.
+
+    Args:
+        items: What to list, in the order the reader should see it.
+
+    Returns:
+        The first `GAP_SAMPLE_LIMIT` items, comma separated, followed by how
+        many were not listed. The count of what is left is exact; only the
+        listing is bounded, so nothing is dropped without saying so.
+
+    """
+    listed = ", ".join(items[:GAP_SAMPLE_LIMIT])
+    if len(items) > GAP_SAMPLE_LIMIT:
+        listed += f" and {len(items) - GAP_SAMPLE_LIMIT} more"
+    return listed
+
+
+def _is_are(items: Sequence[str]) -> str:
+    """Return the verb agreeing in number with ``items``.
+
+    Args:
+        items: What the sentence is about.
+
+    Returns:
+        ``is`` or ``are``. A line an operator reads every morning, and one
+        that reads as broken is one they stop reading.
+
+    """
+    return "is" if len(items) == 1 else "are"
 
 
 @app.command(

@@ -33,6 +33,7 @@ from fbe.cli import (
     CheckStatus,
     _check_sources,
     _probe,
+    _weekdays,
     app,
 )
 from fbe.config import Config, DataConfig, load_config
@@ -1104,11 +1105,29 @@ def test_a_name_with_no_date_withholds_the_gap_list(
 
     named = block[-1]
     assert len(block) == 2
-    assert "bias-backup.json" in named
-    assert "as-of date" in named
+    assert "bias-backup.json is not dated" in named
     assert named[LABEL_WIDTH:].startswith("warn")
     assert not any("missing" in line for line in block)
     assert "2026-09-22" not in named
+
+
+def test_the_window_excludes_its_end_and_the_weekend() -> None:
+    """`_weekdays` on its own. 2026-09-17 is a Thursday and 2026-09-22 a
+    Tuesday, so the span holds Thursday, Friday and Monday."""
+    assert _weekdays(date(2026, 9, 17), date(2026, 9, 22)) == [
+        date(2026, 9, 17),
+        date(2026, 9, 18),
+        date(2026, 9, 21),
+    ]
+
+
+def test_a_window_that_ends_before_it_starts_holds_no_days() -> None:
+    """The guard is unreachable through `_check_record`, which refuses a
+    future-dated report before it measures anything, so it is tested here
+    instead. Without it a reversed span is not an empty window but a negative
+    range, and the helper would quietly answer a question nobody asked."""
+    assert _weekdays(date(2026, 10, 5), date(2026, 9, 25)) == []
+    assert _weekdays(date(2026, 9, 25), date(2026, 9, 25)) == []
 
 
 @respx.mock
@@ -1178,21 +1197,58 @@ def test_exactly_the_sample_limit_prints_no_remainder(
 
 
 @respx.mock
-def test_a_report_dated_ahead_of_today_leaves_an_empty_window(
+def test_a_report_dated_after_today_is_named_and_stops_the_check(
     tmp_path: Path, only_scaffolded: None, today_is_fixed: None
 ) -> None:
-    """A hand-dated file or a skewed clock puts the earliest report after
-    today. There is nothing behind it to be missing, and a window measured
-    without regard to the sign would walk forward from it and call a fortnight
-    of days missing that have not happened yet."""
+    """A mistyped year is not a gap and not a missing morning: it is a file
+    that should not exist yet. Reporting the record around it means asserting
+    an unbroken span over days nothing has looked at."""
     path = _config_file(tmp_path)
     _record(path, tmp_path, "2026-10-05")
 
-    gap = _block(_run(path), "reports")[-1]
+    line = _block(_run(path), "reports")[-1]
 
-    assert "unbroken" in gap
-    assert "1 report from" in gap
-    assert "missing" not in gap
+    assert "bias-2026-10-05.json is dated after 2026-09-25" in line
+    assert line[LABEL_WIDTH:].startswith("warn")
+    assert "unbroken" not in line
+    assert "missing" not in line
+
+
+@respx.mock
+def test_a_future_date_does_not_widen_an_unbroken_span(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """The failure this is guarding. The window runs to today, so with a
+    mistyped year on disk a span printed from the earliest to the latest
+    filename reads as a six-month unbroken record off one checked day, and
+    that sentence is the one this whole check exists to make trustworthy."""
+    path = _config_file(tmp_path)
+    _record(path, tmp_path, "2026-09-24", "2027-03-24")
+
+    line = _block(_run(path), "reports")[-1]
+
+    assert "2027-03-24" not in line.replace("bias-2027-03-24.json", "")
+    assert "unbroken" not in line
+
+
+@respx.mock
+def test_every_undated_name_is_counted_not_only_the_first(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """Three files nobody can date take three runs to clear if the check names
+    one at a time, and the operator cannot tell after the first fix whether
+    they are done."""
+    path = _config_file(tmp_path)
+    reports = _record(path, tmp_path, "2026-09-24")
+    for name in ("bias-backup.json", "bias-old.json", "bias-copy.json"):
+        (reports / name).write_text("{}")
+
+    line = _block(_run(path), "reports")[-1]
+
+    assert "bias-backup.json" in line
+    assert "bias-copy.json" in line
+    assert "bias-old.json" in line
+    assert "are not dated" in line
 
 
 @respx.mock
