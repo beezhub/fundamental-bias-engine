@@ -308,7 +308,20 @@ Every issuer publishes the number free and without a key. The cost is that
 there is no single API: seven providers, seven formats, seven failure modes.
 Each covers exactly one currency, so none can substitute for another and losing one
 provider means losing a currency's heaviest pillar rather than degrading a
-series. Fail loudly.
+series.
+
+**What fails loudly, and at what scope.** Each provider is its own source:
+`EcbSource`, `BocSource`, `MofJpSource`, `BoeSource`, `RbaSource`, `SnbSource`
+and `RbnzSource`, sharing `CurvesSource` as their base, which holds the parsers
+and is not itself a source in a run. A provider that raises, or that answers
+with no session inside the window, is a failed source under its own name on the
+refresh output, and its currency reaches the score as an explicit absence: the
+monetary pillar prints n/a for that currency and coverage is demoted. The other
+six providers' yields still land. `fbe refresh -s ecb` selects one provider;
+there is no `-s curves`. Until #218 the seven sat behind one `curves` source,
+and one central bank's website being down cost every two-year yield in the run.
+ADR 0013 records the ruling and why the split was preferred over a partial
+status on one source.
 
 ### The providers
 
@@ -344,7 +357,16 @@ of last month, so today's number only appears in the first. Columns are
 **Shift-JIS**, not UTF-8, and carry a Japanese-language footer row that is not
 data. Missing tenors appear as `-`.
 
-**Bank of England.** Two different things, do not confuse them.
+**Bank of England.** Two different things, do not confuse them, and one thing
+they share: **both refuse a Python client's default `User-Agent` with HTTP
+403**, before any body is served. Probed live on 2026-09-24: `python-httpx` and
+`python-requests` strings answered 403 on the database and on the archive, and
+a string naming this project answered 200 on both. `CurvesSource` therefore
+sends `fundamental-bias-engine/0.1 (+repository URL)` on every request, set as
+the class's `default_headers` so it reaches all seven providers. If a 403 from
+this host reappears, check that header first; without it the base class reads
+the 403 as a wrong request and does not retry, so GBP loses Bank Rate and every
+provider here loses its 2-year yield for the run (#273).
 
 The interactive database at `/boeapps/iadb/fromshowcolumns.asp` serves flat CSV
 for named series. Query: `csv.x=yes`, `Datefrom`/`Dateto` as `DD/Mon/YYYY`,
@@ -509,10 +531,22 @@ The CFTC's own wording: released "each Friday at 3:30 pm Eastern Time (US),
 using the data from the immediately preceding Tuesday of that week". Positions
 are snapped at Tuesday's close and take three days to process.
 
+When the Tuesday is a US federal holiday the snapshot moves to the Monday. The
+TFF dataset carries twelve Monday report dates since 2007, each the day before
+Christmas Day, New Year's Day, Independence Day or Veterans Day fell on a
+Tuesday, and no weekday other than Monday and Tuesday ever appears (queried
+live 2026-09-24, #274). The source accepts both and stamps the release as the
+Friday of the report week; any other weekday is refused as a misread column.
+The CFTC adds that federal holidays "may delay release by one or two days",
+which the dataset does not record, so a holiday week's reading can carry a
+Friday stamp a day or two before anyone could read it. That is the cost ADR
+0011 already names for a suspended publication, and it is accepted here for
+the same reason: closing it needs a release calendar this dataset lacks.
+
 So on any Wednesday the freshest number is eight days old, and by the next
 Friday morning it is ten. Nothing fixes that. What matters is that the engine
-never treats a COT reading as current: the `Observation` period is the Tuesday,
-`released_at` is the Friday, and the staleness penalty sees the real age.
+never treats a COT reading as current: the `Observation` period is the snapshot
+day, `released_at` is the Friday, and the staleness penalty sees the real age.
 
 ### Deriving a dollar position
 
@@ -1564,9 +1598,17 @@ difference is in the reason string, not in whether the pair is marked
 tradeable.
 
 **COT data is over a week old**
-Expected and structural. Positions are snapped Tuesday and published Friday
-15:30 ET. If it is more than two weeks old, check
-`CotSource.latest_report_date`; publication has been interrupted before.
+Expected and structural. Positions are snapped Tuesday, or Monday when the
+Tuesday is a US holiday, and published Friday 15:30 ET. If it is more than two
+weeks old, check `CotSource.latest_report_date`; publication has been
+interrupted before.
+
+**cftc failed with a report date "rather than a Tuesday"**
+The source refuses a report date on any weekday but Monday or Tuesday, because
+the CFTC has never snapped on another day and a new weekday means the date
+column has been renamed or misread. A Monday is accepted and is a holiday
+week, not a fault. Check the dataset's `report_date_as_yyyy_mm_dd` column by
+hand before changing the accepted weekdays.
 
 **A currency scores with low coverage**
 `CurrencyScore.coverage` below 1.0 means part of the pillar weight had no usable

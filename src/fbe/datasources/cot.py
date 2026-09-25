@@ -46,14 +46,19 @@ Release timing: stale by design
 The CFTC's own wording: the reports are released "each Friday at 3:30 pm
 Eastern Time (US), using the data from the immediately preceding Tuesday of
 that week". Positions are snapped at Tuesday's close and take three days to
-process.
+process. When the Tuesday is a US federal holiday the snapshot moves to the
+Monday: the dataset holds twelve such weeks since 2007, each the day before
+Christmas Day, New Year's Day, Independence Day or Veterans Day fell on a
+Tuesday, and no other weekday ever appears. The release stays on the Friday of
+that week, and the CFTC's release schedule adds that federal holidays "may delay
+release by one or two days", which this source cannot see (see `_released_at`).
 
 So on any given Wednesday the freshest available number is eight days old, and
 by the following Friday morning it is ten. Nothing can be done about that. What
 matters is that the engine never treats a COT reading as current: the period on
-the `Observation` is the Tuesday, not the Friday, and ``released_at`` is the
-Friday. Scoring positioning as though it were a live number is the standard way
-to misuse this dataset.
+the `Observation` is the snapshot day, not the Friday, and ``released_at`` is
+the Friday. Scoring positioning as though it were a live number is the standard
+way to misuse this dataset.
 
 Deriving a dollar position
 --------------------------
@@ -103,8 +108,8 @@ __all__ = [
     "PERCENT_SCALE",
     "RATE_LIMIT",
     "RELEASE_DAY",
-    "SNAPSHOT_WEEKDAY",
-    "RELEASE_LAG_DAYS",
+    "SNAPSHOT_WEEKDAYS",
+    "RELEASE_WEEKDAY",
     "RELEASE_TIME_ET",
     "RELEASE_ZONE",
     "TFF_FIELDS",
@@ -151,29 +156,35 @@ USD_INDEX_CODE = "098662"
 on the derived dollar position, never the primary read: see the module
 docstring."""
 
-SNAPSHOT_WEEKDAY = 1
-"""``date.weekday()`` for Tuesday, the day positions are snapped.
+SNAPSHOT_WEEKDAYS = (0, 1)
+"""``date.weekday()`` values a report date may carry: Monday and Tuesday.
 
-Checked rather than assumed. `CotSource._released_at` adds `RELEASE_LAG_DAYS`
-to the report date unconditionally, so a report date that is not a Tuesday
-would carry a release stamp that is not a Friday, and the stamp is what the
-visibility rule reads. A non-Tuesday report date means a renamed or misread
-column rather than a week the CFTC snapped on a different day, so it stops the
-run."""
+Tuesday is the rule. Monday is the CFTC's own exception for a week whose
+Tuesday is a US federal holiday, and it is the only exception: queried live on
+2026-09-24, the TFF futures-only dataset carries twelve Monday report dates
+since 2007 and no other weekday but Tuesday (#274). Checked rather than
+assumed, because `CotSource._released_at` stamps the release from the report
+date, and the stamp is what the visibility rule reads. A report date on any
+other weekday means a renamed or misread column rather than a week the CFTC
+snapped on a different day, so it stops the run. Before #274 this was Tuesday
+alone, and the first holiday week inside the lookback failed every refresh."""
 
 RELEASE_DAY = "friday"
 RELEASE_TIME_ET = "15:30"
-"""Positions are as of the preceding Tuesday's close. The lag is structural."""
+"""Positions are as of the snapshot day's close. The lag is structural."""
 
-RELEASE_LAG_DAYS = 3
-"""Days from the Tuesday snapshot to the Friday release.
+RELEASE_WEEKDAY = 4
+"""``date.weekday()`` for Friday, the day the CFTC publishes.
 
 Not a guess and not configurable: the CFTC publishes every Friday using the data
-from the immediately preceding Tuesday, so the gap is three days by the release
-schedule itself. `CotSource.fetch` stamps ``period`` with the Tuesday and
-``released_at`` with the Friday, and a run dated between the two must not see
-the reading, which is what the visibility rule in `fbe.pillars.base` uses
-``released_at`` for."""
+from the immediately preceding Tuesday, or Monday in a holiday week, so the
+release is the Friday of the report week by the release schedule itself.
+Expressed as a weekday rather than as a lag because the lag is three days from
+a Tuesday and four from a Monday, and one rule for both is the point.
+`CotSource.fetch` stamps ``period`` with the snapshot day and ``released_at``
+with the Friday, and a run dated between the two must not see the reading,
+which is what the visibility rule in `fbe.pillars.base` uses ``released_at``
+for."""
 
 RELEASE_ZONE = ZoneInfo("America/New_York")
 """The release time is quoted in Eastern Time, which observes daylight saving.
@@ -782,20 +793,21 @@ class CotSource(BaseDataSource):
         """Return when the CFTC published the week snapped on ``report_date``.
 
         Args:
-            report_date: The Tuesday the positions were snapped.
+            report_date: The day the positions were snapped: a Tuesday, or the
+                Monday of a week whose Tuesday is a US federal holiday.
 
         Returns:
-            The following Friday at 15:30 Eastern, as an aware datetime. Eastern
-            rather than a fixed offset because the release time is quoted in
-            local time and observes daylight saving, so 15:30 is 19:30 UTC in
-            summer and 20:30 UTC in winter.
+            The Friday of that week at 15:30 Eastern, as an aware datetime.
+            Eastern rather than a fixed offset because the release time is
+            quoted in local time and observes daylight saving, so 15:30 is
+            19:30 UTC in summer and 20:30 UTC in winter.
 
         Raises:
-            SourceError: ``report_date`` is not a Tuesday. The three-day
-                addition below assumes it is, and every docstring in this
-                module says so, so a Wednesday report date would produce a
-                Saturday release stamp with nothing objecting. See
-                `SNAPSHOT_WEEKDAY`.
+            SourceError: ``report_date`` is neither a Monday nor a Tuesday.
+                The Friday below is computed from the weekday, so a Saturday
+                report date would produce a release stamp six days earlier
+                than its period with nothing objecting, and a Wednesday one is
+                a day the CFTC has never snapped on. See `SNAPSHOT_WEEKDAYS`.
 
         **This is derived from ``period``, which `BaseDataSource._observation`
         says a release stamp never is.** That rule is there because a period and
@@ -807,10 +819,13 @@ class CotSource(BaseDataSource):
         the exception.
 
         What the exception costs is the case where the schedule does not hold.
-        Publication has been suspended and backfilled before, and every Tuesday
-        inside such a span is stamped as released three days later although
-        nobody could read any of them until the catch-up. Closing that needs a
-        published release calendar, which this dataset does not carry.
+        Publication has been suspended and backfilled before, and every report
+        date inside such a span is stamped as released that Friday although
+        nobody could read any of them until the catch-up. The CFTC also says a
+        federal holiday "may delay release by one or two days", so a holiday
+        week's reading may be stamped a day or two before anyone could see it.
+        Closing either needs a published release calendar, which this dataset
+        does not carry.
 
         The hour is not read by anything today. `fbe.pillars.base` compares
         ``released_at.date()`` against the run date, so a run dated that Friday
@@ -819,15 +834,17 @@ class CotSource(BaseDataSource):
         visibility rule currently uses it.
 
         """
-        if report_date.weekday() != SNAPSHOT_WEEKDAY:
+        if report_date.weekday() not in SNAPSHOT_WEEKDAYS:
             raise SourceError(
                 f"{self.name} got report date {report_date}, a "
-                f"{report_date.strftime('%A')} rather than a Tuesday. "
-                "Positions are snapped at Tuesday's close and the release is "
-                "three days later, so this is a renamed or misread column "
+                f"{report_date.strftime('%A')} rather than a Tuesday or the "
+                "Monday of a US holiday week. Those are the only days the CFTC "
+                "snaps positions on, so this is a renamed or misread column "
                 "rather than a week the CFTC snapped on another day."
             )
-        published = report_date + timedelta(days=RELEASE_LAG_DAYS)
+        published = report_date + timedelta(
+            days=RELEASE_WEEKDAY - report_date.weekday()
+        )
         hour, minute = (int(part) for part in RELEASE_TIME_ET.split(":"))
         return datetime.combine(published, time(hour, minute), tzinfo=RELEASE_ZONE)
 
