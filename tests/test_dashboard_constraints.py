@@ -25,10 +25,12 @@ string.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
 
+import fbe.dashboard.build
 from fbe.dashboard.build import (
     ALLOWED_SCRIPT_HOSTS,
     ALLOWED_STYLE_HOSTS,
@@ -769,3 +771,117 @@ def test_the_allowed_style_hosts_are_each_accepted(host: str) -> None:
     link = f'<link rel="stylesheet" href="https://{host}/css2?family=Inter" />'
 
     assert check_constraints(document(head_extra=link)) == []
+
+
+# --- @import without url(), which is #278 -----------------------------------
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_a_stylesheet_imported_without_url_is_reported(quote: str) -> None:
+    """The defect. Both quoting forms are valid CSS and both were invisible.
+
+    `_CSS_URL` matches on ``url(``, so ``@import url("theme.css")`` was caught
+    and ``@import "theme.css"`` reached no pattern. The bare form is the one a
+    hand-written template is likelier to carry, because it is shorter.
+
+    This is the failure the checker exists to prevent. The sandbox blocks the
+    request, the page still renders, and the panel that stylesheet styled is
+    unstyled or absent. Nothing raises at build time or at view time, so the
+    first sign of it is a broken page on a phone mid-session.
+    """
+    imported = f"@import {quote}theme.css{quote};"
+
+    assert "theme.css" in reported(document(palette=imported + PALETTE))
+
+
+def test_an_imported_stylesheet_reads_the_same_as_a_url_one() -> None:
+    """The first criterion asks for the same message shape, not merely a report.
+
+    A reader who has seen the ``url()`` message should not have to work out
+    that this is the same problem. The construct differs, so the message names
+    ``@import`` where the other names ``url()``, and everything else matches.
+    """
+    bare = reported(document(palette='@import "theme.css";' + PALETTE))
+    wrapped = reported(document(palette='@import url("theme.css");' + PALETTE))
+
+    # Asserted before the comparison below, which passes either way. If the
+    # bare form reported ``url()`` too, the replace would be a no-op and the
+    # two strings would match on a message that names the wrong construct.
+    assert "`<style>` @import points at 'theme.css'" in bare
+    assert "`<style>` url() points at 'theme.css'" in wrapped
+
+    assert bare.replace("@import", "url()") == wrapped
+
+
+def test_an_import_from_google_fonts_is_still_accepted() -> None:
+    """The second criterion, and the half this change could break.
+
+    Catching the bare form is easy. Catching it without rejecting the allowed
+    host is the part worth a test: ``fonts.googleapis.com`` is on the
+    stylesheet allow-list and a page that imports from it must still publish.
+    """
+    allowed = '@import url("https://fonts.googleapis.com/css2?family=Inter");'
+
+    assert check_constraints(document(palette=allowed + PALETTE)) == []
+
+
+def test_a_bare_import_from_google_fonts_is_also_accepted() -> None:
+    """The same host through the form this change adds.
+
+    Without this the new pattern could report every bare import regardless of
+    host, which would pass the test above and still block a legitimate page.
+    """
+    allowed = '@import "https://fonts.googleapis.com/css2?family=Inter";'
+
+    assert check_constraints(document(palette=allowed + PALETTE)) == []
+
+
+def test_an_import_inside_a_css_comment_is_not_reported() -> None:
+    """The third criterion, for the case that is cheap to handle honestly.
+
+    A commented-out import is not a reference. Reporting it would refuse to
+    publish a page over a line the browser never reads, and `build_dashboard`
+    refuses to write a page that breaks a constraint, so a false positive here
+    costs a run rather than a warning.
+
+    Comments are stripped before the import scan only, not before the
+    ``url()`` scan, so this change cannot weaken a check that already worked.
+    `test_a_url_inside_a_css_comment_is_still_reported` is that half.
+    """
+    commented = '/* @import "theme.css"; */'
+
+    assert check_constraints(document(palette=commented + PALETTE)) == []
+
+
+def test_a_url_inside_a_css_comment_is_still_reported() -> None:
+    """The existing behaviour this change must not quietly alter.
+
+    ``url()`` inside a comment was reported before #278 and still is. That is
+    arguably a false positive too, but it is the behaviour on `main` and
+    changing it is not what this issue asked for. Pinned so the comment
+    stripping cannot spread to the other scan without a test failing.
+    """
+    commented = '/* background: url("theme.png"); */'
+
+    assert "theme.png" in reported(document(palette=commented + PALETTE))
+
+
+def test_an_import_inside_a_css_string_is_a_recorded_limit() -> None:
+    """The third criterion's other half, recorded rather than handled.
+
+    Telling ``content: "@import 'x';"`` from a real import needs a CSS parser,
+    which is a much larger change than this issue asks for. The criterion
+    offers recording it as a limit instead, beside the two already in the
+    module docstring, and that is what this does.
+
+    Asserted as a false positive rather than left unasserted, so the limit is
+    pinned to what the code actually does. If someone later makes the checker
+    parse properly, this test fails and points at the docstring that needs its
+    limit removed.
+    """
+    in_string = "body::after { content: \"@import 'theme.css';\"; }"
+
+    assert "theme.css" in reported(document(palette=PALETTE, body_rule=in_string))
+
+    source = inspect.getsource(fbe.dashboard.build)
+    assert "inside a CSS string" in source
