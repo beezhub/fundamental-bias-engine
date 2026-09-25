@@ -115,12 +115,24 @@ class Observation:
             never lives here; it lives on ``released_at``.
         released_at: When the number hit the tape. Used to avoid look-ahead
             bias when backtesting; may be ``None`` for series where the source
-            does not publish a release timestamp.
+            does not publish a release timestamp, in which case a consumer
+            dates the figure by ``period`` plus an assumed publication lag.
+            **An observation with ``revision`` above zero must carry one.** The
+            assumed lag dates an original print, and a correction describes the
+            same period as the print it corrects, so the lag gives both the same
+            date and an undated revision would be read from the original's date:
+            on a June figure revised in September, a July run would read the
+            September number. `fbe.datasources.base.checked_vintage` refuses
+            that shape where observations are built and
+            `fbe.pillars.base.BasePillar._visible` refuses it again where they
+            are read. ADR 0007, issue #121.
         source: Short source key, e.g. ``"fred"``, ``"cftc"``, ``"stooq"``.
         series_id: The source's own identifier, e.g. ``"DGS2"``.
         unit: Unit of ``value``, e.g. ``"percent"``, ``"index"``, ``"contracts"``.
         frequency: How often the series is published.
-        revision: Vintage marker when a source republishes a period.
+        revision: Vintage marker when a source republishes a period. Zero is
+            the figure as first published. Above zero requires ``released_at``,
+            for the reason recorded there.
 
     """
 

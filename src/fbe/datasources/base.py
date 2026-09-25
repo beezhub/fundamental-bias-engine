@@ -45,6 +45,9 @@ __all__ = [
     "RateLimit",
     "RetryPolicy",
     "SourceError",
+    "UndatedRevisionError",
+    "checked_vintage",
+    "undated_revision",
 ]
 
 REQUEST_TIMEOUT_SECONDS = 30.0
@@ -62,6 +65,102 @@ class SourceError(RuntimeError):
     "the request failed" is not, and the coverage figures on a report depend on
     telling those two apart.
     """
+
+
+class UndatedRevisionError(SourceError):
+    """An observation claims a revision without saying when it was published.
+
+    A revision and the original print it corrects describe the same period, so
+    the assumed publication lag dates both to the same day and a run reads the
+    correction from the moment the original would have been available. The lag
+    estimates when *a print for this period* appeared, and there is no
+    assumption available that dates a correction to it: only the source knows.
+    ADR 0007 rules that a source which cannot supply `Observation.released_at`
+    may not express a revision.
+
+    Raised where observations are built rather than dropped where they are
+    read. A pillar refusing the shape silently would, on a live run, score
+    today's currency off a superseded figure and report nothing, because on a
+    live run the newest vintage is the only one that matters. Refusing at the
+    boundary is the one point where the fact is still recoverable: the response
+    to a hand-typed correction with no date is to say so, which is what gets
+    the date into the file.
+
+    A `SourceError` because it is a statement about what a source supplied, so
+    `fbe.datasources.collect` reports it as that source's failure rather than
+    dropping it. Its own type so that a narrow ``except ValueError`` around a
+    row parser cannot read an operator's mistake as a malformed number.
+    """
+
+
+def undated_revision(observation: Observation) -> bool:
+    """Whether this observation claims a vintage nothing can place in time.
+
+    Args:
+        observation: Any observation, built or read back from a cache.
+
+    Returns:
+        True when ``revision`` is above zero and ``released_at`` is ``None``.
+        That pair is the one shape no consumer can date: the publication lag
+        estimates when a print for the period appeared, and a correction to it
+        shares the period, so the estimate would admit the correction from the
+        original's date.
+
+        False for an unrevised observation with no stamp, which is most of the
+        universe and is admitted on the assumed lag.
+
+    One predicate for both halves of ADR 0007's rule: `checked_vintage` raises
+    on it at the source boundary and `fbe.pillars.base.BasePillar._visible`
+    refuses it a second time for anything that arrived another way, such as a
+    cache written before this rule existed. Two copies of the condition is one
+    edit away from the halves disagreeing about which shape is refused.
+
+    """
+    return observation.revision > 0 and observation.released_at is None
+
+
+def checked_vintage(observation: Observation, where: str = "") -> Observation:
+    """Return ``observation`` unless it claims a revision it cannot date.
+
+    Args:
+        observation: A freshly built observation, before anything reads it.
+        where: Optional locator for the message, such as the file and row a
+            hand-typed observation came from. Omitted by a fetching source,
+            which has no row to name and whose source name is already on the
+            observation.
+
+    Returns:
+        The same observation, unchanged. Every source's construction path calls
+        this, so the rule lives in one place rather than once per source: ADR
+        0007's requirement is a property of the contract, and six copies of it
+        would be six chances for the seventh source to omit it.
+
+    Raises:
+        UndatedRevisionError: When ``revision`` is above zero and
+            ``released_at`` is ``None``. A revision with no release date cannot
+            be placed in time by anything downstream: the publication lag dates
+            an original print and a correction to that print shares its period,
+            so the assumption admits the correction from the original's date.
+
+    An observation with no revision and no release date is fine and is most of
+    the universe. It is admitted on the assumed lag and counted in
+    ``PillarScore.diagnostics["assumed_lag_inputs"]``, which is how much of a
+    run rests on the assumption rather than on fact.
+
+    """
+    if undated_revision(observation):
+        locator = f"{where} " if where else ""
+        raise UndatedRevisionError(
+            f"{locator}claims {observation.indicator} / {observation.currency} "
+            f"for period {observation.period} at revision "
+            f"{observation.revision} with no released_at. A revision and the "
+            "print it corrects describe the same period, so the assumed "
+            "publication lag would admit the correction from the original's "
+            "date and a historical run would read a number that did not exist "
+            "yet. Give the row a released_at, or record it at revision 0 as "
+            "the figure that was published. ADR 0007."
+        )
+    return observation
 
 
 @dataclass(frozen=True, slots=True)
@@ -639,6 +738,7 @@ class BaseDataSource(ABC):
         period: date,
         value: float,
         released_at: datetime | None = None,
+        revision: int = 0,
     ) -> Observation:
         """Build a canonical `Observation` from a raw value and its ref.
 
@@ -666,6 +766,12 @@ class BaseDataSource(ABC):
                 published are different facts, and conflating them is exactly
                 the look-ahead bias Phase 6 has to avoid. A quarterly print
                 dated to the quarter it covers is weeks early.
+            revision: Which vintage of ``period`` this is, zero for the figure
+                as first published. A source that republishes a corrected
+                figure must supply ``released_at`` with it, because nothing
+                downstream can date a correction: see `checked_vintage` and
+                ADR 0007. Defaults to zero, which is what every source here
+                currently publishes.
 
         Returns:
             A populated `Observation`. ``source``, ``series_id``, ``unit`` and
@@ -673,15 +779,24 @@ class BaseDataSource(ABC):
             caller re-typed, so those four cannot drift from the registry the
             coverage report is computed against.
 
+        Raises:
+            UndatedRevisionError: When ``revision`` is above zero and
+                ``released_at`` is ``None``. Refused here rather than dropped
+                where it is read, because this is the last point at which the
+                missing date is still recoverable.
+
         """
-        return Observation(
-            indicator=indicator,
-            currency=currency,
-            value=value,
-            period=period,
-            source=ref.source,
-            series_id=ref.series_id,
-            unit=ref.unit,
-            frequency=ref.frequency,
-            released_at=released_at,
+        return checked_vintage(
+            Observation(
+                indicator=indicator,
+                currency=currency,
+                value=value,
+                period=period,
+                source=ref.source,
+                series_id=ref.series_id,
+                unit=ref.unit,
+                frequency=ref.frequency,
+                released_at=released_at,
+                revision=revision,
+            )
         )

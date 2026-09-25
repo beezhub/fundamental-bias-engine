@@ -119,6 +119,13 @@ No fetching source sets `released_at` today, so a historical run decides what
 it could have seen from an assumed publication lag instead. That lag is per
 leg, and the next section says how it is measured.
 
+The lag dates an original print and cannot date a revision, so an observation
+carrying `revision` above zero must carry `released_at` too. The rule is
+enforced where observations are built, in
+`fbe.datasources.base.checked_vintage`, and again where they are read, in
+`BasePillar._visible`. ADR 0007 records why, and the manual-entry section below
+says what it means for a typed correction.
+
 ### Publication lag, per leg
 
 Without a `released_at`, `BasePillar._visible` admits an observation on
@@ -782,6 +789,15 @@ Optional: `unit`, `frequency`, `released_at`, `revision`, `meta`.
 - `released_at` is optional but strongly wanted. Without it, staleness falls
   back to `period`, which overstates the age of a quarterly series by up to
   three months.
+- **`revision` above zero must carry `released_at`.** A row with a revision and
+  no release date is refused on load, naming the file and the row, and the run
+  reports it as that source's failure rather than skipping the row. The reason
+  is the one thing the assumed publication lag cannot do: it dates an original
+  print, and a correction describes the same period as the print it corrects, so
+  both get the same date. A June figure corrected in September, typed without a
+  date, is then read by a run dated 16 July, which is a number that did not
+  exist for another two months. Type the date the correction was published, or
+  record the figure at revision 0 as what was published at the time. ADR 0007.
 - `meta` is the right place for the URL the number came from. That provenance is
   the only audit trail a hand-typed number has.
 
