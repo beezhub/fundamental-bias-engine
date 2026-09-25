@@ -409,8 +409,23 @@ observation is 2025-07-31, while other cubes on the same portal are current to
 stopped publishing this particular series. The Swiss franc has no free current
 2-year yield.
 
-**Reserve Bank of New Zealand: current, reachable from the owner's
-connection only.**
+**Reserve Bank of New Zealand: current, from a workbook the owner downloads by
+hand, or from the wire where the RBNZ allows it.**
+
+*The drop-in file.* Download
+`https://www.rbnz.govt.nz/-/media/project/sites/rbnz/files/statistics/series/b/b2/hb2-daily-close.xlsx`
+in a browser and save it as `data/manual/rbnz-hb2-daily-close.xlsx`. While
+that file exists `RbnzSource` reads it on every run, offline or not, and makes
+no request. It is git-ignored: public data, reproducible by one download, not
+the audit trail. Refresh it weekly, or whenever you want a fresher number. A
+file whose newest session is older, at the run's as-of date, than the
+registry's staleness allowance for the NZD two-year (`staleness_allowance`,
+9 days at the time of writing) is refused with a `SourceError` naming the
+file, its newest session and this URL, so the refresh line reads `rbnz failed`
+and NZD is an explicit absence rather than a quiet month-old yield. Delete the
+file to go back to fetching from the wire. Approved in #282, built in #283.
+
+*The wire.*
 `https://www.rbnz.govt.nz/-/media/project/sites/rbnz/files/statistics/series/b/b2/hb2-daily-close.xlsx`,
 statistical table B2, daily wholesale interest rates, the daily close workbook
 from 2018. Sheet `Data` carries five header rows (group, tenor, notes, unit,
@@ -434,7 +449,12 @@ and its own "Website unavailable" page: "Enable JavaScript and cookies to
 continue. Your access to the Reserve Bank website has been restricted." A
 whole-domain JavaScript challenge, static `-/media/` file paths included.
 That covers every network an unattended run on this project can use. From a
-residential or mobile connection the same URL serves the workbook. Nothing
+residential or mobile connection the same URL serves the workbook to a
+browser or to curl, and not always to this engine: probed on 2026-09-24 from
+the owner's home connection, curl with the engine's exact headers and HTTP
+version was served and the engine's HTTP client was refused, so the block
+keys on the TLS handshake rather than on anything in the request. No header
+clears it, and none is tried. That is why the drop-in file above exists. Nothing
 automated in this project fetches live data: the seven scheduled runs are
 repository maintenance, CI runs the four checks and never fetches, and tests
 never touch the network. The only place the engine runs against the live
@@ -963,9 +983,11 @@ manual entry in `yields.yaml` is the only way to fill it. Do not re-raise it
 without a new publisher.
 
 The New Zealand dollar's was an access problem, not an availability one, and
-it is closed: the RBNZ entry above fetches the 2-year from the owner's own
-connection. It reopens only if the engine is run from somewhere the RBNZ
-blocks, and the entry above says what that looks like.
+it is closed by the drop-in file: the RBNZ entry above reads the 2-year from
+`data/manual/rbnz-hb2-daily-close.xlsx` when the owner has downloaded it, and
+from the wire where the RBNZ allows that. It reopens only if the file goes
+stale, which the source refuses loudly rather than scores quietly, and the
+entry above says what that looks like.
 
 The cost of the CHF gap is specific and it was, before the RBNZ entry, the
 largest single risk in the data layer. The monetary pillar draws most of its
