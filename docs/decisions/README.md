@@ -34,3 +34,4 @@ gap shows on the first record that strands rather than the fifth.
 | [0012](0012-available-answers-about-configuration.md) | `available()` answers about configuration, never about reachability | Accepted |
 | [0013](0013-a-provider-inside-a-fan-out-source-is-a-named-gap.md) | A provider inside a fan-out source is a named gap, not the end of the source | Accepted |
 | [0014](0014-the-staleness-ramp-is-derived-from-the-leg.md) | The staleness ramp is derived from the leg's own publication lag and cycle, and the hand-keyed allowance goes | Accepted |
+| [0015](0015-a-series-inside-a-source-is-a-named-gap.md) | A series inside a source is a named gap, and the collector asks for it alone | Accepted |

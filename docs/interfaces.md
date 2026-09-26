@@ -214,6 +214,13 @@ raised it. A source that is not configured, or whose code has not landed yet,
 is printed as skipped with the reason, because a source missing from the output
 and a source that returned nothing are different facts.
 
+A source that is asked one series at a time, which today is `oecd`, can come
+back partial: its counts line carries the word `partial` and how many series
+failed, and one indented line per failed series follows, naming the currency,
+the indicator and the error. The counts are what was served, so the line still
+reconciles with the cache. A partial source is usable and does not change the
+exit code (ADR 0015).
+
 The closing block lists every indicator that `registry.stale_refs` reports a gap
 for, aged against the run date rather than against the date the registry was
 last verified. A registry that has not been re-checked in a year reports its
@@ -223,9 +230,10 @@ Exit 1 means the run reconciled no observations at all, which covers both every
 source failing and coverage collapsing.
 
 ```console
-$ fbe refresh -s fred -s ecb -s cftc
+$ fbe refresh -s fred -s oecd -s ecb -s cftc
 fred          142 series       1,284 observations     8.2s
-oecd          skipped (not selected)
+oecd          38 series        1,921 observations     196.4s  partial (1 of 39 series failed)
+  oecd        JPY policy_rate failed (SourceError: oecd could not fetch ... after 3 attempts)
 ecb           failed (SourceError: ecb could not supply EUR: ... after 3 attempts)
 boc           skipped (not selected)
 mof_jp        skipped (not selected)
