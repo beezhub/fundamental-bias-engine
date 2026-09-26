@@ -65,7 +65,8 @@ the repository root so the row can be checked against the file it names, which
 | `src/fbe/risk.py` | Implemented. Sizing, the conviction ladder, and the per-limit report. |
 | `src/fbe/calendar_guard.py`, `src/fbe/journal.py` | In progress |
 | `src/fbe/report.py` | Implemented. The dated Markdown, its JSON sidecar and the run-to-run diff. |
-| `src/fbe/cli.py`, `src/fbe/dashboard/*` | In progress |
+| `src/fbe/dashboard/*` | Implemented. The page, the publishing checks and the one file it writes. |
+| `src/fbe/cli.py` | In progress |
 
 **How to tell without checking this table:** a stub raises `NotImplementedError`
 with a message naming the fully qualified callable and pointing at the phase of

@@ -77,9 +77,11 @@ is carried by colour alone.
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -99,6 +101,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "TEMPLATE_NAME",
+    "DASHBOARD_FORMAT",
     "MAX_RENDERED_BYTES",
     "ALLOWED_SCRIPT_HOSTS",
     "ALLOWED_STYLE_HOSTS",
@@ -110,6 +113,16 @@ __all__ = [
 
 TEMPLATE_NAME = "dashboard.html.j2"
 """Template file inside ``fbe/dashboard/templates``."""
+
+DASHBOARD_FORMAT = "dashboard-{asof:%Y-%m-%d}.html"
+"""Default name of the written page, dated by the run it renders.
+
+A constant for the same reason `fbe.report.SIDECAR_FORMAT` is one: the name
+appears in the command, in ``docs/interfaces.md`` and in the tests, and a
+rename that moves only some of them leaves a command writing a file nothing
+else can find. Dated by the run rather than by today, so rendering an older
+report does not overwrite the current page.
+"""
 
 MAX_RENDERED_BYTES = 16 * 1024 * 1024
 """Hard ceiling the sandbox enforces on the rendered page."""
@@ -531,14 +544,59 @@ def build_dashboard(
         The path written, for the caller to print or open.
 
     Raises:
-        NotImplementedError: Always, until rendering lands.
-        ValueError: Once implemented, when `check_constraints` reports a
-            violation.
+        ValueError: When `check_constraints` reports a violation, naming every
+            one of them so the page can be fixed in one pass. Nothing is
+            written: a page on disk is the page the owner opens on their phone
+            and it carries no sign of having failed a check, so an unpublishable
+            one is worse than none. An existing file at ``out_path`` is left
+            alone for the same reason, which is why the check comes before the
+            write rather than before the rename.
+
+    Note:
+        Written as UTF-8 bytes, because that is what `check_constraints`
+        measures against `MAX_RENDERED_BYTES` and what the host downloads. A
+        text write under the platform encoding would publish a different number
+        of bytes from the one that was checked, and on Windows would rewrite
+        every newline as well.
+
+        Put in place by rename, so a reader either finds the previous page or
+        the whole new one. A crash partway through a direct write leaves valid
+        HTML that stops in the middle of the matrix, which renders.
 
     """
-    raise NotImplementedError(
-        "fbe.dashboard.build.build_dashboard is scaffolded; see docs/roadmap.md Phase 5"
+    html = render_dashboard(report, diff=diff, config=config)
+    violations = check_constraints(html)
+    if violations:
+        listed = "\n".join(f"  - {violation}" for violation in violations)
+        # The existing page is named when there is one. A refusal that says
+        # only "nothing was written" leaves the operator guessing what the
+        # phone will show, and the answer is an earlier render of the same run
+        # under the same file name, differing only in its generation time.
+        standing = (
+            f" {out_path.name} already holds a page generated at "
+            f"{datetime.fromtimestamp(out_path.stat().st_mtime, UTC):%Y-%m-%d %H:%M} "
+            "UTC, and that is what is still there."
+            if out_path.exists()
+            else ""
+        )
+        raise ValueError(
+            f"The rendered dashboard breaks {len(violations)} publishing "
+            f"constraint{'' if len(violations) == 1 else 's'}, so nothing was "
+            f"written to {out_path}.{standing}\n{listed}"
+        )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    handle, created = tempfile.mkstemp(
+        dir=out_path.parent, prefix=f".{out_path.name}.", suffix=".part"
     )
+    os.close(handle)
+    part = Path(created)
+    try:
+        part.write_bytes(html.encode("utf-8"))
+        part.replace(out_path)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    return out_path
 
 
 def check_constraints(html: str) -> list[str]:
