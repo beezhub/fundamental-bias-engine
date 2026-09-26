@@ -1238,6 +1238,8 @@ def _render_refresh(result: CollectionResult, config: Config, asof: date) -> Non
     """
     for outcome in result.outcomes:
         typer.echo(_render_outcome(outcome))
+        for line in _render_failures(outcome):
+            typer.echo(line)
     for line in _render_gaps(result.gaps, asof):
         typer.echo(line)
     typer.echo(_render_cache(config))
@@ -1251,18 +1253,45 @@ def _render_outcome(outcome: SourceOutcome) -> str:
 
     Returns:
         For a completed source, its series and observation counts and the time
-        inside its fetch. For anything else, the word and the reason, because a
-        source that was skipped and a source that returned nothing are
-        different facts and an operator chasing a missing currency needs to
-        know which one they have.
+        inside its fetch. For a partial one, the same counts followed by the
+        word partial and how many series failed, so the line still reconciles
+        with the cache and still cannot be read as a clean fetch. For anything
+        else, the word and the reason, because a source that was skipped and a
+        source that returned nothing are different facts and an operator
+        chasing a missing currency needs to know which one they have.
 
     """
     label = outcome.source.ljust(SOURCE_WIDTH)
-    if outcome.status is SourceStatus.COMPLETED:
+    if outcome.status in (SourceStatus.COMPLETED, SourceStatus.PARTIAL):
         series = f"{outcome.series:,} series".ljust(COUNT_WIDTH + 7)
         observations = f"{outcome.observations:,} observations".ljust(COUNT_WIDTH + 13)
-        return f"{label}{series}{observations}{outcome.elapsed_seconds:.1f}s"
+        counts = f"{label}{series}{observations}{outcome.elapsed_seconds:.1f}s"
+        if outcome.status is SourceStatus.PARTIAL:
+            return f"{counts}  partial ({outcome.detail})"
+        return counts
     return f"{label}{outcome.status.value} ({outcome.detail})"
+
+
+def _render_failures(outcome: SourceOutcome) -> list[str]:
+    """Return one line per series a series-scoped source could not serve.
+
+    Args:
+        outcome: What that source did.
+
+    Returns:
+        Empty for a source with no failed series. Otherwise one line each,
+        indented under the source's own line and naming the source, the
+        currency, the indicator, the word failed and the error, in that order.
+        Named rather than counted, because "1 of 39 series failed" tells an
+        operator nothing about which currency lost which pillar, and that is
+        the only question they have (ADR 0015, rule 2).
+
+    """
+    label = f"  {outcome.source}".ljust(SOURCE_WIDTH)
+    return [
+        f"{label}{failure.currency} {failure.indicator} failed ({failure.error})"
+        for failure in outcome.failures
+    ]
 
 
 def _render_gaps(gaps: Mapping[str, tuple[str, ...]], asof: date) -> list[str]:

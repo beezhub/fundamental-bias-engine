@@ -43,6 +43,19 @@ score.
 
 Only FRED needs a credential. Everything else is open, which also means anyone
 reading this can check any claim in it without asking for access first.
+
+**What one failure costs, per source.** Every source has a failure scope, and
+the refresh output names the scope's unit when it fails (ADR 0013, ADR 0015).
+
+| Source | Scope | One failure costs |
+| --- | --- | --- |
+| FRED | source | every FRED series in the run; a series-scope follow-up is owed, see ADR 0015 |
+| OECD SDMX | series | that one `(indicator, currency)`, named on its own line; the other series are served and the source reads `partial` |
+| Central banks and debt offices | source, one per provider | that provider's currency; each institution is its own source since #218 |
+| CFTC COT | source | every contract; the dollar is derived from the other seven, so the series are not independent and series scope is not ruled on |
+| Stooq | source | every price proxy; not ruled on |
+| Forex Factory | source | the blackout feed, which reports unknown coverage rather than clear |
+| Manual | source | every hand-keyed entry, which is right: one malformed file is one file to fix |
 ---
 
 ## FRED
