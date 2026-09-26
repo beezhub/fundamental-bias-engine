@@ -84,6 +84,7 @@ __all__ = [
     "write_report",
     "load_report",
     "latest_report",
+    "asof_in",
     "diff_reports",
 ]
 
@@ -547,7 +548,7 @@ def latest_report(reports_dir: Path, *, before: date | None = None) -> Path | No
         return None
     dated: list[tuple[date, Path]] = []
     for candidate in sorted(reports_dir.glob(SIDECAR_GLOB)):
-        stamp = _asof_in(candidate)
+        stamp = asof_in(candidate)
         if before is None or stamp < before:
             dated.append((stamp, candidate))
     if not dated:
@@ -564,8 +565,14 @@ moves the parser with them. This is the safe half of the derivation
 where a wrong glob matches nothing and returns an empty directory instead."""
 
 
-def _asof_in(sidecar: Path) -> date:
+def asof_in(sidecar: Path) -> date:
     """Read the as-of date out of a sidecar's filename.
+
+    Public because the name is the only thing that dates a report without
+    decoding it, and `fbe.cli` checks the forward record for missing mornings
+    from the names alone: a damaged sidecar is a finding of its own and must
+    not read as a morning nobody ran. Parsing the convention in two places
+    would let the two disagree about which day a file is for.
 
     Args:
         sidecar: A path matching `SIDECAR_GLOB`.

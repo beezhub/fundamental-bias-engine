@@ -137,6 +137,31 @@ cache writability, entry count and age against `cache_ttl_hours`;
 and whether a previous report exists to diff against. Each check prints its own
 verdict, so one failure does not hide the rest.
 
+The reports check prints a second line for the forward record: the weekdays
+between the earliest report on disk and today that have no report, counted, or
+`forward record unbroken` with the span it covers. Presence is read from the
+filename alone, so a report that exists but cannot be decoded still counts as
+that morning rather than as a missing one. Note what that does not say: the
+digest line decodes the newest sidecar only, so a damaged older one is reported
+by neither line. Weekends are not gaps; public holidays are, because the engine
+carries no holiday calendar. Today is never reported as missing, since `doctor`
+runs before the morning's report as often as after it. A long gap prints a
+count and the first eight days rather than one line each. An empty reports
+directory, which is what a fresh clone has, checks nothing. A gap is a warning,
+so the run still exits 0 unless `--strict` is set.
+
+The reason it is a check at all: Phase 6 needs at least six months of biases
+recorded before the outcome was known, and a bias cannot be recorded after the
+fact. A gap noticed in month six is a hole in the record for good, so the
+cheapest time to see it is the morning it happens.
+
+Two kinds of file stop the record check rather than being skipped or counted,
+and both are named. A name carrying no date could be any morning, so the days
+around it cannot honestly be called missing. A name dated after today is a file
+that should not exist yet, and reporting the record around it would assert an
+unbroken span over days nothing examined. Both listings are bounded the same
+way the gap list is.
+
 The probe is a request the source vouches for, not a bare GET of its root. A
 source that describes one (`BaseDataSource.probe_request`) is asked that, and a
 2xx whose body the source does not recognise as its own content is a warning,
@@ -165,7 +190,8 @@ cache           warn      37 entries, oldest 19h (ttl 12h): run fbe refresh
 sources         ok        fred 240ms, stooq 310ms, cftc 890ms
                 warn      forexfactory unreachable (timeout after 5.0s)
 reports         ok        last report 2026-09-08, config digest matches
-3 warnings.
+                warn      4 weekdays missing from the forward record: 2026-09-09, 2026-09-10, 2026-09-11, 2026-09-14
+4 warnings.
 ```
 
 ### `fbe refresh`

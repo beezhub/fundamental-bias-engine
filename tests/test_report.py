@@ -43,6 +43,7 @@ from fbe.report import (
     ReportDiff,
     _grid,
     _pillar_order,
+    asof_in,
     build_context,
     diff_reports,
     latest_report,
@@ -1918,3 +1919,32 @@ def test_a_tuple_in_free_form_provenance_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(TypeError, match="tuple"):
         write_report(broken, tmp_path)
+
+
+# --- `asof_in`, which is public because another module parses names with it --
+
+
+def test_asof_in_reads_the_day_out_of_a_sidecar_name(tmp_path: Path) -> None:
+    """`fbe.cli` dates the forward record from filenames alone, so this is the
+    only thing standing between a report that exists and a morning reported as
+    missed. It was tested only through `latest_report` before it was public."""
+    assert asof_in(tmp_path / SIDECAR_FORMAT.format(asof=date(2026, 6, 30))) == date(
+        2026, 6, 30
+    )
+
+
+def test_asof_in_refuses_a_name_it_cannot_date_and_says_which(
+    tmp_path: Path,
+) -> None:
+    """Returning a placeholder would place the file on a day it is not from,
+    which is worse than refusing: the caller cannot tell the two apart. The
+    message names the file because the operator has to find it to move it."""
+    with pytest.raises(ValueError, match="bias-backup.json"):
+        asof_in(tmp_path / "bias-backup.json")
+
+
+def test_asof_in_is_exported(tmp_path: Path) -> None:
+    """It is imported by name from another module, so the underscore is part
+    of the contract rather than a detail: putting it back would break
+    `fbe.cli` at runtime."""
+    assert "asof_in" in fbe.report.__all__
