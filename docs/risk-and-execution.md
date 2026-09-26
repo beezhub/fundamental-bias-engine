@@ -638,6 +638,20 @@ Run this once a week, at the same time, away from the market.
    closed trades per bucket is roughly where a difference in expectancy becomes
    worth acting on. Below that the report is a record, not evidence. Reading it
    as evidence is how a working model gets tuned into a broken one.
+
+   You do not have to remember the number. Every bucket carries
+   `below_evidence_threshold`, true while it holds fewer closed trades than
+   `journal.EVIDENCE_THRESHOLD_TRADES`, and it carries its own `trades` count
+   beside every figure. It is a flag rather than a sentence so that anything
+   rendering these numbers has to decide what to do about it.
+
+   Each `hit_rate` also arrives with `hit_rate_low` and `hit_rate_high`, the
+   ends of a 95% interval computed from the bucket's own record. Read those
+   before reading the difference between two buckets: three winners from four
+   trades is a hit rate of 75% with an interval running from 30% to 95%, which
+   cannot tell a good bucket from a bad one. Two buckets whose intervals overlap
+   have not yet been told apart, whatever their point estimates say, and that is
+   a real answer rather than a missing one.
 4. Run `discipline_flags`. Read every revenge, overtrading and against-bias flag
    without arguing with it.
 5. Group by `exit_reason`. Which exit is making money and which is leaking it.
