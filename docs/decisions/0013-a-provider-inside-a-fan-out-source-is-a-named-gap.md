@@ -132,3 +132,6 @@ source. One thing the record did not weigh: doctor's probe went out without the
 source's headers or its redirect setting, so the Bank of England read as
 refused on the day the split made it probeable. The probe now takes both off
 the source.
+
+Extended to series scope by ADR 0015, 2026-09-25, for a source whose series
+share one provider. This record still governs the curve providers.

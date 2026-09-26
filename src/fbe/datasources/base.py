@@ -31,6 +31,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from types import MappingProxyType
+from typing import Literal
 
 import httpx
 
@@ -180,6 +181,19 @@ class BaseDataSource(ABC):
             refusing it means never reaching the data.
         rate_limit: This source's request budget.
         retry: This source's retry policy.
+        failure_scope: How much of this source one failure costs. ``"source"``,
+            the default: the collector calls ``fetch`` once for everything
+            routed here, and a raise loses it all. ``"series"``: the collector
+            calls ``fetch`` once per ``(indicator, currency)`` on the same
+            instance and catches each call alone, so one series failing is a
+            named gap and the rest are served (ADR 0015). Declared on the
+            class rather than implemented in ``fetch``, because a source that
+            caught its own failures would need a channel to report them and
+            one that forgot would produce a quiet partial; the collector's
+            loop cannot forget. A source opts in only once someone has checked
+            that its series are independent: COT derives the dollar from the
+            other seven contracts, and the manual source is asked for the
+            whole request by design, so neither may.
 
     """
 
@@ -190,6 +204,7 @@ class BaseDataSource(ABC):
     follow_redirects: bool = False
     rate_limit: RateLimit = RateLimit()
     retry: RetryPolicy = RetryPolicy()
+    failure_scope: Literal["source", "series"] = "source"
 
     def __init__(self, config: DataConfig) -> None:
         """Store the run's data configuration.
