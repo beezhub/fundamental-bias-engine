@@ -125,7 +125,9 @@ def required_indicators(
     wrong. Ruled on #301.
 
     Args:
-        pillars: Pillars to inspect. Defaults to `default_pillars`.
+        pillars: Pillars to inspect. ``None`` means `default_pillars`. An empty
+            tuple is a caller asking about no pillars and returns no keys,
+            which is deliberately not the same answer.
 
     Returns:
         Sorted, de-duplicated indicator keys: twenty of the registry's

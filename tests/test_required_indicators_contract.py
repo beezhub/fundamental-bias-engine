@@ -92,6 +92,12 @@ def test_it_takes_the_pillars_it_is_given() -> None:
     assert required_indicators(one) == tuple(sorted(set(one[0].requires)))
     assert set(required_indicators(one)) < set(required_indicators())
 
+    # An empty tuple is a caller asking about no pillars, which is not the same
+    # as None asking about the default set. The two must not collapse: the
+    # guard is `is not None`, and a truthiness test here would silently answer
+    # the whole default question for a caller that asked about nothing.
+    assert required_indicators(()) == ()
+
 
 def test_the_pillars_require_fewer_keys_than_the_registry_holds() -> None:
     """The gap the corrected docstring describes, and exactly what sits in it.
