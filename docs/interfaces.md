@@ -88,15 +88,28 @@ Loading is not judging. A config that `Config.validate` would reject still
 loads, so `fbe doctor` can print the problem rather than the resolver hiding
 it behind an exception.
 
-Once resolved, the config is validated before it is used. `fbe doctor` and
-every command that scores or sizes from the config (`score`, `bias`, `report`,
-`dashboard` and `size`) call `Config.validate` first and refuse to run on a
-non-empty result, printing each problem on its own line. `validate` rejects
-weights that do not cover every pillar, are negative or do not sum to 1.0, a
-risk cap above the plan's 2%, and any threshold ordering that would leave a
-scoring formula undefined or a conviction band empty. A config that fails here
-would not crash the engine. It would produce a report that looks normal and is
-wrong, which is why the refusal happens before any number is computed.
+Once resolved, the config is validated before it is used. Every command that
+scores or sizes from the config (`score`, `bias`, `report`, `dashboard` and
+`size`) calls `Config.validate` first through `cli._require_valid_config`, and
+refuses to run on a non-empty result, printing each problem on its own line to
+stderr and exiting 1. `validate` rejects weights that do not cover every pillar,
+are negative or do not sum to 1.0, a risk cap above the plan's 2%, and any
+threshold ordering that would leave a scoring formula undefined or a conviction
+band empty. A config that fails here would not crash the engine. It would
+produce a report that looks normal and is wrong, which is why the refusal
+happens before any number is computed, and why `report` refuses before it writes
+rather than after: the file is the committed audit trail and re-running the date
+does not recover the correct call.
+
+`fbe doctor` calls `validate` too and does not refuse. It reports every problem
+as its first check and carries on with the rest, because reporting is what it is
+for and a `doctor` that stopped on a bad config would hide the other checks the
+operator ran it to see. Its exit codes are unchanged: 1 on a failing check, 0 on
+a warning without `--strict`.
+
+The refusal goes to stderr rather than stdout so that `fbe score --format csv >
+monday.csv` puts it in front of the operator instead of into the file, where a
+parser would meet prose in place of rows.
 
 ## The daily sequence
 

@@ -518,6 +518,55 @@ def _effective_config(ctx: typer.Context) -> Config:
     return resolved
 
 
+def _require_valid_config(config: Config) -> None:
+    """Refuse to compute anything on a config `Config.validate` rejects.
+
+    Every command that turns the config into a number calls this first, which
+    `docs/interfaces.md` has specified since the command surface was written and
+    which nothing implemented. `Config.validate` had one caller in the package,
+    inside `_check_config`, reached only from `doctor`: the one command that
+    computes no score was the only one that asked.
+
+    The refusal lives here rather than in `_effective_config` because `doctor`
+    exists to print these problems, and a resolver that raised would hide the
+    thing the operator ran `doctor` to see. It lives in one function rather than
+    in each command because the commands still landing should pick it up by
+    calling it, not by copying it.
+
+    Args:
+        config: The effective config, from `_effective_config`.
+
+    Raises:
+        typer.Exit: With `EXIT_UNUSABLE` when `Config.validate` returns anything.
+            One is the code `docs/interfaces.md` reserves for "it ran, but the
+            result should not be traded on", which is what a config this wrong
+            would have produced. Two belongs to the argument parser and the
+            arguments are fine.
+
+    Every problem is printed rather than the first, because `Config.validate`
+    accumulates them for that reason and an operator fixing them one run at a
+    time is an operator running the command five times. They go to stderr, so
+    ``fbe score --format csv > monday.csv`` puts the refusal in front of the
+    operator instead of into the file where a parser expects rows.
+
+    Nothing is printed and nothing is raised on a valid config. A warning here
+    would be read past, which is the failure mode this guard exists to close:
+    the run it would have warned about produces a table that looks normal.
+
+    """
+    problems = config.validate()
+    if not problems:
+        return
+    typer.echo(
+        "This config cannot be used, so nothing was computed. "
+        "Fix these and run again, or run fbe doctor for the full check:",
+        err=True,
+    )
+    for problem in problems:
+        typer.echo(f"  {problem}", err=True)
+    raise typer.Exit(EXIT_UNUSABLE)
+
+
 def _check_config(config: Config) -> list[CheckLine]:
     """Report every `fbe.config.Config.validate` problem.
 
@@ -1434,13 +1483,15 @@ def score(
             outside `fbe.universe.G10`, when ``--asof`` is in the future, or
             when ``scoring.lookback_years`` cannot produce a window. Each would
             otherwise print a table that looked like a run with no opinions.
-        typer.Exit: With `EXIT_UNUSABLE` when the cache held nothing for the
-            window, and when every currency came back at zero coverage, which
-            is the coverage-collapsed case ``docs/interfaces.md`` gives for
-            exit 1.
+        typer.Exit: With `EXIT_UNUSABLE` when `Config.validate` rejects the
+            config, before anything is collected or scored; when the cache held
+            nothing for the window; and when every currency came back at zero
+            coverage, which is the coverage-collapsed case
+            ``docs/interfaces.md`` gives for exit 1.
 
     """
     config = _effective_config(ctx)
+    _require_valid_config(config)
     run_date = asof.date() if asof is not None else date.today()
     if run_date > date.today():
         raise typer.BadParameter(
@@ -2036,12 +2087,14 @@ def bias(
             rather than a refusal. A CSV of the grid is a flat list of 56
             cells, 28 of them pairs written backwards, and a pair list is the
             one thing a mirrored cell must never reach.
-        typer.Exit: With `EXIT_UNUSABLE` when the cache held nothing for the
-            window, so an empty table cannot read as a working engine with no
-            opinions.
+        typer.Exit: With `EXIT_UNUSABLE` when `Config.validate` rejects the
+            config, before anything is collected or scored, and when the cache
+            held nothing for the window, so an empty table cannot read as a
+            working engine with no opinions.
 
     """
     config = _effective_config(ctx)
+    _require_valid_config(config)
     run_date = asof.date() if asof is not None else date.today()
     if run_date > date.today():
         raise typer.BadParameter(
@@ -3565,12 +3618,14 @@ def report(
             ``--compare`` names a path that does not exist. A missing baseline
             silently treated as no baseline would print a report whose
             what-changed section said "first run" on the hundredth.
-        typer.Exit: With `EXIT_UNUSABLE` when the cache held nothing for the
-            window, and when every currency came back at zero coverage, so a
-            report of a run that scored nothing cannot read as a working
-            engine with no opinions. Neither case writes a file: the report is
-            the committed audit trail and it is also tomorrow's baseline, so a
-            report of an outage becomes a fundamental move overnight.
+        typer.Exit: With `EXIT_UNUSABLE` when `Config.validate` rejects the
+            config, when the cache held nothing for the window, and when every
+            currency came back at zero coverage, so a report of a run that
+            scored nothing cannot read as a working engine with no opinions.
+            None of the three writes a file: the report is the committed audit
+            trail and it is also tomorrow's baseline, so a report of an outage
+            becomes a fundamental move overnight, and one written under a
+            config nobody validated cannot be recovered by re-running the date.
         TypeError: When an `fbe.types.Observation`'s free-form ``meta`` holds a
             value JSON has no type for, which today means an unquoted date in
             ``data/manual/*.yaml``. `fbe.report.write_report` refuses it rather
@@ -3579,6 +3634,7 @@ def report(
 
     """
     config = _effective_config(ctx)
+    _require_valid_config(config)
     run_date = asof.date() if asof is not None else date.today()
     if run_date > date.today():
         raise typer.BadParameter(
