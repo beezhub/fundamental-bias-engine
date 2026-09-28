@@ -1011,6 +1011,45 @@ pillar's own factor is the sub-weighted mean of its components' factors, from
 section 4.2. A single pillar-level age cannot do this: GROWTH would report the
 age of whichever series updated last and carry the other at full weight.
 
+**The mean is taken over the components that blended.** Those are the ones
+`BasePillar.blend_components` produced a z for, recorded on
+`BasePillar.last_contributing`, and not every component the pillar measured an
+age for. The two sets differ: a component built from two series with one of
+them missing has an age and no z, so it answers the first question and not the
+second, and weighing it in handed the pillar weight for a component that moved
+no score.
+
+Two components inside that set leave both sides of the mean rather than
+entering the denominator at zero. A component at `phi = 0.0` has missed a whole
+release cycle and no longer counts toward coverage, so keeping its sub-weight in
+the denominator would charge it twice, once through its factor and once through
+the share it occupies, and an expired component would cost more than an absent
+one. A component with no measured factor has no age to weigh at all: counting
+it as 1.0 would invent a measurement and counting it as 0.0 would charge an
+unknown as a failure. Both are left out and the mean is taken over what
+remains.
+
+The rule those two come to is one sentence: a component past its allowance is
+treated exactly as an absent one, so it gets the same two answers absence gets.
+The renormalisation is the first. `MIN_COMPONENT_WEIGHT` is the second, and it
+applies here as well as in the blend: if the components that both blended and
+still count hold no more than that fraction of the declared sub-weight, the
+pillar's factor is 0.0 and it takes no weight. Without it a pillar holding one
+fresh component and four expired ones would renormalise onto the fresh one and
+report 1.0, while the same pillar with those four missing instead falls under
+the floor in `BasePillar.blend_components` and does not speak at all. The two
+floors ask different questions on purpose: the blend's is judged on presence
+before the factors, because it asks about substitution, and this one is judged
+after them, because it asks what is left still counting.
+
+The consequence is the symmetry issue #172 was opened for. Take MONETARY on a
+currency whose `cpi_yoy` is four hundred days old. `real_policy_rate` still
+computes, so it blends, but at `phi = 0.0` it no longer counts, and the factor
+is taken over the remaining 0.85 of sub-weight: `(0.15*1.0 + 0.70*0.5) / 0.85`,
+which is 0.588. Drop that CPI entirely and the component never blends, so the
+same 0.85 carries the mean and the answer is the same 0.588. A run that says
+how old its data is is not penalised against one that says nothing.
+
 The pillar's factor travels to the scorer on `PillarScore.freshness_factor`,
 written by `BasePillar.compute` and read by `scoring.score_currencies`, which
 passes it to `apply_staleness_penalty`. It rides on the score because
@@ -1041,7 +1080,7 @@ at `phi = 0.5`.
     coverage = sum over p of w_eff(p)
 
 where `phi(p)` is the pillar's own factor from section 4.1, the sub-weighted mean
-over the components it has.
+over the components that blended and still count toward coverage.
 
 Since the weights sum to 1.0, `coverage` is directly the fraction of pillar weight
 that had usable, fresh data. It is stored on `CurrencyScore.coverage`.

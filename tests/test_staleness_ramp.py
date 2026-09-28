@@ -395,6 +395,14 @@ def test_pillar_freshness_is_the_sub_weighted_mean_of_its_components() -> None:
     Two different factors on purpose. With both components on one release they
     always carry the same factor, and a mean of one number cannot tell a
     sub-weighted mean from a plain one.
+
+    The mean is taken over the components that blended, so the same two
+    observations answer differently when only one of them carried weight. The
+    second half of this test names core alone, which is 0.60 of the sub-weight
+    and clears `MIN_COMPONENT_WEIGHT`, and gets core's own 0.5 back rather than
+    the 0.70 the pair gives. A mean over everything measured could not produce
+    that. Headline alone is 0.40, under the floor, so the pillar does not speak
+    for the currency at all.
     """
     pillar = InflationPillar()
     extracted = {
@@ -410,15 +418,27 @@ def test_pillar_freshness_is_the_sub_weighted_mean_of_its_components() -> None:
             )
         ],
     }
-    factor = pillar.pillar_freshness(extracted, ASOF)
+    both = ("cpi_gap", "core_gap")
+    factor = pillar.pillar_freshness(extracted, ASOF, both)
     assert pillar.component_weights == {"cpi_gap": 0.40, "core_gap": 0.60}
     assert factor == pytest.approx(0.70)
     assert CONFIG.weights[InflationPillar.name] * factor == pytest.approx(0.105)
 
+    assert pillar.pillar_freshness(extracted, ASOF, ("core_gap",)) == pytest.approx(0.5)
+    assert pillar.pillar_freshness(extracted, ASOF, ("cpi_gap",)) == 0.0
+
 
 def test_pillar_freshness_of_a_pillar_with_no_inputs_is_zero() -> None:
-    """No data is not fresh data. The pillar is absent and weighs nothing."""
-    assert InflationPillar().pillar_freshness({}, ASOF) == 0.0
+    """No data is not fresh data. The pillar is absent and weighs nothing.
+
+    Both ways of saying nothing blended give the same answer: an empty
+    contributing set, and a contributing set naming components that have no
+    observations to measure. The second is the one that would go wrong quietly,
+    because an unmeasured component treated as fully fresh would hand the
+    pillar full weight on a currency it scored nothing for.
+    """
+    assert InflationPillar().pillar_freshness({}, ASOF, ()) == 0.0
+    assert InflationPillar().pillar_freshness({}, ASOF, ("cpi_gap", "core_gap")) == 0.0
 
 
 # ----------------------------------------------------------------------

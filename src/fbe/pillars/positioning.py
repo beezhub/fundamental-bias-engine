@@ -345,10 +345,23 @@ class PositioningPillar(BasePillar):
                 eight, which reads exactly like a dead feed.
 
         """
-        return {
+        # Stated rather than inherited. This pillar scores directly and never
+        # calls `blend_components`, so nothing else can know which components
+        # it used, and `pillar_freshness` weighs over exactly this set. Leaving
+        # it unset would report zero freshness and lose the pillar its weight;
+        # naming the component where the value is ``None`` would take weight
+        # for a currency this pillar did not score. Issue #172.
+        scores = {
             currency: values["positioning_response"]
             for currency, values in components.items()
         }
+        self.last_contributing = {
+            currency: frozenset({"positioning_response"})
+            if value is not None
+            else frozenset()
+            for currency, value in scores.items()
+        }
+        return scores
 
     def _diagnostics(
         self,
