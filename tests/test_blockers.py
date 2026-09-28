@@ -31,10 +31,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 import fbe
-from fbe.bias import BLOCKERS, UNCHECKED_SUFFIX, UNKNOWN_SUFFIX
+from fbe.bias import BLOCKERS, UNCHECKED_SUFFIX, UNKNOWN_SUFFIX, blocking, kind_of
 from fbe.dashboard.build import render_dashboard
 from fbe.report import render_report
 from fbe.types import BiasReport, Conviction, Direction, PairBias, TradeIdea
@@ -177,6 +178,49 @@ def test_only_the_suffixed_markers_are_non_blocking() -> None:
             UNKNOWN_SUFFIX
         )
         assert blocks is not is_provisional, blocker
+
+
+def test_the_kind_of_a_marker_is_its_longest_matching_prefix() -> None:
+    """The rule `BLOCKERS` states, asserted on the four strings that break it.
+
+    ``cost:unchecked``, ``event:unchecked``, ``event:unknown: ...`` and
+    ``event: ...`` all begin with a shorter key than their own. Under
+    first-match they read as the hard blocks ``cost`` and ``event``, which
+    refuses every pair in an offline run.
+    """
+    assert kind_of("cost") == "cost"
+    assert kind_of("cost" + UNCHECKED_SUFFIX) == "cost" + UNCHECKED_SUFFIX
+    assert kind_of("event" + UNCHECKED_SUFFIX) == "event" + UNCHECKED_SUFFIX
+    assert kind_of("event: Core CPI at 12:30") == "event"
+    assert (
+        kind_of("event" + UNKNOWN_SUFFIX + ": the week is not cached")
+        == "event" + UNKNOWN_SUFFIX
+    )
+
+
+def test_a_marker_no_kind_claims_raises_rather_than_being_guessed_at() -> None:
+    """An unrecognised marker is a defect in whatever emitted it.
+
+    Answering anything at all about it lets a real block disappear from an
+    explanation, which is the one direction this module must not fail in.
+    """
+    with pytest.raises(ValueError, match="matches no kind"):
+        kind_of("spread_is_wide")
+
+
+def test_blocking_keeps_exactly_the_markers_whose_kind_blocks() -> None:
+    """The two functions read one table, so they cannot disagree.
+
+    `blocking` is written in terms of `kind_of`, and this is the assertion that
+    says so from outside: every kind, in one tuple, split by the table.
+    """
+    markers = tuple(BLOCKERS) + ("event: Core CPI at 12:30",)
+
+    assert blocking(markers) == tuple(
+        marker for marker in markers if BLOCKERS[kind_of(marker)]
+    )
+    assert "event: Core CPI at 12:30" in blocking(markers)
+    assert "event" + UNCHECKED_SUFFIX not in blocking(markers)
 
 
 def test_unknown_suffix_is_distinct_from_unchecked() -> None:

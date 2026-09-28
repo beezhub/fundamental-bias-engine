@@ -23,4 +23,9 @@ data/cache/*
 # why, and says that a fresh clone therefore has no journal.
 data/journal/*
 !data/journal/.gitkeep
+# The RBNZ workbook the owner downloads by hand when the RBNZ refuses the
+# engine's own request (#282). Public data, reproducible by one download, and
+# 430 kilobytes that change weekly: not the audit trail, so not tracked. The
+# YAML inputs beside it are hand-keyed and stay tracked.
+data/manual/*.xlsx
 .idea
