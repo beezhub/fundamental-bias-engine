@@ -87,15 +87,24 @@ from urllib.parse import urlsplit
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
+from fbe.bias import kind_of
 from fbe.calendar_guard import blackout_windows, is_high_impact
 from fbe.config import Config, DataConfig, ScoringConfig
 from fbe.report import build_context
+from fbe.types import PillarName
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from fbe.report import ReportDiff
-    from fbe.types import BiasReport, CalendarEvent
+    from fbe.types import (
+        BiasReport,
+        CalendarEvent,
+        CurrencyScore,
+        Observation,
+        PairBias,
+        PillarScore,
+    )
 
 __all__ = [
     "TEMPLATE_NAME",
@@ -167,6 +176,115 @@ class _Window:
 
 
 @dataclass(frozen=True, slots=True)
+class _BlockerCount:
+    """One kind of blocker, and how many pairs in the run carry it.
+
+    Attributes:
+        kind: The `fbe.bias.BLOCKERS` key, which is the kind rather than the
+            emitted string: ``event`` covers ``"event: Core CPI at 12:30"``.
+        count: Pairs carrying at least one marker of that kind. A pair carrying
+            two of one kind counts once, because the figure answers how many
+            pairs are affected.
+        total: Pairs in the run, normally 28.
+
+    The count is printed against the total rather than alone, so
+    ``event:unchecked`` on 3 of 28 and the same key on 28 of 28 read
+    differently without anyone counting rows. ``docs/interfaces.md`` states the
+    rule for both renderers.
+
+    """
+
+    kind: str
+    count: int
+    total: int
+
+    @property
+    def universal(self) -> bool:
+        """Whether every pair in the run carries this kind.
+
+        Strict: 27 of 28 is not every pair, and the pair that differs from the
+        other 27 is the one worth seeing. A threshold here would be a free
+        parameter deciding what the reader is not told.
+
+        ``False`` for a run holding no pairs, where there is nothing for a
+        marker to be true of.
+        """
+        return self.total > 0 and self.count == self.total
+
+
+@dataclass(frozen=True, slots=True)
+class _PillarRow:
+    """One pillar's standing on both legs of a pair.
+
+    Attributes:
+        pillar: Which pillar this row is.
+        base: The base leg's score for it, or ``None`` when the run scored the
+            currency on nothing.
+        quote: The quote leg's, on the same terms.
+        difference: ``base.score - quote.score``, the pillar's contribution to
+            this pair's spread, on the ``-3..+3`` band and signed the way the
+            row reads: positive means the pillar prefers the base currency.
+            ``None`` when either leg is absent.
+
+    ``None`` rather than ``0.0`` in all three places, and the template prints a
+    marker for it. A pillar that measured an economy and found it mid-band and a
+    pillar with no data are opposite facts, and ``+0.00`` says the first when
+    the second is true (ADR 0002 rule 1).
+
+    """
+
+    pillar: PillarName
+    base: PillarScore | None
+    quote: PillarScore | None
+    difference: float | None
+
+    @property
+    def inputs(self) -> tuple[Observation, ...]:
+        """Every observation behind this row, base leg first.
+
+        The observations carry their own currency, which is not always the
+        leg's: the RISK pillar reads global series, and a reader who sees
+        ``GLOBAL`` beside a risk figure is reading the truth about where it
+        came from.
+        """
+        return tuple(
+            item
+            for score in (self.base, self.quote)
+            if score is not None
+            for item in score.inputs
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _Expansion:
+    """One pair's working, for the disclosure under the matrix.
+
+    Attributes:
+        bias: The pair as the run holds it, in market convention. The matrix
+            shows mirrored cells as well, and this panel is per pair rather
+            than per cell so that one pair has one set of figures rather than
+            two that differ only in sign.
+        base_coverage: The base leg's `fbe.types.CurrencyScore.coverage`, the
+            share of pillar weight that had usable and fresh data. ``None``
+            when the run carries no score for that currency at all, which is a
+            different fact from zero coverage and is printed as one.
+        quote_coverage: The quote leg's, on the same terms.
+        rows: One `_PillarRow` per pillar, in the order the report orders them.
+        blockers: The markers on this pair that are not true of every pair.
+            A marker true of all of them is a run condition and is printed once
+            in the header instead, which is the rule ``docs/interfaces.md``
+            states and the reason this field is not simply ``bias.blockers``.
+
+    """
+
+    bias: PairBias
+    base_coverage: float | None
+    quote_coverage: float | None
+    rows: tuple[_PillarRow, ...]
+    blockers: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _View:
     """Everything the template needs that is arithmetic rather than a field.
 
@@ -181,6 +299,16 @@ class _View:
         horizon: Right edge, `STRIP_HOURS` later.
         blackouts: Windows to shade, already merged by the guard.
         hour_marks: ``(instant, label)`` pairs for the strip's hour ticks.
+        blocker_counts: Every blocker kind the run carries, with the number of
+            pairs carrying it, widest first. Empty when no pair is marked,
+            which the template reads as "print no run conditions" rather than
+            as an empty panel.
+        details: One `_Expansion` per pair, keyed by
+            `fbe.types.PairBias.pair` in market convention.
+        coverage: Each currency's coverage, keyed by ISO code. A currency the
+            run holds no score for is absent rather than present at ``1.0``:
+            unknown coverage and full coverage are different facts and the
+            grid marks only the one it knows.
 
     Every method here returns a finished value. The template does no
     arithmetic, because arithmetic in a template cannot be unit tested and a
@@ -196,6 +324,9 @@ class _View:
     horizon: datetime
     blackouts: tuple[_Window, ...]
     hour_marks: tuple[tuple[datetime, str], ...]
+    blocker_counts: tuple[_BlockerCount, ...]
+    details: Mapping[str, _Expansion]
+    coverage: Mapping[str, float]
 
     def bar_pct(self, value: float) -> float:
         """Half-width of a ranking bar, as a percentage of the track.
@@ -327,11 +458,98 @@ class _View:
         """
         return round(max(0.0, self.at_pct(end) - self.at_pct(start)), 3)
 
+    def marks(self, cell: PairBias) -> tuple[str, ...]:
+        """Keep the blockers on one cell that are worth printing on that cell.
+
+        Args:
+            cell: A grid cell, mirrored or not. `fbe.report._grid` leaves
+                ``blockers`` unchanged on a mirror, because whether a release
+                blocks a pair does not depend on which way round it is written,
+                so a mirrored cell is marked exactly as its original is.
+
+        Returns:
+            The markers whose kind is not carried by every pair in the run, in
+            the order the pair holds them. A kind true of all of them is a
+            statement about the run rather than about any pair, and it is
+            printed once in the header instead.
+
+        Raises:
+            ValueError: From `fbe.bias.kind_of`, when a marker matches no
+                declared kind. A marker nothing can name is a defect in
+                whatever emitted it, and dropping it quietly here would let a
+                real block disappear from the grid.
+
+        """
+        return tuple(
+            marker for marker in cell.blockers if kind_of(marker) not in self._universal
+        )
+
+    def flags(self, cell: PairBias) -> str:
+        """Name the classes a cell carries beyond its heat step.
+
+        Args:
+            cell: A grid cell.
+
+        Returns:
+            ``" marked"`` when the cell carries a marker of its own,
+            ``" thin"`` when either leg scored below full coverage, both when
+            both, and ``""`` when neither. Returned with the leading space so
+            the template concatenates it onto the heat class without arithmetic
+            or a join.
+
+            ``marked`` rather than ``blocked``, because three of the kinds in
+            `fbe.bias.BLOCKERS` do not block: an offline run carries
+            ``cost:unchecked`` and ``event:unchecked`` on every pair it still
+            considers tradeable. A cell drawn as blocked when the only thing
+            wrong is a check that never ran says the engine refused the pair,
+            which is a different answer from the one it gave.
+
+            A leg the run holds no score for adds nothing. Unknown coverage and
+            reduced coverage are different facts, the grid has room for one
+            mark, and the panel below says which of the two this is.
+
+        """
+        classes = []
+        if self.marks(cell):
+            classes.append("marked")
+        if any(
+            self.coverage[leg] < 1.0
+            for leg in (cell.base, cell.quote)
+            if leg in self.coverage
+        ):
+            classes.append("thin")
+        return "".join(f" {name}" for name in classes)
+
+    def expansion(self, bias: PairBias) -> _Expansion:
+        """Find the working behind one pair, for the disclosure under the matrix.
+
+        Args:
+            bias: A pair from ``report.pairs``, in market convention. Not a
+                mirrored cell: one pair has one panel, and a second panel
+                differing only in sign is two numbers for a reader to reconcile
+                rather than one to read.
+
+        Returns:
+            The `_Expansion` built for that pair.
+
+        Raises:
+            KeyError: When the pair is not one this view was built from, which
+                means the template is iterating something other than the run.
+
+        """
+        return self.details[bias.pair]
+
+    @property
+    def _universal(self) -> frozenset[str]:
+        """Blocker kinds carried by every pair in the run."""
+        return frozenset(row.kind for row in self.blocker_counts if row.universal)
+
 
 def _view(
     report: BiasReport,
     scoring: ScoringConfig,
     data: DataConfig,
+    pillar_order: Sequence[PillarName] = tuple(PillarName),
 ) -> _View:
     """Derive the geometry and the colour steps for one run.
 
@@ -339,6 +557,14 @@ def _view(
         report: The run being rendered.
         scoring: Supplies the conviction bands the heat steps follow.
         data: Supplies the blackout minutes `fbe.calendar_guard` applies.
+        pillar_order: The order the pair expansions list their pillars in.
+            `render_dashboard` passes the order `fbe.report.build_context`
+            already computed from the config, so the expansion and the Markdown
+            report's pillar table read the same way down. The default is
+            `fbe.types.PillarName`'s declaration order, which is what
+            ``build_context`` itself supplies for a run rendered without its
+            config: sorting by weights nobody passed would be a claim about
+            weights this run does not hold.
 
     Returns:
         The `_View` the template reads. The windows come from
@@ -351,6 +577,7 @@ def _view(
     origin = report.generated_at
     horizon = origin + timedelta(hours=STRIP_HOURS)
     widest = max((abs(row.composite) for row in report.currencies), default=0.0)
+    counts = _blocker_counts(report.pairs)
     return _View(
         title=f"G10 fundamental bias, {report.asof:%d %b %Y}",
         widest=widest,
@@ -372,6 +599,125 @@ def _view(
         horizon=horizon,
         blackouts=_windows(report.events, data),
         hour_marks=_hour_marks(origin, horizon),
+        blocker_counts=counts,
+        details=_expansions(report, counts, pillar_order),
+        coverage={row.currency: row.coverage for row in report.currencies},
+    )
+
+
+def _blocker_counts(pairs: Sequence[PairBias]) -> tuple[_BlockerCount, ...]:
+    """Count how many pairs carry each kind of blocker.
+
+    Args:
+        pairs: The run's pairs in market convention, not the grid. Counting the
+            grid would count every pair twice and report 56 of 56 for a marker
+            on all 28, which is the same fact stated as a wrong number.
+
+    Returns:
+        One `_BlockerCount` per kind present, most pairs first and the kind's
+        own name breaking ties, so the conditions a reader most needs come
+        first and the order does not move between runs that tie.
+
+        A pair carrying two markers of one kind counts once for it. The figure
+        answers how many pairs are affected, and a pair with two calendar
+        reasons is still one pair.
+
+    Raises:
+        ValueError: From `fbe.bias.kind_of`, when a marker matches no declared
+            kind.
+
+    """
+    counts: dict[str, int] = {}
+    for row in pairs:
+        for kind in {kind_of(marker) for marker in row.blockers}:
+            counts[kind] = counts.get(kind, 0) + 1
+    return tuple(
+        _BlockerCount(kind=kind, count=count, total=len(pairs))
+        for kind, count in sorted(counts.items(), key=lambda row: (-row[1], row[0]))
+    )
+
+
+def _expansions(
+    report: BiasReport,
+    counts: Sequence[_BlockerCount],
+    pillar_order: Sequence[PillarName],
+) -> dict[str, _Expansion]:
+    """Build the per-pillar working behind every pair in the run.
+
+    Args:
+        report: The run being rendered.
+        counts: The run's blocker counts, which decide which markers belong to
+            the pair and which belong to the run.
+        pillar_order: The order the rows render in, which is the order
+            `fbe.report.build_context` already put the pillars in, so the
+            expansion and the Markdown report's own table read the same way
+            down the page.
+
+    Returns:
+        One `_Expansion` per pair, keyed by market-convention pair name.
+
+        A currency's observations are repeated in each of the seven panels its
+        pairs appear in, which is the page's largest cost and is deliberate: the
+        reader opens one pair and reads that pair's working, and a shared list
+        of series lower down is a second place to scroll to in the middle of
+        deciding something. The whole page is a few hundred kilobytes against a
+        16MB ceiling.
+
+        A currency the run holds no score for contributes ``None`` at every
+        pillar and ``None`` for its coverage rather than a zero. Reading a
+        pillar off a currency that was never scored is the case JPY is in on a
+        day its data was too stale to use, and the two are not the same.
+
+    """
+    universal = frozenset(row.kind for row in counts if row.universal)
+    scores: dict[str, CurrencyScore] = {row.currency: row for row in report.currencies}
+    return {
+        bias.pair: _Expansion(
+            bias=bias,
+            base_coverage=_coverage(scores.get(bias.base)),
+            quote_coverage=_coverage(scores.get(bias.quote)),
+            rows=tuple(
+                _pillar_row(pillar, scores.get(bias.base), scores.get(bias.quote))
+                for pillar in pillar_order
+            ),
+            blockers=tuple(
+                marker for marker in bias.blockers if kind_of(marker) not in universal
+            ),
+        )
+        for bias in report.pairs
+    }
+
+
+def _coverage(score: CurrencyScore | None) -> float | None:
+    """Read the leg's coverage, or ``None`` when the run scored no such leg."""
+    return None if score is None else score.coverage
+
+
+def _pillar_row(
+    pillar: PillarName,
+    base: CurrencyScore | None,
+    quote: CurrencyScore | None,
+) -> _PillarRow:
+    """One pillar's standing on both legs.
+
+    Args:
+        pillar: The pillar this row is about.
+        base: The base leg's score, or ``None`` when the run holds none.
+        quote: The quote leg's, on the same terms.
+
+    Returns:
+        The `_PillarRow`. The difference is computed only when both legs scored
+        the pillar: with one side missing there is nothing to subtract, and the
+        present leg's own score is not the pair's view of it.
+
+    """
+    on_base = None if base is None else base.pillars.get(pillar)
+    on_quote = None if quote is None else quote.pillars.get(pillar)
+    difference = (
+        None if on_base is None or on_quote is None else on_base.score - on_quote.score
+    )
+    return _PillarRow(
+        pillar=pillar, base=on_base, quote=on_quote, difference=difference
     )
 
 
@@ -456,9 +802,12 @@ def render_dashboard(
         diff: Optional diff against the previous run.
         config: Optional effective config. This page reads the scoring section
             for the heatmap's steps and the data section for the blackout
-            minutes, and renders no weights panel: `fbe.report.build_context`
-            supplies ``pillar_order`` for the Markdown report's weights table
-            and this template does not read it.
+            minutes, and renders no weights panel. It does read
+            ``pillar_order``, which `fbe.report.build_context` derives from the
+            config: the pair expansions list their pillars in it, so the
+            expansion and the Markdown report's pillar table read the same way
+            down and a reader comparing the two is comparing rows rather than
+            hunting for them.
         template_dir: Override for the template search path. Defaults to
             ``fbe/dashboard/templates``.
 
@@ -504,7 +853,8 @@ def render_dashboard(
     )
     context = build_context(report, diff=diff, config=config)
     return environment.get_template(TEMPLATE_NAME).render(
-        **context, view=_view(report, scoring, data)
+        **context,
+        view=_view(report, scoring, data, context["pillar_order"]),
     )
 
 
