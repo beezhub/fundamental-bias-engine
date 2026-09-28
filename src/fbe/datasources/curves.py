@@ -139,6 +139,7 @@ import re
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from types import MappingProxyType
 
 import openpyxl
@@ -151,7 +152,12 @@ from fbe.datasources.base import (
     RetryPolicy,
     SourceError,
 )
-from fbe.datasources.registry import CURVE_SOURCES, INDICATORS, SeriesRef
+from fbe.datasources.registry import (
+    CURVE_SOURCES,
+    INDICATORS,
+    SeriesRef,
+    staleness_allowance,
+)
 from fbe.types import Observation
 
 __all__ = [
@@ -173,6 +179,7 @@ __all__ = [
     "RBNZ_B2_URL",
     "RBNZ_BASE_URL",
     "RBNZ_DATA_SHEET",
+    "RBNZ_DROP_IN_FILENAME",
     "RBNZ_SERIES_ID_ROW_LABEL",
     "RBNZ_UNIT",
     "RBNZ_UNIT_ROW_LABEL",
@@ -282,6 +289,15 @@ Taken from the owner's browser download history on 2026-09-16: the filename is
 ``hb2-daily-close.xlsx``, and the two paths guessed before it were wrong on the
 filename alone. Reachable from a residential or mobile connection only; see the
 module docstring."""
+
+RBNZ_DROP_IN_FILENAME = "rbnz-hb2-daily-close.xlsx"
+"""The workbook's name under ``DataConfig.manual_dir`` when the owner has
+downloaded it by hand. `RbnzSource` reads that file first and makes no request
+while it exists (#282). The RBNZ refuses this engine's HTTP client on the TLS
+handshake from the owner's own connection, while a browser on the same
+connection is served, so the file is the one route the number reliably has.
+Git-ignored: it is public data reproducible by one download, and 430 kilobytes
+that change weekly are not the audit trail."""
 
 RBNZ_DATA_SHEET = "Data"
 RBNZ_SERIES_ID_ROW_LABEL = "Series Id"
@@ -1459,14 +1475,18 @@ class CurvesSource(BaseDataSource):
                 cloud egress is HTTP 403 with the RBNZ's own challenge page;
                 on a body that is not a workbook; on a missing data sheet or
                 series-ID row; on an ID the sheet does not carry; or on a
-                column published in a unit other than `RBNZ_UNIT`.
+                column published in a unit other than `RBNZ_UNIT`. Also when
+                the workbook came from the drop-in file and its newest
+                session is older, at ``end``, than the registry's staleness
+                allowance for the NZD two-year: a stale download must be a
+                loud absence, not a quiet month-old yield (#283).
+
+        The workbook comes from the drop-in file when one exists and from the
+        wire otherwise; see `_rbnz_workbook`. The parse is the same either way,
+        so a wrong file is refused by the same checks as a wrong body.
 
         """
-        raw = self._request(self._path(RBNZ_B2_URL), {})
-        if not isinstance(raw, bytes):
-            raise SourceError(
-                f"{self.name} decoded the workbook into something unusable"
-            )
+        raw, drop_in = self._rbnz_workbook()
         try:
             workbook = openpyxl.load_workbook(
                 io.BytesIO(raw), read_only=True, data_only=True
@@ -1480,7 +1500,17 @@ class CurvesSource(BaseDataSource):
                 f"rbnz workbook holds no {RBNZ_DATA_SHEET!r} sheet; it holds "
                 f"{', '.join(workbook.sheetnames)}"
             )
-        rows = list(workbook[RBNZ_DATA_SHEET].iter_rows(values_only=True))
+        sheet = workbook[RBNZ_DATA_SHEET]
+        # The RBNZ publishes the workbook with every sheet's dimension element
+        # declared as a single cell, "A1". In read-only mode openpyxl trusts
+        # that declaration and yields one empty row, so the labelled-row
+        # search reported the file as carrying no series-ID row (#283, found
+        # on the first real download). Resetting makes the reader walk the
+        # cells that are actually there. The test fixture had been re-saved
+        # by openpyxl with a correct dimension, which is why the tests passed
+        # against a file the parser could not read.
+        sheet.reset_dimensions()
+        rows = list(sheet.iter_rows(values_only=True))
         id_row = self._rbnz_labelled_row(rows, RBNZ_SERIES_ID_ROW_LABEL)
         ids = rows[id_row]
         try:
@@ -1498,11 +1528,20 @@ class CurvesSource(BaseDataSource):
                 "the registry promises percent and no conversion is applied"
             )
         parsed: list[tuple[date, float]] = []
+        newest: date | None = None
         for row in rows[id_row + 1 :]:
             if not row or len(row) <= column:
                 continue
             session = self._curve_session(row[0])
-            if session is None or not start <= session <= end:
+            if session is None:
+                continue
+            if row[column] is not None and (newest is None or session > newest):
+                # Newest priced session in the whole file, window or not: the
+                # freshness of a download is a fact about the file, and a
+                # backtest window that ends years ago must not read a current
+                # file as stale.
+                newest = session
+            if not start <= session <= end:
                 continue
             cell = row[column]
             value = self._reading(
@@ -1510,8 +1549,90 @@ class CurvesSource(BaseDataSource):
             )
             if value is not None:
                 parsed.append((session, value))
+        if drop_in is not None:
+            self._refuse_stale_drop_in(drop_in, newest, end)
         parsed.sort()
         return parsed
+
+    def _rbnz_workbook(self) -> tuple[bytes, Path | None]:
+        """Return the B2 workbook's bytes, and where they came from.
+
+        The drop-in file under ``DataConfig.manual_dir`` wins whenever it
+        exists, and no request is made. Predictable beats adaptive: reading
+        the file only when the RBNZ refused would make a run's behaviour
+        depend on the provider's mood that morning, and an operator could not
+        say from the output which route produced the number. The file is not
+        the cache: it is read on every run, offline or not, and is subject to
+        the freshness rule in `_refuse_stale_drop_in` rather than to the
+        cache's lifetime.
+
+        Returns:
+            The bytes and the file's path, or the bytes and ``None`` when they
+            came off the wire.
+
+        Raises:
+            SourceError: From `_request` on the wire route, or when the file
+                exists and cannot be read, which is a permissions or disk
+                problem worth naming rather than a reason to fall back to a
+                request the RBNZ will refuse.
+
+        """
+        drop_in = Path(self.config.manual_dir) / RBNZ_DROP_IN_FILENAME
+        if drop_in.exists():
+            try:
+                return drop_in.read_bytes(), drop_in
+            except OSError as error:
+                raise SourceError(
+                    f"rbnz could not read the drop-in workbook {drop_in}: {error}"
+                ) from error
+        raw = self._request(self._path(RBNZ_B2_URL), {})
+        if not isinstance(raw, bytes):
+            raise SourceError(
+                f"{self.name} decoded the workbook into something unusable"
+            )
+        return raw, None
+
+    def _refuse_stale_drop_in(
+        self, drop_in: Path, newest: date | None, end: date
+    ) -> None:
+        """Raise when the drop-in file is too old to carry weight at ``end``.
+
+        The allowance is the registry's own for the NZD two-year, the same
+        number past which `fbe.scoring.freshness` gives the leg no weight, so
+        the file is refused at exactly the age at which its number would have
+        stopped counting. Measured against ``end`` rather than today so a
+        backtest as of an earlier date reads the file as of that date.
+
+        Args:
+            drop_in: The file, named in the error so the operator knows what
+                to replace.
+            newest: The newest priced session in the file, or ``None`` when
+                the two-year column holds no value at all.
+            end: The run's as-of date.
+
+        Raises:
+            SourceError: Naming the file, its newest session, the allowance
+                and the URL to download a fresh copy from. A stale download
+                that scored quietly would be a wrong number that looks right,
+                which is the failure this whole codebase is built to avoid.
+
+        """
+        ref = INDICATORS["yield_2y"].series["NZD"]
+        allowance = staleness_allowance(ref, ref.frequency)
+        if newest is None:
+            raise SourceError(
+                f"rbnz drop-in workbook {drop_in} carries no priced two-year "
+                f"session at all; download a fresh copy from {RBNZ_B2_URL}"
+            )
+        age = (end - newest).days
+        if age > allowance:
+            raise SourceError(
+                f"rbnz drop-in workbook {drop_in} is stale: its newest session "
+                f"is {newest}, {age} days before {end}, and the allowance for "
+                f"the NZD two-year is {allowance} days. Download a fresh copy "
+                f"from {RBNZ_B2_URL} and replace the file, or delete it to "
+                "fetch from the wire."
+            )
 
     def _rbnz_labelled_row(self, rows: Sequence[Sequence[object]], label: str) -> int:
         """Find the header row of the B2 sheet that starts with ``label``.

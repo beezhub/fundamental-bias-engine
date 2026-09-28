@@ -25,11 +25,13 @@ import json
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import Enum, StrEnum
+from math import sqrt
 from pathlib import Path
+from statistics import NormalDist
 
-from fbe.config import DATA_DIR
+from fbe.config import DATA_DIR, RiskConfig
 from fbe.types import Conviction, Direction, PillarName
 
 __all__ = [
@@ -69,6 +71,38 @@ trade flatten into a spreadsheet badly and read back worse.
 
 A spreadsheet is still the right place to LOOK at this data. Export to CSV for
 that. It is the wrong place to store it.
+"""
+
+
+EVIDENCE_THRESHOLD_TRADES: int = 30
+"""Closed trades in one conviction bucket before its figures are evidence.
+
+At the plan's five trades a week a bucket needs months to reach this, which is
+the point: `evaluate`'s docstring states that below thirty a difference in
+expectancy is not worth acting on, and this is that sentence as a number a
+`ConvictionStats` can be compared against.
+
+Thirty is conventional rather than derived, and it is not a limit on anything.
+It decides when a figure is worth believing, so it lives here and not in
+`fbe.config.RiskConfig`, which holds the numbers that constrain trading. Nothing
+refuses, blocks or resizes on it: the only effect of crossing it is that
+`ConvictionStats.below_evidence_threshold` goes false and a renderer stops
+printing the caveat.
+"""
+
+HIT_RATE_CONFIDENCE: float = 0.95
+"""Confidence level for the interval around every reported hit rate.
+
+The interval is a Wilson score interval, computed from this level rather than
+from a stored multiplier, so the level is the only thing to change and the
+arithmetic follows. Wilson rather than the normal approximation because the
+approximation runs outside ``0..1`` on small samples and reports a zero-width
+interval on a bucket that has not lost yet, which would read as certainty from
+five trades.
+
+95% is the convention and nothing here depends on it being that rather than 90%.
+It is not a threshold: no decision in this repository branches on whether an
+interval excludes a value.
 """
 
 
@@ -288,15 +322,38 @@ class ConvictionStats:
     Attributes:
         conviction: The bucket these figures describe.
         trades: Number of closed trades in the bucket.
-        wins: Trades with ``r_multiple`` above zero.
+        wins: Trades with ``r_multiple`` strictly above zero. ``trades`` is
+            not necessarily ``wins`` plus the losers: a trade closed exactly at
+            breakeven, which is what moving a stop to entry produces, is
+            neither, and it is counted in ``trades`` and in neither average.
         hit_rate: ``wins / trades``, in ``0..1``.
+        hit_rate_low: Lower end of the interval around ``hit_rate``, in
+            ``0..1``, at `HIT_RATE_CONFIDENCE`. Carried beside the point
+            estimate because on the sample this journal will have for months the
+            two ends are far apart, and a point estimate alone invites a reader
+            to act on a difference the record cannot see.
+        hit_rate_high: Upper end of the same interval.
+        below_evidence_threshold: True when ``trades`` is under
+            `EVIDENCE_THRESHOLD_TRADES`, so the bucket is a record of what
+            happened rather than evidence about what will. A flag rather than a
+            sentence, because a renderer has to branch on a flag and can print
+            prose that a reader skims past. Ruled on issue #263.
         expectancy_r: Mean ``r_multiple`` across the bucket. This, not hit rate,
             is the number that decides whether the bucket makes money: a 35% hit
             rate at 3R average win is a better business than 70% at 0.4R.
-        avg_win_r: Mean ``r_multiple`` of winners.
-        avg_loss_r: Mean ``r_multiple`` of losers, negative.
+        avg_win_r: Mean ``r_multiple`` of winners, positive. ``None`` when the
+            bucket holds no winner, which is a different fact from winners
+            averaging zero and cannot be expressed by a float: a winner is an
+            ``r_multiple`` above zero, so no average of winners can be 0.0 and
+            putting one there would be a sentinel inside the value space.
+        avg_loss_r: Mean ``r_multiple`` of losers, strictly negative. ``None``
+            when the bucket has not lost yet, for the same reason.
         total_r: Sum of ``r_multiple``, the bucket's contribution to the account.
-        max_drawdown_r: Deepest peak-to-trough run of the bucket's cumulative R.
+        max_drawdown_r: Deepest peak-to-trough fall of the bucket's cumulative
+            R, in close order, as a non-negative magnitude. 2.5 means the curve
+            fell 2.5R from its high. Zero is a reading and means the curve never
+            fell, which is why this is not optional: a bucket with no drawdown
+            and a bucket whose drawdown is unknown do not both occur here.
 
     """
 
@@ -304,9 +361,12 @@ class ConvictionStats:
     trades: int
     wins: int
     hit_rate: float
+    hit_rate_low: float
+    hit_rate_high: float
+    below_evidence_threshold: bool
     expectancy_r: float
-    avg_win_r: float
-    avg_loss_r: float
+    avg_win_r: float | None
+    avg_loss_r: float | None
     total_r: float
     max_drawdown_r: float
 
@@ -785,21 +845,193 @@ def evaluate(records: Sequence[TradeRecord]) -> Mapping[Conviction, ConvictionSt
     being worth acting on. Below that the report is a record, not evidence, and
     reading it as evidence is how a working model gets tuned into a broken one.
 
+    That caveat is carried in the data rather than left to a renderer to
+    remember: every bucket reports `ConvictionStats.below_evidence_threshold`
+    against `EVIDENCE_THRESHOLD_TRADES`, and every ``hit_rate`` arrives with the
+    two ends of its interval. Two buckets whose intervals overlap have not been
+    told apart yet, whatever their point estimates say, and saying so is the
+    answer rather than the absence of one. Ruled on issue #263.
+
     Args:
-        records: Journal records, typically from `load`. Open trades are ignored.
+        records: Journal records, typically from `load`. Open trades are ignored,
+            and so are closed trades carrying no ``r_multiple``: a trade with no
+            realised figure has nothing to contribute and counting it as a loss
+            would be the plausible wrong answer.
 
     Returns:
         One `ConvictionStats` per conviction level present in the data. Levels
         with no closed trades are omitted rather than reported as zeros, so an
-        empty bucket cannot be mistaken for a losing one.
+        empty bucket cannot be mistaken for a losing one. An empty sequence, or
+        one holding only open trades, gives an empty mapping: that is the state
+        of every fresh clone, because ``data/journal/`` is git-ignored.
+
+        Every figure comes from the records passed in. This function opens no
+        file, reads no config and consults no clock, so the same records always
+        give the same answer and no stored number can leak into a thin bucket.
 
     """
-    raise NotImplementedError(
-        "fbe.journal.evaluate is scaffolded; see docs/roadmap.md Phase 6"
+    closed: dict[Conviction, list[tuple[datetime, float]]] = {}
+    for record in records:
+        if record.closed_at is None or record.r_multiple is None:
+            continue
+        closed.setdefault(record.conviction, []).append(
+            (record.closed_at, record.r_multiple)
+        )
+    return {
+        conviction: _bucket(conviction, outcomes)
+        for conviction, outcomes in closed.items()
+    }
+
+
+def _bucket(
+    conviction: Conviction,
+    outcomes: Sequence[tuple[datetime, float]],
+) -> ConvictionStats:
+    """Reduce one conviction's closed outcomes to its figures.
+
+    Args:
+        conviction: The bucket being described.
+        outcomes: ``(closed_at, r_multiple)`` for each closed trade in the
+            bucket, in whatever order the caller held them, sorted here for the
+            drawdown and nowhere else. Narrowed to concrete values by
+            `evaluate` rather than filtered a second time here: the same
+            exclusion written twice is one that can be deleted from one place
+            and still appear to work, which is how a test stops being able to
+            see it.
+
+    Returns:
+        The bucket's `ConvictionStats`. Every figure is in R multiples measured
+        against realised risk, which is what `TradeRecord.r_multiple` holds, so
+        nothing here divides money by anything.
+
+    """
+    multiples = [value for _, value in outcomes]
+    wins = [value for value in multiples if value > 0.0]
+    # Strictly below zero, because `ConvictionStats.wins` is documented as
+    # strictly above it. A trade closed exactly at breakeven is neither, so it
+    # counts in `trades`, `expectancy_r` and `total_r` and in neither average.
+    # Folding it into the losers would make a bucket's average loss shallower
+    # every time a stop was moved to entry, which is the opposite of what that
+    # figure is read for.
+    losses = [value for value in multiples if value < 0.0]
+    trades = len(multiples)
+    low, high = _hit_rate_interval(len(wins), trades)
+    return ConvictionStats(
+        conviction=conviction,
+        trades=trades,
+        wins=len(wins),
+        hit_rate=len(wins) / trades,
+        hit_rate_low=low,
+        hit_rate_high=high,
+        below_evidence_threshold=trades < EVIDENCE_THRESHOLD_TRADES,
+        expectancy_r=sum(multiples) / trades,
+        # None rather than 0.0 where a kind is absent. A winner is above zero,
+        # so no average of winners can be 0.0, and writing one would put a
+        # marker inside the value space that a consumer reads as a measurement.
+        avg_win_r=sum(wins) / len(wins) if wins else None,
+        avg_loss_r=sum(losses) / len(losses) if losses else None,
+        total_r=sum(multiples),
+        max_drawdown_r=_max_drawdown(_in_close_order(outcomes)),
     )
 
 
-def discipline_flags(records: Sequence[TradeRecord]) -> Sequence[DisciplineFlag]:
+def _in_close_order(outcomes: Sequence[tuple[datetime, float]]) -> list[float]:
+    """Return one bucket's R multiples in the order the trades closed.
+
+    Args:
+        outcomes: ``(closed_at, r_multiple)`` pairs in any order.
+
+    Returns:
+        The multiples, earliest close first. Order matters only to the
+        drawdown, and it has to be close order rather than entry order: a
+        drawdown is what the account balance did, and the balance moves when a
+        trade closes.
+
+        Sorted on the time alone, so two trades closing at the same instant keep
+        the order the caller held them in. Sorting on the pair would order those
+        by outcome, which would quietly report the gentlest drawdown available
+        from the same set of trades.
+
+    """
+    return [value for _, value in sorted(outcomes, key=lambda row: row[0])]
+
+
+def _max_drawdown(multiples: Sequence[float]) -> float:
+    """Deepest fall of a cumulative R curve from its own running peak.
+
+    Args:
+        multiples: R multiples in close order.
+
+    Returns:
+        The largest peak-to-trough fall, as a non-negative magnitude in R. Zero
+        when the curve never fell, which is a reading rather than an absence:
+        a bucket whose every trade won genuinely has no drawdown.
+
+        The running peak starts at zero rather than at the first point, so a
+        bucket that opens with a loss reports that loss as a drawdown. Starting
+        at the first point would report 0.0 for a bucket that went straight
+        down, which is the flattering answer.
+
+    """
+    peak = 0.0
+    cumulative = 0.0
+    deepest = 0.0
+    for value in multiples:
+        cumulative += value
+        peak = max(peak, cumulative)
+        deepest = max(deepest, peak - cumulative)
+    return deepest
+
+
+def _hit_rate_interval(wins: int, trades: int) -> tuple[float, float]:
+    """Wilson score interval for a hit rate, at `HIT_RATE_CONFIDENCE`.
+
+    Args:
+        wins: Winning trades in the bucket, zero or more.
+        trades: Closed trades in the bucket, strictly positive. Buckets with no
+            trades are omitted from `evaluate`'s mapping, so there is no
+            division to guard here.
+
+    Returns:
+        ``(low, high)`` in ``0..1``, both ends inclusive of the achievable
+        range and clamped to it, and to either side of ``wins / trades``. The
+        interval is computed from the confidence level through the normal
+        quantile rather than from a stored multiplier, so changing
+        `HIT_RATE_CONFIDENCE` changes the answer and nothing else has to move.
+
+        Wilson rather than the normal approximation, and the reason is the
+        sample this journal will have for its first months. The approximation
+        is ``p +/- z * sqrt(p(1-p)/n)``, which runs below zero or above one on
+        small samples, and collapses to zero width when ``p`` is 0 or 1: five
+        winners from five trades would report a hit rate of 100% with no
+        uncertainty at all. Wilson stays inside the range and keeps width at
+        both extremes, which is the honest answer to "the record has not seen a
+        loss yet".
+
+    """
+    z = NormalDist().inv_cdf(1 - (1 - HIT_RATE_CONFIDENCE) / 2)
+    proportion = wins / trades
+    denominator = 1 + z * z / trades
+    centre = (proportion + z * z / (2 * trades)) / denominator
+    half = (z / denominator) * sqrt(
+        proportion * (1 - proportion) / trades + z * z / (4 * trades * trades)
+    )
+    # Clamped, and only floating point error is being clamped: Wilson is
+    # analytically inside 0..1 and astride the point estimate at every
+    # (wins, trades). The arithmetic is not. At zero wins of five the lower end
+    # evaluates to about -5.6e-17, at zero of thirteen to about +1.4e-17, which
+    # is an interval that excludes the hit rate it describes, and at every win
+    # the upper end reaches 1.0000000000000002. A hit rate of 0.0% with a lower
+    # bound above it is the kind of number a reader has to explain away.
+    return (
+        min(proportion, max(0.0, centre - half)),
+        max(proportion, min(1.0, centre + half)),
+    )
+
+
+def discipline_flags(
+    records: Sequence[TradeRecord], config: RiskConfig | None = None
+) -> Sequence[DisciplineFlag]:
     """Detect the behaviours the trading plan explicitly warns against.
 
     The plan names these three and this function looks for exactly them. It
@@ -834,14 +1066,325 @@ def discipline_flags(records: Sequence[TradeRecord]) -> Sequence[DisciplineFlag]
         If they consistently lose, the discipline is.
 
     Args:
-        records: Journal records, typically from `load`, sorted or not.
+        records: Journal records, typically from `load`, sorted or not. They are
+            read, never altered.
+        config: Risk limits to read ``max_concurrent_positions`` from. Defaults
+            to `RiskConfig()`, which is the packaged default of three and not
+            whatever the operator has in their own `fbe.yaml`. A caller that has
+            loaded a config should pass ``load_config().risk``, because a desk
+            that tightened the limit to two gets a review calling a breach clean
+            otherwise. It is a parameter at all because a limit that cannot be
+            moved cannot be tested.
 
     Returns:
         Flags in chronological order. An empty sequence means a clean run, which
         on a real trading record is worth noting in the review rather than
-        assuming.
+        assuming. Nothing here reports absence of data as a behaviour: too few
+        trades to judge reads in the review as a finding about the trader.
+
+    Note:
+        Give it more history than the period under review. Both time-based
+        rules read across the boundaries of whatever they are handed and
+        neither can tell that it was handed a slice: a loss that closed on
+        Monday morning is invisible to a book loaded from Monday, and seven
+        days of records fed to a rolling seven-day count is the calendar week
+        this rule exists to avoid. Two weeks of records to report on one is
+        enough for both.
+
+        Both sweeps are quadratic in the number of records, since each rule
+        reads the whole book per entry. At the plan's five trades a week that
+        is a fraction of a second for years of journal. A broker export of tens
+        of thousands of fills is a different size of problem and would need an
+        index rather than this.
 
     """
-    raise NotImplementedError(
-        "fbe.journal.discipline_flags is scaffolded; see docs/roadmap.md Phase 6"
-    )
+    limits = RiskConfig() if config is None else config
+    ordered = sorted(records, key=lambda record: record.opened_at)
+    found = [
+        *_revenge_flags(ordered),
+        *_weekly_flags(ordered),
+        *_concurrent_flags(ordered, limits.max_concurrent_positions),
+        *_against_bias_flags(ordered),
+    ]
+    return tuple(sorted(found, key=lambda flag: flag.occurred_at))
+
+
+def _loss_closed_at(record: TradeRecord) -> datetime | None:
+    """When this record closed, if it closed as a loss.
+
+    Args:
+        record: One journal record.
+
+    Returns:
+        The close time of a closed trade that lost, otherwise ``None``. An open
+        position is not a loss whatever it is showing on the screen, and a
+        breakeven trade is not one either: neither starts a revenge window,
+        because the window is about a loss the owner has taken. The time rather
+        than a flag, so the caller cannot ask when a trade that did not lose
+        closed.
+
+    Note:
+        Three readings, in order, because the first two are absent on the
+        account this runs for. `r_multiple` is preferred: it is the same number
+        at any account size. `outcome_zar` is next, in the account currency.
+        Both are ``None`` on every record `fbe journal add` writes today, since
+        valuing a G10 pip in ZAR needs a rate the tree does not carry, so the
+        last reading is the price itself.
+
+        The price is the weakest of the three and the only one that is always
+        there. It says whether the trade lost and nothing about how much, it
+        needs no rate, and it carries the direction: a long that exited below
+        its entry lost, a short that exited above it lost. Without it the rule
+        would find no loss at all on the owner's own journal and return an
+        empty sequence, which reads as a clean run rather than as a figure
+        nobody could compute. A record with no exit price and no money figure
+        is an unknown and returns ``None``, and so does one whose direction is
+        neutral, since the sign of its move means nothing.
+
+    """
+    if record.closed_at is None:
+        return None
+    if record.r_multiple is not None:
+        return record.closed_at if record.r_multiple < 0.0 else None
+    if record.outcome_zar is not None:
+        return record.closed_at if record.outcome_zar < 0.0 else None
+    if record.exit_price is None:
+        return None
+    if record.direction is Direction.LONG:
+        moved = record.exit_price - record.entry
+    elif record.direction is Direction.SHORT:
+        moved = record.entry - record.exit_price
+    else:
+        return None
+    return record.closed_at if moved < 0.0 else None
+
+
+def _revenge_flags(ordered: Sequence[TradeRecord]) -> list[DisciplineFlag]:
+    """Find entries opened inside `REVENGE_WINDOW_MINUTES` of a loss closing.
+
+    Args:
+        ordered: Records sorted by open time.
+
+    Returns:
+        One flag per qualifying entry, against the most recent loss that closed
+        inside the window, since that is the one being reacted to. The window is
+        inclusive at both ends: an entry in the same second as the close is the
+        behaviour rather than a coincidence, and one at exactly the boundary is
+        what the constant says.
+
+    Note:
+        The size half of the comparison is skipped when either ``risk_amount``
+        is ``None``, and again when the two records carry different values of
+        ``account_currency``, which a journal spanning a change of denomination
+        or of broker holds. The flag is still raised either way and simply says
+        nothing about size. Money figures in the detail are in the account
+        currency both records share, which is why they are only printed once
+        the two agree.
+
+        A record is excluded from its own search. A trade normally opens before
+        it closes, which puts its own close outside the window at the lower
+        end, but a scalp recorded at minute resolution can open and close in
+        the same recorded minute and would otherwise be flagged as a reaction
+        to itself.
+
+    """
+    window = timedelta(minutes=REVENGE_WINDOW_MINUTES)
+    flags: list[DisciplineFlag] = []
+    for record in ordered:
+        loss: TradeRecord | None = None
+        lost_at: datetime | None = None
+        for candidate in ordered:
+            closed = _loss_closed_at(candidate)
+            if closed is None or candidate.trade_id == record.trade_id:
+                continue
+            if not timedelta(0) <= record.opened_at - closed <= window:
+                continue
+            if lost_at is None or closed > lost_at:
+                loss, lost_at = candidate, closed
+        if loss is None or lost_at is None:
+            continue
+        minutes = int((record.opened_at - lost_at).total_seconds() // 60)
+        result = "loss" if loss.r_multiple is None else f"{loss.r_multiple:.1f}R loss"
+        detail = (
+            f"entered {record.pair} {minutes} minutes after a {result} on {loss.pair}"
+        )
+        aggravations: list[str] = []
+        if record.pair == loss.pair:
+            aggravations.append("same pair")
+        if (
+            record.risk_amount is not None
+            and loss.risk_amount is not None
+            and record.account_currency == loss.account_currency
+            and record.risk_amount > loss.risk_amount
+        ):
+            aggravations.append(
+                f"larger risk than the trade that lost, "
+                f"{record.account_currency} {record.risk_amount:.2f} "
+                f"against {record.account_currency} {loss.risk_amount:.2f}"
+            )
+        if aggravations:
+            detail = f"{detail}, {' and '.join(aggravations)}"
+        flags.append(
+            DisciplineFlag(
+                kind="revenge",
+                trade_id=record.trade_id,
+                occurred_at=record.opened_at,
+                detail=detail,
+            )
+        )
+    return flags
+
+
+def _weekly_flags(ordered: Sequence[TradeRecord]) -> list[DisciplineFlag]:
+    """Find rolling seven-day windows holding more entries than the week allows.
+
+    Args:
+        ordered: Records sorted by open time.
+
+    Returns:
+        One flag per breaching run of entries, keyed on the entry that opens the
+        densest seven days in that run, after which the entries inside that
+        window are not counted again. Reporting every overlapping window would
+        turn one busy fortnight into a page of flags saying the same thing.
+
+    Note:
+        The window is rolling rather than a calendar week on purpose. Three
+        trades late on a Sunday and three early the following Tuesday are six
+        inside six days, and a calendar reading calls both weeks clean.
+
+        The densest window rather than the first breaching one, because the
+        number in the flag is the one the review acts on. Six entries on six
+        consecutive days followed by five more on the eighth breach first as a
+        window of six, while the worst week in that run holds nine. A flag
+        reading six against an allowance of five describes a marginal week and
+        the record holds something else.
+
+    """
+    allowed = OVERTRADING_TRADES_PER_WEEK
+    window = timedelta(days=7)
+
+    def width(start: int) -> int:
+        """How many entries open within the window that opens at ``start``."""
+        opened = ordered[start].opened_at
+        return sum(
+            1 for record in ordered[start:] if record.opened_at - opened <= window
+        )
+
+    flags: list[DisciplineFlag] = []
+    index = 0
+    while index < len(ordered):
+        span = width(index)
+        if span <= allowed:
+            index += 1
+            continue
+        densest = max(range(index, index + span), key=width)
+        count = width(densest)
+        first = ordered[densest]
+        flags.append(
+            DisciplineFlag(
+                kind="overtrading",
+                trade_id=first.trade_id,
+                occurred_at=first.opened_at,
+                detail=(
+                    f"{count} entries in the seven days from "
+                    f"{first.opened_at:%Y-%m-%d %H:%M}, above the {allowed} "
+                    f"a selective week is expected to hold"
+                ),
+            )
+        )
+        index = densest + count
+    return flags
+
+
+def _concurrent_flags(
+    ordered: Sequence[TradeRecord], allowed: int
+) -> list[DisciplineFlag]:
+    """Find the moments when more positions were open at once than allowed.
+
+    Args:
+        ordered: Records sorted by open time.
+        allowed: ``RiskConfig.max_concurrent_positions``.
+
+    Returns:
+        One flag per entry that pushed the count above the limit. This is the
+        harder of the two overtrading readings and stays a separate flag from
+        the weekly count: a busy week is a habit, while this is a limit the
+        pre-trade checks exist to refuse, so finding it in the journal means
+        the refusal was bypassed or never asked for. The second is the live
+        case: `risk._concurrent_check` reports not performed whenever it is
+        given no open book, which is every run today, so nothing has in fact
+        refused any of these yet and the flag's wording says only what the
+        limit is for.
+
+    Note:
+        A position counts as open from its ``opened_at`` until its ``closed_at``,
+        and a record with no ``closed_at`` is open from then on. A position
+        closed at the moment another opens is not open at that moment, so
+        rotating one ticket into the next is one position and not two.
+
+        The entering record counts itself whatever its own close says. At
+        minute resolution a scalp can open and close inside the same recorded
+        minute, and the test above would then leave it out of its own count and
+        report one position fewer than were on.
+
+    """
+    flags: list[DisciplineFlag] = []
+    for record in ordered:
+        moment = record.opened_at
+        open_now = [
+            other
+            for other in ordered
+            if other.trade_id == record.trade_id
+            or (
+                other.opened_at <= moment
+                and (other.closed_at is None or other.closed_at > moment)
+            )
+        ]
+        if len(open_now) <= allowed:
+            continue
+        flags.append(
+            DisciplineFlag(
+                kind="overtrading",
+                trade_id=record.trade_id,
+                occurred_at=moment,
+                detail=(
+                    f"{len(open_now)} positions open at once on entering "
+                    f"{record.pair}, above the {allowed} in "
+                    f"RiskConfig.max_concurrent_positions, a limit check_limits "
+                    f"refuses when it is told what is already open"
+                ),
+            )
+        )
+    return flags
+
+
+def _against_bias_flags(ordered: Sequence[TradeRecord]) -> list[DisciplineFlag]:
+    """Find the entries taken against the engine's lean.
+
+    Args:
+        ordered: Records sorted by open time.
+
+    Returns:
+        One flag per record with ``agreed_with_bias`` false.
+
+    Note:
+        The wording says what happened and stops there. Whether fading the lean
+        helps or hurts is a question about a group of trades that nobody here
+        has measured, and a flag that called each one an error would be
+        answering it.
+
+    """
+    return [
+        DisciplineFlag(
+            kind="against_bias",
+            trade_id=record.trade_id,
+            occurred_at=record.opened_at,
+            detail=(
+                f"entered {record.pair} {record.direction.value} against "
+                f"the engine's lean, flagged so the overrides can be counted "
+                f"and read as their own group"
+            ),
+        )
+        for record in ordered
+        if not record.agreed_with_bias
+    ]
