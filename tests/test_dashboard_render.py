@@ -30,6 +30,7 @@ import re
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, UndefinedError
@@ -49,7 +50,7 @@ from fbe.report import (
     load_report,
     render_report,
 )
-from fbe.types import BiasReport, Conviction, Direction
+from fbe.types import BiasReport, Conviction, Direction, PairBias
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "dashboard_report.json"
 """The committed run every test renders.
@@ -197,6 +198,15 @@ class _StubView:
     legend = (("heat-p1", "stub legend"),)
     blackouts = ()
     hour_marks = ()
+    blocker_counts = ()
+
+    def flags(self, cell: PairBias) -> str:
+        return " stub-flag"
+
+    def expansion(self, bias: PairBias) -> SimpleNamespace:
+        return SimpleNamespace(
+            blockers=(), base_coverage=None, quote_coverage=None, rows=()
+        )
 
     def bar_pct(self, value: float) -> float:
         return 37.25
@@ -229,6 +239,7 @@ def test_the_template_renders_the_geometry_it_is_handed(report: BiasReport) -> N
     assert "<title>stub title</title>" in rendered
     assert "width: 37.25%" in rendered
     assert "heat-n2" in rendered
+    assert "stub-flag" in rendered
     assert "left: 11.5%" in rendered
     assert "19.0%" in rendered
     assert "19.2%" in rendered
@@ -779,14 +790,41 @@ def test_the_heat_class_carries_the_sign_of_the_spread(report: BiasReport) -> No
     assert any(heat.startswith("heat-n") for heat, _ in cells)
 
 
+def _matrix(page: str) -> str:
+    """The matrix table alone.
+
+    Scoped rather than searched over the whole page because the pair detail
+    below it prints its pillar scores in ``num`` cells too, and a helper that
+    reads those as matrix cells reports 546 cells for a grid of 56.
+    """
+    match = re.search(r'<table class="matrix">.*?</table>', page, flags=re.S)
+    assert match is not None, "the page carries no matrix"
+    return match.group(0)
+
+
+def _heat_of(classes: str) -> str:
+    """The heat step out of one cell's class list.
+
+    A cell carries its marks in the same attribute: ``marked`` when the pair
+    holds a marker of its own, ``thin`` when a leg is below full coverage. The
+    step is the one class naming a band, and a cell inside the no-view band has
+    none.
+    """
+    steps = [name for name in classes.split() if name.startswith("heat-")]
+    assert len(steps) <= 1, classes
+    return steps[0] if steps else ""
+
+
 def _cells(page: str) -> list[tuple[str, str]]:
     """Every matrix cell as ``(heat class, printed number)``.
 
     The diagonal is excluded: a currency has no bias against itself and the
     template renders it as a placeholder rather than as a number.
     """
-    found = re.findall(r'<td class="num ?([^"]*)"[^>]*>\s*([+-][\d.]+)\s*</td>', page)
-    return [(heat.strip(), printed) for heat, printed in found]
+    found = re.findall(
+        r'<td class="num ?([^"]*)"[^>]*>\s*([+-][\d.]+)\s*</td>', _matrix(page)
+    )
+    return [(_heat_of(classes), printed) for classes, printed in found]
 
 
 def test_a_mirrored_cell_carries_the_opposite_colour(report: BiasReport) -> None:
@@ -798,10 +836,10 @@ def test_a_mirrored_cell_carries_the_opposite_colour(report: BiasReport) -> None
     """
     page = render_dashboard(report)
     classes = {
-        f"{base}{quote}": heat
-        for heat, base, quote in re.findall(
+        f"{base}{quote}": _heat_of(found)
+        for found, base, quote in re.findall(
             r'<td class="num ?([^"]*)"\s+title="(\w{3}) vs (\w{3})',
-            page,
+            _matrix(page),
             flags=re.S,
         )
     }

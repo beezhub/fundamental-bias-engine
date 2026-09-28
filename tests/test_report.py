@@ -1764,6 +1764,13 @@ def render_dashboard(idea: TradeIdea) -> str:
         legend=(),
         hour_marks=(),
         blackouts=(),
+        # The pair detail below the matrix, stubbed the same way: this test is
+        # about one label, and the expansion has its own file.
+        blocker_counts=(),
+        flags=lambda cell: "",
+        expansion=lambda bias: SimpleNamespace(
+            blockers=(), base_coverage=None, quote_coverage=None, rows=()
+        ),
     )
     return environment.get_template("dashboard.html.j2").render(**context)
 
