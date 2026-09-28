@@ -46,6 +46,7 @@ __all__ = [
     "RateLimit",
     "RetryPolicy",
     "SourceError",
+    "WindowTooNarrow",
 ]
 
 REQUEST_TIMEOUT_SECONDS = 30.0
@@ -62,6 +63,23 @@ class SourceError(RuntimeError):
     a request returns an empty sequence, because "no observations" is data and
     "the request failed" is not, and the coverage figures on a report depend on
     telling those two apart.
+    """
+
+
+class WindowTooNarrow(SourceError):
+    """A series served nothing over a window that could not judge it either way.
+
+    Not a failure and not a reading. `fbe.datasources.registry` decides which
+    by arithmetic: the window, shifted back by the leg's own publication lag,
+    must span at least one release cycle before an empty answer means the
+    series is dead. Below that a live series is legitimately empty, so naming
+    it dead is a false cause and calling it served is the silent empty success
+    ADR 0015 rule 3 removed.
+
+    A `SourceError` so that a caller which catches the base class still catches
+    it, since not returning observations is what they both mean. The separate
+    type is what lets `fbe.datasources.collect` record the third answer rather
+    than choosing one of the other two.
     """
 
 

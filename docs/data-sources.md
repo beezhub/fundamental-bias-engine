@@ -50,7 +50,7 @@ the refresh output names the scope's unit when it fails (ADR 0013, ADR 0015).
 | Source | Scope | One failure costs |
 | --- | --- | --- |
 | FRED | source | every FRED series in the run; a series-scope follow-up is owed, see ADR 0015 |
-| OECD SDMX | series | that one `(indicator, currency)`, named on its own line; the other series are served and the source reads `partial` |
+| OECD SDMX | series | that one `(indicator, currency)`, named on its own line; the other series are served and the source reads `partial`. A series that answers with nothing is a failure only where the window could judge it, see below |
 | Central banks and debt offices | source, one per provider | that provider's currency; each institution is its own source since #218 |
 | CFTC COT | source | every contract; the dollar is derived from the other seven, so the series are not independent and series scope is not ruled on |
 | Stooq | source | every price proxy; not ruled on |
@@ -277,6 +277,36 @@ the registry's transform hint is `level`, not `yoy`.
 answers for the financial market flow but not for national CPI, where the OECD
 serves member states rather than the bloc. Euro CPI therefore comes from
 Eurostat through FRED, not from here.
+
+### An empty answer, and when it means the series is dead
+
+A well-formed CSV with no rows is the answer to two different questions and the
+body does not say which. The series can be dead or mis-keyed, which ADR 0015
+rule 3 raises on and names. Or the window can be too narrow to hold a print, in
+which case a live series answers the same way.
+
+`fbe refresh --since` is where the second one appears, because the window is
+then the operator's and reaches the wire as `startPeriod` unaltered. Asked for
+five days, no series of any cadence can answer: five days less even the 45-day
+monthly lag is short of a 31-day cycle, so all 38 come back with no rows, and
+before #298 each one was named as dead or mis-keyed.
+
+`registry.empty_is_judgeable` decides which is which, from the leg's own
+frequency and lag:
+
+```
+judgeable  iff  (end - publication_lag) - start  >=  CYCLE_DAYS[frequency]
+```
+
+Where it says yes, the source raises `SourceError` and the series is a named
+failure, as before. Where it says no, the source raises `WindowTooNarrow` and
+the refresh line says the series was not judged, which is neither a reading nor
+a fault. The default five-year lookback is judgeable for every frequency, so
+nothing about a normal run changes. The arithmetic and the reasoning are in
+ADR 0015's 2026-09-28 amendment.
+
+The request is still made, so a narrow refresh still spends one request per
+series against a provider that rate-limits. Only the false cause is fixed.
 
 ### Financial market flow
 

@@ -97,8 +97,15 @@ from fbe.datasources.base import (
     RateLimit,
     RetryPolicy,
     SourceError,
+    WindowTooNarrow,
 )
-from fbe.datasources.registry import INDICATORS, SeriesRef
+from fbe.datasources.registry import (
+    CYCLE_DAYS,
+    INDICATORS,
+    SeriesRef,
+    empty_is_judgeable,
+    publication_lag,
+)
 from fbe.types import Observation
 
 __all__ = [
@@ -543,14 +550,30 @@ class OecdSource(BaseDataSource):
         Raises:
             SourceError: On repeated request failure, on an unparseable body,
                 when the body contains `THROTTLE_MARKER`, or when a series
-                this source was asked for answers with no observation inside
-                the window. The lookback is years long, so a series with
-                nothing in it is dead or mis-keyed, and an empty success would
-                score the currency as uncovered with nothing saying why. ADR
-                0015's third rule, enforced here rather than in the collector
-                because whether an empty answer is a reading is a fact about
-                the provider: COT documents one as a reading, this source does
-                not.
+                this source was asked for answers with no observation inside a
+                window wide enough to judge it. Over such a window a series
+                with nothing in it is dead or mis-keyed, and an empty success
+                would score the currency as uncovered with nothing saying why.
+                ADR 0015's third rule, enforced here rather than in the
+                collector because whether an empty answer is a reading is a
+                fact about the provider: COT documents one as a reading, this
+                source does not.
+            WindowTooNarrow: When that same series answers with nothing over a
+                window too narrow to judge it, which
+                `registry.empty_is_judgeable` decides as ``(end - lag) - start
+                >= CYCLE_DAYS[frequency]``. Both halves matter. The cycle is
+                the longest gap between consecutive periods, so a shorter
+                window can fall entirely between prints. The lag is the half a
+                test on frequency alone misses: a 92-day window does contain a
+                quarterly boundary, but that period carries a 120-day lag and
+                is not published yet, so a live series is empty over it too.
+                `end` and `start` are the window as asked for, which on
+                ``fbe refresh --since`` is the operator's and can be days. The
+                default five-year lookback clears it: 1826 - 120 = 1706
+                against a quarterly cycle of 92, so rule 3 is untouched for
+                the case it was written for. A
+                separate type because the collector records it as neither a
+                reading nor a failure. ADR 0015, amended on #298.
 
         What fails loudly, and at what scope: one series. The collector calls
         this once per ``(indicator, currency)`` because `failure_scope` says
@@ -583,6 +606,17 @@ class OecdSource(BaseDataSource):
                 )
                 served += 1
             if served == 0:
+                if not empty_is_judgeable(ref, ref.frequency, start, end):
+                    raise WindowTooNarrow(
+                        f"{self.name} served no observation for {indicator} "
+                        f"{currency} ({ref.series_id}) between {start} and "
+                        f"{end}; that window judges nothing, because "
+                        f"{(end - start).days} days less this leg's "
+                        f"{publication_lag(ref, ref.frequency)}-day "
+                        f"publication lag does not span the "
+                        f"{CYCLE_DAYS[ref.frequency]}-day "
+                        f"{ref.frequency.value} cycle"
+                    )
                 raise SourceError(
                     f"{self.name} answered for {ref.series_id} but served no "
                     f"observation for {indicator} {currency} between {start} "
