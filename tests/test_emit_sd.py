@@ -35,7 +35,7 @@ Nothing here reaches the network.
 from __future__ import annotations
 
 import inspect
-import random
+import math
 import statistics
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
@@ -44,7 +44,13 @@ from pathlib import Path
 import pytest
 
 from fbe.pillars.monetary import MonetaryPillar
-from fbe.pillars.positioning import PositioningPillar
+from fbe.pillars.positioning import (
+    CONTRARIAN_CAP,
+    CONTRARIAN_SLOPE,
+    MOMENTUM_PEAK_Z,
+    SIGN_FLIP_Z,
+    PositioningPillar,
+)
 from fbe.pillars.risk import RiskPillar
 from fbe.types import Frequency, Observation
 from fbe.universe import CURRENCIES, G10
@@ -214,22 +220,219 @@ def test_the_section_7_positioning_responses_spread_at_0_6437() -> None:
     assert statistics.pstdev(responses) == pytest.approx(0.6437, abs=5e-5)
 
 
-def test_the_positioning_response_spread_under_a_normal_p() -> None:
-    """The 0.5885 the spec publishes, measured here rather than cited.
+NORMAL_SPREAD = 0.5884755850860
+"""The exact spread of `PositioningPillar.response` under a standard normal ``p``.
 
-    Seeded, so it is a fixed assertion rather than one that passes most days.
-    The tolerance is three decimals because that is the precision simulation
-    actually supports: two million draws put this at 0.5886 and the recorded
-    figure is 0.5887, which is sampling noise and not a discrepancy. Two hundred
-    thousand draws keeps the suite fast and still pins the figure well inside
-    the gap between 0.59 and the 1.0 it is being compared against.
+Not a simulated estimate. ``response`` is deterministic and piecewise linear and
+``p`` is standard normal, so the spread is a definite integral with a closed
+form, and the digits here are the value of that integral rather than the centre
+of a confidence interval.
+
+Recomputed in this container two independent ways before it was written down:
+piecewise Simpson at 200,000 intervals per smooth piece plus the exact ``erfc``
+tail gives ``0.5884755850860195``, and a one-pass trapezoid over the half line
+at 4,000,000 intervals gives ``0.5884755850850196``. They agree to eleven
+digits, and the one-pass figure is the worse of the two for the reason the split
+exists: the integrand has corners at ``|p| = 1, 2, 10/3`` and quadrature that
+straddles them converges badly, which is what made the fourth decimal look like
+noise.
+"""
+
+NORMAL_SPREAD_TOLERANCE = 5e-6
+"""How far `spread_under_a_normal_p` may sit from `NORMAL_SPREAD`.
+
+It is not a quadrature bound. At `QUADRATURE_INTERVALS` the measured error is
+about 3.5e-14, eight orders tighter, so this is a generous bound rather than a
+tight one.
+
+What decides it is the other side: it has to be small enough that moving any of
+the four shape constants fails the test. The tightest of those is
+`MOMENTUM_PEAK_Z`, where a 1% move shifts the spread by 8.2e-5, sixteen times
+this tolerance. `test_moving_any_shape_constant_breaks_the_published_spread`
+measures all four rather than leaving that as a claim.
+
+The figure it replaced was 5e-3, which a simulation of 200,000 draws supported
+and which was wide enough to pass with `CONTRARIAN_CAP` at 2.05.
+"""
+
+QUADRATURE_INTERVALS = 1000
+"""Simpson intervals per smooth piece.
+
+Convergence measured here: 100 intervals give an error of 3.9e-10, 500 give
+6.2e-13 and 1000 give 3.5e-14, after which it is at the floating-point floor.
+1000 costs about 1.6 milliseconds against the 200,000 normal draws this
+replaced, and leaves eight orders of margin under `NORMAL_SPREAD_TOLERANCE`.
+"""
+
+
+def _standard_normal_pdf(value: float) -> float:
+    """The standard normal density at ``value``."""
+    return math.exp(-0.5 * value * value) / math.sqrt(2.0 * math.pi)
+
+
+def spread_under_a_normal_p(
+    response: Callable[[float], float],
+    *,
+    peak: float,
+    flip: float,
+    slope: float,
+    cap: float,
+) -> float:
+    """Return the exact standard deviation of ``response(p)`` for standard normal ``p``.
+
+    Args:
+        response: The response function to integrate. The live test passes
+            `PositioningPillar.response` so the production function is what is
+            measured; the sensitivity test passes a local one built from moved
+            constants.
+        peak: Where the momentum branch ends, `MOMENTUM_PEAK_Z`.
+        flip: Where the response crosses zero, `SIGN_FLIP_Z`.
+        slope: The contrarian branch's slope, `CONTRARIAN_SLOPE`.
+        cap: Where the contrarian branch saturates, `CONTRARIAN_CAP`.
+
+    Returns:
+        ``sd = sqrt( 2 * integral from 0 to inf of f(p)^2 * phi(p) dp )``.
+        The mean is zero because ``f`` is odd, so the second moment is the
+        variance and no mean term is needed.
+
+    The integral is split at ``peak``, ``flip`` and the saturation point
+    ``flip + cap / slope``. Those are the corners of a piecewise-linear
+    function, and Simpson's rule assumes a smooth integrand, so a pass that
+    straddles a corner converges badly.
+
+    Measured here, the split buys between one and four orders of accuracy
+    depending on resolution: at 10 intervals per piece the split form errs by
+    3.9e-6 and the unsplit by 3.0e-2, and at `QUADRATURE_INTERVALS` it is
+    3.5e-14 against 9.9e-13. So at this resolution both forms clear
+    `NORMAL_SPREAD_TOLERANCE` and the split is not what makes the test pass.
+    What it buys is the last digits of `NORMAL_SPREAD` being right, and a cheap
+    interval count being enough. Removing it is caught by nothing here, which
+    is recorded rather than papered over.
+
+    Beyond saturation ``f^2`` is the constant ``cap ** 2``, so that piece is
+    ``cap ** 2`` times the normal tail mass and closes in ``erfc`` with no
+    quadrature at all. `math.erfc` is standard library, so this adds no
+    dependency, which the issue's fourth criterion requires.
     """
-    generator = random.Random(12)
-    responses = [
-        PositioningPillar.response(generator.gauss(0.0, 1.0)) for _ in range(200_000)
-    ]
 
-    assert statistics.pstdev(responses) == pytest.approx(0.5885, abs=5e-3)
+    def piece(lower: float, upper: float) -> float:
+        width = (upper - lower) / QUADRATURE_INTERVALS
+        total = response(lower) ** 2 * _standard_normal_pdf(lower) + response(
+            upper
+        ) ** 2 * _standard_normal_pdf(upper)
+        for index in range(1, QUADRATURE_INTERVALS):
+            point = lower + index * width
+            weight = 4.0 if index % 2 else 2.0
+            total += weight * response(point) ** 2 * _standard_normal_pdf(point)
+        return total * width / 3.0
+
+    saturation = flip + cap / slope
+    knots = (0.0, peak, flip, saturation)
+    smooth = sum(
+        piece(lower, upper) for lower, upper in zip(knots, knots[1:], strict=False)
+    )
+    tail = cap**2 * 0.5 * math.erfc(saturation / math.sqrt(2.0))
+    return math.sqrt(2.0 * (smooth + tail))
+
+
+def test_the_positioning_response_spread_under_a_normal_p() -> None:
+    """The 0.5885 the spec publishes, computed rather than sampled.
+
+    This was a seeded Monte Carlo over 200,000 draws asserting three decimals,
+    with a docstring calling the fourth decimal the precision "simulation
+    actually supports". That is true of simulation and not of the quantity.
+    `response` is deterministic and ``p`` is standard normal, so the spread has
+    a closed form and the fourth decimal is 5, exactly.
+
+    Integrating `PositioningPillar.response` itself rather than a local copy,
+    so a change to the function or to any constant it reads moves this.
+    """
+    computed = spread_under_a_normal_p(
+        PositioningPillar.response,
+        peak=MOMENTUM_PEAK_Z,
+        flip=SIGN_FLIP_Z,
+        slope=CONTRARIAN_SLOPE,
+        cap=CONTRARIAN_CAP,
+    )
+
+    assert computed == pytest.approx(NORMAL_SPREAD, abs=NORMAL_SPREAD_TOLERANCE)
+
+
+@pytest.mark.parametrize(
+    "constant",
+    ["MOMENTUM_PEAK_Z", "SIGN_FLIP_Z", "CONTRARIAN_SLOPE", "CONTRARIAN_CAP"],
+)
+def test_moving_any_shape_constant_breaks_the_published_spread(constant: str) -> None:
+    """The issue's third criterion, measured rather than assumed.
+
+    The tolerance above is only worth having if it is tight enough to catch a
+    change to the shape of the response. The figure it replaced was not: at
+    5e-3 the test passed with `CONTRARIAN_CAP` at 2.05, so it pinned that
+    somebody had once run a simulation rather than pinning the shape.
+
+    Each constant is moved 1% and the spread recomputed from a local response
+    built on the moved value. A parametrised case per constant rather than one
+    test over four, so a failure names which one stopped mattering.
+    """
+    moved = {
+        "MOMENTUM_PEAK_Z": MOMENTUM_PEAK_Z,
+        "SIGN_FLIP_Z": SIGN_FLIP_Z,
+        "CONTRARIAN_SLOPE": CONTRARIAN_SLOPE,
+        "CONTRARIAN_CAP": CONTRARIAN_CAP,
+    }
+    moved[constant] *= 1.01
+
+    def response(value: float) -> float:
+        magnitude = abs(value)
+        sign = 1.0 if value >= 0 else -1.0
+        if magnitude <= moved["MOMENTUM_PEAK_Z"]:
+            return value
+        if magnitude <= moved["SIGN_FLIP_Z"]:
+            return sign * (moved["SIGN_FLIP_Z"] - magnitude)
+        excess = moved["CONTRARIAN_SLOPE"] * (magnitude - moved["SIGN_FLIP_Z"])
+        return -sign * min(excess, moved["CONTRARIAN_CAP"])
+
+    computed = spread_under_a_normal_p(
+        response,
+        peak=moved["MOMENTUM_PEAK_Z"],
+        flip=moved["SIGN_FLIP_Z"],
+        slope=moved["CONTRARIAN_SLOPE"],
+        cap=moved["CONTRARIAN_CAP"],
+    )
+
+    assert abs(computed - NORMAL_SPREAD) > NORMAL_SPREAD_TOLERANCE, (
+        f"{constant} moved 1% and the spread shifted only "
+        f"{abs(computed - NORMAL_SPREAD):.2e}, inside the tolerance"
+    )
+
+
+def test_the_local_response_matches_the_pillars_when_nothing_is_moved() -> None:
+    """The reimplementation above is only evidence if it starts out identical.
+
+    `test_moving_any_shape_constant_breaks_the_published_spread` builds its own
+    response so it can move a constant the module does not. That copy could
+    drift from `PositioningPillar.response`, and then it would be measuring the
+    sensitivity of something the engine does not compute. Checked across every
+    branch and both joins.
+    """
+
+    def response(value: float) -> float:
+        magnitude = abs(value)
+        sign = 1.0 if value >= 0 else -1.0
+        if magnitude <= MOMENTUM_PEAK_Z:
+            return value
+        if magnitude <= SIGN_FLIP_Z:
+            return sign * (SIGN_FLIP_Z - magnitude)
+        excess = CONTRARIAN_SLOPE * (magnitude - SIGN_FLIP_Z)
+        return -sign * min(excess, CONTRARIAN_CAP)
+
+    probes = [-4.0, -3.5, -10 / 3, -2.5, -2.0, -1.5, -1.0, -0.5, 0.0]
+    probes += [-value for value in probes]
+
+    for probe in probes:
+        assert response(probe) == pytest.approx(
+            PositioningPillar.response(probe), abs=1e-15
+        ), probe
 
 
 def test_the_positioning_response_is_quieter_than_a_restandardised_pillar() -> None:
