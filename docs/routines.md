@@ -115,6 +115,28 @@ eleven lane slots a weekday passed over them and every lane correctly reported
 no qualifying issue. Nothing errors when this happens, which is why it is
 written down here.
 
+**A `type:defect` or a `type:debt` carrying neither label belongs to no pool
+either, and there it is a real resting state rather than a labelling mistake.**
+A defect ruled correctly not `routine-safe`, because its diff spans two owners
+or changes a contract every consumer reads, cannot carry `roadmap` instead:
+`roadmap` is the requirement pool's key and a defect is not a requirement.
+There is no third key. So the issue is ready, correctly labelled, and claimed
+by nothing on an ordinary day, while the board counts it at `status:ready`
+beside work that is genuinely queued.
+
+The difference from the case above is the whole point of writing both down. A
+requirement in that state is mislabelled and the fix is to pick a pool. A
+defect in it is waiting for the named specialist its ruling asked for, and
+adding `routine-safe` to it would undo that ruling rather than fix anything.
+It is worked by a person invoking a desk by number, `/next 172`, which is the
+only route that reaches it on demand. An implementation lane also reaches a
+ruled one through the fallback below, on a day its own pool is shut, and that
+is a day nobody can schedule, so it is not a route to plan around.
+
+The count is not recorded here on purpose. It moves as issues are ruled on and
+worked, so a number in this file would be stale by the time anyone read it.
+The triage desk reports the current set each run, which is where to look.
+
 ## Who did what
 
 Every run is signed. The commits all carry the repository owner's name, and a
@@ -188,7 +210,7 @@ issue, which is not a failure.
 | Run | When (SAST) | Role | Does | Does not |
 | --- | --- | --- | --- | --- |
 | deliver | weekdays 05:00 | product-analyst | Counts open issues carrying `roadmap` and `status:ready` whose dependencies have all landed. Four or more: files nothing and stops. Fewer: decomposes the current phase of `docs/roadmap.md` into `type:requirement` issues, at most 5 in one run, aiming for roughly 6 unblocked. Posts the delivery order as a comment on the phase's lowest-numbered issue. When the current phase is fully decomposed and the count is still under four, it files nothing and stops rather than decomposing the next phase or splitting what it already filed: a sequential phase does not yield parallel work, and filing more of it widens a queue that is already longer than the merge rate. | Apply `routine-safe`. File defects or proposals. Touch any source file. Change what a stub docstring says a function should do. |
-| triage | weekdays 06:00 and 12:00 | architect | Releases stranded `status:in-progress` claims with no pull request referencing the issue, **open or merged**. Reports a claim whose pull request has merged for closure instead of releasing it. **Rules** every `status:needs-decision` issue that is not the owner's to decide, and never leaves one longer than two days. Unblocks what has landed. Spot-checks `status:ready`. Widens the maintenance pool by labelling qualifying `p2` or `p3` issues `routine-safe`. Splits anything too big for one pull request. Files at most 3 defects. | Touch source. Open proposals. Advance anything past the approval gate. Add `routine-safe` to anything carrying `roadmap`, `routine-hold` or `desk-only`. Override an issue's own argument against the label without a comment answering it. |
+| triage | weekdays 06:00 and 12:00 | architect | Releases stranded `status:in-progress` claims with no pull request referencing the issue, **open or merged**. Reports a claim whose pull request has merged for closure instead of releasing it. **Rules** every `status:needs-decision` issue that is not the owner's to decide, and never leaves one longer than two days. Unblocks what has landed. Spot-checks `status:ready`. Widens the maintenance pool by labelling qualifying `p2` or `p3` issues `routine-safe`. **Reports the issues that belong to no pool**, so the category is read from a list rather than inferred from a board count. Splits anything too big for one pull request. Files at most 3 defects. | Touch source. Open proposals. Advance anything past the approval gate. Add `routine-safe` to anything carrying `roadmap`, `routine-hold` or `desk-only`. Override an issue's own argument against the label without a comment answering it. |
 | build lane 1 | weekdays 07:00, 11:00 and 15:00 | developer, then test-engineer, then code-reviewer | Looks after its own open pull requests first. Then claims **one** issue, the lowest-numbered that is `status:ready`, `routine-safe`, `p2` or `p3`. Branch, failing test, fix, four checks, pull request. | Take a second issue. Take an issue already at `status:in-progress` or carrying `routine-hold` or `desk-only`. Change a field, a type, an argument order or a default in `src/fbe/types.py`. Change a value in `ScoringConfig` or `RiskConfig`. Take anything at `p0` or `p1`. Merge. |
 | implement lane A | weekdays 09:00, 13:00 and 17:00 | developer, then test-engineer, then code-reviewer | Looks after its own open pull requests first. Then claims **one** issue carrying `type:requirement`, `roadmap` and `status:ready`, at any priority, preferring the **lowest** number whose dependencies have all landed. Tests first, each shown to fail against the stub for the right reason, then the implementation, four checks, pull request. **When no issue in that pool has all its dependencies landed**, it claims from the fallback instead: the **lowest-numbered** `status:ready` issue that carries an architect ruling with acceptance criteria, has no open dependency, carries neither `routine-hold` nor `desk-only`, is not already `status:in-progress`, is not `p0` and is not a `type:proposal`. It says in its pull request body that it claimed from the fallback and why. | Take a second issue. Claim an issue carrying `routine-hold`, or one whose dependencies are still open. Change an existing default in `ScoringConfig` or `RiskConfig`. Change `types.py` without an architect ruling in the issue body naming every consumer. Force-push. Merge. |
 | implement lane B | weekdays 08:00, 12:00 and 16:00 | developer, then test-engineer, then code-reviewer | The same, preferring the **highest** number whose dependencies have all landed. **When no issue in that pool has all its dependencies landed**, it claims from the fallback instead: the **highest-numbered** `status:ready` issue that carries an architect ruling with acceptance criteria, has no open dependency, carries neither `routine-hold` nor `desk-only`, is not already `status:in-progress`, is not `p0` and is not a `type:proposal`, so the two lanes work from opposite ends of what is claimable. It says in its pull request body that it claimed from the fallback and why. | The same. |
@@ -256,6 +278,11 @@ authority too. The differences are only the ones that follow from a person
 being present: it proposes one issue rather than listing eight, it asks before
 touching `src/fbe/types.py` or a configured value rather than refusing outright,
 and it stops and says so rather than guessing.
+
+`/next` without a number claims by label exactly as the desks do, so it cannot
+reach the no-pool category above. A person who types it and is told there is
+nothing to claim is being told the truth about the two pools rather than about
+the board. Those issues are reached by number, and only by number.
 
 Two things it must not do, the same as the desks: it does not merge, and it does
 not decide anything from the four kinds above that belong to the owner.
