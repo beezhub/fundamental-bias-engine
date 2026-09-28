@@ -1084,11 +1084,12 @@ def discipline_flags(
 
     Note:
         Give it more history than the period under review. Both time-based
-        rules read across the edges of whatever they are handed and neither can
-        tell that it was handed a slice: a loss that closed on Monday morning
-        is invisible to a book loaded from Monday, and seven days of records
-        fed to a rolling seven-day count is the calendar week this rule exists
-        to avoid. Two weeks of records to report on one is enough for both.
+        rules read across the boundaries of whatever they are handed and
+        neither can tell that it was handed a slice: a loss that closed on
+        Monday morning is invisible to a book loaded from Monday, and seven
+        days of records fed to a rolling seven-day count is the calendar week
+        this rule exists to avoid. Two weeks of records to report on one is
+        enough for both.
 
         Both sweeps are quadratic in the number of records, since each rule
         reads the whole book per entry. At the plan's five trades a week that
