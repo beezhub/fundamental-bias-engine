@@ -65,6 +65,7 @@ the repository root so the row can be checked against the file it names, which
 | `src/fbe/risk.py` | Implemented. Sizing, the conviction ladder, and the per-limit report. |
 | `src/fbe/calendar_guard.py`, `src/fbe/journal.py` | In progress |
 | `src/fbe/report.py` | Implemented. The dated Markdown, its JSON sidecar and the run-to-run diff. |
+| `src/fbe/pillar_audit.py` | Implemented. The cross-section diagnostic behind `fbe score --audit`. |
 | `src/fbe/cli.py`, `src/fbe/dashboard/*` | In progress |
 
 **How to tell without checking this table:** a stub raises `NotImplementedError`
