@@ -1,10 +1,10 @@
 """The collector: one request, fanned out across every source.
 
-Six sources each know how to answer for their own series. Something has to take
-one request for the whole universe, send each ``(indicator, currency)`` to the
-source the registry names for it, and reconcile what comes back into one set of
-`Observation`s. That is this module, and `fbe.cli.refresh` is its only caller
-today.
+Every source in ``ALL_SOURCES`` knows how to answer for its own series.
+Something has to take one request for the whole universe, send each
+``(indicator, currency)`` to the source the registry names for it, and
+reconcile what comes back into one set of `Observation`s. That is this module,
+and the commands in `fbe.cli` are its only callers.
 
 Why it lives here
 -----------------
@@ -29,9 +29,19 @@ routes to ``manual`` could never override anything. It runs last, so its value
 wins for a ``(indicator, currency, period)`` another source also answered.
 
 **A source that fails is a gap, not the end of the run.** One dead provider at
-07:00 must leave the other five to fill the cache, because a partial refresh
-with a named gap beats no data at all. Every failure is recorded against its
-source and reported; nothing is swallowed.
+07:00 must leave the others to fill the cache, because a partial refresh with a
+named gap beats no data at all. Every failure is recorded against its source
+and reported; nothing is swallowed.
+
+**A series inside a series-scoped source is a gap in the same way.** A source
+that declares ``failure_scope = "series"`` is asked for one ``(indicator,
+currency)`` at a time, each call caught on its own, so one dead series costs
+its own currency and the rest are served. The outcome is `SourceStatus.PARTIAL`
+with every failed series named on it. The loop lives here and not in the
+source, because a source that caught its own failures would need a channel to
+report them and one that forgot would produce a quiet partial. ADR 0015
+records the ruling; the OECD's 39 series were the case, one of them failing
+three times in two days and taking the other 38 with it each time.
 """
 
 from __future__ import annotations
@@ -51,6 +61,7 @@ from fbe.universe import G10
 
 __all__ = [
     "CollectionResult",
+    "SeriesFailure",
     "SourceOutcome",
     "SourceStatus",
     "collect",
@@ -67,11 +78,40 @@ class SourceStatus(StrEnum):
     COMPLETED = "completed"
     """It was asked and it answered, with any number of observations."""
 
+    PARTIAL = "partial"
+    """It was asked one series at a time, some answered and some raised.
+
+    Only a source with ``failure_scope = "series"`` can produce this. What was
+    served is on the counts; what was not is on ``failures``, by name. A partial
+    result is usable, and it does not change a command's exit code (ADR 0015).
+    """
+
     SKIPPED = "skipped"
     """It was never asked: not selected, not configured, or not yet built."""
 
     FAILED = "failed"
-    """It was asked and it raised. A named gap, not a reason to stop."""
+    """It was asked and it raised. A named gap, not a reason to stop.
+
+    For a series-scoped source, every series raised; each is on ``failures``.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class SeriesFailure:
+    """One series a series-scoped source could not serve.
+
+    Attributes:
+        indicator: Canonical indicator key.
+        currency: ISO 4217 code, or ``GLOBAL``.
+        error: What the call raised, as ``TypeName: message``. The message is
+            the source's own, which names the series id and the reason, so an
+            operator can tell a cache miss from a 500 from an empty answer.
+
+    """
+
+    indicator: str
+    currency: str
+    error: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +120,7 @@ class SourceOutcome:
 
     Attributes:
         source: The source key, matching ``SeriesRef.source``.
-        status: Which of the three things happened.
+        status: Which of the four things happened.
         series: Distinct ``(indicator, currency)`` pairs this source returned
             observations for. Counted from what came back rather than from what
             was asked, so it reconciles with ``observations`` on the same line.
@@ -88,9 +128,20 @@ class SourceOutcome:
         observations: How many observations it returned, before the manual
             override is applied, so a source's own line says what it served
             rather than what survived.
-        elapsed_seconds: Wall-clock time inside ``fetch``. Zero for a source
-            that was never asked.
-        detail: Why it was skipped, or what it raised. Empty when it completed.
+        elapsed_seconds: Wall-clock time inside ``fetch``, summed across calls
+            for a series-scoped source. Zero for a source that was never asked.
+        detail: Why it was skipped, or what it raised. For a partial or a
+            series-scoped failure, how many series were asked and how many
+            failed. Empty when it completed.
+        failures: The series a series-scoped source could not serve, in the
+            order they were asked. Empty for a source-scoped source, whose one
+            failure is on ``detail``, and always empty on a completed outcome.
+
+    Raises:
+        ValueError: On construction, when ``status`` is completed and
+            ``failures`` is not empty. A completed line that hides a failed
+            series is exactly the quiet partial ADR 0015 forbids, so it cannot
+            be built.
 
     """
 
@@ -100,6 +151,15 @@ class SourceOutcome:
     observations: int
     elapsed_seconds: float
     detail: str = ""
+    failures: tuple[SeriesFailure, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Refuse the one combination of fields that would hide a failure."""
+        if self.status is SourceStatus.COMPLETED and self.failures:
+            raise ValueError(
+                f"{self.source} cannot be completed with "
+                f"{len(self.failures)} failed series; that is a partial outcome"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +382,9 @@ def _collect_one(
         # rather than serving the copy the operator asked to be rid of.
         source.cache.clear(name)
 
+    if source.failure_scope == "series":
+        return _collect_by_series(source, pairs, start, end)
+
     started = time.monotonic()
     try:
         observations = tuple(
@@ -352,6 +415,93 @@ def _collect_one(
             series=len({(o.indicator, o.currency) for o in observations}),
             observations=len(observations),
             elapsed_seconds=time.monotonic() - started,
+        ),
+        observations,
+    )
+
+
+def _collect_by_series(
+    source: BaseDataSource,
+    pairs: frozenset[tuple[str, str]],
+    start: date,
+    end: date,
+) -> tuple[SourceOutcome, Sequence[Observation]]:
+    """Ask a series-scoped source for one series at a time.
+
+    Each call is caught exactly as a whole-source fetch is, so a series that
+    raises is a `SeriesFailure` on the outcome and the next series is still
+    asked. The source's ``fetch`` contract is unchanged: it returns or it
+    raises, once per call, and it is the same instance throughout, so the
+    rate limiter and the one client hold across the calls.
+
+    The status follows from the counts with no threshold. No failure is
+    completed; some is partial; all is failed. 38 of 39 failing therefore reads
+    as partial rather than failed, which ADR 0015 accepts: there is no free
+    parameter to defend, and coverage makes the case visible on the page.
+
+    Args:
+        source: The constructed, series-scoped source.
+        pairs: The ``(indicator, currency)`` pairs routed to it, already
+            intersected with the request.
+        start: Earliest period, inclusive.
+        end: Latest period, inclusive.
+
+    Returns:
+        The outcome and every observation the served series returned. For a
+        failed outcome the observations are empty and every series is named.
+
+    """
+    name = source.name
+    served: list[Observation] = []
+    failures: list[SeriesFailure] = []
+    elapsed = 0.0
+    for indicator, currency in sorted(pairs):
+        started = time.monotonic()
+        try:
+            served.extend(source.fetch([indicator], [currency], start, end))
+        except Exception as error:  # noqa: BLE001
+            # The same breadth as the whole-source catch, for the same reason:
+            # one bad row in one series is that series' problem alone.
+            failures.append(
+                SeriesFailure(indicator, currency, f"{type(error).__name__}: {error}")
+            )
+        elapsed += time.monotonic() - started
+
+    asked = len(pairs)
+    observations = tuple(served)
+    if not failures:
+        return (
+            SourceOutcome(
+                source=name,
+                status=SourceStatus.COMPLETED,
+                series=len({(o.indicator, o.currency) for o in observations}),
+                observations=len(observations),
+                elapsed_seconds=elapsed,
+            ),
+            observations,
+        )
+    if len(failures) == asked:
+        return (
+            SourceOutcome(
+                source=name,
+                status=SourceStatus.FAILED,
+                series=0,
+                observations=0,
+                elapsed_seconds=elapsed,
+                detail=f"all {asked} series failed",
+                failures=tuple(failures),
+            ),
+            (),
+        )
+    return (
+        SourceOutcome(
+            source=name,
+            status=SourceStatus.PARTIAL,
+            series=len({(o.indicator, o.currency) for o in observations}),
+            observations=len(observations),
+            elapsed_seconds=elapsed,
+            detail=f"{len(failures)} of {asked} series failed",
+            failures=tuple(failures),
         ),
         observations,
     )
