@@ -702,6 +702,14 @@ def test_the_module_imports_nothing_that_could_place_an_order() -> None:
     reaches `fbe.config`, `fbe.types` and `fbe.universe`, none of which can
     act on an account, and nothing else.
 
+    It states the literal import surface, not what those three reach in turn.
+    #228 wanted the guard to read `BLACKOUT_IMPACTS`, which lived in
+    `fbe.datasources.calendar`; importing it from there would have passed this
+    test as written while pulling the whole `fbe.datasources` package, thirteen
+    sources and `httpx` with them, into a module whose safety argument is that
+    it imports nothing that could act on an account. The constant moved to
+    `fbe.config` instead, so the set below is unchanged.
+
     This is what fails the day a broker client is wired into the guard rather
     than an instruction being returned for the owner to carry out.
 
