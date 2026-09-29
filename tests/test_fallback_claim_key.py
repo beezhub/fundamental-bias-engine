@@ -30,7 +30,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 ROUTINES = REPO / "docs" / "routines.md"
 DECISIONS = REPO / "docs" / "decisions"
-ADR = DECISIONS / "0016-the-implementation-lanes-claim-key-has-a-fallback.md"
+ADR = DECISIONS / "0017-the-implementation-lanes-claim-key-has-a-fallback.md"
 INDEX = DECISIONS / "README.md"
 
 FALLBACK = "### The fallback, for the day the roadmap pool is shut"

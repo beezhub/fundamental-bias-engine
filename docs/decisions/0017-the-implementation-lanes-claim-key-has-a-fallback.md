@@ -1,4 +1,4 @@
-# 0016. The implementation lanes' claim key has a fallback
+# 0017. The implementation lanes' claim key has a fallback
 
 Status: Accepted
 
@@ -139,12 +139,18 @@ overwriting a different accepted decision. 0016 is the next number free on
 `main`, and `tests/test_adr_index.py` requires the sequence to have no gaps, so
 0016 is what it has to be.
 
-**#296's pull request also uses 0016**, for the source-declines-a-ref decision,
-on a branch that has not merged. That collision is invisible to every test
-here, which is the case `tests/test_adr_index.py`'s own docstring names: a file
-on an unmerged branch is not detectable from `main`. Whichever of the two
-merges second has to renumber to 0017 and move its index row. The number is the
-only thing that changes; nothing in either ruling depends on it.
+**This record was written as 0016 and renumbered to 0017 when it merged
+second.** #296's source-declines-a-ref decision took 0016 first. The collision
+was invisible to every test while both were unmerged, which is the case
+`tests/test_adr_index.py`'s own docstring names: a file on an unmerged branch
+is not detectable from `main`. The number is the only thing that changed and
+nothing in either ruling depends on it.
+
+`tests/test_adr_index.py` states the invariant as "A record is never renumbered
+and never deleted". That holds from the merge onward, which is what the test
+can see. A record on an unmerged branch has not been published under its
+number, so renumbering it before it lands is what keeps the invariant true
+afterwards rather than an exception to it.
 
 `tests/test_adr_index.py` states the invariant as "A record is never renumbered
 and never deleted". That holds from the merge onward, which is what the test

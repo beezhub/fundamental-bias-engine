@@ -399,7 +399,7 @@ fires, because a lane slot goes to a defect instead. On such a day the roadmap
 was advancing at zero anyway, and on the day this was ruled the defects in
 front of the lanes had typically been ready for days. Ruled on #270 and
 recorded in
-`docs/decisions/0016-the-implementation-lanes-claim-key-has-a-fallback.md`.
+`docs/decisions/0017-the-implementation-lanes-claim-key-has-a-fallback.md`.
 
 ## What goes to the owner, and what does not
 

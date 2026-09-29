@@ -35,4 +35,5 @@ gap shows on the first record that strands rather than the fifth.
 | [0013](0013-a-provider-inside-a-fan-out-source-is-a-named-gap.md) | A provider inside a fan-out source is a named gap, not the end of the source | Accepted |
 | [0014](0014-the-staleness-ramp-is-derived-from-the-leg.md) | The staleness ramp is derived from the leg's own publication lag and cycle, and the hand-keyed allowance goes | Accepted |
 | [0015](0015-a-series-inside-a-source-is-a-named-gap.md) | A series inside a source is a named gap, and the collector asks for it alone | Accepted |
-| [0016](0016-the-implementation-lanes-claim-key-has-a-fallback.md) | The implementation lanes' claim key has a fallback for the day the roadmap pool is shut | Accepted |
+| [0016](0016-a-source-declines-a-ref-before-it-is-routed.md) | A source declines a ref it cannot serve before the collector routes it | Accepted |
+| [0017](0017-the-implementation-lanes-claim-key-has-a-fallback.md) | The implementation lanes' claim key has a fallback for the day the roadmap pool is shut | Accepted |

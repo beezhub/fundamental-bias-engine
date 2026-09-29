@@ -166,6 +166,18 @@ class FredSource(BaseDataSource):
     ``(indicator, currency)`` pair, since FRED's observations endpoint takes a
     single ``series_id``.
 
+    What fails loudly, and at what scope: one series. This source declares
+    ``failure_scope = "series"``, so the collector asks it for one
+    ``(indicator, currency)`` at a time and catches each call alone. A series
+    that raises after its retries, or that answers with no observation inside
+    the window, is a named failure on the refresh output and its currency
+    loses that indicator; the rest are served and the outcome is partial. A
+    ref whose transform FRED cannot express is declined by `serves` before it
+    is routed, so it is never asked for and never a failure line. Until #296
+    the first raise ended the whole fetch, and one series failing cost
+    MONETARY, GROWTH, EMPLOYMENT and EXTERNAL for every currency at once,
+    which is what #169 recorded. ADR 0015 and ADR 0016 record the rulings.
+
     Attributes:
         name: ``"fred"``, matching ``SeriesRef.source``.
 
@@ -176,6 +188,7 @@ class FredSource(BaseDataSource):
     api_key_param = "api_key"
     rate_limit = RATE_LIMIT
     retry = RetryPolicy(attempts=3, backoff_seconds=1.0)
+    failure_scope = "series"
 
     def __init__(self, config: DataConfig) -> None:
         """Store config and the API key.
@@ -231,12 +244,22 @@ class FredSource(BaseDataSource):
 
         Returns:
             Observations keyed by canonical indicator, never by FRED series ID.
-            A ref whose ``transform`` has no `UNITS` entry contributes nothing
-            and is not requested, so its absence reaches the pillar as reduced
-            coverage rather than as an approximated number.
+            A ref `serves` declines contributes nothing and is not requested,
+            so its absence reaches the pillar as reduced coverage rather than
+            as an approximated number. The collector never routes such a ref
+            here; this check is for a direct caller.
 
         Raises:
-            SourceError: On repeated request failure or an unparseable body.
+            SourceError: On repeated request failure, on an unparseable body,
+                or when a series this source requested answers with no
+                observation inside the window. The lookback is years long, so
+                a series with nothing in it is dead or mis-keyed, and an empty
+                success would score the currency as uncovered with nothing
+                saying why. ADR 0015's third rule, enforced here because
+                whether an empty answer is a reading is a fact about the
+                provider. Called with several pairs at once, as tests do
+                directly, the first raise ends the call; the per-series
+                boundary is the collector's.
 
         """
         wanted_indicators = set(indicators)
@@ -247,23 +270,47 @@ class FredSource(BaseDataSource):
                 continue
             if currency not in wanted_currencies:
                 continue
-            if ref.transform not in UNITS:
-                # chg_1m and chg_3m reach here today. FRED's chg is the change
-                # from the previous observation, a one-day change on a daily
-                # series, so mapping it would emit a number roughly thirty
-                # times too small under a label saying otherwise. ADR 0004
-                # settles the derivation and no source computes it yet. The
-                # ref is passed over rather than raised on: raising here took
-                # every other FRED series down with it (issue #169), and an
-                # absence is what the pillar knows how to represent.
+            if not self.serves(ref):
                 continue
+            served = 0
             for period, value in self.fetch_series(
                 ref.series_id, start, end, units=UNITS[ref.transform]
             ):
                 emitted.append(
                     self._observation(indicator, currency, ref, period, value)
                 )
+                served += 1
+            if served == 0:
+                raise SourceError(
+                    f"{self.name} answered for {ref.series_id} but served no "
+                    f"observation for {indicator} {currency} between {start} "
+                    f"and {end}; a series with nothing in a window that long "
+                    "is dead or mis-keyed, not empty"
+                )
         return emitted
+
+    def serves(self, ref: SeriesRef) -> bool:
+        """Decline a ref whose transform FRED's ``units`` cannot express.
+
+        ``yield_2y_chg_1m`` and ``yield_2y_chg_3m`` reach here today. FRED's
+        ``chg`` is the change from the previous observation, a one-day change
+        on a daily series, so mapping it would emit a number roughly thirty
+        times too small under a label saying otherwise. ADR 0004 settles the
+        derivation and no source computes it yet. Declined here rather than
+        raised on inside ``fetch``: raising took every other FRED series down
+        with it (#169), and under series scope an empty answer for a ref
+        nobody could serve would print a failure line every morning (ADR
+        0016). The registry marks both refs unverified, which is what keeps
+        them on the coverage-gap report.
+
+        Args:
+            ref: A registry entry from this source's own ``refs()``.
+
+        Returns:
+            Whether the transform has a `UNITS` entry.
+
+        """
+        return ref.transform in UNITS
 
     def refs(self) -> Mapping[tuple[str, str], SeriesRef]:
         """Return every registry entry whose source is ``"fred"``.
