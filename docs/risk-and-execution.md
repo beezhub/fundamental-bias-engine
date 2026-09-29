@@ -76,8 +76,9 @@ behaviour.
 a stop that is not a finite positive price, a lot step that is not positive, a
 pair that is not six characters, a supplied `risk_fraction` that is not finite,
 and a balance that is not a finite positive amount. None is a fact about the
-trade, so none comes back as a warning, and section 8 below lets the owner read
-an empty `warnings` list as a pass.
+trade, so none comes back as a warning. A malformed input has no size to
+describe and no refusal to report: it is a mistake in what was handed to the
+function, and the caller is the one who can fix it.
 
 The balance is the newest of the five and nothing else checks it.
 `Config.validate` does not, so `RiskConfig(account_balance=0.0)` is
@@ -840,8 +841,20 @@ Run this before every ticket. It takes about two minutes.
 
 - [ ] `position_size` run with the **current** USDZAR rate, not this morning's,
       and with whatever second leg the pair needs (`USDJPY` for a yen cross).
-- [ ] `warnings` is empty. If the size is below the broker minimum, the trade
-      does not happen. Do not round up.
+- [ ] `risk.refusing(warnings)` is empty. Read every string in `warnings`, the
+      way the `blockers` box above asks: most of them describe the size that
+      was produced rather than withholding it, and the two that withhold it
+      also come back with `units` and `lots` at zero. If the size is below the
+      broker minimum, the trade does not happen, and it is never rounded up to
+      reach the minimum.
+- [ ] The notes that are not refusals have been read rather than skipped.
+      `size:shortfall` means the lot step cost more than a fifth of the
+      intended risk, which is routine on this account and is why the box below
+      is the one that decides. `spread:unchecked` means the profile lists no
+      spread for this pair, so the tight-stop check did not run: that is a
+      statement about what was checked, not about the trade.
+      `broker:unconfirmed` is on every ticket until a profile is confirmed
+      against a broker contract specification.
 - [ ] **`realised_risk_amount`**, not `risk_amount`, is between R20 and R40.
       That is the money actually on the book after rounding down.
 - [ ] `notional` reads as a rand figure and the leverage it implies is one you
