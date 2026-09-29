@@ -457,6 +457,32 @@ class BaseDataSource(ABC):
         """
         raise NotImplementedError
 
+    def serves(self, ref: SeriesRef) -> bool:
+        """Say whether this source can serve a ref its ``refs()`` claims.
+
+        The collector routes a pair only when ``refs()`` claims it and this
+        accepts its ref, so a declined ref is never asked for: no request, no
+        observation, no failure line. The base accepts everything. A source
+        overrides this for a ref it holds by registry but cannot serve, such
+        as a transform no source computes yet (ADR 0004), so that under series
+        scope the collector does not ask for it alone and then record its
+        empty answer as a failure (ADR 0016).
+
+        A hook that means "do not ask me" is the shape a quiet drop takes, so
+        it is tied to the registry by a test: every ref a source declines must
+        carry ``fetchable`` False, which keeps it in `stale_refs` and on the
+        coverage-gap report. A source that wants to decline a ref the registry
+        calls verified is a new decision, not an edit to that test.
+
+        Args:
+            ref: A registry entry from this source's own ``refs()``.
+
+        Returns:
+            Whether to route the pair to this source.
+
+        """
+        return True
+
     def _request(
         self,
         path: str,
