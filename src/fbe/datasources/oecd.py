@@ -44,6 +44,18 @@ a 429 as an error: the body is prose, not SDMX, so a parser that does not check
 will read it as zero observations and report a currency as uncovered when it is
 merely throttled.
 
+What fails loudly, and at what scope
+------------------------------------
+One series. This source declares ``failure_scope = "series"``, so the collector
+asks it for one ``(indicator, currency)`` at a time and catches each call on
+its own. A series that raises after its retries, or that answers with no
+observation inside the window, is a named failure on the refresh output and
+its currency loses that indicator; the other series are served and the outcome
+is partial. Until #275 the first raise ended the whole fetch, and one series
+failing cost every OECD-backed indicator for every currency, three times in two
+days. ADR 0015 records the ruling and why the boundary lives in the collector
+rather than here.
+
 The two price dataflows, and why both are needed
 ------------------------------------------------
 Countries are split across two dataflows by classification vintage, and the
@@ -388,6 +400,18 @@ class OecdSource(BaseDataSource):
     rate_limit = RATE_LIMIT
     retry = RetryPolicy(attempts=3, backoff_seconds=5.0)
 
+    failure_scope = "series"
+    """One failed series costs that series, not the other 38 (ADR 0015).
+
+    The collector asks this source for one ``(indicator, currency)`` at a time
+    and catches each call alone. True of this source because every series is
+    its own narrow request to the same endpoint and none is derived from
+    another, which is not true of every source: see
+    `BaseDataSource.failure_scope` for the ones that may not opt in. Before
+    #275 one series failing after its retries was recorded as the whole source
+    failing, and three times in two days that cost every OECD-backed indicator
+    for every currency."""
+
     def __init__(self, config: DataConfig) -> None:
         """Store the run's data configuration.
 
@@ -518,7 +542,22 @@ class OecdSource(BaseDataSource):
 
         Raises:
             SourceError: On repeated request failure, on an unparseable body,
-                or when the body contains `THROTTLE_MARKER`.
+                when the body contains `THROTTLE_MARKER`, or when a series
+                this source was asked for answers with no observation inside
+                the window. The lookback is years long, so a series with
+                nothing in it is dead or mis-keyed, and an empty success would
+                score the currency as uncovered with nothing saying why. ADR
+                0015's third rule, enforced here rather than in the collector
+                because whether an empty answer is a reading is a fact about
+                the provider: COT documents one as a reading, this source does
+                not.
+
+        What fails loudly, and at what scope: one series. The collector calls
+        this once per ``(indicator, currency)`` because `failure_scope` says
+        so, so a raise here costs that series and no other. Called with more
+        than one pair, as the tests do directly, the first raise still ends
+        the call; that is the ``fetch`` contract, and the per-series boundary
+        is the collector's to keep.
 
         """
         wanted_indicators = set(indicators)
@@ -531,6 +570,7 @@ class OecdSource(BaseDataSource):
                 continue
             flow, key = self.split_series_id(ref.series_id)
             frequency = self._key_frequency(key, ref.series_id)
+            served = 0
             for period, value in self.fetch_key(flow, key, start, end):
                 emitted.append(
                     self._observation(
@@ -540,6 +580,14 @@ class OecdSource(BaseDataSource):
                         self.parse_period(period, frequency),
                         value,
                     )
+                )
+                served += 1
+            if served == 0:
+                raise SourceError(
+                    f"{self.name} answered for {ref.series_id} but served no "
+                    f"observation for {indicator} {currency} between {start} "
+                    f"and {end}; a series with nothing in a window that long "
+                    "is dead or mis-keyed, not empty"
                 )
         return emitted
 
