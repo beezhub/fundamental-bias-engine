@@ -47,9 +47,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from math import fsum
 from typing import TYPE_CHECKING
 
 from fbe.config import ScoringConfig
+from fbe.journal import (
+    EVIDENCE_THRESHOLD_TRADES,
+    TradeRecord,
+    hit_rate_interval,
+)
 from fbe.report import SIDECAR_GLOB, load_report
 from fbe.risk import MissingRateError, convert_rate
 from fbe.types import Conviction, Direction
@@ -61,8 +67,15 @@ if TYPE_CHECKING:
     from fbe.types import BiasReport
 
 __all__ = [
+    "AGAINST",
+    "AGREEMENT_BROAD",
+    "AGREEMENT_NARROW",
+    "ALIGNED",
+    "Evaluation",
     "ForwardRow",
     "ForwardJoin",
+    "GroupStats",
+    "evaluate",
     "join_report",
     "join_reports",
 ]
@@ -516,3 +529,327 @@ def join_reports(
     # could then be dropped and the other would hide it.
     rows.sort(key=lambda row: row.asof)
     return ForwardJoin(rows=tuple(rows), problems=tuple(problems))
+
+
+AGREEMENT_BROAD: str = "agreement at or above the threshold"
+"""Label for rows whose pillar agreement reached `ScoringConfig.min_agreement`."""
+
+AGREEMENT_NARROW: str = "agreement below the threshold"
+"""Label for rows whose pillar agreement fell short of it."""
+
+ALIGNED: str = "traded with the bias"
+"""Label for journal records the owner marked `agreed_with_bias`."""
+
+AGAINST: str = "traded against the bias"
+"""Label for journal records taken the other way.
+
+Roadmap question 11 ruled that the engine counts these rather than warning
+louder in the moment. A trader who does better against the engine than with it
+is a finding, and it is invisible in a total.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class GroupStats:
+    """One bucket of the record, and what it does and does not say.
+
+    Attributes:
+        label: How the bucket is named in the output. A conviction band, a
+            direction, one of the two agreement labels, or one of the two
+            journal alignment labels.
+        observations: Rows in the bucket that made a call. A row whose spread
+            is exactly zero leaned nowhere and is counted nowhere here: there
+            is nothing for it to have been right about.
+        hits: Observations where the move went the way the call pointed.
+            ``observations`` is not ``hits`` plus the misses: a move of exactly
+            zero is neither, which is the rule `ConvictionStats` applies to a
+            trade closed at breakeven.
+        hit_rate: ``hits / observations``, in ``0..1``.
+        hit_rate_low: Lower end of the Wilson interval around it at
+            `fbe.journal.HIT_RATE_CONFIDENCE`, from
+            `fbe.journal.hit_rate_interval`. The same implementation the
+            journal uses, because two intervals over the same kind of rate will
+            disagree and the disagreement will not be visible.
+        hit_rate_high: Upper end of the same interval.
+        below_evidence_threshold: True when ``observations`` is under
+            `fbe.journal.EVIDENCE_THRESHOLD_TRADES`, so the bucket is a record
+            of what happened rather than evidence about what will. On a forward
+            record that began this month every bucket carries this, which is
+            why it is a flag the renderer prints as the normal case rather than
+            an alarm.
+        avg_move: Mean realised move in the direction the call pointed, as a
+            fraction rather than a percentage. Positive means the calls were
+            right on average by that much; negative means they were wrong on
+            average. Measured in the call's direction rather than raw, because
+            a right long and a right short cancel in a raw average and report a
+            model that predicted nothing.
+
+    """
+
+    label: str
+    observations: int
+    hits: int
+    hit_rate: float
+    hit_rate_low: float
+    hit_rate_high: float
+    below_evidence_threshold: bool
+    avg_move: float
+
+
+@dataclass(frozen=True, slots=True)
+class Evaluation:
+    """What the forward record and the journal say, and what they do not.
+
+    Attributes:
+        rows: Rows the evaluation was given, including any that made no call.
+        called: Rows that leaned one way or the other, which is the denominator
+            every hit rate below is built from. Reported beside ``rows`` so a
+            reader can see how many were dropped for having no lean.
+        by_conviction: One bucket per conviction band present, strongest first,
+            `Conviction.NONE` included as the control.
+        by_direction: One bucket per recorded direction present.
+        by_agreement: Up to two buckets, split at `ScoringConfig.min_agreement`.
+        by_alignment: Up to two buckets over closed journal records, split on
+            `fbe.journal.TradeRecord.agreed_with_bias`. Empty when the journal
+            holds no closed record, which is the normal state of a fresh clone
+            and is different from a journal whose trades all lost.
+        digests: Distinct config digests behind the rows, in first-seen order.
+        separating: Labels of the buckets whose interval sits entirely above a
+            half **and** which clear the evidence threshold. Empty is the
+            honest answer for this record today and for some time.
+
+    The question this answers is whether the model separated anything, and the
+    answer it is built to be able to give is no. A bucket is only listed in
+    ``separating`` when its whole interval is above chance and it holds enough
+    observations to be evidence: Wilson's lower end at five wins from five
+    trades is about 0.57, so separation judged on the interval alone would
+    announce a finding from five rows.
+
+    Nothing here is a claim about what the model will do. These are counts over
+    what it did, with the width of each one stated beside it.
+
+    """
+
+    rows: int = 0
+    called: int = 0
+    by_conviction: tuple[GroupStats, ...] = ()
+    by_direction: tuple[GroupStats, ...] = ()
+    by_agreement: tuple[GroupStats, ...] = ()
+    by_alignment: tuple[GroupStats, ...] = ()
+    digests: tuple[str, ...] = ()
+    separating: tuple[str, ...] = ()
+
+    @property
+    def mixed_digests(self) -> bool:
+        """Whether the rows came from more than one configuration.
+
+        Cross-sectional scores depend on the weights that made them, so rows
+        from two digests are not comparable without saying so. They are pooled
+        rather than split, because splitting a record this young leaves every
+        bucket below the point of being reportable, and the mixture is named at
+        the top of the output instead.
+        """
+        return len(self.digests) > 1
+
+    @property
+    def shows_no_separation(self) -> bool:
+        """Whether nothing in the record separates from chance.
+
+        True when ``separating`` is empty, which includes the empty record.
+        This is the conclusion `docs/roadmap.md` Phase 6 requires the
+        evaluation to be able to reach: an analysis with no way to say "no" is
+        not an analysis, and it is the answer a young record should give.
+        """
+        return not self.separating
+
+
+def _called(row: ForwardRow) -> Direction | None:
+    """Which way a row leaned, from the sign of its spread.
+
+    Args:
+        row: A joined row.
+
+    Returns:
+        `Direction.LONG` for a positive spread, `Direction.SHORT` for a
+        negative one, and ``None`` for exactly zero, which leaned nowhere.
+
+    The spread rather than `ForwardRow.direction`, and the two agree wherever
+    the engine graded a direction at all: `fbe.bias.direction_for` reads the
+    same sign and only withholds a direction inside the low threshold. The
+    difference is the `Conviction.NONE` control, whose direction is
+    `Direction.NEUTRAL` by construction. Judged on direction it has nothing to
+    have been right about and stops being a control, which is the one thing
+    criterion 3 needs it to be.
+
+    """
+    if row.spread > 0.0:
+        return Direction.LONG
+    if row.spread < 0.0:
+        return Direction.SHORT
+    return None
+
+
+def _hit(row: ForwardRow, call: Direction) -> bool | None:
+    """Whether the move went the way the call pointed.
+
+    Args:
+        row: A joined row.
+        call: The lean, from `_called`.
+
+    Returns:
+        True when the move agreed, False when it went the other way, and
+        ``None`` for a move of exactly zero, which is neither. The row still
+        counts in ``observations``: it happened, and dropping it would shrink
+        the denominator of a rate it is genuinely part of.
+
+    """
+    if row.move == 0.0:
+        return None
+    return (row.move > 0.0) if call is Direction.LONG else (row.move < 0.0)
+
+
+def _signed(row: ForwardRow, call: Direction) -> float:
+    """Return the move in the direction the call pointed, as a fraction.
+
+    Positive means the call was right by that much. A short that fell one
+    percent and a long that rose one percent both come back as ``+0.01``, so
+    they reinforce rather than cancel.
+    """
+    return row.move if call is Direction.LONG else -row.move
+
+
+def _stats(label: str, outcomes: Sequence[tuple[bool | None, float]]) -> GroupStats:
+    """Build one bucket from its outcomes.
+
+    Args:
+        label: The bucket's name in the output.
+        outcomes: ``(hit, signed_move)`` per observation, where ``hit`` is
+            ``None`` for a move of exactly zero.
+
+    Returns:
+        The bucket. Never called with an empty sequence: a bucket nothing fell
+        into is left out of the report rather than printed at zero, because a
+        zero hit rate over zero observations is a number that reads like a
+        finding.
+
+    """
+    observations = len(outcomes)
+    hits = sum(1 for hit, _ in outcomes if hit)
+    low, high = hit_rate_interval(hits, observations)
+    return GroupStats(
+        label=label,
+        observations=observations,
+        hits=hits,
+        hit_rate=hits / observations,
+        hit_rate_low=low,
+        hit_rate_high=high,
+        below_evidence_threshold=observations < EVIDENCE_THRESHOLD_TRADES,
+        avg_move=fsum(move for _, move in outcomes) / observations,
+    )
+
+
+def _grouped(
+    buckets: Mapping[str, list[tuple[bool | None, float]]],
+    order: Sequence[str],
+) -> tuple[GroupStats, ...]:
+    """Turn the collected buckets into stats, in the given label order."""
+    return tuple(_stats(label, buckets[label]) for label in order if buckets[label])
+
+
+def evaluate(
+    rows: Sequence[ForwardRow],
+    trades: Sequence[TradeRecord] = (),
+    *,
+    scoring: ScoringConfig | None = None,
+) -> Evaluation:
+    """Report what the forward record and the journal say, and how loudly.
+
+    Args:
+        rows: Joined rows from `join_report` or `join_reports`, in any order.
+            Rows whose spread is exactly zero made no call and are counted in
+            ``Evaluation.rows`` and nowhere else.
+        trades: Journal records, normally from `fbe.journal.load`. Only closed
+            records carrying an ``r_multiple`` are counted: an open trade has
+            no outcome to attribute yet, and counting it as a loss would be a
+            number where an absence belongs. Defaults to none, which leaves the
+            alignment split out of the report rather than printing zeros.
+        scoring: Supplies ``min_agreement``, the threshold the agreement
+            buckets split at. Defaults to `ScoringConfig`'s packaged values.
+
+    Returns:
+        An `Evaluation`. Every rate carries its count and its interval, every
+        bucket under `fbe.journal.EVIDENCE_THRESHOLD_TRADES` observations is
+        marked, and ``separating`` names only the buckets that clear both
+        chance and that threshold.
+
+        An empty record comes back as an empty evaluation rather than as zeros:
+        `Evaluation.shows_no_separation` is true for it, which is correct, and
+        every bucket tuple is empty, which says there was nothing to bucket.
+
+    Units and signs: ``avg_move`` is a fraction of the rate, not a percentage,
+    and is measured in the direction the call pointed, so positive means the
+    calls were right. ``hit_rate`` and both interval ends are in ``0..1``.
+
+    Nothing here is a claim about what the model will do next. It counts what
+    it did, and it is built so that "nothing here separates from chance" is a
+    result it can return rather than a case it cannot express.
+
+    """
+    config = scoring if scoring is not None else ScoringConfig()
+
+    conviction: dict[str, list[tuple[bool | None, float]]] = {
+        band.value: [] for band in Conviction
+    }
+    direction: dict[str, list[tuple[bool | None, float]]] = {
+        way.value: [] for way in Direction
+    }
+    agreement: dict[str, list[tuple[bool | None, float]]] = {
+        AGREEMENT_BROAD: [],
+        AGREEMENT_NARROW: [],
+    }
+    digests: list[str] = []
+    called = 0
+
+    for row in rows:
+        if row.config_digest not in digests:
+            digests.append(row.config_digest)
+        call = _called(row)
+        if call is None:
+            continue
+        called += 1
+        outcome = (_hit(row, call), _signed(row, call))
+        conviction[row.conviction.value].append(outcome)
+        direction[row.direction.value].append(outcome)
+        broad = row.agreement >= config.min_agreement
+        agreement[AGREEMENT_BROAD if broad else AGREEMENT_NARROW].append(outcome)
+
+    alignment: dict[str, list[tuple[bool | None, float]]] = {ALIGNED: [], AGAINST: []}
+    for record in trades:
+        if record.r_multiple is None:
+            continue
+        label = ALIGNED if record.agreed_with_bias else AGAINST
+        # An r_multiple of exactly zero is a trade closed at breakeven, which
+        # `ConvictionStats` counts as neither a win nor a loss. The same rule
+        # here, so the two reports agree about the same trade.
+        hit = None if record.r_multiple == 0.0 else record.r_multiple > 0.0
+        alignment[label].append((hit, record.r_multiple))
+
+    by_conviction = _grouped(conviction, [band.value for band in Conviction])
+    by_direction = _grouped(direction, [way.value for way in Direction])
+    by_agreement = _grouped(agreement, [AGREEMENT_BROAD, AGREEMENT_NARROW])
+    by_alignment = _grouped(alignment, [ALIGNED, AGAINST])
+
+    return Evaluation(
+        rows=len(rows),
+        called=called,
+        by_conviction=by_conviction,
+        by_direction=by_direction,
+        by_agreement=by_agreement,
+        by_alignment=by_alignment,
+        digests=tuple(digests),
+        separating=tuple(
+            entry.label
+            for entry in (*by_conviction, *by_direction, *by_agreement, *by_alignment)
+            if entry.hit_rate_low > 0.5 and not entry.below_evidence_threshold
+        ),
+    )

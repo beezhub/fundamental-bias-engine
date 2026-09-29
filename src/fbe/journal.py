@@ -51,6 +51,7 @@ __all__ = [
     "load",
     "evaluate",
     "discipline_flags",
+    "hit_rate_interval",
 ]
 
 
@@ -915,7 +916,7 @@ def _bucket(
     # figure is read for.
     losses = [value for value in multiples if value < 0.0]
     trades = len(multiples)
-    low, high = _hit_rate_interval(len(wins), trades)
+    low, high = hit_rate_interval(len(wins), trades)
     return ConvictionStats(
         conviction=conviction,
         trades=trades,
@@ -983,7 +984,7 @@ def _max_drawdown(multiples: Sequence[float]) -> float:
     return deepest
 
 
-def _hit_rate_interval(wins: int, trades: int) -> tuple[float, float]:
+def hit_rate_interval(wins: int, trades: int) -> tuple[float, float]:
     """Wilson score interval for a hit rate, at `HIT_RATE_CONFIDENCE`.
 
     Args:
