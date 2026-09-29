@@ -52,6 +52,14 @@ __all__ = [
     "CONVERSION_PIVOT",
     "MIN_STOP_SPREAD_MULTIPLE",
     "SIZING_SHORTFALL_TOLERANCE",
+    "WARNING_RISK_FRACTION_CLAMPED",
+    "WARNING_STOP_ZERO",
+    "WARNING_STOP_TIGHT",
+    "WARNING_SIZE_BELOW_MINIMUM",
+    "WARNING_SIZE_SHORTFALL",
+    "WARNING_SPREAD_UNCHECKED",
+    "WARNINGS",
+    "refusing",
     "CONVICTION_BAND_POSITION",
     "MIN_REWARD_TO_RISK",
     "LIMITS",
@@ -212,6 +220,135 @@ drift is silent.
 rendering of it, derived from the profile handed to `position_size` and never
 from a second copy of the state.
 """
+
+
+WARNING_RISK_FRACTION_CLAMPED: str = "risk_fraction:clamped"
+"""Marker for a requested risk fraction brought inside the configured band."""
+
+WARNING_STOP_ZERO: str = "stop:zero"
+"""Marker for an entry equal to its stop, so no size can be derived."""
+
+WARNING_STOP_TIGHT: str = "stop:tight"
+"""Marker for a stop inside `MIN_STOP_SPREAD_MULTIPLE` times the typical spread."""
+
+WARNING_SIZE_BELOW_MINIMUM: str = "size:below_minimum"
+"""Marker for a computed size that rounds below the broker's ``min_lot``."""
+
+WARNING_SIZE_SHORTFALL: str = "size:shortfall"
+"""Marker for lot rounding costing more than `SIZING_SHORTFALL_TOLERANCE`."""
+
+WARNING_SPREAD_UNCHECKED: str = "spread" + UNCHECKED_SUFFIX
+"""Marker for a broker profile listing no typical spread for the pair.
+
+Composed from `fbe.bias.UNCHECKED_SUFFIX` rather than spelled out, because the
+``:unchecked`` half is the repository's shared vocabulary for a check that did
+not run and this is one of its two users.
+"""
+
+
+WARNINGS: Mapping[str, bool] = {
+    BROKER_UNCONFIRMED: False,
+    WARNING_RISK_FRACTION_CLAMPED: False,
+    WARNING_STOP_ZERO: True,
+    WARNING_STOP_TIGHT: False,
+    WARNING_SIZE_BELOW_MINIMUM: True,
+    WARNING_SIZE_SHORTFALL: False,
+    WARNING_SPREAD_UNCHECKED: False,
+}
+"""Every kind of warning `position_size` can append, and whether it refuses.
+
+``True`` means there is no trade: the result carries zero units and zero lots,
+and no reading of the rest of the ticket changes that. ``False`` means a size
+was produced and the warning describes it. Both belong in
+`PositionSize.warnings`, because `engineering-standards` puts them there: the
+module sizes what was asked for and says what is wrong with it rather than
+silently fixing it.
+
+The distinction is the whole of issue #189. Section 8 of
+``docs/risk-and-execution.md`` told the owner to tick the sizing box only on an
+empty tuple, which refused about half of every sizeable EURUSD setup on this
+account for the sole reason that the lot step had rounded the size down, with
+the money on the book sitting exactly inside the plan's own R20 to R40 band. The
+unconfirmed-profile marker rides every result under `BrokerConfig`'s packaged
+values, so the box could not be ticked at all out of the box.
+
+Two refuse and five do not, and the five are not a judgement made here:
+
+``broker:unconfirmed`` is emitted on every result including the refusals, by a
+profile that ships unconfirmed on purpose. Refusing on it would refuse every
+trade until the owner confirms a profile, which is the opposite of what
+`BROKER_UNCONFIRMED`'s docstring asks the reader to do with it.
+
+``stop:tight`` is settled by `MIN_STOP_SPREAD_MULTIPLE`, whose docstring says in
+those words that it warns and does not refuse, because the spreads it measures
+against are indicative and sampled at one time of day.
+
+``risk_fraction:clamped`` reports that the caller asked for something outside
+the configured band and got the band. The size that comes back is inside the
+plan's 1-2% by construction, which is what the next checklist box tests.
+
+``size:shortfall`` is the case the issue was filed for. ``spread:unchecked`` is
+the same shape and says so in its own text: a statement about what was checked,
+not about the trade.
+
+This is the mirror of `fbe.bias.BLOCKERS` and deliberately not a reuse of it.
+The two maps ask different questions about different objects, one about a pair
+the engine will not back and one about a ticket the arithmetic could not
+produce, and `engineering-standards` keeps two things that change for different
+reasons apart. What is shared is the ``noun:state`` vocabulary and the
+longest-matching-prefix rule, so a reader who has learned one has learned both.
+
+A consumer mapping a string back to its kind must take the **longest** key that
+prefixes it. No key here shadows another today, so the rule is inert, and it is
+written into `refusing` anyway: `BLOCKERS` has four such pairs and taking the
+first match there reads three non-blocking markers as hard blocks.
+"""
+
+
+def refusing(warnings: Sequence[str]) -> tuple[str, ...]:
+    """Keep only the warnings whose kind means there is no trade.
+
+    Args:
+        warnings: A `PositionSize.warnings` tuple, as `position_size` set it.
+
+    Returns:
+        The subset `WARNINGS` marks as refusing, in the order given. Empty means
+        a size was produced and every note on it describes that size rather than
+        withholding it. Never a count, because the checklist reads the strings.
+
+    Raises:
+        ValueError: A warning matching no key in `WARNINGS`. Neither default is
+            safe. Treating an unknown marker as refusing throws away trades for
+            a note nobody classified; treating it as not refusing lets a real
+            refusal vanish from the one list the owner reads before committing
+            money. `fbe.bias.blocking` raises for the same reason.
+
+    This is the question section 8 of ``docs/risk-and-execution.md`` asks, and
+    it exists so the document can point at one answer instead of restating the
+    rule. The rule stated twice is the rule that disagrees with itself, which is
+    how #189 happened: the checklist's ``blockers`` box read ``:unchecked`` as
+    "read it and carry on" and its ``warnings`` box read the identical marker,
+    three lines lower, as "no trade".
+
+    Classified by kind rather than by the result's size. Every refusal today
+    also returns zero units, so a helper reading the size would agree, and it
+    would keep agreeing right up to the first refusing warning that arrives on a
+    non-zero size, where it would disagree silently. The map is also the thing
+    that can be asked about a kind nobody has emitted yet.
+
+    """
+    kept: list[str] = []
+    for entry in warnings:
+        matches = [kind for kind in WARNINGS if entry.startswith(kind)]
+        if not matches:
+            raise ValueError(
+                f"{entry!r} matches no kind in WARNINGS, so whether it stops "
+                "the trade cannot be answered. Every string reaching a "
+                "PositionSize is one position_size emitted."
+            )
+        if WARNINGS[max(matches, key=len)]:
+            kept.append(entry)
+    return tuple(kept)
 
 
 class MissingRateError(LookupError):
@@ -819,7 +956,8 @@ def position_size(
     fraction = min(max(requested, config.risk_per_trade_min), config.risk_per_trade_max)
     if fraction != requested:
         warnings.append(
-            f"risk_fraction {requested:g} is outside the configured band "
+            f"{WARNING_RISK_FRACTION_CLAMPED}: risk_fraction {requested:g} is "
+            f"outside the configured band "
             f"[{config.risk_per_trade_min:g}, {config.risk_per_trade_max:g}]; "
             f"clamped to {fraction:g} rather than honoured"
         )
@@ -854,7 +992,8 @@ def position_size(
 
     if stop_distance_pips == 0.0:
         warnings.append(
-            f"entry {entry:g} equals stop {stop:g}, so the stop distance is "
+            f"{WARNING_STOP_ZERO}: entry {entry:g} equals stop {stop:g}, so "
+            f"the stop distance is "
             f"zero and no size can be derived from it"
         )
         return _result(0.0, 0.0, 0.0, 0.0)
@@ -862,13 +1001,14 @@ def position_size(
     typical_spread = broker.typical_spread_pips.get(normalised)
     if typical_spread is None:
         warnings.append(
-            f"spread{UNCHECKED_SUFFIX}: {broker.name} lists no typical spread "
+            f"{WARNING_SPREAD_UNCHECKED}: {broker.name} lists no typical spread "
             f"for {normalised}, so the tight-stop check did not run. This is "
             f"a statement about what was checked, not about the trade."
         )
     elif stop_distance_pips < MIN_STOP_SPREAD_MULTIPLE * typical_spread:
         warnings.append(
-            f"stop distance {stop_distance_pips:.1f} pips is inside "
+            f"{WARNING_STOP_TIGHT}: stop distance {stop_distance_pips:.1f} "
+            f"pips is inside "
             f"{MIN_STOP_SPREAD_MULTIPLE:g}x the typical spread of "
             f"{typical_spread:g} pips for {normalised}"
         )
@@ -879,7 +1019,8 @@ def position_size(
 
     if lots < broker.min_lot:
         warnings.append(
-            f"computed size {raw_lots:.6f} lots rounds down to {lots:g} at "
+            f"{WARNING_SIZE_BELOW_MINIMUM}: computed size {raw_lots:.6f} lots "
+            f"rounds down to {lots:g} at "
             f"{broker.name}'s {broker.lot_step:g} step, below its minimum of "
             f"{broker.min_lot:g} lots; refusing to size rather than taking the "
             f"minimum, which would risk more than the configured band allows"
@@ -892,7 +1033,8 @@ def position_size(
 
     if realised < risk_amount * (1.0 - SIZING_SHORTFALL_TOLERANCE):
         warnings.append(
-            f"rounding to {broker.name}'s {broker.lot_step:g} lot step leaves "
+            f"{WARNING_SIZE_SHORTFALL}: rounding to {broker.name}'s "
+            f"{broker.lot_step:g} lot step leaves "
             f"{realised:.2f} at risk against an intended {risk_amount:.2f}, a "
             f"materially smaller trade than the risk fraction asked for"
         )

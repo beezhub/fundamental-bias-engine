@@ -51,7 +51,11 @@ from fbe.calendar_guard import (
     is_high_impact,
 )
 from fbe.config import DataConfig
-from fbe.datasources.calendar import IMPACT_LEVELS
+from fbe.datasources.calendar import (
+    AVOID_PATTERNS,
+    IMPACT_LEVELS,
+    CalendarSource,
+)
 from fbe.types import CalendarEvent
 
 CONFIG = DataConfig()
@@ -926,3 +930,278 @@ def test_the_blackout_minutes_reach_is_blacked_out_from_config() -> None:
 
     assert is_blacked_out("EURUSD", WHEN, coverage, wide)[0] is True
     assert is_blacked_out("EURUSD", WHEN, coverage, narrow) == (False, None)
+
+
+# --- one impact policy, and two maps that answer different questions ---------
+#
+# #228. `is_high_impact` wrote the blackout policy a third time as the literal
+# ``"high"``, beside `BLACKOUT_IMPACTS` and the `DEFAULT_MIN_IMPACT` derived
+# from it, so widening the policy widened what the source returned and what the
+# classifier tagged while the guard went on blocking only High. And the guard's
+# keywords missed three central bank rate decisions the classifier names, held
+# today only by the feed's rating, which is the kind of failure that reads as a
+# clear week.
+
+
+def _guard_keys(title: str) -> frozenset[str]:
+    """Which `HIGH_IMPACT_KEYWORDS` categories a title matches.
+
+    Matched the way `is_high_impact` matches, lower-cased substrings, so the
+    two cannot drift apart inside this file.
+    """
+    folded = title.casefold()
+    return frozenset(
+        key
+        for key, keywords in HIGH_IMPACT_KEYWORDS.items()
+        if any(keyword in folded for keyword in keywords)
+    )
+
+
+def _classifier_keys(title: str) -> frozenset[str]:
+    """Which `AVOID_PATTERNS` classes a title matches.
+
+    Calls `CalendarSource.classify` rather than reimplementing it. A copy of
+    the matching rule here would keep agreeing with itself after the real one
+    changed, and the two already fold differently: `classify` uses ``lower``
+    and the guard uses ``casefold``. The source is built offline and `classify`
+    is a pure string match, so nothing is fetched.
+    """
+    return frozenset(CalendarSource(DataConfig(offline=True)).classify(title))
+
+
+def test_the_guard_reads_the_blackout_policy_rather_than_a_third_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Widening the policy must widen what the guard blocks.
+
+    `BLACKOUT_IMPACTS` is the policy and `DEFAULT_MIN_IMPACT` is derived from it
+    so the two cannot drift. The guard wrote it a third time as a literal, and
+    the drift that produced is the one `DEFAULT_MIN_IMPACT`'s docstring warns
+    about: widened to ``Medium``, the source returns medium rows, the
+    classifier tags them, and the guard blocks none of them, so the policy says
+    one thing and every call that does not override it does another.
+
+    The title is held quiet so the rating is the only thing under test.
+    """
+    medium = event(title=QUIET_TITLE, impact="Medium")
+
+    assert is_high_impact(medium) is False
+
+    monkeypatch.setattr(
+        "fbe.calendar_guard.BLACKOUT_IMPACTS", frozenset({"High", "Medium"})
+    )
+
+    assert is_high_impact(medium) is True
+    assert is_high_impact(event(title=QUIET_TITLE, impact="Low")) is False
+
+
+def test_the_policy_comparison_still_folds_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading the constant must not cost the fold.
+
+    The feed sends ``"High"`` and `BLACKOUT_IMPACTS` holds ``"High"``, so a
+    membership test on the raw strings would pass today and hide the fold's
+    absence. These two spellings are what a comparison without it gets wrong,
+    and `IMPACT_LEVELS` records that such a consumer "would match nothing and
+    report every week as clear".
+    """
+    monkeypatch.setattr("fbe.calendar_guard.BLACKOUT_IMPACTS", frozenset({"high"}))
+
+    assert is_high_impact(event(title=QUIET_TITLE, impact="High")) is True
+    assert is_high_impact(event(title=QUIET_TITLE, impact=" HIGH ")) is True
+
+
+@pytest.mark.parametrize("pattern", sorted(AVOID_PATTERNS["rate_decision"]))
+def test_every_rate_decision_the_classifier_names_opens_a_window(
+    pattern: str,
+) -> None:
+    """The hazard half of #228, and it is a hazard rather than a defect today.
+
+    "Main Refinancing Rate" is the ECB's decision, "Federal Funds Rate" is the
+    Fed's and "Overnight Rate" is the Bank of Canada's. The guard matched none
+    of the three on keywords: all three are rated High today, so the rating
+    half blocked them and the week read correctly. The day one is published
+    Medium, or `BLACKOUT_IMPACTS` moves, the guard stops blocking a G10 central
+    bank rate decision and nothing says so.
+
+    Parametrised over the classifier's own list rather than over three names,
+    so a pattern added there fails here instead of quietly going unblocked.
+    The rating is held at ``"Low"`` so only the title can qualify it, and the
+    matched key is asserted beside the answer: widen `BLACKOUT_IMPACTS` to
+    include ``Low`` and every case would qualify on the rating alone, leaving
+    the keyword half unchecked and this test green for the wrong reason.
+    """
+    assert is_high_impact(event(title=pattern, impact="Low")) is True
+    assert "rate_decision" in _guard_keys(pattern), pattern
+
+
+def test_the_three_rate_decisions_qualify_under_their_feed_titles() -> None:
+    """The same three as the feed capitalises them, not as patterns."""
+    for title in ("Main Refinancing Rate", "Federal Funds Rate", "Overnight Rate"):
+        assert is_high_impact(event(title=title, impact="Low")) is True, title
+        assert "rate_decision" in _guard_keys(title), title
+
+
+def test_the_feeds_payrolls_title_is_matched_under_nfp() -> None:
+    """The plan names payrolls first and the feed does not call it payrolls.
+
+    The real title is "Non-Farm Employment Change". The guard matched it only
+    through the bare "employment change" in its employment category, so the
+    category the plan names first was reached under the wrong key. Nothing
+    reads these keys yet, so that is the label a report showing them would
+    carry rather than one any page prints today. None of the `nfp` keys the
+    guard carried ("non-farm payroll", "nonfarm payroll", "nfp") appears in any
+    title the feed sends.
+    """
+    assert "nfp" in _guard_keys("Non-Farm Employment Change")
+    assert "nfp" in _classifier_keys("Non-Farm Employment Change")
+
+
+def test_unemployment_claims_is_classified_and_deliberately_not_blocked() -> None:
+    """Ruled on #228: the divergence on this row is the intended state.
+
+    US initial jobless claims prints weekly, every Thursday. Blocking it would
+    open a blackout on all seven dollar pairs one day in five, permanently. The
+    plan's employment item is the monthly payrolls print, which is why the
+    guard's `nfp` keys carry the monthly release's wording and not a weekly
+    series.
+
+    The classifier still tags it, so it shows on the report and the owner sees
+    a claims print on the row without the row being called untradeable. The
+    engine names it, the owner judges it.
+    """
+    assert _classifier_keys("Unemployment Claims") == frozenset({"employment_other"})
+    assert _guard_keys("Unemployment Claims") == frozenset()
+    assert is_high_impact(event(title="Unemployment Claims", impact="Medium")) is False
+
+
+def test_the_two_maps_name_the_same_ten_classes() -> None:
+    """A report joining a blackout to a class joins on the class name.
+
+    The guard called them ``employment_uk_ca`` and ``minutes_accounts`` where
+    the source called them ``employment_other`` and ``minutes``, so the join
+    was impossible by key even where both maps matched the same row.
+    """
+    assert set(HIGH_IMPACT_KEYWORDS) == set(AVOID_PATTERNS)
+    assert len(HIGH_IMPACT_KEYWORDS) == 10
+
+
+SIGNED_OFF_DIVERGENCE: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    # The guard blocks the external-balance family; the classifier's patterns
+    # were drawn from observed titles and carry only "trade balance". A
+    # guard-only match costs one skipped setup.
+    "Current Account": (frozenset({"trade_balance"}), frozenset()),
+    # The Fed publishes the decision as "Federal Funds Rate" and the statement
+    # as its own row. The guard blocks both; the classifier tags the rate row.
+    "FOMC Statement": (frozenset({"rate_decision"}), frozenset()),
+    # The guard's rate_decision carries bare institution names, so a decision
+    # published under any wording opens a window. The classifier reads titles,
+    # and a press conference is a speech. On the two RBA rows below the guard's
+    # extra key is a mislabel rather than a decision arriving under unexpected
+    # wording: both are speeches, and they match rate_decision only because
+    # "rba" is a substring. The block is right either way.
+    "BOJ Press Conference": (
+        frozenset({"rate_decision", "central_bank_speech"}),
+        frozenset({"central_bank_speech"}),
+    ),
+    "RBA Assist Gov Hunter Speaks": (
+        frozenset({"rate_decision", "central_bank_speech"}),
+        frozenset({"central_bank_speech"}),
+    ),
+    "RBA Gov Bullock Speaks": (
+        frozenset({"rate_decision", "central_bank_speech"}),
+        frozenset({"central_bank_speech"}),
+    ),
+    # Ruled deliberate above: weekly, so blocking it takes a fifth of the
+    # trading week off the dollar pairs permanently.
+    "Unemployment Claims": (frozenset(), frozenset({"employment_other"})),
+    # The guard's nfp keys carry "unemployment rate", which is right for the
+    # US release, where the rate is published inside payrolls, and wrong as a
+    # label for every other currency's. The capture's two rows are CNY, which
+    # the currency map drops, and GBP, which is a labour market release and not
+    # payrolls. Both maps match the row, so it is blocked either way and only
+    # the label differs; the guard's key is the same kind of over-match the ADP
+    # row below records on the classifier's side.
+    "Unemployment Rate": (frozenset({"nfp"}), frozenset({"employment_other"})),
+    # The classifier's nfp patterns carry the bare "employment change", so a
+    # private payroll proxy is tagged as payrolls. The guard does not make that
+    # claim. Recorded rather than fixed: changing the classifier's keys is out
+    # of this issue's scope and would change what the report shows.
+    "ADP Weekly Employment Change": (
+        frozenset({"employment_other"}),
+        frozenset({"employment_other", "nfp"}),
+    ),
+}
+"""Every title in the committed capture the two maps read differently.
+
+Titles, not rows: the capture carries "Current Account" and "Unemployment Rate"
+twice each, for different currencies, and the two maps read a title the same
+way whichever currency sent it.
+
+Each one is a decision rather than an accident, and the comment above it says
+which. A wording change in either map shows up here as a failing test instead
+of as a quiet gap, which is the whole point of pinning it.
+"""
+
+
+def test_the_remaining_divergence_on_the_capture_is_the_signed_off_set() -> None:
+    """The measurement #228 was filed on, re-run against the two maps.
+
+    No network: the capture is committed and its provenance is in
+    ``tests/fixtures/README.md``. Every other row in it is read the same way by
+    both maps, which is what makes the eight above worth naming.
+    """
+    rows = json.loads(
+        (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "forexfactory_calendar_thisweek.json"
+        ).read_text()
+    )
+
+    divergent = {
+        row["title"]: (_guard_keys(row["title"]), _classifier_keys(row["title"]))
+        for row in rows
+        if _guard_keys(row["title"]) != _classifier_keys(row["title"])
+    }
+
+    assert divergent == SIGNED_OFF_DIVERGENCE
+
+    # `_guard_keys` is a copy of the matching rule, so it is tied to the
+    # production one here rather than trusted: on all 105 rows, a title that
+    # matches a category must be exactly a title `is_high_impact` qualifies on
+    # the keyword half. Without this the divergence above would keep agreeing
+    # with itself after `is_high_impact` changed how it matches.
+    for row in rows:
+        title = row["title"]
+        assert bool(_guard_keys(title)) is is_high_impact(
+            event(title=title, impact="Low")
+        ), title
+
+
+def test_the_claims_ruling_holds_only_while_the_policy_is_high_only() -> None:
+    """Two criteria of #228 pull against each other and nothing said so.
+
+    The fourth ruled that "Unemployment Claims" is deliberately not blocked,
+    because it prints weekly and blocking it would open a window on all seven
+    dollar pairs every Thursday, permanently. The second asks that widening
+    `BLACKOUT_IMPACTS` widen what the guard blocks, which is the operation the
+    docs now describe as supported.
+
+    The feed rates this release ``Medium``, so the two meet: widen the policy
+    to include ``Medium`` and the weekly blackout the ruling rejected comes
+    back, through the rating half rather than through the keywords. That is not
+    a defect in either half. It is a consequence to know before widening, and
+    it is pinned here so that widening the policy arrives with this test rather
+    than as a surprise on a Thursday.
+    """
+    claims = event(title="Unemployment Claims", impact="Medium")
+
+    assert is_high_impact(claims) is False
+
+    monkeypatched = frozenset({"High", "Medium"})
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("fbe.calendar_guard.BLACKOUT_IMPACTS", monkeypatched)
+
+        assert is_high_impact(claims) is True
