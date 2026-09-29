@@ -48,12 +48,15 @@ from fbe.config import (  # noqa: E402
     RiskConfig,
     ScoringConfig,
 )
+from fbe.datasources.registry import GLOBAL, INDICATORS  # noqa: E402
+from fbe.pillars import default_pillars  # noqa: E402
 from fbe.report import write_report  # noqa: E402
 from fbe.risk import position_size  # noqa: E402
 from fbe.types import (  # noqa: E402
     BiasReport,
     CalendarEvent,
     CurrencyScore,
+    Observation,
     PillarName,
     PillarScore,
     TradeIdea,
@@ -87,6 +90,62 @@ COVERAGE = {
 WEIGHTS = ScoringConfig().weights
 """The shipped weights, so ``coverage`` below is the figure they define."""
 
+PERIOD = date(2026, 5, 31)
+"""Period the observations describe, a month before the run."""
+
+RELEASED_AT = datetime(2026, 6, 15, 12, 30, tzinfo=UTC)
+"""When the series was published, which is what a historical read filters on.
+
+Set rather than left ``None`` because the dashboard's pair expansion prints it,
+and an observation with no release date is a different fact from one released a
+fortnight before the run. The period above is what the figure describes.
+"""
+
+PRIMARY = {pillar.name: pillar.requires[0] for pillar in default_pillars()}
+"""One canonical indicator per pillar, taken from the pillar's own `requires`.
+
+Read from the pillars rather than written out, so a pillar that changes what it
+consumes cannot leave this fixture asserting a series nothing reads. The first
+entry is the pillar's headline series in every case.
+"""
+
+
+def observation(code: str, pillar: PillarName, raw: float) -> Observation:
+    """The one series behind a pillar score, for the dashboard's expansion.
+
+    Args:
+        code: The currency whose pillar this is.
+        pillar: Which pillar, which selects the indicator through `PRIMARY`.
+        raw: The pillar's own raw input, in the pillar's units.
+
+    Returns:
+        One `fbe.types.Observation` carrying the registry's canonical unit and
+        frequency for that indicator, and the real source and series id for
+        this currency where the registry has one. The value is derived from
+        ``raw`` but deliberately not equal to it: a renderer printing the
+        observation where it means the pillar's raw input, or the reverse,
+        would otherwise pass on every currency.
+
+        The RISK pillar's series is global rather than per currency, so its
+        observation carries ``GLOBAL`` as its currency, which is what a real
+        run produces and what the expansion has to be able to show.
+
+    """
+    indicator = PRIMARY[pillar]
+    spec = INDICATORS[indicator]
+    ref = spec.series.get(code) or spec.series[GLOBAL]
+    return Observation(
+        indicator=indicator,
+        currency=code if code in spec.series else GLOBAL,
+        value=round(raw * 1.5 + 0.3, 3),
+        period=PERIOD,
+        source=ref.source,
+        series_id=ref.series_id,
+        unit=spec.unit,
+        frequency=spec.frequency,
+        released_at=RELEASED_AT,
+    )
+
 
 def pillars(
     code: str, composite: float, coverage: float
@@ -118,6 +177,7 @@ def pillars(
             weight=round(WEIGHTS[name] * coverage, 4),
             asof=ASOF,
             staleness_days=index,
+            inputs=(observation(code, name, round(composite * 1.1 + index, 3)),),
         )
         for index, name in enumerate(PillarName)
     }

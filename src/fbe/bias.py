@@ -39,6 +39,7 @@ __all__ = [
     "BLOCKERS",
     "at_least",
     "blocking",
+    "kind_of",
     "UNCHECKED_SUFFIX",
     "UNKNOWN_SUFFIX",
     "CalendarGuard",
@@ -639,9 +640,6 @@ def blocking(blockers: Sequence[str]) -> tuple[str, ...]:
         unrecognised marker is a defect in whatever produced it, and silently
         ignoring it would let a real block disappear from an explanation.
 
-    Raises:
-        ValueError: An entry matching no key in `BLOCKERS`.
-
     Three of the eight kinds do not block, and an offline run carries two of
     them on every pair, so "why was this pair removed" and "what does this
     pair carry" are different questions with different answers. A renderer
@@ -651,21 +649,52 @@ def blocking(blockers: Sequence[str]) -> tuple[str, ...]:
 
     The longest matching prefix wins, which is the rule `BLOCKERS` documents
     and the reason this lives here rather than in a renderer. Taking the first
-    key that matches reads those same two markers as hard blocks.
+    key that matches reads those same two markers as hard blocks. `kind_of`
+    applies that rule and this function asks it, so the two cannot answer
+    differently.
+
+    Raises:
+        ValueError: From `kind_of`, on an entry matching no key in `BLOCKERS`.
 
     """
-    kept: list[str] = []
-    for entry in blockers:
-        matches = [kind for kind in BLOCKERS if entry.startswith(kind)]
-        if not matches:
-            raise ValueError(
-                f"{entry!r} matches no kind in BLOCKERS, so whether it stops a "
-                "pair being traded cannot be answered. Every string reaching "
-                "blockers is one apply_filters emitted."
-            )
-        if BLOCKERS[max(matches, key=len)]:
-            kept.append(entry)
-    return tuple(kept)
+    return tuple(entry for entry in blockers if BLOCKERS[kind_of(entry)])
+
+
+def kind_of(blocker: str) -> str:
+    """Name the `BLOCKERS` kind one emitted blocker string belongs to.
+
+    Args:
+        blocker: One entry from a `PairBias.blockers` tuple, as
+            `apply_filters` set it. Two of the kinds carry a reason after
+            their key, ``"event: <reason>"`` and ``"event:unknown: <reason>"``,
+            so the string is not always a key.
+
+    Returns:
+        The **longest** key in `BLOCKERS` that prefixes it, which is the rule
+        `BLOCKERS` documents. Taking the first key that matches reads
+        ``"cost:unchecked"``, ``"event:unchecked"`` and ``"event:unknown: ..."``
+        as the hard blocks ``cost`` and ``event``, which refuses every pair in
+        an offline run: the outcome the two suffixes exist to avoid.
+
+    Raises:
+        ValueError: The string matches no kind. An unrecognised marker is a
+            defect in whatever produced it, and answering anything at all
+            about it would let a real block disappear from an explanation.
+
+    Exported because two consumers need the kind rather than the verdict:
+    `blocking` asks whether it stops the trade, and a renderer counting how
+    many pairs carry each kind asks which kind it is. Written twice, the
+    longest-prefix rule is one copy away from the first-match bug above.
+
+    """
+    matches = [kind for kind in BLOCKERS if blocker.startswith(kind)]
+    if not matches:
+        raise ValueError(
+            f"{blocker!r} matches no kind in BLOCKERS, so whether it stops a "
+            "pair being traded cannot be answered. Every string reaching "
+            "blockers is one apply_filters emitted."
+        )
+    return max(matches, key=len)
 
 
 def agreement(base_leg: CurrencyScore, quote_leg: CurrencyScore) -> float:

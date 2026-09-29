@@ -49,7 +49,7 @@ the refresh output names the scope's unit when it fails (ADR 0013, ADR 0015).
 
 | Source | Scope | One failure costs |
 | --- | --- | --- |
-| FRED | source | every FRED series in the run; a series-scope follow-up is owed, see ADR 0015 |
+| FRED | series | that one `(indicator, currency)`, named on its own line; the other series are served and the source reads `partial`. A ref FRED cannot serve, today the two-year change transforms, is declined before it is routed and appears only as a registry gap (ADR 0016) |
 | OECD SDMX | series | that one `(indicator, currency)`, named on its own line; the other series are served and the source reads `partial` |
 | Central banks and debt offices | source, one per provider | that provider's currency; each institution is its own source since #218 |
 | CFTC COT | source | every contract; the dollar is derived from the other seven, so the series are not independent and series scope is not ruled on |
@@ -131,6 +131,13 @@ Live scoring does not need this. Any backtest does. `Observation` carries
 No fetching source sets `released_at` today, so a historical run decides what
 it could have seen from an assumed publication lag instead. That lag is per
 leg, and the next section says how it is measured.
+
+The lag dates an original print and cannot date a revision, so an observation
+carrying `revision` above zero must carry `released_at` too. The rule is
+enforced where observations are built, in
+`fbe.datasources.base.checked_vintage`, and again where they are read, in
+`BasePillar._visible`. ADR 0007 records why, and the manual-entry section below
+says what it means for a typed correction.
 
 ### Publication lag, per leg
 
@@ -730,6 +737,22 @@ close to useless, because scheduled political events are what this feed covers
 worst. **Item 10 stays a human judgement.** The report should say so rather than
 implying it is handled.
 
+**This map tags a row. It does not block one.** The blackout decision is
+`fbe.calendar_guard.HIGH_IMPACT_KEYWORDS` with `BLACKOUT_IMPACTS`, and the two
+are deliberately separate: a merge would make this map stricter for reasons
+that have nothing to do with blackouts. Both carry the same ten class names so
+a report can join a tag to a blackout, but a title can land under different
+keys in each, so a join goes on the event rather than on the key (#228).
+
+**One row is tagged here and deliberately not blocked there.** "Unemployment
+Claims" prints weekly, so blocking it would open a blackout on all seven dollar
+pairs one day in five, permanently. It is tagged as an employment row and the
+morning is not called untradeable, so a report showing the class can carry it.
+No renderer shows the class yet, so that is what this map makes possible rather
+than what a page prints today. Ruled on #228, and
+`tests/test_blackout_windows.py` pins every row of the committed capture the
+two maps read differently, with the reason beside each.
+
 ### Terms and limits
 
 The feed is unofficial. It is not affiliated with, endorsed by, or sponsored by
@@ -815,6 +838,15 @@ Optional: `unit`, `frequency`, `released_at`, `revision`, `meta`.
 - `released_at` is optional but strongly wanted. Without it, staleness falls
   back to `period`, which overstates the age of a quarterly series by up to
   three months.
+- **`revision` above zero must carry `released_at`.** A row with a revision and
+  no release date is refused on load, naming the file and the row, and the run
+  reports it as that source's failure rather than skipping the row. The reason
+  is the one thing the assumed publication lag cannot do: it dates an original
+  print, and a correction describes the same period as the print it corrects, so
+  both get the same date. A June figure corrected in September, typed without a
+  date, is then read by a run dated 16 July, which is a number that did not
+  exist for another two months. Type the date the correction was published, or
+  record the figure at revision 0 as what was published at the time. ADR 0007.
 - `meta` is the right place for the URL the number came from. That provenance is
   the only audit trail a hand-typed number has.
 

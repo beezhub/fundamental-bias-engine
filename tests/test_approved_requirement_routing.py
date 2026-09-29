@@ -130,6 +130,124 @@ def test_the_section_records_what_the_gap_cost() -> None:
     assert "Nothing errors when this happens" in body
 
 
+# --- the no-pool category for defects and debt, which is #258 --------------
+
+
+def test_the_section_names_the_defect_and_debt_case_as_well() -> None:
+    """#258's first criterion. The arithmetic did not stop at requirements.
+
+    A `type:defect` ruled correctly not `routine-safe` cannot carry `roadmap`
+    instead, because `roadmap` is the requirement pool's key. It matches
+    neither pool and nothing claims it, exactly as the requirement case does,
+    and the section named only one of the two.
+    """
+    body = _pools()
+
+    defect_case = "`type:defect` or a `type:debt` carrying neither label"
+    assert f"{defect_case} belongs to no pool" in body
+    assert "There is no third key." in body
+
+
+def test_the_section_says_which_of_the_two_cases_is_a_mistake() -> None:
+    """#258's first criterion, and the half that makes the paragraph worth having.
+
+    Both cases land at ``status:ready`` claimable by nothing, and the right
+    response to them is opposite. A requirement there is mislabelled and the
+    fix is to pick a pool. A defect there is waiting for the specialist its
+    ruling named, and adding `routine-safe` would undo that ruling.
+
+    Stating both without saying which is which would leave a reader worse off
+    than the text that named only one, so the distinction is asserted rather
+    than left to the ordering of two paragraphs.
+    """
+    body = _pools()
+
+    assert "That is not a resting state, it is a labelling mistake" in body
+    assert "a real resting state rather than a labelling mistake" in body
+    assert "adding `routine-safe` to it would undo that ruling" in body
+
+
+def test_both_halves_of_the_no_pool_rule_stand_or_fall_together() -> None:
+    """#258's fifth criterion, which is the reason it asked for a test at all.
+
+    The failure this guards is a later trim that keeps the requirement
+    paragraph and drops the defect one, leaving the file saying the no-pool
+    state is always a labelling mistake. That reading is worse than silence: it
+    invites someone to "fix" six issues by labelling them `routine-safe`, which
+    is six rulings undone without anyone deciding to.
+
+    Asserted as a biconditional over the two markers rather than as two
+    independent presence checks, so the test names that failure when it fires.
+    """
+    body = _pools()
+    requirement_case = (
+        "`type:requirement` carrying neither `roadmap` nor `routine-safe`"
+    )
+    requirement = requirement_case in body
+    defect = "`type:defect` or a `type:debt` carrying neither label" in body
+
+    assert requirement == defect, (
+        "the two no-pool cases must be documented together; "
+        f"requirement case present: {requirement}, defect case present: {defect}"
+    )
+
+
+def test_the_section_says_how_such_an_issue_is_actually_worked() -> None:
+    """#258's second criterion. A category with no route out is a complaint.
+
+    ``/next 172`` already works and is the only thing that reaches these. Naming
+    the mechanism is what turns the paragraph from a description of a gap into
+    an instruction.
+    """
+    body = _pools()
+
+    assert "/next 172" in body
+    assert "only route that reaches it" in body
+
+
+def test_the_section_does_not_freeze_a_count_that_will_go_stale() -> None:
+    """The set moves, so a number here would be wrong within days.
+
+    #258 was filed naming seven issues. One of them, #218, had closed before
+    this was built. A count in the file would have been wrong on the day it
+    merged, which is why the fourth criterion puts the list on the triage desk
+    instead and this paragraph says where to look.
+    """
+    body = _pools()
+
+    assert "The count is not recorded here on purpose." in body
+    assert "The triage desk reports the current set each run" in body
+
+
+def test_next_without_a_number_says_it_cannot_reach_them() -> None:
+    """#258's third criterion, asserted where a reader of `/next` would look.
+
+    Outside the two-pools section on purpose: someone who typed `/next`, got
+    nothing and wants to know why is reading the skills section, not the pools
+    one. Bounded to that section so the pools paragraph cannot satisfy it.
+    """
+    body = ROUTINES.read_text()
+    start = body.index("| `/next` | Picks up one issue")
+    section = " ".join(body[start : body.index("\n## ", start + 1)].split())
+
+    assert "`/next` without a number claims by label exactly as the desks do" in section
+    assert "cannot reach the no-pool category" in section
+
+
+def test_the_triage_desk_reports_the_set_each_run() -> None:
+    """#258's fourth criterion. The list has to live somewhere a person sees.
+
+    Without it the category is inferred by subtracting two pool queries from a
+    board count, which nobody will do, and the paragraph above would describe a
+    state with no way to enumerate it.
+    """
+    body = " ".join(ROUTINES.read_text().split())
+    start = body.index("| triage | weekdays")
+    row = body[start : body.index("|", body.index("Touch source.", start))]
+
+    assert "Reports the issues that belong to no pool" in row
+
+
 # --- the label, which is criterion 2 ---------------------------------------
 
 
