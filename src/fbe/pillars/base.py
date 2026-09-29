@@ -27,6 +27,7 @@ from statistics import median, pstdev
 
 from fbe.config import ScoringConfig
 from fbe.datasources import registry
+from fbe.datasources.base import undated_revision
 from fbe.datasources.registry import (
     full_weight_age,
     history_floor,
@@ -244,6 +245,23 @@ class BasePillar(ABC):
         `fbe.types.Pillar` protocol, which is the same reason the history
         arrives at construction.
         """
+        self.last_undated_revisions: Mapping[str, int] = {}
+        """Per currency, how many observations this run refused as undated
+        revisions, from the last `compute`.
+
+        Empty when the last run met none, and reset by `_extract` on every run
+        so a previous run's count cannot be read as this one's. It rides on the
+        instance for the same reason `last_blend_sd` does: `compute`'s signature
+        is fixed by the `fbe.types.Pillar` protocol, and this is a fact about
+        what the run refused rather than about any score it produced. `compute`
+        copies it into ``PillarScore.diagnostics["undated_revisions"]``, which
+        is where a consumer reads it.
+
+        A refused observation is one `fbe.datasources.base.checked_vintage`
+        should already have stopped at the source boundary, so a non-zero count
+        means one reached a pillar another way. Reporting it is the point: a
+        coverage gap nothing reports is a gap nobody can act on.
+        """
         self.last_blend_divisor_path: str = ""
         """Which path `blend_divisor` took on this run, or ``""`` for none.
 
@@ -309,8 +327,13 @@ class BasePillar(ABC):
         How many inputs were admitted by the assumed publication lag rather than
         a real ``released_at`` goes to
         ``PillarScore.diagnostics["assumed_lag_inputs"]``, which is how much of
-        the run rests on an assumed publication lag rather than on fact. The
-        third is `pillar_freshness`, which goes to
+        the run rests on an assumed publication lag rather than on fact. Beside
+        it, ``undated_revisions`` counts the observations this run refused for
+        claiming a revision with no release date, which
+        `fbe.datasources.base.checked_vintage` should have stopped at the source
+        boundary: a non-zero count means one arrived another way, and ADR 0007's
+        second half refuses it here rather than reading a correction from the
+        original print's date. The third is `pillar_freshness`, which goes to
         ``PillarScore.freshness_factor`` and is the only one of the three the
         aggregator acts on: it is the fraction of the configured weight this
         pillar's inputs justify, and `scoring.score_currencies` multiplies by it.
@@ -364,6 +387,12 @@ class BasePillar(ABC):
             )
             diagnostics = self._diagnostics(per_currency, inputs, asof)
             diagnostics["emit_sd"] = emit_sd
+            # Always present, including at zero, for the reason
+            # ``assumed_lag_inputs`` is: a key that disappears at zero cannot
+            # be read as zero by anything downstream.
+            diagnostics["undated_revisions"] = float(
+                self.last_undated_revisions.get(currency, 0)
+            )
             z = normalised.get(currency)
 
             if z is None:
@@ -586,16 +615,25 @@ class BasePillar(ABC):
         the daily series, a two-year yield or a volatility index, where the lag
         is a day, and largest for the quarterly ones.
 
-        The fallback has a hole this method cannot close, worth knowing rather
-        than discovering. Period plus lag is the same answer for every vintage
-        of one period, so an unstamped revision is admitted the moment the
-        original print would have been, and `_newest_vintages` then prefers it
-        on ``revision``. The engine is honest exactly when a source stamps its
-        data and flattering when it does not. Closing it means changing the rule
-        in `BasePillar._extract` rather than one pillar's reading of it, which
-        is issue #121.
+        An unstamped observation carrying a revision above zero is **not
+        visible at any date**. Period plus lag is the same answer for every
+        vintage of one period, so admitting it would admit a correction from the
+        moment the original print would have been available, and
+        `_newest_vintages` would then prefer it on ``revision``: the engine
+        would be honest exactly when a source stamps its data and flattering
+        when it does not. ADR 0007 refuses the shape where observations are
+        built, so reaching here means something bypassed that gate. This is the
+        second half of the same rule, and `compute` reports how many were
+        refused in ``PillarScore.diagnostics["undated_revisions"]`` rather than
+        dropping them quietly. Issue #121.
+
+        The original print is unaffected. Refusing the revision leaves the
+        vintage that certainly existed, which is a figure the run could
+        genuinely read, rather than leaving the period with nothing.
 
         """
+        if undated_revision(observation):
+            return False
         if observation.released_at is not None:
             return observation.released_at.date() <= asof
         try:
@@ -692,6 +730,18 @@ class BasePillar(ABC):
             ``diagnostics`` rather than into prose a consumer would have to
             parse; `compute` fills it.
 
+            ``released_at`` absent and ``revision`` above zero: **not visible**,
+            at any ``asof``. The assumption above dates an original print, and a
+            correction to that print shares its period, so the assumption would
+            admit the correction from the original's date. ADR 0007 requires a
+            revision to carry a release date and
+            `fbe.datasources.base.checked_vintage` refuses the shape where
+            observations are built; this is the same rule applied a second time,
+            because downstream must not depend on upstream validation having
+            run. The count of refusals goes to
+            ``PillarScore.diagnostics["undated_revisions"]``, so a run that
+            meets one says so.
+
         Filtering on ``period`` instead is the mistake this rule exists to
         prevent, and it stays invisible until a backtest is run. US Q1 GDP has a
         period of 1 January and is published on about 25 April. A run dated 15
@@ -722,7 +772,8 @@ class BasePillar(ABC):
         the only pillar; INFLATION then wrote the same twenty-one lines, which
         is the copy #122 exists to prevent one level up from the two helpers it
         names. Sharing the leaves and duplicating the composition would leave
-        #121's fix landing in one file and being missed in the others.
+        #121's fix landing in one file and being missed in the others, which is
+        why the undated-revision rule above lives here rather than in a pillar.
 
         Override it where a pillar reads something else. RISK reads a
         ``GLOBAL``-keyed series that belongs to no currency, so the loop below
@@ -738,6 +789,9 @@ class BasePillar(ABC):
 
         """
         wanted = set(self.requires)
+        # Reset here rather than in `compute`, so a direct `_extract` call
+        # cannot read the previous run's refusals as its own.
+        refused: dict[str, int] = {}
         per_currency: dict[str, dict[str, list[Observation]]] = {
             currency: {indicator: [] for indicator in self.requires}
             for currency in currencies
@@ -756,8 +810,20 @@ class BasePillar(ABC):
             if series is None or observation.period > asof:
                 continue
             if not self._visible(observation, asof):
+                # `_visible` decides; this only says which refusal it was. An
+                # undated revision is refused at every ``asof`` and a figure
+                # that is merely early is refused at this one, and a consumer
+                # reading a thin period needs to know which happened. Asking
+                # the predicate here rather than deciding with it keeps one
+                # decision point: a rule applied in two places is one edit away
+                # from the two disagreeing.
+                if undated_revision(observation):
+                    refused[observation.currency] = (
+                        refused.get(observation.currency, 0) + 1
+                    )
                 continue
             series[observation.indicator].append(observation)
+        self.last_undated_revisions = refused
         return {
             currency: {
                 indicator: self._newest_vintages(found)
