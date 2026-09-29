@@ -737,6 +737,22 @@ close to useless, because scheduled political events are what this feed covers
 worst. **Item 10 stays a human judgement.** The report should say so rather than
 implying it is handled.
 
+**This map tags a row. It does not block one.** The blackout decision is
+`fbe.calendar_guard.HIGH_IMPACT_KEYWORDS` with `BLACKOUT_IMPACTS`, and the two
+are deliberately separate: a merge would make this map stricter for reasons
+that have nothing to do with blackouts. Both carry the same ten class names so
+a report can join a tag to a blackout, but a title can land under different
+keys in each, so a join goes on the event rather than on the key (#228).
+
+**One row is tagged here and deliberately not blocked there.** "Unemployment
+Claims" prints weekly, so blocking it would open a blackout on all seven dollar
+pairs one day in five, permanently. It is tagged as an employment row and the
+morning is not called untradeable, so a report showing the class can carry it.
+No renderer shows the class yet, so that is what this map makes possible rather
+than what a page prints today. Ruled on #228, and
+`tests/test_blackout_windows.py` pins every row of the committed capture the
+two maps read differently, with the reason beside each.
+
 ### Terms and limits
 
 The feed is unofficial. It is not affiliated with, endorsed by, or sponsored by
