@@ -35,7 +35,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from math import isfinite
 
-from fbe.config import DataConfig
+from fbe.config import BLACKOUT_IMPACTS, DataConfig
 from fbe.types import CalendarEvent
 from fbe.universe import G10, split_pair
 
@@ -56,6 +56,7 @@ __all__ = [
 
 HIGH_IMPACT_KEYWORDS: Mapping[str, tuple[str, ...]] = {
     "nfp": (
+        "non-farm employment change",
         "non-farm payroll",
         "nonfarm payroll",
         "non farm payroll",
@@ -72,6 +73,9 @@ HIGH_IMPACT_KEYWORDS: Mapping[str, tuple[str, ...]] = {
         "cash rate",
         "policy rate",
         "fomc statement",
+        "federal funds rate",
+        "main refinancing rate",
+        "overnight rate",
         "ecb press conference",
         "boe",
         "boj",
@@ -96,7 +100,7 @@ HIGH_IMPACT_KEYWORDS: Mapping[str, tuple[str, ...]] = {
         "retail sales",
         "core retail sales",
     ),
-    "employment_uk_ca": (
+    "employment_other": (
         "claimant count",
         "average earnings index",
         "employment change",
@@ -119,7 +123,7 @@ HIGH_IMPACT_KEYWORDS: Mapping[str, tuple[str, ...]] = {
         "chair",
         "president",
     ),
-    "minutes_accounts": (
+    "minutes": (
         "fomc minutes",
         "meeting minutes",
         "monetary policy meeting accounts",
@@ -139,11 +143,30 @@ HIGH_IMPACT_KEYWORDS: Mapping[str, tuple[str, ...]] = {
 }
 """The ten event categories the trading plan names, as matchable keywords.
 
+**This map decides whether to stop trading. Its twin decides what to call an
+event.** `fbe.datasources.calendar.AVOID_PATTERNS` tags each row of the
+calendar with the plan's class so the report can show it; this one opens a
+blackout window. Read that one to answer "what is this release", read this one
+to answer "may I trade through it". They are deliberately not merged: a merge
+would make the classifier stricter for reasons that have nothing to do with
+blackouts (#228).
+
+**The ten keys are the same ten on both sides**, so a report can join a
+blackout to a class by name. What a join cannot assume is that a given title
+lands under the same key in both: "Unemployment Rate" is `nfp` here, because
+these keys carry the wording of the US release that publishes the rate inside
+payrolls, and `employment_other` in the classifier, which reads it by subject.
+For a British or Chinese unemployment rate the guard's key is the wrong label
+on a correct block. Join on the event, not on the key, and
+`SIGNED_OFF_DIVERGENCE` in ``tests/test_blackout_windows.py`` pins every row of
+the committed capture the two read differently.
+
 This constant exists because feeds mislabel. ForexFactory and its peers assign
 impact ratings editorially, and an ECB member's unscheduled remarks or a
 mid-cycle CPI revision routinely arrive tagged medium when they move a pair
 forty pips in a minute. Matching the title against these keywords catches those
-before the impact field does.
+before the impact field does. `BLACKOUT_IMPACTS` is the other half of that OR,
+and `is_high_impact` reads it rather than naming a level here.
 
 The keywords are matched case-insensitively as substrings of the event title.
 That is deliberately loose, and it will produce false positives: "president"
@@ -151,6 +174,23 @@ catches a head of state as well as a central bank president, and "budget"
 catches routine fiscal housekeeping. On a small account a false positive costs
 one skipped setup and a false negative costs a stop-out on a spike, so the trade
 is not close. Tighten a category only after seeing it block something real.
+
+**One release is deliberately absent and it is not an oversight.** US initial
+jobless claims, which the feed sends as "Unemployment Claims", prints weekly
+every Thursday. Blocking it would open a blackout on all seven dollar pairs one
+day in five, permanently, and the plan's employment item is the monthly
+payrolls print, which is why `nfp` carries that release's wording and not a
+weekly series. The classifier still tags it, so a report showing the class can
+carry a claims row without the row being called untradeable. No renderer shows
+that class today, so this is what the classifier makes possible rather than
+what any page prints. The engine names it, the owner judges it. Ruled on #228,
+which is the same division of labour #227 settled for global events.
+
+**That ruling holds only while `BLACKOUT_IMPACTS` is High alone.** The feed
+rates this release Medium, so widening the policy to Medium blocks it through
+the rating half and brings back the weekly blackout the ruling rejected. Not a
+defect in either half, and pinned by a test, but the thing to know before
+widening.
 """
 
 
@@ -328,24 +368,35 @@ def _checked_legs(pair: str) -> tuple[str, str]:
 def is_high_impact(event: CalendarEvent) -> bool:
     """Decide whether an event should be treated as high impact.
 
-    An event qualifies if ``event.impact`` is ``"high"`` (case-insensitive) OR
-    its title matches any keyword in `HIGH_IMPACT_KEYWORDS`. The OR is the point:
-    the feed's rating is a hint, not an authority, and the keyword list is the
-    trading plan's own list of events to avoid.
+    An event qualifies if ``event.impact`` is one of `BLACKOUT_IMPACTS`
+    (case-insensitive) OR its title matches any keyword in
+    `HIGH_IMPACT_KEYWORDS`. The OR is the point: the feed's rating is a hint,
+    not an authority, and the keyword list is the trading plan's own list of
+    events to avoid.
 
     Args:
         event: The calendar event to classify.
 
     Returns:
-        True when the event should generate a blackout window.
+        True when the event should generate a blackout window. An impact the
+        feed does not send, or the empty string, matches no policy level and
+        leaves the decision to the title alone.
 
     """
+    # Read from the policy, not written again. `BLACKOUT_IMPACTS` is the
+    # decision and `DEFAULT_MIN_IMPACT` is derived from it for exactly this
+    # reason; a literal here was a third copy, and widening the policy to
+    # ``Medium`` would have left the source returning medium rows and the
+    # classifier tagging them while this went on blocking only High.
+    #
     # Folded, not compared. The feed publishes ``"High"`` capitalised, which
     # `fbe.datasources.calendar.IMPACT_LEVELS` records along with the warning
     # that a consumer comparing against the lower-case spelling "would match
     # nothing and report every week as clear". That failure is silent, so the
-    # fold is the load-bearing part of this line rather than tidiness.
-    if event.impact.strip().casefold() == "high":
+    # fold is load-bearing rather than tidiness, and both sides fold because
+    # the policy is a constant someone may widen in either spelling.
+    blocking = {level.casefold() for level in BLACKOUT_IMPACTS}
+    if event.impact.strip().casefold() in blocking:
         return True
     folded = event.title.casefold()
     return any(

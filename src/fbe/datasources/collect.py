@@ -334,8 +334,9 @@ def _routed_pairs(
         requested: Every ``(indicator, currency)`` the run wants.
 
     Returns:
-        For an ordinary source, the pairs its own ``refs()`` claims, so no
-        source is asked about an indicator the registry routes elsewhere. For
+        For an ordinary source, the pairs its own ``refs()`` claims and its
+        ``serves`` accepts, so no source is asked about an indicator the
+        registry routes elsewhere or about a ref it cannot serve. For
         `ManualSource`, the whole request: a manual entry exists to override a
         value some other source already serves, and a manual source asked only
         for the pairs the registry routes to ``manual`` could never override
@@ -351,7 +352,14 @@ def _routed_pairs(
     """
     if source.name == SOURCE_MANUAL:
         return requested
-    return frozenset(pair for pair in source.refs() if pair in requested)
+    # Claimed by refs() and accepted by serves(): a ref the source holds by
+    # registry but cannot serve is not asked for, so under series scope it
+    # cannot be recorded as an empty answer (ADR 0016).
+    return frozenset(
+        pair
+        for pair, ref in source.refs().items()
+        if pair in requested and source.serves(ref)
+    )
 
 
 def _collect_one(
