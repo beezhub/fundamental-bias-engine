@@ -56,6 +56,28 @@ outside this scheme: it is the vendor's own documented name, read by
 `default_config`."""
 
 
+BLACKOUT_IMPACTS: frozenset[str] = frozenset({"High"})
+"""Impact levels that trigger a blackout.
+
+Only ``High``. The plan says high-impact events, and widening this to ``Medium``
+would black out most of the London session on most days, which for a trader
+already limited to a few positions would mean never trading. ``Holiday`` is
+handled separately: it thins liquidity rather than spiking it, so it belongs in
+a liquidity check, not a volatility blackout.
+
+It lives here rather than with the calendar source because two modules read it
+and neither may import the other. `fbe.datasources.calendar` derives
+`DEFAULT_MIN_IMPACT` from it, so what the source returns cannot disagree with
+what is blocked, and `fbe.calendar_guard.is_high_impact` reads it rather than
+naming a level of its own. Written in both places instead, the two drift, and
+the drift is silent in the safe-looking direction: widened to ``Medium`` here
+with a literal left in the guard, the source returns medium rows and the guard
+blocks none of them. That was the defect #228 was filed on. The import edge
+between the source and the guard stays absent in both directions, which
+`docs/data-sources.md` and `fbe.calendar_guard._merge` both rely on.
+"""
+
+
 SECRET_FIELDS = frozenset({"fred_api_key"})
 """Fields whose value must not appear in an error message.
 

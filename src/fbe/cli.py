@@ -77,6 +77,7 @@ import json
 import logging
 import math
 import time
+import webbrowser
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
@@ -103,6 +104,7 @@ from fbe.calendar_guard import (
     blackout_windows,
     coverage_gap,
 )
+from fbe.dashboard.build import DASHBOARD_FORMAT, build_dashboard
 from fbe.datasources import ALL_SOURCES, CalendarSource
 from fbe.datasources.base import ProbeRequest, SourceError
 from fbe.datasources.cache import DiskCache
@@ -167,6 +169,32 @@ STATUS_WIDTH = 10
 published in ``docs/interfaces.md``. A continuation line leaves the label
 column blank, so a check that has several things to say still reads as one
 check."""
+
+RECORD_WEEKDAYS = frozenset(range(5))
+"""``date.weekday()`` values the forward record is expected to cover: Monday
+to Friday.
+
+The spot market is shut over the weekend, so a Saturday with no bias is not a
+morning anybody missed. Public holidays are a different matter and are counted
+as gaps here, because this engine carries no holiday calendar and inventing one
+per currency to suppress eight lines a year would be a larger and less reliable
+thing than the check itself. A gap that turns out to be Christmas costs the
+owner one look; a gap that is never reported costs the month."""
+
+
+GAP_SAMPLE_LIMIT = 8
+"""How many missing mornings the forward-record line names before it stops
+listing them and counts the rest.
+
+Eight is enough to show the shape of a gap, a scattered week against a solid
+month, and enough to show where the hole starts, which is what the sample is
+read for. It does not fit the column layout on one line: a full eight-date
+sample runs to about 177 characters and wraps. That is the cost of the
+alternative being worse, since a check that answers a three-month hole with
+eighty-two lines is one an operator scrolls past, which is the same silence
+this check exists to end. The count is always exact; only the listing is
+bounded."""
+
 
 SOURCE_WIDTH = 14
 """Column width for the ``refresh`` per-source lines. Wide enough for
@@ -976,6 +1004,12 @@ def _check_reports(config: Config) -> list[CheckLine]:
     if not sidecars:
         return [CheckLine("reports", CheckStatus.OK, "no previous report to diff")]
 
+    # Computed before the digest read and appended to whichever verdict that
+    # produces, so a sidecar nobody can decode still gets its record checked.
+    # The two findings are independent: one is about the newest file's
+    # contents, the other about which days have a file at all.
+    record = _check_record(sidecars, _now().date())
+
     newest = sidecars[-1]
     try:
         payload = json.loads(newest.read_text(encoding="utf-8"))
@@ -986,7 +1020,8 @@ def _check_reports(config: Config) -> list[CheckLine]:
                 "reports",
                 CheckStatus.WARN,
                 f"{newest.name} could not be read ({type(error).__name__})",
-            )
+            ),
+            *record,
         ]
 
     asof = str(payload.get("asof", newest.stem))
@@ -994,15 +1029,173 @@ def _check_reports(config: Config) -> list[CheckLine]:
         return [
             CheckLine(
                 "reports", CheckStatus.OK, f"last report {asof}, config digest matches"
-            )
+            ),
+            *record,
         ]
     return [
         CheckLine(
             "reports",
             CheckStatus.WARN,
             f"last report {asof} used digest {recorded}, not comparable",
+        ),
+        *record,
+    ]
+
+
+def _weekdays(start: date, end: date) -> list[date]:
+    """Return the weekdays from ``start`` up to but not including ``end``.
+
+    Args:
+        start: First day considered, included when it is a weekday.
+        end: The day the window stops at, excluded.
+
+    Returns:
+        Monday-to-Friday dates in order, per `RECORD_WEEKDAYS`. Empty when
+        ``end`` is not after ``start``, which is a window holding no days
+        rather than an error: a record that begins today has nothing behind it
+        to be missing.
+
+    """
+    span = (end - start).days
+    return [
+        day
+        for day in (start + timedelta(days=offset) for offset in range(max(span, 0)))
+        if day.weekday() in RECORD_WEEKDAYS
+    ]
+
+
+def _check_record(sidecars: Sequence[Path], today: date) -> list[CheckLine]:
+    """Report the weekdays between the first report and today that have none.
+
+    Phase 6 rests on an unbroken run of daily biases recorded before the
+    outcome was known, and a gap in it cannot be repaired: the macro series
+    have been revised since and the cross-sectional scores depended on the rest
+    of the universe on the day. So the cost of noticing late is the record
+    itself, and this is the only line that makes a missing morning visible
+    while the cause can still be fixed.
+
+    Presence is read from the filename and nothing else. Decoding a sidecar to
+    establish that it exists would file a damaged report as a morning nobody
+    ran, which is a worse answer than either finding on its own: the file is
+    there and the day was not missed. The digest line above reports a damaged
+    sidecar when it is the newest one, which is the case an operator hits
+    first; an older one it does not read is reported by neither line, and that
+    gap is `_check_reports`'s rather than this function's.
+
+    Args:
+        sidecars: Every path under `fbe.report.SIDECAR_GLOB`, in any order.
+        today: The day the window stops before. Excluded, because doctor runs
+            before the morning's report at least as often as after it, and a
+            check that reports today as missing every morning is one nobody
+            reads by Wednesday. For a zone at or ahead of UTC that also
+            absorbs the hours-wide difference between the local date a report
+            is named with and the UTC date read here.
+
+    Returns:
+        One continuation line under the reports check. ``ok`` when every
+        expected weekday has a report, naming the span so an unbroken record
+        cannot be confused with a check that did not run. ``warn`` naming the
+        count and up to `GAP_SAMPLE_LIMIT` of the missing days otherwise: a
+        gap is worth acting on and is not a reason to call the install
+        unusable, so it becomes an exit 1 only under ``--strict``.
+
+        ``warn`` naming the files, and no gap list at all, when a name the
+        glob matched carries no date or carries one after ``today``. An
+        undated file could be any morning, so the days around it cannot
+        honestly be called missing; a file dated ahead of today sits outside
+        the window, and reporting the record around it would assert an
+        unbroken span over days nothing examined. Both are reported rather
+        than skipped, and the listing is bounded the same way the gap list is.
+
+    """
+    dated: list[tuple[date, Path]] = []
+    undateable: list[str] = []
+    for sidecar in sidecars:
+        try:
+            dated.append((report_module.asof_in(sidecar), sidecar))
+        except ValueError:
+            undateable.append(sidecar.name)
+
+    if undateable:
+        return [
+            CheckLine(
+                "",
+                CheckStatus.WARN,
+                f"{_bounded(undateable)} {_is_are(undateable)} not dated, so "
+                f"the forward record cannot be checked",
+            )
+        ]
+
+    ahead = [path.name for day, path in dated if day > today]
+    if ahead:
+        # Not a gap and not a missing morning: a file that should not exist
+        # yet. Reporting the record around it would mean asserting an
+        # unbroken span over days nothing has looked at, which is the one
+        # sentence this check exists to make trustworthy.
+        return [
+            CheckLine(
+                "",
+                CheckStatus.WARN,
+                f"{_bounded(ahead)} {_is_are(ahead)} dated after "
+                f"{today.isoformat()}, so the forward record cannot be checked",
+            )
+        ]
+
+    present = {day for day, _ in dated}
+    start = min(present)
+    missing = [day for day in _weekdays(start, today) if day not in present]
+    if not missing:
+        return [
+            CheckLine(
+                "",
+                CheckStatus.OK,
+                f"forward record unbroken, {len(present)} "
+                f"report{'s' if len(present) != 1 else ''} from "
+                f"{start.isoformat()} to {max(present).isoformat()}",
+            )
+        ]
+
+    return [
+        CheckLine(
+            "",
+            CheckStatus.WARN,
+            f"{len(missing)} weekday{'s' if len(missing) != 1 else ''} missing "
+            f"from the forward record: "
+            f"{_bounded([day.isoformat() for day in missing])}",
         )
     ]
+
+
+def _bounded(items: Sequence[str]) -> str:
+    """Join ``items`` for one printed line, listing at most the sample limit.
+
+    Args:
+        items: What to list, in the order the reader should see it.
+
+    Returns:
+        The first `GAP_SAMPLE_LIMIT` items, comma separated, followed by how
+        many were not listed. The count of what is left is exact; only the
+        listing is bounded, so nothing is dropped without saying so.
+
+    """
+    listed = ", ".join(items[:GAP_SAMPLE_LIMIT])
+    if len(items) > GAP_SAMPLE_LIMIT:
+        listed += f" and {len(items) - GAP_SAMPLE_LIMIT} more"
+    return listed
+
+
+def _is_are(items: Sequence[str]) -> str:
+    """Return the verb agreeing in number with ``items``.
+
+    Args:
+        items: What the sentence is about.
+
+    Returns:
+        ``is`` or ``are``. A line an operator reads every morning, and one
+        that reads as broken is one they stop reading.
+
+    """
+    return "is" if len(items) == 1 else "are"
 
 
 @app.command(
@@ -3827,7 +4020,10 @@ def dashboard(
         typer.Option(
             "--asof",
             formats=DATE_FORMATS,
-            help="Point-in-time cutoff, YYYY-MM-DD. Defaults to today.",
+            help=(
+                "Render the report with this as-of date. Defaults to the "
+                "latest report on disk, which on a normal morning is today's."
+            ),
         ),
     ] = None,
     out: Annotated[
@@ -3836,7 +4032,9 @@ def dashboard(
             "--out",
             "-o",
             help=(
-                "Output HTML file. Defaults to data/reports/dashboard-YYYY-MM-DD.html."
+                "Output HTML file. Defaults to "
+                "data/reports/dashboard-YYYY-MM-DD.html, dated by the report "
+                "it renders rather than by today."
             ),
             dir_okay=False,
         ),
@@ -3864,20 +4062,155 @@ def dashboard(
     would leave the ranking unreadable at exactly the wrong moment. See
     `fbe.dashboard.build.build_dashboard` for the full constraint list.
 
+    Renders a report that already exists and computes nothing itself. The
+    committed Markdown and this page are then two views of one run rather than
+    two readings of one date taken at different times, and only one of those
+    can be the record.
+
     Args:
         ctx: Typer context carrying the effective config.
-        asof: Point-in-time cutoff for observations.
-        out: Output HTML path.
-        compare: Diff baseline, ``last``, ``none`` or a path.
+        asof: As-of date of the report to render. Without it, the latest report
+            on disk, which on a normal morning is today's and before `report`
+            has run is yesterday's. A page from this morning is worth more on a
+            phone mid-session than a refusal saying today's run has not
+            happened yet.
+        out: Output HTML path. The default is dated by the report being
+            rendered, not by today, so rendering an older run does not overwrite
+            the current page.
+        compare: Diff baseline, ``last``, ``none`` or a path. ``last`` means the
+            run before the one being rendered rather than the newest on disk,
+            so a backfilled run does not diff against its own successor and
+            print every move backwards.
         open_after: Open the result in a browser.
 
     Raises:
-        NotImplementedError: Always, until `fbe.dashboard.build` lands.
+        typer.Exit: `EXIT_UNUSABLE` when there is no report to render, and when
+            the rendered page breaks a publishing constraint. Both are "it ran,
+            and there is nothing here you should publish", which is what code 1
+            means in ``docs/interfaces.md``. Neither is a usage error and
+            neither is a guard rule refusing a trade, so neither is 2 or 3.
 
     """
-    raise NotImplementedError(
-        "fbe.cli.dashboard is scaffolded; see docs/roadmap.md Phase 5"
+    config = _effective_config(ctx)
+    reports_dir = config.data.reports_dir
+    sidecar = _report_to_render(reports_dir, asof.date() if asof else None)
+    run = _loaded(sidecar)
+
+    baseline_path = _baseline_path(compare, reports_dir, run.asof)
+    baseline = _loaded(baseline_path) if baseline_path is not None else None
+    diff = report_module.diff_reports(baseline, run) if baseline is not None else None
+
+    target = (
+        out if out is not None else reports_dir / DASHBOARD_FORMAT.format(asof=run.asof)
     )
+    try:
+        written = build_dashboard(run, target, diff=diff, config=config)
+    except ValueError as error:
+        # Printed rather than raised: whatever went wrong, the message is the
+        # thing to act on and a traceback in front of it is noise. Almost
+        # always the constraint violations; a run whose sidecar survived its
+        # shape checks and still holds a pair twice reaches here too, and that
+        # message names itself.
+        typer.echo(str(error))
+        raise typer.Exit(EXIT_UNUSABLE) from error
+    except OSError as error:
+        typer.echo(f"The page could not be written to {target}: {error}")
+        raise typer.Exit(EXIT_UNUSABLE) from error
+
+    typer.echo(f"Wrote {written} ({written.stat().st_size / 1024:.1f} KB)")
+    typer.echo("Checked against the publishing constraints: no violations.")
+    typer.echo(
+        f"This is the run of {run.asof}, generated "
+        f"{run.generated_at:%Y-%m-%d %H:%M} UTC."
+    )
+    if run.config_digest and run.config_digest != config.digest():
+        # The page is coloured on today's bands and the convictions on it were
+        # graded under the ones in force when the run was written. A cell
+        # coloured for one band and labelled with another is the state
+        # `_View.heat` says cannot happen, and rendering an older run is how it
+        # happens. Said rather than refused: the page is still the best record
+        # of that day, and the reader needs to know which half is which.
+        typer.echo(
+            f"The config has changed since that run: it was scored under digest "
+            f"{run.config_digest} and this page is coloured on {config.digest()}, "
+            "so a cell's colour and the conviction beside it can disagree."
+        )
+    if open_after and not webbrowser.open(written.resolve().as_uri()):
+        # Resolved because `Path.as_uri` refuses a relative path, and both
+        # --out and the configured reports directory can be relative. The
+        # page is already written at that point, so raising here would report
+        # a failed build for a file that is on disk and correct.
+        typer.echo("No browser could be opened, so the page is where it says.")
+
+
+def _loaded(sidecar: Path) -> BiasReport:
+    """Read a report back, or refuse with the reason on one line.
+
+    Args:
+        sidecar: A sidecar `fbe.report.latest_report` or `_report_to_render`
+            already found on disk.
+
+    Returns:
+        The reconstructed run.
+
+    Raises:
+        typer.Exit: `EXIT_UNUSABLE` when the file cannot be read as a report,
+            with the reason `fbe.report.load_report` gives. Existing and
+            readable are different questions: a sidecar written by another
+            version, hand-edited, or half-copied passes the first and fails the
+            second, and this command's whole job is downstream of the answer.
+
+    """
+    try:
+        return report_module.load_report(sidecar)
+    except (ValueError, OSError) as error:
+        typer.echo(f"{sidecar.name} cannot be read as a report: {error}")
+        raise typer.Exit(EXIT_UNUSABLE) from error
+
+
+def _report_to_render(reports_dir: Path, asof: date | None) -> Path:
+    """Find the sidecar this run renders, or refuse and say what is missing.
+
+    Args:
+        reports_dir: The configured reports directory.
+        asof: The as-of date asked for, or ``None`` for the latest on disk.
+
+    Returns:
+        Path to the sidecar, which is the file `fbe.report.load_report` reads.
+
+    Raises:
+        typer.Exit: `EXIT_UNUSABLE` when there is nothing to render, with a
+            message naming the date or the directory and the command that fills
+            it. Rendering an empty page instead would put a file on disk that
+            opens, looks like a run, and describes one that never happened.
+
+    """
+    if asof is None:
+        try:
+            latest = report_module.latest_report(reports_dir)
+        except ValueError as error:
+            # `latest_report` is loud on purpose about a file that matches the
+            # sidecar glob and carries no date, because skipping it quietly
+            # makes the newest report depend on what else is in the directory.
+            # Loud has to mean a message, not a traceback.
+            typer.echo(f"{reports_dir} cannot be read for reports: {error}")
+            raise typer.Exit(EXIT_UNUSABLE) from error
+        if latest is not None:
+            return latest
+        typer.echo(
+            f"No report to render: {reports_dir} holds none. Run fbe report to "
+            "write one, then build the page from it."
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
+    named = reports_dir / report_module.SIDECAR_FORMAT.format(asof=asof)
+    if named.exists():
+        return named
+    typer.echo(
+        f"No report for {asof} in {reports_dir}, so there is nothing to render "
+        f"for that date. Run fbe report --asof {asof} to write one, or drop "
+        "--asof for the latest report on disk."
+    )
+    raise typer.Exit(EXIT_UNUSABLE)
 
 
 @journal_app.command(

@@ -81,7 +81,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlsplit
 
-from fbe.config import DataConfig
+from fbe.config import BLACKOUT_IMPACTS, DataConfig
 from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy, SourceError
 from fbe.datasources.registry import SeriesRef
 from fbe.types import CalendarEvent, Observation
@@ -126,14 +126,14 @@ making that caller discover the mismatch as a crash. A consumer that compares
 whichever file it was written against.
 """
 
-BLACKOUT_IMPACTS: frozenset[str] = frozenset({"High"})
-"""Impact levels that trigger a blackout by default.
+"""`BLACKOUT_IMPACTS` is re-exported from `fbe.config`.
 
-Only ``High``. The plan says high-impact events, and widening this to ``Medium``
-would black out most of the London session on most days, which for a trader
-already limited to a few positions would mean never trading. ``Holiday`` is
-handled separately: it thins liquidity rather than spiking it, so it belongs in
-a liquidity check, not a volatility blackout."""
+It moved there with #228, because `fbe.calendar_guard.is_high_impact` reads the
+same constant and the two modules may not import each other. Kept in this
+module's ``__all__`` so ``from fbe.datasources.calendar import
+BLACKOUT_IMPACTS`` still reads, since this is where a reader of the source
+looks for it and where `DEFAULT_MIN_IMPACT` is derived from it.
+"""
 
 CURRENCY_MAP: Mapping[str, str] = {
     "USD": "USD",
@@ -194,6 +194,32 @@ AVOID_PATTERNS: Mapping[str, tuple[str, ...]] = {
 }
 """The ten event classes the trading plan names, mapped onto substrings that
 appear in real feed titles.
+
+**This map decides what to call an event. Its twin decides whether to stop
+trading.** `fbe.calendar_guard.HIGH_IMPACT_KEYWORDS` opens a blackout window;
+this one tags a row so the report can show the class beside it. Read this one
+to answer "what is this release", read that one to answer "may I trade through
+it". They are deliberately not merged: the two answer different questions, and
+a merge would make this map stricter for reasons that have nothing to do with
+blackouts (#228).
+
+**The ten keys are the same ten on both sides**, so a report can join a class
+to a blackout by name. What a join cannot assume is that a title lands under
+the same key in both: this map files "Unemployment Rate" under
+``employment_other`` by subject, while the guard files it under ``nfp``,
+because the guard's keys carry the wording of the US release that publishes the
+rate inside payrolls. On a British print that guard key is the wrong label on a
+correct block. Join on the event, not on the key. Every row of the committed
+capture the two read differently is pinned in
+``tests/test_blackout_windows.py``, with the reason beside it.
+
+A row this map tags is not necessarily a row the guard blocks, and "Unemployment
+Claims" is the case to know: it prints weekly, so blocking it would open a
+window on all seven dollar pairs every Thursday, permanently, which at the
+default 30 minutes before and 60 after is an hour and a half a week that the
+plan never asked to stand aside for. It is tagged here and not
+blocked there, deliberately, so a report showing the class can carry the row
+without calling the morning untradeable. Nothing renders that class yet.
 
 Matching is on a lower-cased title substring. That is crude and it is the right
 trade-off: the feed has no event type field, titles are stable in wording but

@@ -89,17 +89,18 @@ loads, so `fbe doctor` can print the problem rather than the resolver hiding
 it behind an exception.
 
 Once resolved, the config is validated before it is used. Every command that
-scores or sizes from the config (`score`, `bias`, `report`, `dashboard` and
-`size`) calls `Config.validate` first through `cli._require_valid_config`, and
-refuses to run on a non-empty result, printing each problem on its own line to
-stderr and exiting 1. `validate` rejects weights that do not cover every pillar,
-are negative or do not sum to 1.0, a risk cap above the plan's 2%, and any
-threshold ordering that would leave a scoring formula undefined or a conviction
-band empty. A config that fails here would not crash the engine. It would
-produce a report that looks normal and is wrong, which is why the refusal
-happens before any number is computed, and why `report` refuses before it writes
-rather than after: the file is the committed audit trail and re-running the date
-does not recover the correct call.
+scores or sizes from the config (`score`, `bias`, `report` and `size`) calls
+`Config.validate` first through `cli._require_valid_config`, and refuses to run
+on a non-empty result, printing each problem on its own line to stderr and
+exiting 1. `dashboard` is not in that list: it neither scores nor sizes, it
+renders a run that was already scored. `validate` rejects weights that do not
+cover every pillar, are negative or do not sum to 1.0, a risk cap above the
+plan's 2%, and any threshold ordering that would leave a scoring formula
+undefined or a conviction band empty. A config that fails here would not crash
+the engine. It would produce a report that looks normal and is wrong, which is
+why the refusal happens before any number is computed, and why `report` refuses
+before it writes rather than after: the file is the committed audit trail and
+re-running the date does not recover the correct call.
 
 `fbe doctor` calls `validate` too and does not refuse. It reports every problem
 as its first check and carries on with the rest, because reporting is what it is
@@ -150,6 +151,31 @@ cache writability, entry count and age against `cache_ttl_hours`;
 and whether a previous report exists to diff against. Each check prints its own
 verdict, so one failure does not hide the rest.
 
+The reports check prints a second line for the forward record: the weekdays
+between the earliest report on disk and today that have no report, counted, or
+`forward record unbroken` with the span it covers. Presence is read from the
+filename alone, so a report that exists but cannot be decoded still counts as
+that morning rather than as a missing one. Note what that does not say: the
+digest line decodes the newest sidecar only, so a damaged older one is reported
+by neither line. Weekends are not gaps; public holidays are, because the engine
+carries no holiday calendar. Today is never reported as missing, since `doctor`
+runs before the morning's report as often as after it. A long gap prints a
+count and the first eight days rather than one line each. An empty reports
+directory, which is what a fresh clone has, checks nothing. A gap is a warning,
+so the run still exits 0 unless `--strict` is set.
+
+The reason it is a check at all: Phase 6 needs at least six months of biases
+recorded before the outcome was known, and a bias cannot be recorded after the
+fact. A gap noticed in month six is a hole in the record for good, so the
+cheapest time to see it is the morning it happens.
+
+Two kinds of file stop the record check rather than being skipped or counted,
+and both are named. A name carrying no date could be any morning, so the days
+around it cannot honestly be called missing. A name dated after today is a file
+that should not exist yet, and reporting the record around it would assert an
+unbroken span over days nothing examined. Both listings are bounded the same
+way the gap list is.
+
 The probe is a request the source vouches for, not a bare GET of its root. A
 source that describes one (`BaseDataSource.probe_request`) is asked that, and a
 2xx whose body the source does not recognise as its own content is a warning,
@@ -178,7 +204,8 @@ cache           warn      37 entries, oldest 19h (ttl 12h): run fbe refresh
 sources         ok        fred 240ms, stooq 310ms, cftc 890ms
                 warn      forexfactory unreachable (timeout after 5.0s)
 reports         ok        last report 2026-09-08, config digest matches
-3 warnings.
+                warn      4 weekdays missing from the forward record: 2026-09-09, 2026-09-10, 2026-09-11, 2026-09-14
+4 warnings.
 ```
 
 ### `fbe refresh`
@@ -671,16 +698,67 @@ rounded up.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--asof` | today | Point-in-time cutoff. |
-| `--out`, `-o` | `data/reports/dashboard-YYYY-MM-DD.html` | Output file. |
+| `--asof` | the latest report on disk | Which run to render. |
+| `--out`, `-o` | `data/reports/dashboard-YYYY-MM-DD.html` | Output file, dated by the report it renders. |
 | `--compare` | `last` | Diff baseline, same values as `report --compare`. |
 | `--open` / `--no-open` | no-open | Open the result in a browser. |
 
 ```console
 $ fbe dashboard --open
-Wrote data/reports/dashboard-2026-09-09.html (38 KB)
-Constraint check: 0 external assets, 38 KB of 16 MB, theme tokens ok.
+Wrote data/reports/dashboard-2026-09-09.html (27.2 KB)
+Checked against the publishing constraints: no violations.
 ```
+
+This command renders a report that already exists and computes nothing. The
+committed Markdown and this page are two views of one run rather than two
+readings of one date taken at different times, and only one of those can be the
+record. `--asof` therefore names a run that was already written: it selects, it
+does not recompute, and asking for a date with no report is refused rather than
+answered by scoring that date now.
+
+The default is the latest report rather than today's, because today's does not
+exist until `fbe report` has run and this is the command opened on a phone
+mid-session. A page from this morning is worth more there than a refusal saying
+the day's run has not happened yet. The output file is named after the run it
+renders for the same reason: rendering an older report does not overwrite the
+current page.
+
+A `--compare` path whose sidecar does not exist exits 2, the same as it does on
+`fbe report` and for the same reason: a run that named a baseline and got a page
+with no diff on it reads as a first run rather than as a typo.
+
+Everything that goes wrong here exits 1 with a message, never a traceback, and
+the distinction between them is in the message rather than in the code. There is
+no report to render, which names the date or the directory and the command that
+fills it. The sidecar exists and cannot be read as a report, which says what is
+wrong with it: existing and readable are different questions, and a file written
+by another version or half-copied passes the first. The reports directory holds
+a file matching the sidecar glob with no date in its name, which is refused
+loudly rather than skipped, because skipping it makes the newest report depend on
+what else is in the directory. The rendered page breaks a publishing constraint,
+which lists every violation so the page can be fixed in one pass. Or the
+destination cannot be written. All of them mean the command ran and there is
+nothing here that should be published, which is what code 1 says. None is a usage
+error and none is a guard rule refusing a trade.
+
+The page names its own provenance on the console as well as in its header: the
+as-of date of the run and when that run was generated. `fbe report` exits without
+writing on an empty cache, so a week of failed refreshes leaves the newest report
+where it was and this command renders it without complaint. The file name carries
+the date and `--out` takes even that away, so the line is the only thing left
+saying how old the page is.
+
+When the run was scored under a different config digest from the one in force
+now, that is said too. The page is coloured on today's bands and every conviction
+on it was graded under the ones that were current when it was written, so a
+cell's colour and the conviction beside it can disagree. It is a warning rather
+than a refusal: the report is still the best record of that day.
+
+Nothing is written in either case, and an existing page is left alone. A file on
+disk is the file the owner opens, it carries no sign of having failed a check,
+and yesterday's page is worth more than a blank one. The page is put in place by
+rename, so a reader finds either the previous file or the whole new one, never
+half of the new one.
 
 ### `fbe journal add`
 
@@ -944,15 +1022,41 @@ Single column, in the order the trading day needs it:
 3. **The 28-pair matrix** as a heatmap, base down the rows and quote across the
    columns, cell colour by spread. Diverging scale centred on zero with a
    neutral grey midpoint, so a near-zero cell reads as "no view" rather than as
-   a weak signal. The ranked table underneath carries the same numbers, so no
-   value is available only through colour.
-4. **Shortlist as cards**, one per idea: pair, direction, conviction, reasoning,
+   a weak signal. Every cell prints its own spread and the pair detail below
+   lists all 28 with the same numbers, so no value is available only through
+   colour.
+
+   The diagonal prints `.`, the same placeholder the `--matrix` view uses: a
+   currency has no bias against itself and `0.00` there would read as the
+   engine finding two economies level.
+
+   A cell is faded when either leg scored below full coverage and outlined when
+   the pair carries a marker of its own. Marked rather than blocked: three of
+   the kinds in `fbe.bias.BLOCKERS` record a check that did not run rather than
+   a refusal, and a cell drawn as blocked for one of those says the engine
+   refused the pair. A leg the run holds no score for is neither mark: unknown
+   coverage and reduced coverage are different facts, the cell has room for one
+   mark, and the pair detail says which of the two this is.
+4. **Pair detail**, one disclosure per pair, widest spread first, opening to
+   the seven pillar scores on both legs, the difference each pillar makes to
+   the spread, and the observations behind them with their period, release date
+   and series id. This is the Phase 5 criterion that the dashboard shows its
+   working.
+
+   A pillar the run could not score on a leg prints `.` rather than `0.00`, for
+   the reason the diagonal does. Native `<details>` rather than script, so the
+   panel opens on a page whose script was blocked; the data is inlined at build
+   time and nothing is fetched when it opens.
+
+   Pairs are in market convention here while the matrix mirrors half its cells,
+   so one pair has one panel rather than two that differ only in sign.
+5. **Shortlist as cards**, one per idea: pair, direction, conviction, reasoning,
    size if attached, blackout if any. Cards rather than a table because this is
    the part read on a phone at arm's length.
-5. **Calendar strip.** A 24 hour axis with blackout windows shaded, events
+6. **Calendar strip.** A 24 hour axis with blackout windows shaded, events
    ticked and the current time marked, so "is the window clear" is answered by
    looking rather than by reading.
-6. **Coverage, warnings and the run-to-run diff** in the footer. Both matter and
+7. **Coverage, warnings and the run-to-run diff** in the footer. Both matter and
    neither should be the first thing on the screen.
 
 Colour and layout follow the repository's data visualisation conventions: a
@@ -974,6 +1078,22 @@ It matters more here than in the report. This is the layout Phase 5 asks to be
 readable at arm's length on a phone, and two or three markers repeated down 28
 rows is the density at which the morning review carries on in form and stops in
 substance.
+
+The run conditions render in the header as one line per kind, `kind, n of 28`,
+ordered by how many pairs carry each. A kind on every pair is not repeated on
+the cells; a kind on fewer stays on the cells it belongs to and is named again
+in that pair's detail. `fbe.bias.kind_of` maps an emitted marker back to its
+kind by longest matching prefix, so `event: Core CPI at 12:30` counts as
+`event` and `event:unchecked` counts as itself rather than as a hard block.
+
+**The cards are the half of this rule the dashboard does not yet follow.** A
+shortlist card still lists every marker its pair carries, including one the
+whole run carries. The shortlist is a handful of cards rather than 28 rows, so
+the density argument above does not reach it, and
+`tests/test_blockers.py::test_the_dashboard_says_an_unchecked_marker_was_not_checked`
+pins the card's label on a single-pair run, where every marker is carried by
+every pair. Whether the rule should reach the cards, and what that test should
+then say, is a decision rather than an oversight and is recorded here as one.
 
 ### Publishing constraints
 
