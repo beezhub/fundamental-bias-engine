@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
+    from fbe.bias import EventHorizonGuard
     from fbe.types import BiasReport, Observation, PairBias
 
 __all__ = [
@@ -548,6 +549,14 @@ this repository is `docs/scoring-spec.md`'s own comparison, "6.07% of tiers for
 a single 0.05 shift between two pillar weights", and a second convention beside
 it would make the two figures look comparable when they are not.
 
+That precedent fixes the size and not the construction, and the two differ.
+The spec's figure moves two weights against each other, MONETARY from 0.30 to
+0.35 and EXTERNAL from 0.10 to 0.05, over synthetic runs. This function moves
+one weight and scales the other six proportionally. So the 6.07% is why 0.05
+is a recognisable size in this codebase, and it is not a number this function
+should be expected to reproduce. Nothing here tries to: the figure comes from
+runs that were never committed, so no test could check it honestly.
+
 The cost of absolute is that the seven moves are not comparable with each
 other: 0.05 on ``MONETARY``'s 0.30 is a sixth of it and 0.05 on ``RISK``'s 0.10
 is half. `WeightMove` carries ``weight_before`` and ``weight_after`` so a
@@ -685,6 +694,7 @@ def _rescore(
     config: Config,
     weights: Mapping[PillarName, float],
     asof: date,
+    guard: EventHorizonGuard | None,
 ) -> tuple[PairBias, ...]:
     """Run the real pipeline at one weight vector.
 
@@ -696,6 +706,8 @@ def _rescore(
         weights: The vector to score at, already summing to 1.0.
         asof: The date the run represents, so staleness is measured against
             the morning the report was built rather than against today.
+        guard: The event horizon guard the report was produced under, or
+            ``None``.
 
     Returns:
         The 28 pair rows, in ``universe.ALL_PAIRS`` order.
@@ -706,10 +718,14 @@ def _rescore(
     run differently from the report it is being compared against and every
     difference would be attributed to the weight.
 
-    No event horizon guard is passed. `fbe.bias.build_pair_biases` then applies
-    no 24-hour conviction cap, which is the right reading of a past run being
-    rescored: the cap depends on a calendar the report does not carry, and
-    assuming an event would cap convictions the original run did not.
+    The guard is forwarded rather than decided here. Passing ``None`` is not
+    the same as passing a guard that found something:
+    `fbe.bias._events_within_24h` reads no guard as ``False`` for every
+    currency and applies no cap, which is the right default for a backtest.
+    A report built under a guard that answered ``True`` or ``None`` for some
+    leg carries a cap on those pairs, and rescoring it without the guard
+    lifts the cap rather than adding one. Either way the difference is
+    conviction that no weight moved.
 
     """
     from fbe.bias import build_pair_biases
@@ -718,7 +734,14 @@ def _rescore(
 
     scoring = replace(config.scoring, weights=dict(weights))
     scores = score_currencies(observations, default_pillars(scoring), scoring, asof)
-    return tuple(build_pair_biases(scores, replace(config, scoring=scoring), asof))
+    return tuple(
+        build_pair_biases(
+            scores,
+            replace(config, scoring=scoring),
+            asof,
+            event_horizon_guard=guard,
+        )
+    )
 
 
 def _counts(
@@ -778,6 +801,7 @@ def weight_sensitivity(
     observations: Sequence[Observation],
     *,
     config: Config | None = None,
+    event_horizon_guard: EventHorizonGuard | None = None,
     step: float = DEFAULT_WEIGHT_STEP,
 ) -> WeightSensitivity:
     """Move each pillar weight in turn and report how far the ranking travelled.
@@ -797,6 +821,16 @@ def weight_sensitivity(
             should pass it, because perturbing weights the run did not use
             measures a vector nobody scored with. Never modified: every
             perturbation is scored through a copy.
+        event_horizon_guard: The guard the report was produced under, which
+            has to be the same one. ``None`` is the correct value for a
+            report built without a guard, and is not a neutral choice for
+            one built with a live calendar: `fbe.bias._events_within_24h`
+            reads an absent guard as ``False`` everywhere and applies no
+            cap, so rescoring a capped run without its guard lifts the cap
+            on whichever pairs had an event near them and raises their
+            conviction. The reproduction check refuses that rather than
+            counting it, but the refusal reads as a data problem unless a
+            caller knows to look here.
         step: How far to move each weight, in weight units, absolute and
             unsigned. Each pillar is moved up by it and down by it. Defaults to
             `DEFAULT_WEIGHT_STEP`.
@@ -839,7 +873,9 @@ def weight_sensitivity(
     run_config = config if config is not None else Config()
     weights = run_config.scoring.weights
 
-    baseline = _rescore(observations, run_config, weights, report.asof)
+    baseline = _rescore(
+        observations, run_config, weights, report.asof, event_horizon_guard
+    )
     original = {row.pair: row for row in report.pairs}
     reproduced = len(baseline) == len(original) and all(
         row.pair in original
@@ -852,9 +888,12 @@ def weight_sensitivity(
         raise ValueError(
             f"rescoring the {report.asof} run at its own weights does not "
             "reproduce it, so nothing measured against it would mean what it "
-            "says. The usual cause is observations from a different run than "
-            "the report, or a configuration whose scoring section is not the "
-            "one the report was produced under."
+            "says. The usual causes are observations from a different run "
+            "than the report, a configuration whose scoring section is not "
+            "the one the report was produced under, and an event horizon "
+            "guard that is not the one the run used, which moves conviction "
+            "on whichever pairs had an event near them without touching a "
+            "weight."
         )
 
     moves: list[WeightMove] = []
@@ -867,7 +906,14 @@ def weight_sensitivity(
                 problems.append(str(error))
                 continue
             directions, convictions, largest, worst = _counts(
-                baseline, _rescore(observations, run_config, perturbed, report.asof)
+                baseline,
+                _rescore(
+                    observations,
+                    run_config,
+                    perturbed,
+                    report.asof,
+                    event_horizon_guard,
+                ),
             )
             moves.append(
                 WeightMove(

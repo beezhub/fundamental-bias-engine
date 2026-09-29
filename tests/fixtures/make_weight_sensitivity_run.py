@@ -305,13 +305,80 @@ rather than silently disagreeing with it.
 GLOBAL_SERIES: Mapping[str, float] = {
     "vol_index": 18.6,
     "world_equity_index": 4185.0,
-    "commodity_price": 108.4,
 }
 """Cross-market series, which carry ``GLOBAL`` rather than a currency.
 
-The RISK pillar reads the first two and EXTERNAL the third. They are one value
-for the whole universe by construction, so a currency code on them would be a
-false claim about what the number describes.
+The RISK pillar reads both. They are one value for the whole universe by
+construction, so a currency code on them would be a false claim about what the
+number describes.
+
+``commodity_price`` is not here, and the first version of this file had it
+here, which was wrong in a way that cost three currencies a component without
+saying so. `fbe.datasources.registry` keys that indicator by currency, and
+`fbe.pillars.external` reads one currency's own prices against its
+`CurrencyMeta.commodity_link`. A single GLOBAL print is invisible to all
+eight, so CAD, AUD and NZD scored EXTERNAL without their terms-of-trade
+component and came out a tenth lower on coverage than the other five.
+"""
+
+COMMODITY_PRICES: Mapping[str, tuple[float, float]] = {
+    "CAD": (94.0, 101.2),
+    "AUD": (118.0, 112.6),
+    "NZD": (131.0, 134.9),
+}
+"""The linked commodity, three months back and now, for the three that have one.
+
+USD, EUR, GBP, JPY and CHF carry no ``commodity_link`` and take a deliberate
+0.0 on the component, which `fbe.pillars.external._terms_of_trade` documents
+as a modelling statement rather than an absence. Giving them a price here
+would not change that, so they have none.
+
+Crude is falling and iron ore is falling while dairy rises, so the component
+does not rank the three the same way the rate differentials do. A fixture
+where every component agrees cannot show a weight mattering.
+"""
+
+UNEMPLOYMENT_6M_AGO: Mapping[str, float] = {
+    "USD": 4.45,
+    "EUR": 6.20,
+    "GBP": 4.40,
+    "JPY": 2.55,
+    "CHF": 2.60,
+    "CAD": 6.10,
+    "AUD": 4.30,
+    "NZD": 4.70,
+}
+"""The unemployment rate six months before the run.
+
+`fbe.pillars.employment` scores the six-month change and inverts it, so a
+falling rate is currency-positive. Without a second print the pillar has no
+change to score, carries no weight, and takes every currency below the
+``coverage_demotion`` threshold with it.
+
+USD, JPY and AUD are falling and the rest are rising, so the pillar disagrees
+with the monetary ranking rather than repeating it.
+"""
+
+HISTORY_MONTHS: Mapping[str, int] = {
+    "employment_chg": 4,
+}
+"""Indicators needing several prints, and how many months of them.
+
+`fbe.pillars.employment` totals three months of hiring, so one print leaves the
+component unscored and the pillar with it, since its two components are
+weighted equally and one alone sits at the floor.
+
+Four rather than three, and the fourth is not spare. ``employment_chg`` is a
+diff series, so each value is the change since the print before it, and
+`fbe.pillars.employment._hiring_trend` refuses a window whose oldest print has
+no predecessor one step earlier: without it there is no way to tell whether
+that value spans one month or the hole before it. Three prints starting exactly
+at the window boundary are refused for that reason, which is what the first
+version of this fixture supplied.
+
+The same value is repeated across the window. The fixture is exercising the
+weight, not the shape of a hiring cycle, and a drifting series here would put a
+second moving part into a measurement that should have one.
 """
 
 FRESH_PERIOD: Mapping[Frequency, date] = {
@@ -332,13 +399,20 @@ quarterly period would be stale on arrival.
 """
 
 
-def _observation(indicator: str, currency: str, value: float) -> Observation:
+def _observation(
+    indicator: str, currency: str, value: float, *, months_back: int = 0
+) -> Observation:
     """One observation, with its unit and frequency taken from the registry.
 
     Args:
         indicator: A canonical indicator key.
         currency: The ISO code, or ``GLOBAL`` for a cross-market series.
         value: The published figure, in the registry's unit for that key.
+        months_back: How many whole months before the fresh period this
+            print describes. Whole months because the pillars that read a
+            window measure it in calendar months, so a print offset by
+            thirty days would land inside or outside a six-month window
+            depending on which months it crossed.
 
     Returns:
         The observation, stamped with the period `FRESH_PERIOD` gives for its
@@ -349,13 +423,22 @@ def _observation(indicator: str, currency: str, value: float) -> Observation:
     longer uses.
     """
     meta = INDICATORS[indicator]
+    period = FRESH_PERIOD[meta.frequency]
+    if months_back:
+        month = period.month - months_back
+        year = period.year + (month - 1) // 12
+        period = period.replace(year=year, month=(month - 1) % 12 + 1)
     return Observation(
         indicator=indicator,
         currency=currency,
         value=value,
-        period=FRESH_PERIOD[meta.frequency],
+        period=period,
         source="fixture",
         series_id=f"{indicator.upper()}_{currency}",
+        # Release date tracks the period rather than being fixed, so an
+        # older print is not stamped as having been published after a
+        # newer one. A window read on release order would otherwise take
+        # the six-month-old rate as the current one.
         unit=meta.unit,
         frequency=meta.frequency,
         released_at=RELEASED_AT,
@@ -374,7 +457,28 @@ def observations() -> tuple[Observation, ...]:
     rows: list[Observation] = []
     for currency in G10:
         for indicator, by_currency in SERIES.items():
-            rows.append(_observation(indicator, currency, by_currency[currency]))
+            months = HISTORY_MONTHS.get(indicator, 1)
+            for back in range(months):
+                rows.append(
+                    _observation(
+                        indicator,
+                        currency,
+                        by_currency[currency],
+                        months_back=back,
+                    )
+                )
+        rows.append(
+            _observation(
+                "unemployment_rate",
+                currency,
+                UNEMPLOYMENT_6M_AGO[currency],
+                months_back=6,
+            )
+        )
+        if currency in COMMODITY_PRICES:
+            then, now = COMMODITY_PRICES[currency]
+            rows.append(_observation("commodity_price", currency, then, months_back=3))
+            rows.append(_observation("commodity_price", currency, now))
     for indicator, value in GLOBAL_SERIES.items():
         rows.append(_observation(indicator, "GLOBAL", value))
     return tuple(rows)
@@ -405,6 +509,33 @@ def _observation_payload(observation: Observation) -> dict[str, object]:
     }
 
 
+def no_events(currency: str, asof: date) -> bool:
+    """Answer that no high-impact release sits inside the next 24 hours.
+
+    Args:
+        currency: The leg being asked about. Unused: the answer is the same
+            for the whole universe here.
+        asof: The run date. Unused, for the same reason.
+
+    Returns:
+        Always ``False``, which `fbe.bias.build_pair_biases` reads as "no
+        event", so no pair takes the 24-hour conviction cap.
+
+    This changes nothing about the output and is here to be explicit rather
+    than to have an effect. `fbe.bias._events_within_24h` reads an absent
+    guard as ``False`` for every currency, so a run built with no guard and a
+    run built with this one are identical. What it does is make the fixture
+    say which it is, and give the test that rescores under a capping guard
+    something to contrast against.
+
+    A fixture is not a claim that the calendar was empty that morning. It is
+    a statement that this run is scored as a backtest is scored, with no
+    calendar, which is what a committed cross-section with no events beside
+    it means.
+    """
+    return False
+
+
 def build(config: Config, rows: Sequence[Observation]) -> BiasReport:
     """Score the observations and difference them into the 28 pairs.
 
@@ -422,7 +553,7 @@ def build(config: Config, rows: Sequence[Observation]) -> BiasReport:
     scores = score_currencies(
         rows, default_pillars(config.scoring), config.scoring, ASOF
     )
-    pairs = build_pair_biases(scores, config, ASOF)
+    pairs = build_pair_biases(scores, config, ASOF, event_horizon_guard=no_events)
     return BiasReport(
         asof=ASOF,
         generated_at=GENERATED_AT,

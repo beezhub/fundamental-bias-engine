@@ -144,6 +144,42 @@
     "revision": 0
   },
   {
+    "indicator": "employment_chg",
+    "currency": "USD",
+    "value": 185000.0,
+    "period": "2026-01-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_USD",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "USD",
+    "value": 185000.0,
+    "period": "2025-12-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_USD",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "USD",
+    "value": 185000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_USD",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "employment_level",
     "currency": "USD",
     "value": 161400000.0,
@@ -200,6 +236,18 @@
     "series_id": "COT_NET_PCT_OI_USD",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "unemployment_rate",
+    "currency": "USD",
+    "value": 4.45,
+    "period": "2025-08-01",
+    "source": "fixture",
+    "series_id": "UNEMPLOYMENT_RATE_USD",
+    "unit": "percent",
+    "frequency": "monthly",
     "released_at": "2026-02-20T12:00:00+00:00",
     "revision": 0
   },
@@ -348,6 +396,42 @@
     "revision": 0
   },
   {
+    "indicator": "employment_chg",
+    "currency": "EUR",
+    "value": 96000.0,
+    "period": "2026-01-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_EUR",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "EUR",
+    "value": 96000.0,
+    "period": "2025-12-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_EUR",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "EUR",
+    "value": 96000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_EUR",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "employment_level",
     "currency": "EUR",
     "value": 168900000.0,
@@ -404,6 +488,18 @@
     "series_id": "COT_NET_PCT_OI_EUR",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "unemployment_rate",
+    "currency": "EUR",
+    "value": 6.2,
+    "period": "2025-08-01",
+    "source": "fixture",
+    "series_id": "UNEMPLOYMENT_RATE_EUR",
+    "unit": "percent",
+    "frequency": "monthly",
     "released_at": "2026-02-20T12:00:00+00:00",
     "revision": 0
   },
@@ -552,6 +648,42 @@
     "revision": 0
   },
   {
+    "indicator": "employment_chg",
+    "currency": "GBP",
+    "value": 42000.0,
+    "period": "2026-01-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_GBP",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "GBP",
+    "value": 42000.0,
+    "period": "2025-12-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_GBP",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "GBP",
+    "value": 42000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_GBP",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "employment_level",
     "currency": "GBP",
     "value": 33200000.0,
@@ -608,6 +740,18 @@
     "series_id": "COT_NET_PCT_OI_GBP",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "unemployment_rate",
+    "currency": "GBP",
+    "value": 4.4,
+    "period": "2025-08-01",
+    "source": "fixture",
+    "series_id": "UNEMPLOYMENT_RATE_GBP",
+    "unit": "percent",
+    "frequency": "monthly",
     "released_at": "2026-02-20T12:00:00+00:00",
     "revision": 0
   },
@@ -756,6 +900,42 @@
     "revision": 0
   },
   {
+    "indicator": "employment_chg",
+    "currency": "JPY",
+    "value": 31000.0,
+    "period": "2026-01-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_JPY",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "JPY",
+    "value": 31000.0,
+    "period": "2025-12-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_JPY",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "JPY",
+    "value": 31000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_JPY",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "employment_level",
     "currency": "JPY",
     "value": 67800000.0,
@@ -812,6 +992,18 @@
     "series_id": "COT_NET_PCT_OI_JPY",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "unemployment_rate",
+    "currency": "JPY",
+    "value": 2.55,
+    "period": "2025-08-01",
+    "source": "fixture",
+    "series_id": "UNEMPLOYMENT_RATE_JPY",
+    "unit": "percent",
+    "frequency": "monthly",
     "released_at": "2026-02-20T12:00:00+00:00",
     "revision": 0
   },
@@ -960,6 +1152,42 @@
     "revision": 0
   },
   {
+    "indicator": "employment_chg",
+    "currency": "CHF",
+    "value": 8000.0,
+    "period": "2026-01-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_CHF",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "CHF",
+    "value": 8000.0,
+    "period": "2025-12-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_CHF",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "CHF",
+    "value": 8000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_CHF",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "employment_level",
     "currency": "CHF",
     "value": 5300000.0,
@@ -1016,6 +1244,18 @@
     "series_id": "COT_NET_PCT_OI_CHF",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "unemployment_rate",
+    "currency": "CHF",
+    "value": 2.6,
+    "period": "2025-08-01",
+    "source": "fixture",
+    "series_id": "UNEMPLOYMENT_RATE_CHF",
+    "unit": "percent",
+    "frequency": "monthly",
     "released_at": "2026-02-20T12:00:00+00:00",
     "revision": 0
   },
@@ -1164,6 +1404,42 @@
     "revision": 0
   },
   {
+    "indicator": "employment_chg",
+    "currency": "CAD",
+    "value": 27000.0,
+    "period": "2026-01-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_CAD",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "CAD",
+    "value": 27000.0,
+    "period": "2025-12-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_CAD",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "CAD",
+    "value": 27000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_CAD",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "employment_level",
     "currency": "CAD",
     "value": 20600000.0,
@@ -1220,6 +1496,42 @@
     "series_id": "COT_NET_PCT_OI_CAD",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "unemployment_rate",
+    "currency": "CAD",
+    "value": 6.1,
+    "period": "2025-08-01",
+    "source": "fixture",
+    "series_id": "UNEMPLOYMENT_RATE_CAD",
+    "unit": "percent",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "commodity_price",
+    "currency": "CAD",
+    "value": 94.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "COMMODITY_PRICE_CAD",
+    "unit": "index",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "commodity_price",
+    "currency": "CAD",
+    "value": 101.2,
+    "period": "2026-02-01",
+    "source": "fixture",
+    "series_id": "COMMODITY_PRICE_CAD",
+    "unit": "index",
+    "frequency": "monthly",
     "released_at": "2026-02-20T12:00:00+00:00",
     "revision": 0
   },
@@ -1368,6 +1680,42 @@
     "revision": 0
   },
   {
+    "indicator": "employment_chg",
+    "currency": "AUD",
+    "value": 39000.0,
+    "period": "2026-01-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_AUD",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "AUD",
+    "value": 39000.0,
+    "period": "2025-12-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_AUD",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "AUD",
+    "value": 39000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_AUD",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "employment_level",
     "currency": "AUD",
     "value": 14500000.0,
@@ -1424,6 +1772,42 @@
     "series_id": "COT_NET_PCT_OI_AUD",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "unemployment_rate",
+    "currency": "AUD",
+    "value": 4.3,
+    "period": "2025-08-01",
+    "source": "fixture",
+    "series_id": "UNEMPLOYMENT_RATE_AUD",
+    "unit": "percent",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "commodity_price",
+    "currency": "AUD",
+    "value": 118.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "COMMODITY_PRICE_AUD",
+    "unit": "index",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "commodity_price",
+    "currency": "AUD",
+    "value": 112.6,
+    "period": "2026-02-01",
+    "source": "fixture",
+    "series_id": "COMMODITY_PRICE_AUD",
+    "unit": "index",
+    "frequency": "monthly",
     "released_at": "2026-02-20T12:00:00+00:00",
     "revision": 0
   },
@@ -1572,6 +1956,42 @@
     "revision": 0
   },
   {
+    "indicator": "employment_chg",
+    "currency": "NZD",
+    "value": 4000.0,
+    "period": "2026-01-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_NZD",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "NZD",
+    "value": 4000.0,
+    "period": "2025-12-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_NZD",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "employment_chg",
+    "currency": "NZD",
+    "value": 4000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "EMPLOYMENT_CHG_NZD",
+    "unit": "persons",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "employment_level",
     "currency": "NZD",
     "value": 2900000.0,
@@ -1632,6 +2052,42 @@
     "revision": 0
   },
   {
+    "indicator": "unemployment_rate",
+    "currency": "NZD",
+    "value": 4.7,
+    "period": "2025-08-01",
+    "source": "fixture",
+    "series_id": "UNEMPLOYMENT_RATE_NZD",
+    "unit": "percent",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "commodity_price",
+    "currency": "NZD",
+    "value": 131.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "COMMODITY_PRICE_NZD",
+    "unit": "index",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "commodity_price",
+    "currency": "NZD",
+    "value": 134.9,
+    "period": "2026-02-01",
+    "source": "fixture",
+    "series_id": "COMMODITY_PRICE_NZD",
+    "unit": "index",
+    "frequency": "monthly",
+    "released_at": "2026-02-20T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "vol_index",
     "currency": "GLOBAL",
     "value": 18.6,
@@ -1652,18 +2108,6 @@
     "series_id": "WORLD_EQUITY_INDEX_GLOBAL",
     "unit": "index",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
-    "revision": 0
-  },
-  {
-    "indicator": "commodity_price",
-    "currency": "GLOBAL",
-    "value": 108.4,
-    "period": "2026-02-01",
-    "source": "fixture",
-    "series_id": "COMMODITY_PRICE_GLOBAL",
-    "unit": "index",
-    "frequency": "monthly",
     "released_at": "2026-02-20T12:00:00+00:00",
     "revision": 0
   }
