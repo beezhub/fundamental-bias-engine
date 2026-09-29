@@ -858,6 +858,81 @@ Open: GBPUSD long from 1.3120, stop 1.3068, 2 days held.
 The single plan break was the single worst trade of the week.
 ```
 
+### `fbe evaluate`
+
+Reports what the forward bias record says, and whether it says anything. Twenty
+eight pairs are recorded every morning and a handful are traded in a week, so
+the bias record carries far more evidence than the journal does, and it is the
+only route to an answer this side of years.
+
+Hit rate and average realised move are reported by conviction band, by recorded
+direction and by pillar agreement, each with the number of observations behind
+it and a Wilson interval around it, from `journal.hit_rate_interval`. The
+journal is split the same way on whether the trade agreed with the bias.
+
+Three things the output does that a reader should rely on:
+
+- **The pairs the engine put at `NONE` are their own group.** They are the
+  control. If they perform like the backed bands then the conviction ladder
+  separated nothing, and the two rows sitting next to each other is how that
+  becomes visible.
+- **A group under thirty observations is marked as a record rather than
+  evidence**, in its own row and in a sentence above the tables. On a record
+  that began this month that is most of them, so the marking reads as the
+  normal case rather than as an alarm.
+- **It can conclude that nothing separated from chance**, and says so in those
+  words. A group is named as separating only when its whole interval sits above
+  50% and it clears the evidence threshold: Wilson's lower end at five wins
+  from five is about 0.57, so a rule reading the interval alone would announce
+  a finding from five rows.
+
+A hit is judged against the sign of the recorded spread rather than against
+`Direction`. The two agree wherever the engine graded a direction, because
+`bias.direction_for` reads the same sign, and the spread is what lets the
+`NONE` control have something to have been right about. The average move is
+measured in the direction the call pointed, so a right short and a right long
+reinforce rather than cancel.
+
+Rows from more than one config digest are pooled and the mixture is named at the
+top of the output. Splitting a record this young by digest leaves every bucket
+below the point of being reportable, and cross-sectional scores depend on the
+weights that made them, so the caveat is loud instead.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--reports` | configured reports directory | Directory of dated sidecars. |
+| `--journal` | the packaged journal path | Journal file for the alignment split. |
+| `--format` | `table` | `table`, `json` or `csv`, all carrying the same figures. |
+
+Exit codes: 0 when an evaluation was produced, including one that concluded
+nothing separated. 1 when the reports directory is absent or empty, and when no
+report's window could be priced, which is the ordinary state while the newest
+reports are younger than `horizon_days`. Zeros printed for an unmeasurable
+record would read as a model that called nothing right, which is a different
+fact. Problems from the join go to stderr, so a redirected JSON or CSV stays
+machine readable and a dropped day still reaches the reader.
+
+```console
+$ fbe evaluate
+Forward record: 84 rows, 81 carrying a call.
+Every figure below 30 observations is a record of what happened, not evidence
+about what will. On a record that started this month that is most of them.
+
+By conviction
+  group                                   n     hit      95% interval    avg move
+  high                                    9   55.6%    26.7% to  81.1%      0.112%  record only
+  medium                                 17   47.1%    26.2% to  69.0%     -0.051%  record only
+  none                                   55   50.9%    38.0% to  63.7%      0.004%  record only
+
+No group separates from chance on this record: every interval includes 50%, or
+the group holds too few observations to say. That is a result, not a missing
+answer.
+```
+
+The figures in that block are a layout, not a measurement. Nothing in this
+repository has been evaluated against out-of-sample returns yet, and this
+command is the thing that will do it.
+
 ## The report
 
 `fbe report` writes two files per run: `data/reports/bias-YYYY-MM-DD.md` and

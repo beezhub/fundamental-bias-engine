@@ -18,8 +18,8 @@ Three decisions the issue left open are pinned here rather than in prose:
   to the `Conviction.NONE` control, whose direction is `NEUTRAL` by
   construction. Without it the control has nothing to be right about and stops
   being a control.
-* A move of exactly zero is neither a hit nor a miss, matching how
-  `ConvictionStats` counts a trade closed at breakeven.
+* A move of exactly zero counts in the denominator and not in the numerator,
+  matching how `ConvictionStats` counts a trade closed at breakeven.
 * Agreement is bucketed at `ScoringConfig.min_agreement`, the engine's own
   threshold, rather than at edges invented here.
 
@@ -530,8 +530,16 @@ def test_an_empty_journal_leaves_the_split_out_rather_than_reporting_zeros() -> 
 # ----------------------------------------------------------------------
 
 
-def test_a_move_of_exactly_zero_is_neither_a_hit_nor_a_miss() -> None:
-    """The same rule `ConvictionStats` applies to a trade closed at breakeven."""
+def test_a_move_of_exactly_zero_counts_in_the_denominator_and_not_the_numerator() -> (
+    None
+):
+    """The same rule `ConvictionStats` applies to a trade closed at breakeven.
+
+    Not a third answer: a pair that did not move is in ``observations`` and out
+    of ``hits``, which is arithmetically a miss. A three-valued hit was written
+    first and removed, because nothing downstream could tell it from a miss and
+    a distinction no consumer can act on is a claim rather than behaviour.
+    """
     rows = [
         row(spread=2.0, move=0.01),
         row(spread=2.0, move=0.0),

@@ -689,7 +689,7 @@ def _called(row: ForwardRow) -> Direction | None:
     return None
 
 
-def _hit(row: ForwardRow, call: Direction) -> bool | None:
+def _hit(row: ForwardRow, call: Direction) -> bool:
     """Whether the move went the way the call pointed.
 
     Args:
@@ -697,14 +697,17 @@ def _hit(row: ForwardRow, call: Direction) -> bool | None:
         call: The lean, from `_called`.
 
     Returns:
-        True when the move agreed, False when it went the other way, and
-        ``None`` for a move of exactly zero, which is neither. The row still
-        counts in ``observations``: it happened, and dropping it would shrink
-        the denominator of a rate it is genuinely part of.
+        True when the move agreed with the call, False otherwise.
+
+        A move of exactly zero is False rather than a third answer. It counts
+        in ``observations`` and not in ``hits``, which is how `ConvictionStats`
+        counts a trade closed exactly at breakeven, and the two reports
+        agreeing about the same kind of edge case is worth more than a
+        distinction neither of them can act on. A three-valued answer was
+        written here first and removed: nothing downstream could tell it from
+        False, so it was a claim in a docstring rather than behaviour.
 
     """
-    if row.move == 0.0:
-        return None
     return (row.move > 0.0) if call is Direction.LONG else (row.move < 0.0)
 
 
@@ -718,13 +721,12 @@ def _signed(row: ForwardRow, call: Direction) -> float:
     return row.move if call is Direction.LONG else -row.move
 
 
-def _stats(label: str, outcomes: Sequence[tuple[bool | None, float]]) -> GroupStats:
+def _stats(label: str, outcomes: Sequence[tuple[bool, float]]) -> GroupStats:
     """Build one bucket from its outcomes.
 
     Args:
         label: The bucket's name in the output.
-        outcomes: ``(hit, signed_move)`` per observation, where ``hit`` is
-            ``None`` for a move of exactly zero.
+        outcomes: ``(hit, signed_move)`` per observation.
 
     Returns:
         The bucket. Never called with an empty sequence: a bucket nothing fell
@@ -749,7 +751,7 @@ def _stats(label: str, outcomes: Sequence[tuple[bool | None, float]]) -> GroupSt
 
 
 def _grouped(
-    buckets: Mapping[str, list[tuple[bool | None, float]]],
+    buckets: Mapping[str, list[tuple[bool, float]]],
     order: Sequence[str],
 ) -> tuple[GroupStats, ...]:
     """Turn the collected buckets into stats, in the given label order."""
@@ -797,13 +799,13 @@ def evaluate(
     """
     config = scoring if scoring is not None else ScoringConfig()
 
-    conviction: dict[str, list[tuple[bool | None, float]]] = {
+    conviction: dict[str, list[tuple[bool, float]]] = {
         band.value: [] for band in Conviction
     }
-    direction: dict[str, list[tuple[bool | None, float]]] = {
+    direction: dict[str, list[tuple[bool, float]]] = {
         way.value: [] for way in Direction
     }
-    agreement: dict[str, list[tuple[bool | None, float]]] = {
+    agreement: dict[str, list[tuple[bool, float]]] = {
         AGREEMENT_BROAD: [],
         AGREEMENT_NARROW: [],
     }
@@ -823,16 +825,15 @@ def evaluate(
         broad = row.agreement >= config.min_agreement
         agreement[AGREEMENT_BROAD if broad else AGREEMENT_NARROW].append(outcome)
 
-    alignment: dict[str, list[tuple[bool | None, float]]] = {ALIGNED: [], AGAINST: []}
+    alignment: dict[str, list[tuple[bool, float]]] = {ALIGNED: [], AGAINST: []}
     for record in trades:
         if record.r_multiple is None:
             continue
         label = ALIGNED if record.agreed_with_bias else AGAINST
-        # An r_multiple of exactly zero is a trade closed at breakeven, which
-        # `ConvictionStats` counts as neither a win nor a loss. The same rule
-        # here, so the two reports agree about the same trade.
-        hit = None if record.r_multiple == 0.0 else record.r_multiple > 0.0
-        alignment[label].append((hit, record.r_multiple))
+        # A trade closed exactly at breakeven counts in the denominator and not
+        # in the numerator, which is what `ConvictionStats` does with the same
+        # trade and what `_hit` does with a move of exactly zero.
+        alignment[label].append((record.r_multiple > 0.0, record.r_multiple))
 
     by_conviction = _grouped(conviction, [band.value for band in Conviction])
     by_direction = _grouped(direction, [way.value for way in Direction])
