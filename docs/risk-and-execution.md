@@ -76,8 +76,9 @@ behaviour.
 a stop that is not a finite positive price, a lot step that is not positive, a
 pair that is not six characters, a supplied `risk_fraction` that is not finite,
 and a balance that is not a finite positive amount. None is a fact about the
-trade, so none comes back as a warning, and section 8 below lets the owner read
-an empty `warnings` list as a pass.
+trade, so none comes back as a warning. A malformed input has no size to
+describe and no refusal to report: it is a mistake in what was handed to the
+function, and the caller is the one who can fix it.
 
 The balance is the newest of the five and nothing else checks it.
 `Config.validate` does not, so `RiskConfig(account_balance=0.0)` is
@@ -383,9 +384,47 @@ the plan trades most.
 matched against event titles, on top of whatever impact rating the feed
 publishes: NFP, interest rate decisions, GDP, CPI and PPI, retail sales, UK and
 Canada employment, trade balance, central bank speeches and press conferences,
-FOMC minutes and ECB accounts, geopolitical events and summits. Feeds mislabel.
-An unscheduled ECB remark tagged medium impact still moves a pair forty pips.
-The keyword match catches those.
+FOMC minutes and ECB accounts, geopolitical events and summits. The key both
+maps file that sixth class under is `employment_other`, which is the
+classifier's existing spelling and what the join needs; the plan's own wording
+is the one above. Feeds mislabel. An
+unscheduled ECB remark tagged medium impact still moves a pair forty pips. The
+keyword match catches those.
+
+**Which rating counts is one decision in one place.** `BLACKOUT_IMPACTS` holds
+it, `DEFAULT_MIN_IMPACT` is derived from it so the source returns what the
+guard blocks, and `is_high_impact` reads it rather than naming a level of its
+own. Until #228 it named one, so widening the policy to `Medium` would have had
+the source returning medium rows and the report tagging them while the guard
+blocked none of them.
+
+**Two maps, and they answer different questions.** `HIGH_IMPACT_KEYWORDS`
+decides whether to stop trading. `calendar.AVOID_PATTERNS` decides what to call
+an event on the report. They carry the same ten class names, so a report can
+join a blackout to a class, but a title can land under different keys in each:
+"Unemployment Rate" is filed under `nfp` by the guard, whose keys carry the
+wording of the US release that publishes the rate inside payrolls, and under
+`employment_other` by the classifier, which reads it by subject. On a British
+print the guard's key is the wrong label on a correct block. Join on the event,
+not on the key.
+
+**A tagged row is not always a blocked row, and one case is deliberate.** US
+initial jobless claims, which the feed sends as "Unemployment Claims", prints
+weekly every Thursday. Blocking it would open a blackout on all seven dollar
+pairs one day in five, permanently, and the plan's employment item is the
+monthly payrolls print. So the row is tagged as employment and the guard does
+not call the morning untradeable, which a report showing the class can carry.
+No renderer shows that class yet. The engine names it, the owner judges it.
+Ruled on #228.
+
+**That ruling depends on the policy above.** The feed rates this release
+Medium, so widening `BLACKOUT_IMPACTS` to include Medium blocks it on the
+rating and brings back the weekly blackout the ruling rejected. A test pins
+that consequence, so widening the policy fails it rather than surprising
+someone on a Thursday. Every other row of the committed capture the
+two maps read differently is pinned in `tests/test_blackout_windows.py` with
+its reason, so a wording change in either map fails a test rather than opening
+a quiet gap.
 
 **Clear and unknown are different answers, and only one of them is clear.**
 `is_blacked_out` can return three things: blocked, clear, or unknown. Unknown
@@ -802,8 +841,20 @@ Run this before every ticket. It takes about two minutes.
 
 - [ ] `position_size` run with the **current** USDZAR rate, not this morning's,
       and with whatever second leg the pair needs (`USDJPY` for a yen cross).
-- [ ] `warnings` is empty. If the size is below the broker minimum, the trade
-      does not happen. Do not round up.
+- [ ] `risk.refusing(warnings)` is empty. Read every string in `warnings`, the
+      way the `blockers` box above asks: most of them describe the size that
+      was produced rather than withholding it, and the two that withhold it
+      also come back with `units` and `lots` at zero. If the size is below the
+      broker minimum, the trade does not happen, and it is never rounded up to
+      reach the minimum.
+- [ ] The notes that are not refusals have been read rather than skipped.
+      `size:shortfall` means the lot step cost more than a fifth of the
+      intended risk, which is routine on this account and is why the box below
+      is the one that decides. `spread:unchecked` means the profile lists no
+      spread for this pair, so the tight-stop check did not run: that is a
+      statement about what was checked, not about the trade.
+      `broker:unconfirmed` is on every ticket until a profile is confirmed
+      against a broker contract specification.
 - [ ] **`realised_risk_amount`**, not `risk_amount`, is between R20 and R40.
       That is the money actually on the book after rounding down.
 - [ ] `notional` reads as a rand figure and the leverage it implies is one you
