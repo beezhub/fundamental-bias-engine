@@ -76,8 +76,9 @@ behaviour.
 a stop that is not a finite positive price, a lot step that is not positive, a
 pair that is not six characters, a supplied `risk_fraction` that is not finite,
 and a balance that is not a finite positive amount. None is a fact about the
-trade, so none comes back as a warning, and section 8 below lets the owner read
-an empty `warnings` list as a pass.
+trade, so none comes back as a warning. A malformed input has no size to
+describe and no refusal to report: it is a mistake in what was handed to the
+function, and the caller is the one who can fix it.
 
 The balance is the newest of the five and nothing else checks it.
 `Config.validate` does not, so `RiskConfig(account_balance=0.0)` is
@@ -383,9 +384,47 @@ the plan trades most.
 matched against event titles, on top of whatever impact rating the feed
 publishes: NFP, interest rate decisions, GDP, CPI and PPI, retail sales, UK and
 Canada employment, trade balance, central bank speeches and press conferences,
-FOMC minutes and ECB accounts, geopolitical events and summits. Feeds mislabel.
-An unscheduled ECB remark tagged medium impact still moves a pair forty pips.
-The keyword match catches those.
+FOMC minutes and ECB accounts, geopolitical events and summits. The key both
+maps file that sixth class under is `employment_other`, which is the
+classifier's existing spelling and what the join needs; the plan's own wording
+is the one above. Feeds mislabel. An
+unscheduled ECB remark tagged medium impact still moves a pair forty pips. The
+keyword match catches those.
+
+**Which rating counts is one decision in one place.** `BLACKOUT_IMPACTS` holds
+it, `DEFAULT_MIN_IMPACT` is derived from it so the source returns what the
+guard blocks, and `is_high_impact` reads it rather than naming a level of its
+own. Until #228 it named one, so widening the policy to `Medium` would have had
+the source returning medium rows and the report tagging them while the guard
+blocked none of them.
+
+**Two maps, and they answer different questions.** `HIGH_IMPACT_KEYWORDS`
+decides whether to stop trading. `calendar.AVOID_PATTERNS` decides what to call
+an event on the report. They carry the same ten class names, so a report can
+join a blackout to a class, but a title can land under different keys in each:
+"Unemployment Rate" is filed under `nfp` by the guard, whose keys carry the
+wording of the US release that publishes the rate inside payrolls, and under
+`employment_other` by the classifier, which reads it by subject. On a British
+print the guard's key is the wrong label on a correct block. Join on the event,
+not on the key.
+
+**A tagged row is not always a blocked row, and one case is deliberate.** US
+initial jobless claims, which the feed sends as "Unemployment Claims", prints
+weekly every Thursday. Blocking it would open a blackout on all seven dollar
+pairs one day in five, permanently, and the plan's employment item is the
+monthly payrolls print. So the row is tagged as employment and the guard does
+not call the morning untradeable, which a report showing the class can carry.
+No renderer shows that class yet. The engine names it, the owner judges it.
+Ruled on #228.
+
+**That ruling depends on the policy above.** The feed rates this release
+Medium, so widening `BLACKOUT_IMPACTS` to include Medium blocks it on the
+rating and brings back the weekly blackout the ruling rejected. A test pins
+that consequence, so widening the policy fails it rather than surprising
+someone on a Thursday. Every other row of the committed capture the
+two maps read differently is pinned in `tests/test_blackout_windows.py` with
+its reason, so a wording change in either map fails a test rather than opening
+a quiet gap.
 
 **Clear and unknown are different answers, and only one of them is clear.**
 `is_blacked_out` can return three things: blocked, clear, or unknown. Unknown
@@ -584,8 +623,40 @@ form of this. Closing the gap means a ZAR rate source, which is data work and
 not a change to the journal.
 
 **Discipline flags read this.** `journal.discipline_flags` skips the size half
-of its revenge comparison when either record's `risk_amount` is absent, rather
-than treating an unpriced trade as a small one.
+of its revenge comparison when either record's `risk_amount` is absent, and
+again when the two records carry different account currencies, rather than
+treating an unpriced trade as a small one or comparing ZAR against USD. The
+rest of the rule still fires and the flag simply says nothing about size.
+
+It still finds the loss, which matters because on this account no record holds
+a money figure at all. `r_multiple` is read first and `outcome_zar` next, and
+when both are absent the rule reads the exit price against the entry, carrying
+the direction: a long that exited below its entry lost, a short that exited
+above it lost. That says whether the trade lost and nothing about how much, and
+it needs no rate. Without it the rule would find no loss anywhere in the owner's
+own journal and return an empty sequence, which this document and the function's
+own docstring both tell the reader means a clean run.
+
+`discipline_flags` reads two overtrading limits and keeps them as separate
+flags, distinguished today only by the text of `detail`, since `DisciplineFlag`
+carries three kinds and both of these are `overtrading`.
+`OVERTRADING_TRADES_PER_WEEK` is a habit, counted over any rolling seven-day
+window rather than a calendar week, because three trades late on a Sunday and
+three early the following Tuesday are six inside six days and a calendar
+reading calls both weeks clean. Where several breaching windows overlap, the
+flag reports the densest of them, which is the number worth acting on.
+`max_concurrent_positions` in section 4 is the limit the pre-trade checks exist
+to refuse, so a journal holding a breach of it means the refusal was bypassed or
+never asked for. Note that `_concurrent_check` reports not performed on every
+run today, because it is never given an open book to count, so nothing has in
+fact refused one of these yet.
+
+The function takes a `RiskConfig` and defaults to `RiskConfig()`, which is the
+packaged limit of three rather than whatever is in your own `fbe.yaml`. A caller
+that has loaded a config should pass `load_config().risk`. Nothing in
+`TradeRecord` records the limit that was in force when the trade was entered, so
+reading an old journal against the limit of its day means knowing what that was:
+`config_digest` pins the config but does not spell it out.
 
 **Outcome:** `outcome_zar` net of costs, and `r_multiple`, which is
 `outcome_zar` divided by the realised risk. Both are `None` while the trade is
@@ -624,7 +695,12 @@ rather than assumed.
 
 Run this once a week, at the same time, away from the market.
 
-1. Load the week's records.
+1. Load the last two weeks of records, not one. Both time rules read across
+   the edges of whatever they are given and neither can tell it was handed a
+   slice: a loss that closed on Monday morning is invisible to a book loaded
+   from Monday, and seven days of records fed to a rolling seven-day count is
+   the calendar week the rolling window exists to avoid. Report on the week,
+   load more than it.
 2. Run `evaluate`. Read expectancy by conviction bucket. **Expectancy should
    rise from LOW through MEDIUM to HIGH.** If it does not, the conviction model
    is wrong, and the ladder is actively harmful because it is putting more money
@@ -765,8 +841,20 @@ Run this before every ticket. It takes about two minutes.
 
 - [ ] `position_size` run with the **current** USDZAR rate, not this morning's,
       and with whatever second leg the pair needs (`USDJPY` for a yen cross).
-- [ ] `warnings` is empty. If the size is below the broker minimum, the trade
-      does not happen. Do not round up.
+- [ ] `risk.refusing(warnings)` is empty. Read every string in `warnings`, the
+      way the `blockers` box above asks: most of them describe the size that
+      was produced rather than withholding it, and the two that withhold it
+      also come back with `units` and `lots` at zero. If the size is below the
+      broker minimum, the trade does not happen, and it is never rounded up to
+      reach the minimum.
+- [ ] The notes that are not refusals have been read rather than skipped.
+      `size:shortfall` means the lot step cost more than a fifth of the
+      intended risk, which is routine on this account and is why the box below
+      is the one that decides. `spread:unchecked` means the profile lists no
+      spread for this pair, so the tight-stop check did not run: that is a
+      statement about what was checked, not about the trade.
+      `broker:unconfirmed` is on every ticket until a profile is confirmed
+      against a broker contract specification.
 - [ ] **`realised_risk_amount`**, not `risk_amount`, is between R20 and R40.
       That is the money actually on the book after rounding down.
 - [ ] `notional` reads as a rand figure and the leverage it implies is one you

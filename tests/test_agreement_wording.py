@@ -156,6 +156,13 @@ def _render_dashboard() -> str:
         # The calendar note over the strip, stubbed to a run that
         # consulted its calendar: this test is about one label.
         calendar=SimpleNamespace(unchecked=0, unknown=0, reasons=(), total=0),
+        # The pair detail below the matrix, stubbed the same way: this test is
+        # about one label, and the expansion has its own file.
+        blocker_counts=(),
+        flags=lambda cell: "",
+        expansion=lambda bias: SimpleNamespace(
+            blockers=(), base_coverage=None, quote_coverage=None, rows=()
+        ),
     )
     environment = _environment(PACKAGE_ROOT / "dashboard" / "templates")
     return environment.get_template("dashboard.html.j2").render(**context)
