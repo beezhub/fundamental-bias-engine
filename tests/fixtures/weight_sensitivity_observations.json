@@ -8,7 +8,7 @@
     "series_id": "POLICY_RATE_USD",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -20,7 +20,7 @@
     "series_id": "YIELD_2Y_USD",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -32,7 +32,7 @@
     "series_id": "YIELD_2Y_CHG_1M_USD",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -44,7 +44,7 @@
     "series_id": "YIELD_2Y_CHG_3M_USD",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -56,7 +56,7 @@
     "series_id": "CPI_YOY_USD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -68,7 +68,7 @@
     "series_id": "CORE_CPI_YOY_USD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -80,7 +80,7 @@
     "series_id": "GDP_YOY_USD",
     "unit": "percent",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -92,7 +92,7 @@
     "series_id": "BUSINESS_CONFIDENCE_MFG_USD",
     "unit": "percentage_balance",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -104,7 +104,7 @@
     "series_id": "INDPRO_YOY_USD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -116,7 +116,7 @@
     "series_id": "RETAIL_SALES_YOY_USD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -128,7 +128,7 @@
     "series_id": "UNEMPLOYMENT_RATE_USD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -140,7 +140,7 @@
     "series_id": "EMPLOYMENT_CHG_USD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -152,7 +152,7 @@
     "series_id": "EMPLOYMENT_CHG_USD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -164,7 +164,7 @@
     "series_id": "EMPLOYMENT_CHG_USD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-12-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -176,7 +176,7 @@
     "series_id": "EMPLOYMENT_CHG_USD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -188,7 +188,7 @@
     "series_id": "EMPLOYMENT_LEVEL_USD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -200,7 +200,7 @@
     "series_id": "CURRENT_ACCOUNT_GDP_USD",
     "unit": "percent_of_gdp",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -212,7 +212,7 @@
     "series_id": "TRADE_BALANCE_USD",
     "unit": "usd",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -224,7 +224,7 @@
     "series_id": "GDP_NOMINAL_USD_USD",
     "unit": "usd",
     "frequency": "annual",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -236,7 +236,7 @@
     "series_id": "COT_NET_PCT_OI_USD",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-25T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -248,7 +248,7 @@
     "series_id": "UNEMPLOYMENT_RATE_USD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-08-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -260,7 +260,7 @@
     "series_id": "POLICY_RATE_EUR",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -272,7 +272,7 @@
     "series_id": "YIELD_2Y_EUR",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -284,7 +284,7 @@
     "series_id": "YIELD_2Y_CHG_1M_EUR",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -296,7 +296,7 @@
     "series_id": "YIELD_2Y_CHG_3M_EUR",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -308,7 +308,7 @@
     "series_id": "CPI_YOY_EUR",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -320,7 +320,7 @@
     "series_id": "CORE_CPI_YOY_EUR",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -332,7 +332,7 @@
     "series_id": "GDP_YOY_EUR",
     "unit": "percent",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -344,7 +344,7 @@
     "series_id": "BUSINESS_CONFIDENCE_MFG_EUR",
     "unit": "percentage_balance",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -356,7 +356,7 @@
     "series_id": "INDPRO_YOY_EUR",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -368,7 +368,7 @@
     "series_id": "RETAIL_SALES_YOY_EUR",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -380,7 +380,7 @@
     "series_id": "UNEMPLOYMENT_RATE_EUR",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -392,7 +392,7 @@
     "series_id": "EMPLOYMENT_CHG_EUR",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -404,7 +404,7 @@
     "series_id": "EMPLOYMENT_CHG_EUR",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -416,7 +416,7 @@
     "series_id": "EMPLOYMENT_CHG_EUR",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-12-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -428,7 +428,7 @@
     "series_id": "EMPLOYMENT_CHG_EUR",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -440,7 +440,7 @@
     "series_id": "EMPLOYMENT_LEVEL_EUR",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -452,7 +452,7 @@
     "series_id": "CURRENT_ACCOUNT_GDP_EUR",
     "unit": "percent_of_gdp",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -464,7 +464,7 @@
     "series_id": "TRADE_BALANCE_EUR",
     "unit": "usd",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -476,7 +476,7 @@
     "series_id": "GDP_NOMINAL_USD_EUR",
     "unit": "usd",
     "frequency": "annual",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -488,7 +488,7 @@
     "series_id": "COT_NET_PCT_OI_EUR",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-25T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -500,7 +500,7 @@
     "series_id": "UNEMPLOYMENT_RATE_EUR",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-08-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -512,7 +512,7 @@
     "series_id": "POLICY_RATE_GBP",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -524,7 +524,7 @@
     "series_id": "YIELD_2Y_GBP",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -536,7 +536,7 @@
     "series_id": "YIELD_2Y_CHG_1M_GBP",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -548,7 +548,7 @@
     "series_id": "YIELD_2Y_CHG_3M_GBP",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -560,7 +560,7 @@
     "series_id": "CPI_YOY_GBP",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -572,7 +572,7 @@
     "series_id": "CORE_CPI_YOY_GBP",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -584,7 +584,7 @@
     "series_id": "GDP_YOY_GBP",
     "unit": "percent",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -596,7 +596,7 @@
     "series_id": "BUSINESS_CONFIDENCE_MFG_GBP",
     "unit": "percentage_balance",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -608,7 +608,7 @@
     "series_id": "INDPRO_YOY_GBP",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -620,7 +620,7 @@
     "series_id": "RETAIL_SALES_YOY_GBP",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -632,7 +632,7 @@
     "series_id": "UNEMPLOYMENT_RATE_GBP",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -644,7 +644,7 @@
     "series_id": "EMPLOYMENT_CHG_GBP",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -656,7 +656,7 @@
     "series_id": "EMPLOYMENT_CHG_GBP",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -668,7 +668,7 @@
     "series_id": "EMPLOYMENT_CHG_GBP",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-12-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -680,7 +680,7 @@
     "series_id": "EMPLOYMENT_CHG_GBP",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -692,7 +692,7 @@
     "series_id": "EMPLOYMENT_LEVEL_GBP",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -704,7 +704,7 @@
     "series_id": "CURRENT_ACCOUNT_GDP_GBP",
     "unit": "percent_of_gdp",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -716,7 +716,7 @@
     "series_id": "TRADE_BALANCE_GBP",
     "unit": "usd",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -728,7 +728,7 @@
     "series_id": "GDP_NOMINAL_USD_GBP",
     "unit": "usd",
     "frequency": "annual",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -740,7 +740,7 @@
     "series_id": "COT_NET_PCT_OI_GBP",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-25T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -752,7 +752,7 @@
     "series_id": "UNEMPLOYMENT_RATE_GBP",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-08-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -764,7 +764,7 @@
     "series_id": "POLICY_RATE_JPY",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -776,7 +776,7 @@
     "series_id": "YIELD_2Y_JPY",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -788,7 +788,7 @@
     "series_id": "YIELD_2Y_CHG_1M_JPY",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -800,7 +800,7 @@
     "series_id": "YIELD_2Y_CHG_3M_JPY",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -812,7 +812,7 @@
     "series_id": "CPI_YOY_JPY",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -824,7 +824,7 @@
     "series_id": "CORE_CPI_YOY_JPY",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -836,7 +836,7 @@
     "series_id": "GDP_YOY_JPY",
     "unit": "percent",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -848,7 +848,7 @@
     "series_id": "BUSINESS_CONFIDENCE_MFG_JPY",
     "unit": "percentage_balance",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -860,7 +860,7 @@
     "series_id": "INDPRO_YOY_JPY",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -872,7 +872,7 @@
     "series_id": "RETAIL_SALES_YOY_JPY",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -884,7 +884,7 @@
     "series_id": "UNEMPLOYMENT_RATE_JPY",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -896,7 +896,7 @@
     "series_id": "EMPLOYMENT_CHG_JPY",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -908,7 +908,7 @@
     "series_id": "EMPLOYMENT_CHG_JPY",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -920,7 +920,7 @@
     "series_id": "EMPLOYMENT_CHG_JPY",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-12-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -932,7 +932,7 @@
     "series_id": "EMPLOYMENT_CHG_JPY",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -944,7 +944,7 @@
     "series_id": "EMPLOYMENT_LEVEL_JPY",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -956,7 +956,7 @@
     "series_id": "CURRENT_ACCOUNT_GDP_JPY",
     "unit": "percent_of_gdp",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -968,7 +968,7 @@
     "series_id": "TRADE_BALANCE_JPY",
     "unit": "usd",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -980,7 +980,7 @@
     "series_id": "GDP_NOMINAL_USD_JPY",
     "unit": "usd",
     "frequency": "annual",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -992,7 +992,7 @@
     "series_id": "COT_NET_PCT_OI_JPY",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-25T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1004,7 +1004,7 @@
     "series_id": "UNEMPLOYMENT_RATE_JPY",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-08-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1016,7 +1016,7 @@
     "series_id": "POLICY_RATE_CHF",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1028,7 +1028,7 @@
     "series_id": "YIELD_2Y_CHF",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1040,7 +1040,7 @@
     "series_id": "YIELD_2Y_CHG_1M_CHF",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1052,7 +1052,7 @@
     "series_id": "YIELD_2Y_CHG_3M_CHF",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1064,7 +1064,7 @@
     "series_id": "CPI_YOY_CHF",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1076,7 +1076,7 @@
     "series_id": "CORE_CPI_YOY_CHF",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1088,7 +1088,7 @@
     "series_id": "GDP_YOY_CHF",
     "unit": "percent",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1100,7 +1100,7 @@
     "series_id": "BUSINESS_CONFIDENCE_MFG_CHF",
     "unit": "percentage_balance",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1112,7 +1112,7 @@
     "series_id": "INDPRO_YOY_CHF",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1124,7 +1124,7 @@
     "series_id": "RETAIL_SALES_YOY_CHF",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1136,7 +1136,7 @@
     "series_id": "UNEMPLOYMENT_RATE_CHF",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1148,7 +1148,7 @@
     "series_id": "EMPLOYMENT_CHG_CHF",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1160,7 +1160,7 @@
     "series_id": "EMPLOYMENT_CHG_CHF",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1172,7 +1172,7 @@
     "series_id": "EMPLOYMENT_CHG_CHF",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-12-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1184,7 +1184,7 @@
     "series_id": "EMPLOYMENT_CHG_CHF",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1196,7 +1196,7 @@
     "series_id": "EMPLOYMENT_LEVEL_CHF",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1208,7 +1208,7 @@
     "series_id": "CURRENT_ACCOUNT_GDP_CHF",
     "unit": "percent_of_gdp",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1220,7 +1220,7 @@
     "series_id": "TRADE_BALANCE_CHF",
     "unit": "usd",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1232,7 +1232,7 @@
     "series_id": "GDP_NOMINAL_USD_CHF",
     "unit": "usd",
     "frequency": "annual",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1244,7 +1244,7 @@
     "series_id": "COT_NET_PCT_OI_CHF",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-25T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1256,7 +1256,7 @@
     "series_id": "UNEMPLOYMENT_RATE_CHF",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-08-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1268,7 +1268,7 @@
     "series_id": "POLICY_RATE_CAD",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1280,7 +1280,7 @@
     "series_id": "YIELD_2Y_CAD",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1292,7 +1292,7 @@
     "series_id": "YIELD_2Y_CHG_1M_CAD",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1304,7 +1304,7 @@
     "series_id": "YIELD_2Y_CHG_3M_CAD",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1316,7 +1316,7 @@
     "series_id": "CPI_YOY_CAD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1328,7 +1328,7 @@
     "series_id": "CORE_CPI_YOY_CAD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1340,7 +1340,7 @@
     "series_id": "GDP_YOY_CAD",
     "unit": "percent",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1352,7 +1352,7 @@
     "series_id": "BUSINESS_CONFIDENCE_MFG_CAD",
     "unit": "percentage_balance",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1364,7 +1364,7 @@
     "series_id": "INDPRO_YOY_CAD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1376,7 +1376,7 @@
     "series_id": "RETAIL_SALES_YOY_CAD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1388,7 +1388,7 @@
     "series_id": "UNEMPLOYMENT_RATE_CAD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1400,7 +1400,7 @@
     "series_id": "EMPLOYMENT_CHG_CAD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1412,7 +1412,7 @@
     "series_id": "EMPLOYMENT_CHG_CAD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1424,7 +1424,7 @@
     "series_id": "EMPLOYMENT_CHG_CAD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-12-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1436,7 +1436,7 @@
     "series_id": "EMPLOYMENT_CHG_CAD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1448,7 +1448,7 @@
     "series_id": "EMPLOYMENT_LEVEL_CAD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1460,7 +1460,7 @@
     "series_id": "CURRENT_ACCOUNT_GDP_CAD",
     "unit": "percent_of_gdp",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1472,7 +1472,7 @@
     "series_id": "TRADE_BALANCE_CAD",
     "unit": "usd",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1484,7 +1484,7 @@
     "series_id": "GDP_NOMINAL_USD_CAD",
     "unit": "usd",
     "frequency": "annual",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1496,7 +1496,7 @@
     "series_id": "COT_NET_PCT_OI_CAD",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-25T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1508,7 +1508,7 @@
     "series_id": "UNEMPLOYMENT_RATE_CAD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-08-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1520,7 +1520,7 @@
     "series_id": "COMMODITY_PRICE_CAD",
     "unit": "index",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1532,7 +1532,7 @@
     "series_id": "COMMODITY_PRICE_CAD",
     "unit": "index",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1544,7 +1544,7 @@
     "series_id": "POLICY_RATE_AUD",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1556,7 +1556,7 @@
     "series_id": "YIELD_2Y_AUD",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1568,7 +1568,7 @@
     "series_id": "YIELD_2Y_CHG_1M_AUD",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1580,7 +1580,7 @@
     "series_id": "YIELD_2Y_CHG_3M_AUD",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1592,7 +1592,7 @@
     "series_id": "CPI_YOY_AUD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1604,7 +1604,7 @@
     "series_id": "CORE_CPI_YOY_AUD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1616,7 +1616,7 @@
     "series_id": "GDP_YOY_AUD",
     "unit": "percent",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1628,7 +1628,7 @@
     "series_id": "BUSINESS_CONFIDENCE_MFG_AUD",
     "unit": "percentage_balance",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1640,7 +1640,7 @@
     "series_id": "INDPRO_YOY_AUD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1652,7 +1652,7 @@
     "series_id": "RETAIL_SALES_YOY_AUD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1664,7 +1664,7 @@
     "series_id": "UNEMPLOYMENT_RATE_AUD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1676,7 +1676,7 @@
     "series_id": "EMPLOYMENT_CHG_AUD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1688,7 +1688,7 @@
     "series_id": "EMPLOYMENT_CHG_AUD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1700,7 +1700,7 @@
     "series_id": "EMPLOYMENT_CHG_AUD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-12-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1712,7 +1712,7 @@
     "series_id": "EMPLOYMENT_CHG_AUD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1724,7 +1724,7 @@
     "series_id": "EMPLOYMENT_LEVEL_AUD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1736,7 +1736,7 @@
     "series_id": "CURRENT_ACCOUNT_GDP_AUD",
     "unit": "percent_of_gdp",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1748,7 +1748,7 @@
     "series_id": "TRADE_BALANCE_AUD",
     "unit": "usd",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1760,7 +1760,7 @@
     "series_id": "GDP_NOMINAL_USD_AUD",
     "unit": "usd",
     "frequency": "annual",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1772,7 +1772,7 @@
     "series_id": "COT_NET_PCT_OI_AUD",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-25T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1784,7 +1784,7 @@
     "series_id": "UNEMPLOYMENT_RATE_AUD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-08-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1796,7 +1796,7 @@
     "series_id": "COMMODITY_PRICE_AUD",
     "unit": "index",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1808,7 +1808,7 @@
     "series_id": "COMMODITY_PRICE_AUD",
     "unit": "index",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1820,7 +1820,7 @@
     "series_id": "POLICY_RATE_NZD",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1832,7 +1832,7 @@
     "series_id": "YIELD_2Y_NZD",
     "unit": "percent",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1844,7 +1844,7 @@
     "series_id": "YIELD_2Y_CHG_1M_NZD",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1856,7 +1856,7 @@
     "series_id": "YIELD_2Y_CHG_3M_NZD",
     "unit": "basis_points",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1868,7 +1868,7 @@
     "series_id": "CPI_YOY_NZD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1880,7 +1880,7 @@
     "series_id": "CORE_CPI_YOY_NZD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1892,7 +1892,7 @@
     "series_id": "GDP_YOY_NZD",
     "unit": "percent",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1904,7 +1904,7 @@
     "series_id": "BUSINESS_CONFIDENCE_MFG_NZD",
     "unit": "percentage_balance",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1916,7 +1916,7 @@
     "series_id": "INDPRO_YOY_NZD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1928,7 +1928,7 @@
     "series_id": "RETAIL_SALES_YOY_NZD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1940,7 +1940,7 @@
     "series_id": "UNEMPLOYMENT_RATE_NZD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1952,7 +1952,7 @@
     "series_id": "EMPLOYMENT_CHG_NZD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1964,7 +1964,7 @@
     "series_id": "EMPLOYMENT_CHG_NZD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1976,7 +1976,7 @@
     "series_id": "EMPLOYMENT_CHG_NZD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-12-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1988,7 +1988,7 @@
     "series_id": "EMPLOYMENT_CHG_NZD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -2000,7 +2000,7 @@
     "series_id": "EMPLOYMENT_LEVEL_NZD",
     "unit": "persons",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -2012,7 +2012,7 @@
     "series_id": "CURRENT_ACCOUNT_GDP_NZD",
     "unit": "percent_of_gdp",
     "frequency": "quarterly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -2024,7 +2024,7 @@
     "series_id": "TRADE_BALANCE_NZD",
     "unit": "usd",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -2036,7 +2036,7 @@
     "series_id": "GDP_NOMINAL_USD_NZD",
     "unit": "usd",
     "frequency": "annual",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-01-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -2048,7 +2048,7 @@
     "series_id": "COT_NET_PCT_OI_NZD",
     "unit": "percent_of_open_interest",
     "frequency": "weekly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-25T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -2060,7 +2060,7 @@
     "series_id": "UNEMPLOYMENT_RATE_NZD",
     "unit": "percent",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-08-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -2072,7 +2072,7 @@
     "series_id": "COMMODITY_PRICE_NZD",
     "unit": "index",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -2084,7 +2084,7 @@
     "series_id": "COMMODITY_PRICE_NZD",
     "unit": "index",
     "frequency": "monthly",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -2096,7 +2096,7 @@
     "series_id": "VOL_INDEX_GLOBAL",
     "unit": "index",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -2108,7 +2108,7 @@
     "series_id": "WORLD_EQUITY_INDEX_GLOBAL",
     "unit": "index",
     "frequency": "daily",
-    "released_at": "2026-02-20T12:00:00+00:00",
+    "released_at": "2026-02-28T12:00:00+00:00",
     "revision": 0
   }
 ]

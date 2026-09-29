@@ -34,6 +34,7 @@ compares an implementation to itself passes whatever the implementation does.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -263,10 +264,10 @@ def test_the_counts_are_recomputed_against_the_unperturbed_run(
 ) -> None:
     """Criterion 3, checked by recomputing one row from the report itself.
 
-    ``MONETARY`` up by the default step is rescored here from the same two
+    ``INFLATION`` up by the default step is rescored here from the same two
     functions, and the three figures are counted off the two pair lists by
     hand. If the module and this test agree, they agree about a number neither
-    took from the other.
+    took from the other. The comment below says why this row and not another.
     """
     from fbe.bias import build_pair_biases
     from fbe.pillars import default_pillars
@@ -393,7 +394,10 @@ def test_the_unperturbed_weights_reproduce_the_report_exactly(
     """
     result = weight_sensitivity(report, observations, event_horizon_guard=no_events)
 
-    assert result.baseline_matches_report
+    # The reproduction is asserted by the run having returned at all, since a
+    # baseline that does not rebuild the report raises, and then row by row
+    # here. There is no flag to read: one that could only ever be true would
+    # tell a caller nothing.
     assert [row.pair for row in result.baseline] == [row.pair for row in report.pairs]
     for rebuilt, original in zip(result.baseline, report.pairs, strict=True):
         assert rebuilt.spread == original.spread, rebuilt.pair
@@ -481,8 +485,9 @@ def test_the_observations_are_read_rather_than_refetched(
     weight change. Asserted by feeding it a different universe and seeing the
     answer follow the observations.
     """
-    result = weight_sensitivity(report, observations, event_horizon_guard=no_events)
-    assert result.baseline_matches_report
+    # Returning at all is the assertion: the baseline rebuilt the report from
+    # these observations.
+    weight_sensitivity(report, observations, event_horizon_guard=no_events)
 
     # One currency moved, not all of them. Every pillar here normalises
     # cross-sectionally, so doubling the whole universe leaves every z-score
@@ -825,9 +830,8 @@ def test_a_report_rescored_without_its_guard_is_refused(
         row.conviction for row in report.pairs
     ]
 
-    assert weight_sensitivity(
-        guarded, observations, event_horizon_guard=jpy_event
-    ).baseline_matches_report
+    # Under its own guard the run reproduces, so it returns rather than raising.
+    weight_sensitivity(guarded, observations, event_horizon_guard=jpy_event)
 
     with pytest.raises(ValueError, match="does not reproduce"):
         weight_sensitivity(guarded, observations, event_horizon_guard=no_events)
@@ -928,12 +932,13 @@ def test_the_ranking_tie_break_is_the_pair_name(report: BiasReport) -> None:
         replace(narrowest, pair="AAAAAA", spread=-widest.spread),
     )
 
-    assert [row.pair for row in ranked_pairs(tied)] == [
-        "AAAAAA",
-        "ZZZZZZ",
-        widest.pair,
-    ] or [row.pair for row in ranked_pairs(tied)] == sorted(row.pair for row in tied)
+    # One assertion, not a disjunction. The order the first branch allowed was
+    # ``[AAAAAA, ZZZZZZ, USDJPY]``, which is exactly what a tie-break on the
+    # signed spread produces and is the most plausible wrong one available. A
+    # test named for the pair-name tie-break that accepted it would certify the
+    # thing it forbids.
     assert len({abs(row.spread) for row in tied}) == 1
+    assert [row.pair for row in ranked_pairs(tied)] == sorted(row.pair for row in tied)
 
 
 def test_a_run_holding_different_pairs_is_refused() -> None:
@@ -991,3 +996,125 @@ def test_the_reported_pair_is_the_first_by_name_when_several_tie() -> None:
     assert largest == 1
     assert len(moved) > 1, "the constructed tie has stopped being a tie"
     assert worst == min(moved)
+
+
+def test_the_guard_is_asked_once_per_currency_for_the_whole_run(
+    report: BiasReport, observations: Sequence[Observation]
+) -> None:
+    """A sensitivity run rescores fifteen times and must ask the guard once.
+
+    `fbe.bias` asks the guard once per currency per rescore, so an unmemoised
+    guard over eight currencies is asked 120 times in one call.
+    `fbe.bias.apply_filters` already puts the memoisation on the caller in
+    writing, because a guard backed by a live fetch can time out and answer
+    ``None``, which `fbe.bias.conviction_for` treats exactly as ``True``.
+
+    Unmemoised, a timeout on the ninth perturbation caps every pair on that leg
+    and arrives in the output as a conviction change with a weight's name on
+    it. Nothing in the result would record that a calendar lookup failed, which
+    is a plausible number meaning something entirely different from what the
+    field says.
+    """
+    asked: list[str] = []
+
+    def counting(currency: str, asof: date) -> bool:
+        asked.append(currency)
+        return False
+
+    weight_sensitivity(report, observations, event_horizon_guard=counting)
+
+    assert asked, "the guard was never asked"
+    assert len(asked) == len(set(asked)), (
+        f"the guard was asked {len(asked)} times for {len(set(asked))} "
+        "currencies, so two rescores could get different answers"
+    )
+
+
+def test_an_unstable_guard_cannot_reach_two_different_rescores(
+    report: BiasReport, observations: Sequence[Observation]
+) -> None:
+    """The memoisation holds even when the guard itself is not stable.
+
+    Asserting the call count pins the mechanism; this pins the consequence.
+    The guard below answers ``False`` the first time it is asked about a
+    currency and ``None`` every time after, which is the failed fetch the
+    memoisation exists for. Memoised, no rescore ever sees the ``None`` and the
+    run is identical to one under a stable guard. Unmemoised, the baseline
+    would still reproduce, because it asks first and gets the good answer, and
+    then every perturbation would be scored against a universe capped at LOW
+    and the counts would be inflated with no refusal anywhere.
+
+    So the assertion is equality with the stable run rather than a raise. A
+    wrong answer here does not announce itself, which is the reason to pin it.
+    """
+    asked: dict[str, int] = {}
+
+    def flaky(currency: str, asof: date) -> bool | None:
+        asked[currency] = asked.get(currency, 0) + 1
+        return False if asked[currency] == 1 else None
+
+    stable = weight_sensitivity(report, observations, event_horizon_guard=no_events)
+    result = weight_sensitivity(report, observations, event_horizon_guard=flaky)
+
+    assert result.moves
+    assert [
+        (m.pillar, m.step, m.directions_changed, m.convictions_changed)
+        for m in result.moves
+    ] == [
+        (m.pillar, m.step, m.directions_changed, m.convictions_changed)
+        for m in stable.moves
+    ]
+
+
+def test_the_coverage_channel_is_on_every_row(
+    report: BiasReport, observations: Sequence[Observation]
+) -> None:
+    """The figure that explains a dead pillar's counts, carried in the output.
+
+    Without it the table shows POSITIONING and RISK tied with the heaviest live
+    pillar at eleven direction changes, and the knowledge that those eleven are
+    a coverage demotion rather than eleven pairs changing side lives only in
+    this file. `WeightMove` carries coverage before and after so the reader of
+    the table can tell the two apart.
+    """
+    result = weight_sensitivity(report, observations, event_horizon_guard=no_events)
+    scored = {
+        name
+        for currency in report.currencies
+        for name, pillar in currency.pillars.items()
+        if pillar.weight > 0.0
+    }
+
+    for move in result.moves:
+        assert 0.0 <= move.coverage_after <= 1.0, move.pillar
+        assert move.coverage_before == pytest.approx(
+            min(score.coverage for score in report.currencies)
+        )
+
+    # Raising a dead pillar's weight is the case: no composite moves and
+    # coverage falls, which is the whole of its effect.
+    dead_up = [
+        move for move in result.moves if move.pillar not in scored and move.step > 0
+    ]
+
+    assert dead_up
+    for move in dead_up:
+        assert move.coverage_after < move.coverage_before, move.pillar
+        assert move.largest_rank_move == 0, move.pillar
+
+
+def test_a_step_that_is_not_a_number_is_refused(
+    report: BiasReport, observations: Sequence[Observation]
+) -> None:
+    """NaN passes a bare range check, because every comparison against it is False.
+
+    `fbe.bias._refuse_unusable` and `fbe.risk.position_size` both guard this
+    explicitly and say why. Unguarded here it returned a `WeightSensitivity`
+    carrying fourteen refusals, no rows and a step of NaN, which reads as a run
+    that happened rather than one that could not.
+    """
+    for step in (math.nan, math.inf):
+        with pytest.raises(ValueError, match="finite"):
+            weight_sensitivity(
+                report, observations, event_horizon_guard=no_events, step=step
+            )

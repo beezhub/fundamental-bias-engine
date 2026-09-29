@@ -45,13 +45,17 @@ counts and the intervals in front of them.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from fbe.bias import build_pair_biases
 from fbe.config import Config, ScoringConfig
+from fbe.pillars import default_pillars
 from fbe.report import SIDECAR_GLOB, load_report, ranked_pairs
 from fbe.risk import MissingRateError, convert_rate
+from fbe.scoring import score_currencies
 from fbe.types import Conviction, Direction, PillarName
 
 if TYPE_CHECKING:
@@ -59,7 +63,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from fbe.bias import EventHorizonGuard
-    from fbe.types import BiasReport, Observation, PairBias
+    from fbe.types import BiasReport, CurrencyScore, Observation, PairBias
 
 __all__ = [
     "CROSS_SECTION_NOTE",
@@ -530,7 +534,11 @@ CROSS_SECTION_NOTE = (
     "be moved without disturbing the ranking is not thereby useless, and one "
     "that disturbs it a lot is not thereby right: both are statements about "
     "this morning's eight currencies and the 28 pairs built from them, not "
-    "about whether any of it was correct."
+    "about whether any of it was correct. Read the two counts against "
+    "coverage before concluding anything about a pillar: a weight can move "
+    "conviction by changing how much of the model had an opinion, without "
+    "moving any currency's score, and a pillar that scored nothing at all "
+    "can do it."
 )
 """What the sensitivity figures are, and the two conclusions they do not support.
 
@@ -581,13 +589,26 @@ class WeightMove:
         weights: The whole perturbed vector, summing to 1.0. A copy; writing
             through it reaches nothing.
         directions_changed: How many of the run's pairs came back with a
-            different `fbe.types.Direction`. A flip is the loudest thing a
-            weight can do, because it is the one that puts the trader on the
-            other side of the pair.
+            different `fbe.types.Direction`. **Not the same as how many
+            changed side.** `fbe.bias.build_pair_biases` forces ``NEUTRAL``
+            on any pair it grades ``Conviction.NONE``, so a pair demoted out
+            of the bands counts here without its spread having crossed zero.
+            Read with ``coverage_after``: where that fell through
+            ``coverage_demotion`` the count is mostly demotions, and where
+            it held the count is mostly genuine flips.
         convictions_changed: How many came back in a different
             `fbe.types.Conviction` band, counted in either direction. A band
             change moves position size through `fbe.risk`, so it is not
-            cosmetic even where the direction held.
+            cosmetic even where the direction held. Subject to the same
+            coverage caveat.
+        coverage_before: The lowest `fbe.types.CurrencyScore.coverage` in the
+            run at the configured weights, which is the leg that decides the
+            demotion for any pair it appears in.
+        coverage_after: The same at the perturbed weights. It moves whenever
+            a pillar that scored nothing has its weight changed, because
+            coverage is the share of weight that scored, and it is the
+            channel by which a dead pillar moves the two counts above while
+            moving no composite at all.
         largest_rank_move: The furthest any single pair travelled in the
             ranking, in places, against `fbe.report.ranked_pairs`. Zero means
             the order was untouched.
@@ -605,6 +626,8 @@ class WeightMove:
     directions_changed: int
     convictions_changed: int
     largest_rank_move: int
+    coverage_before: float
+    coverage_after: float
     largest_rank_move_pair: str | None = None
 
 
@@ -617,15 +640,17 @@ class WeightSensitivity:
             outlives the cross-section it describes.
         step: The step the run used, so the output states the number rather
             than assuming the reader passed the default.
-        baseline: The pairs as rescored at the original weights, in the
-            report's own order.
-        baseline_matches_report: Whether ``baseline`` reproduced the report it
-            started from. Always true on a returned result, because a run that
-            could not reproduce its own starting point raises instead. It is a
-            field rather than an assumption so a caller writing the result out
-            records which it was.
-        moves: Fourteen rows, seven pillars up and down, in `fbe.types.
-            PillarName` order with the upward move first.
+        baseline: The pairs as rescored at the configured weights, in
+            ``universe.ALL_PAIRS`` order, which is the order
+            `fbe.bias.build_pair_biases` returns and not necessarily the
+            order the report's sidecar was written in. That it reproduced
+            the report is not a field here: a run that cannot rebuild its
+            own starting point raises, so a flag could only ever read true
+            and would tell a reader nothing.
+        moves: Fourteen rows, seven pillars up and down, in
+            `fbe.types.PillarName` order with the upward move first. Fewer
+            when a step cannot be applied, with a line in ``problems`` for
+            each one left out.
         problems: One sentence per perturbation that could not be made. Never
             silently empty: a pillar missing from ``moves`` with nothing said
             about it reads as a pillar nothing moved.
@@ -636,7 +661,6 @@ class WeightSensitivity:
     asof: date
     step: float
     baseline: tuple[PairBias, ...] = ()
-    baseline_matches_report: bool = False
     moves: tuple[WeightMove, ...] = ()
     problems: tuple[str, ...] = ()
     note: str = CROSS_SECTION_NOTE
@@ -695,7 +719,7 @@ def _rescore(
     weights: Mapping[PillarName, float],
     asof: date,
     guard: EventHorizonGuard | None,
-) -> tuple[PairBias, ...]:
+) -> tuple[Sequence[CurrencyScore], tuple[PairBias, ...]]:
     """Run the real pipeline at one weight vector.
 
     Args:
@@ -710,7 +734,11 @@ def _rescore(
             ``None``.
 
     Returns:
-        The 28 pair rows, in ``universe.ALL_PAIRS`` order.
+        The currency scores and the 28 pair rows, in
+        ``universe.ALL_PAIRS`` order. The scores come back because coverage
+        is read off them: it is the share of weight that scored, so it
+        moves with the weights, and it is the channel by which a pillar
+        that scored nothing still changes a conviction.
 
     The two functions are `fbe.scoring.score_currencies` and
     `fbe.bias.build_pair_biases`, called rather than reimplemented, because a
@@ -728,13 +756,9 @@ def _rescore(
     conviction that no weight moved.
 
     """
-    from fbe.bias import build_pair_biases
-    from fbe.pillars import default_pillars
-    from fbe.scoring import score_currencies
-
     scoring = replace(config.scoring, weights=dict(weights))
     scores = score_currencies(observations, default_pillars(scoring), scoring, asof)
-    return tuple(
+    return scores, tuple(
         build_pair_biases(
             scores,
             replace(config, scoring=scoring),
@@ -796,6 +820,44 @@ def _counts(
     return directions, convictions, largest, worst
 
 
+def _memoised(guard: EventHorizonGuard | None) -> EventHorizonGuard | None:
+    """Wrap a guard so it answers each currency once for the whole run.
+
+    Args:
+        guard: The caller's guard, or ``None``.
+
+    Returns:
+        ``None`` unchanged, or a callable holding the first answer it got
+        for each currency and returning it thereafter.
+
+    A sensitivity run rescores fifteen times, and `fbe.bias` asks the guard
+    once per currency per rescore, so an eight-currency universe asks 120
+    times. `fbe.bias.apply_filters` already puts the memoisation on the
+    caller in writing, for the same reason at a fourteenth of the scale: a
+    guard backed by a live fetch can time out and answer ``None``, which
+    `fbe.bias.conviction_for` treats exactly as ``True``, and every pair on
+    that leg caps at ``LOW``.
+
+    Unmemoised, that arrives as a count. One perturbation reports seven
+    conviction changes on the dollar's pairs, the table says a weight did
+    it, and nothing anywhere records that a calendar lookup failed. Every
+    figure here is a difference between two runs, so the two runs have to
+    differ in one thing.
+
+    """
+    if guard is None:
+        return None
+
+    answers: dict[str, bool | None] = {}
+
+    def once(currency: str, asof: date) -> bool | None:
+        if currency not in answers:
+            answers[currency] = guard(currency, asof)
+        return answers[currency]
+
+    return once
+
+
 def weight_sensitivity(
     report: BiasReport,
     observations: Sequence[Observation],
@@ -822,8 +884,12 @@ def weight_sensitivity(
             measures a vector nobody scored with. Never modified: every
             perturbation is scored through a copy.
         event_horizon_guard: The guard the report was produced under, which
-            has to be the same one. ``None`` is the correct value for a
-            report built without a guard, and is not a neutral choice for
+            is memoised here so every rescore sees the same answer for a
+            given currency. A guard that answered differently between two
+            of the fifteen runs would show up as a conviction change with a
+            weight's name on it. It has to be the same one. ``None`` is the
+            correct value for a report built without a guard, and is not a
+            neutral choice for
             one built with a live calendar: `fbe.bias._events_within_24h`
             reads an absent guard as ``False`` everywhere and applies no
             cap, so rescoring a capped run without its guard lifts the cap
@@ -864,18 +930,23 @@ def weight_sensitivity(
     produced. Nothing here writes a weight back.
 
     """
-    if step <= 0.0:
+    if not math.isfinite(step) or step <= 0.0:
         raise ValueError(
-            f"step must be above zero, got {step}. A step of zero moves no "
-            "weight and would report every pillar as having changed nothing."
+            f"step must be a finite number above zero, got {step}. A step of "
+            "zero moves no weight and would report every pillar as having "
+            "changed nothing, and every comparison against NaN is False, so "
+            "an unusable number passes a bare range check and comes back as "
+            "a run with fourteen refusals and no rows."
         )
 
     run_config = config if config is not None else Config()
     weights = run_config.scoring.weights
+    guard = _memoised(event_horizon_guard)
 
-    baseline = _rescore(
-        observations, run_config, weights, report.asof, event_horizon_guard
+    base_scores, baseline = _rescore(
+        observations, run_config, weights, report.asof, guard
     )
+    coverage_before = min(score.coverage for score in base_scores)
     original = {row.pair: row for row in report.pairs}
     reproduced = len(baseline) == len(original) and all(
         row.pair in original
@@ -893,7 +964,12 @@ def weight_sensitivity(
             "the one the report was produced under, and an event horizon "
             "guard that is not the one the run used, which moves conviction "
             "on whichever pairs had an event near them without touching a "
-            "weight."
+            "weight. A fourth becomes possible the day the runner starts "
+            "loading blend standard deviations from past reports: the "
+            "pillars here are built without that history, so a report "
+            "scored on the rolling divisor cannot be rebuilt on the "
+            "run-local one. Check PillarScore.blend_divisor_path on the "
+            "report if the first three do not explain it."
         )
 
     moves: list[WeightMove] = []
@@ -905,16 +981,10 @@ def weight_sensitivity(
             except ValueError as error:
                 problems.append(str(error))
                 continue
-            directions, convictions, largest, worst = _counts(
-                baseline,
-                _rescore(
-                    observations,
-                    run_config,
-                    perturbed,
-                    report.asof,
-                    event_horizon_guard,
-                ),
+            moved_scores, moved_pairs = _rescore(
+                observations, run_config, perturbed, report.asof, guard
             )
+            directions, convictions, largest, worst = _counts(baseline, moved_pairs)
             moves.append(
                 WeightMove(
                     pillar=pillar,
@@ -925,6 +995,8 @@ def weight_sensitivity(
                     directions_changed=directions,
                     convictions_changed=convictions,
                     largest_rank_move=largest,
+                    coverage_before=coverage_before,
+                    coverage_after=min(score.coverage for score in moved_scores),
                     largest_rank_move_pair=worst,
                 )
             )
@@ -933,7 +1005,6 @@ def weight_sensitivity(
         asof=report.asof,
         step=step,
         baseline=baseline,
-        baseline_matches_report=True,
         moves=tuple(moves),
         problems=tuple(problems),
     )

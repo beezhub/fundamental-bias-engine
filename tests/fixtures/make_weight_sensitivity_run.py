@@ -43,14 +43,33 @@ chosen so that the cross-section has the properties a sensitivity test needs:
   weight, so a stale input removes a pillar from the measurement as surely as
   an absent one and folds two effects into one number.
 
-**Four of the seven pillars score on this run and three do not.** MONETARY,
-INFLATION, GROWTH and EXTERNAL each take a value from one morning's figures.
-EMPLOYMENT, POSITIONING and RISK need a history rather than a point, which a
-single-period fixture cannot give them, so they carry weight 0.0 and moving
-their weights changes nothing. That is a true property of a run with no data
-for them rather than a fault in the fixture, and
-``test_a_pillar_that_scored_nothing_reports_zero_rather_than_a_guess`` pins it,
-because the alternative reading is that the model does not need those pillars.
+**Five of the seven pillars score on this run and two do not.** MONETARY,
+INFLATION, GROWTH and EXTERNAL take a value from one morning's figures, and
+EMPLOYMENT takes one from the short history `UNEMPLOYMENT_6M_AGO` and
+`HISTORY_MONTHS` supply. POSITIONING z-scores a year of its own weekly
+prints and RISK needs a volatility window, and neither history is here,
+because both would cost several hundred rows of committed JSON to exercise
+a path this measurement does not depend on.
+
+**A pillar carrying weight 0.0 is not inert, and this is the trap the
+fixture exists to expose.** It moves no composite: the five live weights
+are scaled by one common factor and the composite's coverage divisor
+cancels it exactly, so no spread changes by more than a rounding error and
+the ranking cannot move. What it moves is coverage, which is the share of
+weight that scored. Every currency here sits at 0.80, exactly
+``ScoringConfig.coverage_demotion``, so raising POSITIONING's weight from
+0.10 to 0.15 takes coverage to 0.756 and demotes all 28 pairs one band at
+once. Eleven fall to NONE, which forces them to NEUTRAL, and the run
+reports eleven direction changes and fourteen conviction changes for a
+pillar that contributed nothing.
+
+That is real arithmetic reporting something other than what a reader will
+take from it, so it is pinned rather than tuned away:
+``test_a_pillar_that_scored_nothing_cannot_move_the_ranking`` asserts the
+half that holds and ``test_a_dead_pillar_still_moves_conviction_through_
+coverage`` asserts the half that does not. `WeightMove` carries
+``coverage_before`` and ``coverage_after`` so the channel is visible in the
+output rather than only in this file.
 
 Units, frequencies and sign conventions are the registry's, not this file's:
 `_observation` reads `fbe.datasources.registry` for each key, and positive
@@ -62,7 +81,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -89,12 +108,23 @@ calendar is not distracted by a date the engine would not have run on."""
 PERIOD = date(2026, 2, 1)
 """Period the observations describe, the month before the run."""
 
-RELEASED_AT = datetime(2026, 2, 20, 12, 0, tzinfo=UTC)
-"""Release timestamp, before the as-of so every figure is visible to the run.
+RELEASE_LAG_DAYS = 1
+"""Days after a period begins that its figure is stamped as published.
 
-Stamped rather than left absent because an observation with no release date is
-admitted on an assumed lag and counted as resting on that assumption, which is
-a second thing varying across the fixture when only the weights should vary.
+Stamped rather than left absent because an observation with no release date
+is admitted on an assumed lag and counted as resting on that assumption,
+which is a second thing varying across the fixture when only the weights
+should vary.
+
+Derived from the period rather than fixed for the whole file. A fixed stamp
+puts the six-month-old unemployment print and the current one on the same
+publication date, and stamps every daily and weekly print as published days
+before the period it describes, which is not a thing that can happen. One
+day is short for a monthly release and long for none of them, and the
+alternative is a per-frequency table that reimplements
+`fbe.datasources.registry`'s publication lag for no gain here: nothing in
+this fixture reads the lag, only that the stamp exists and precedes the
+as-of.
 """
 
 GENERATED_AT = datetime(2026, 3, 2, 5, 9, tzinfo=UTC)
@@ -333,7 +363,7 @@ USD, EUR, GBP, JPY and CHF carry no ``commodity_link`` and take a deliberate
 as a modelling statement rather than an absence. Giving them a price here
 would not change that, so they have none.
 
-Crude is falling and iron ore is falling while dairy rises, so the component
+Crude rises 7.7% and dairy 3.0% while iron ore falls 4.6%, so the component
 does not rank the three the same way the rate differentials do. A fixture
 where every component agrees cannot show a weight mattering.
 """
@@ -428,6 +458,9 @@ def _observation(
         month = period.month - months_back
         year = period.year + (month - 1) // 12
         period = period.replace(year=year, month=(month - 1) % 12 + 1)
+    released_at = datetime.combine(
+        period + timedelta(days=RELEASE_LAG_DAYS), time(12, 0), tzinfo=UTC
+    )
     return Observation(
         indicator=indicator,
         currency=currency,
@@ -435,13 +468,12 @@ def _observation(
         period=period,
         source="fixture",
         series_id=f"{indicator.upper()}_{currency}",
-        # Release date tracks the period rather than being fixed, so an
-        # older print is not stamped as having been published after a
-        # newer one. A window read on release order would otherwise take
-        # the six-month-old rate as the current one.
         unit=meta.unit,
         frequency=meta.frequency,
-        released_at=RELEASED_AT,
+        # Tracks the period, so an older print is never stamped as having
+        # been published after a newer one and nothing is published before
+        # the span it describes.
+        released_at=released_at,
     )
 
 
