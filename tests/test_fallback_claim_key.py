@@ -4,7 +4,7 @@
 unblocked issues in front of them, nine of them ruled, because the claim key
 requires `roadmap` and none of those carried it. The bottleneck is not a
 shortage of filed work: a dependency only counts as landed when a human merges,
-so two green unreviewed pull requests held four issues shut.
+so two green unreviewed pull requests held three of four issues shut.
 
 The ruling of 2026-09-25 gave the lanes a fallback. It then lived only in a
 GitHub comment for three days while `docs/routines.md` went on describing the
@@ -36,23 +36,26 @@ INDEX = DECISIONS / "README.md"
 FALLBACK = "### The fallback, for the day the roadmap pool is shut"
 
 CONDITIONS = (
+    "is `p2` or `p3`",
     "carries an architect ruling with acceptance criteria",
+    "if it is a `type:requirement`, links its human approval",
+    "names one owner and its diff stays inside that owner's files",
+    "needs no change to `src/fbe/types.py`",
     "has no open dependency",
     "carries neither `routine-hold` nor `desk-only`",
     "is not already `status:in-progress`",
-    "is not `p0`",
     "is not a `type:proposal`",
 )
 """The fence, in the words the document uses.
 
 Written here rather than read out of the file, because these are the assertion:
-a fallback stated with four of them is a wider pool than the one written, and
+a fallback stated with eight of them is a wider pool than the one written, and
 the difference is the fence.
 
-The first four are the ruling's own. The last two are narrower than the ruling,
-which said "at any priority" and named no type, and they are here because the
-document states them and a document that states a bound has to keep it. Whether
-they survive is the architect's, and the section says they are raised on #270.
+The priority, owner and `types.py` conditions are the `issue-workflow` skill's
+bound on every unattended run, which the ruling on #270 first went past and the
+owner narrowed back to. The approval link is the skill's definition of ready
+for a requirement. Neither is the lane's to relax.
 """
 
 
@@ -136,10 +139,10 @@ def test_the_lane_rows_name_the_ends_they_take_from_the_fallback() -> None:
     assert "highest-numbered" in _row("implement lane B")
 
 
-def test_the_four_conditions_are_all_stated() -> None:
+def test_the_nine_conditions_are_all_stated() -> None:
     """The fence, in full, in both places that define the pool.
 
-    Three of four is a wider pool than the one ruled. Asserted against lane A's
+    Eight of nine is a wider pool than the one written. Asserted against lane A's
     row and against the section separately rather than against the file,
     because the file also names the ruling condition in the two-pools prose,
     and a search of the whole file passes with the fence gone from both places
@@ -172,15 +175,16 @@ def test_the_lane_declares_in_its_pull_request_that_it_used_the_fallback() -> No
 def test_a_ready_issue_with_no_architect_ruling_is_excluded_with_its_reason() -> None:
     """The fence, and why, so it cannot be read away as an oversight.
 
-    Build lane 1 is barred from `p1` because a high-priority defect deserves a
-    person deciding who fixes it. The architect is that person and the ruling
-    is the record, which is what makes `p1` safe for these lanes and what an
-    unruled issue lacks.
+    The first draft argued that the ruling was a person deciding, which made
+    `p1` safe. The architect also runs unattended, so a ruling can be written
+    with nobody watching. The section has to say that, or the next reader
+    rebuilds the old argument from the fence alone.
     """
     body = _fallback()
 
     assert "A ready issue with no architect ruling is not in the fallback pool" in body
-    assert "the gate has already run" in body
+    assert "the architect also runs as an unattended routine" in body
+    assert "the gate has already run" not in body
 
 
 def test_the_floor_survives_the_fallback() -> None:
@@ -279,21 +283,38 @@ def test_the_decision_names_why_it_rejected_branching_from_an_open_head() -> Non
     assert "rebase debt" in body
 
 
-def test_the_two_narrowed_conditions_are_marked_as_narrower_than_the_ruling() -> None:
+def test_the_fallback_is_marked_as_narrower_than_the_ruling() -> None:
     """The document states a bound the ruling did not, and says so in the file.
 
     Silently narrowing a ruling is the same defect as silently widening one: a
     reader comparing the file against the comment on #270 finds a difference
-    and cannot tell whether it was reasoned or lost in transcription. Both
-    exclusions are conservative, `p0` because a wrong number is reaching the
-    trader now and `type:proposal` because the approval gate has no agent
-    override, and both are the architect's to confirm or lift.
+    and cannot tell whether it was reasoned or lost in transcription.
     """
     body = _fallback()
 
-    assert "narrower than the ruling and are raised on #270" in body
-    assert "It did not reach `p0`" in body
+    assert "The fallback is narrower than the ruling on #270." in body
     assert "the approval gate on `type:proposal` has no agent override" in body
+
+
+def test_the_fallback_never_goes_past_the_skill() -> None:
+    """The skill bars an unattended run from `p1` and from cross-owner diffs.
+
+    The first draft let the lanes claim any ruled, non-`p0` issue, including
+    `p1` and work spanning two owners, which the `issue-workflow` skill does
+    not allow any unattended run. The owner chose not to widen. Asserted on
+    the section and on the record, because the record is where the next
+    reader looks to find out whether the bound was a choice.
+    """
+    body = _fallback()
+    record = " ".join(ADR.read_text().split())
+
+    for text in (body, record):
+        assert "`p1` and cross-owner work stay with a session a person starts" in text
+        assert "#313" in text
+    assert "is not `p0`" not in body
+    assert "may span two owners' files" not in record
+    for lane in ("A", "B"):
+        assert "is not `p0`" not in _row(f"implement lane {lane}"), lane
 
 
 def test_the_gap_between_the_trigger_and_claimability_is_named() -> None:

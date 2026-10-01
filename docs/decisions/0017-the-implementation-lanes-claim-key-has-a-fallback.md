@@ -34,30 +34,45 @@ Counted on the same morning, `status:ready` issues outside the roadmap pool
 with no unlanded dependency of any kind: ten, nine of them carrying an
 architect ruling with acceptance criteria. Both lanes idled with that list in
 front of them, because the claim key requires `roadmap` and none of them
-carried it. Nothing about a lane's competence excludes that work. The
-implementation pool is the one that may span two owners' files, may change
-`src/fbe/types.py` under a ruling, and is not barred from `p1`, which is
-exactly what makes those issues claimable by a lane and not by the maintenance
-desk.
+carried it. Nothing about a lane's competence excludes that work, but not
+all of it is open to a run with nobody watching. The `issue-workflow` skill,
+which `docs/routines.md` names as the authority, lets an unattended run fix a
+`status:ready` issue at `p2` or `p3` whose diff stays inside one owner's files,
+and bars `p0`, `p1`, `src/fbe/types.py` and proposals. Some of the ten fit
+inside that bound and some did not.
 
 ## Decision
 
 **The claim key gains a fallback. When no issue carrying `type:requirement`,
 `roadmap` and `status:ready` has all its dependencies landed, the lane claims
-instead a `status:ready` issue at any priority that**
+instead a `status:ready` issue that**
 
+- is `p2` or `p3`,
 - carries an architect ruling with acceptance criteria on the issue,
+- if it is a `type:requirement`, links its human approval,
+- names one owner and its diff stays inside that owner's files,
+- needs no change to `src/fbe/types.py` and no value changed in
+  `ScoringConfig` or `RiskConfig`,
 - has no open dependency,
 - carries neither `routine-hold` nor `desk-only`,
 - is not already `status:in-progress`,
-- is not `p0`, and is not a `type:proposal`.
+- is not a `type:proposal`.
 
-**The last two are narrower than the ruling, and are recorded here as open.**
-The ruling said "at any priority" and argued one bar, `p1`, by the #97
-argument. It did not reach `p0`, and it named no type, while the approval gate
-on `type:proposal` has no agent override. Both are written as exclusions and
-raised on #270 rather than resolved here, because the conservative reading
-costs an idle slot and the wide one costs a pull request nobody asked for.
+**The fallback never goes past the skill.** The ruling on #270 said "at any
+priority" and let the pool span two owners' files. The owner narrowed it before
+it merged: an implementation lane is an unattended run, and the skill bounds
+every unattended run to `p2` or `p3` work inside one owner's files. A ruling in
+this directory cannot widen the skill, because the skill is the authority this
+directory defers to.
+
+**`p1` and cross-owner work stay with a session a person starts**, such as
+`/next 172`. Whether an unattended lane may take `p1` is the open question on
+#313, and it is decided there, not here.
+
+**A requirement must link its human approval.** That is the skill's definition
+of ready for a `type:requirement`, and the fallback checks it rather than
+trusting the `status:ready` label, because the fallback reaches issues that no
+other claim key has already checked.
 
 Lane A takes the lowest-numbered and lane B the highest, as in the roadmap
 pool, so the two work from opposite ends of what is claimable. **The lane says
@@ -66,13 +81,13 @@ nothing else records that the roadmap pool was shut that day, and a reviewer
 reading a defect fix from an implementation lane would otherwise have no way to
 tell it from a lane ignoring its own pool.
 
-**The ruling with criteria is the fence, and it is load-bearing.** Build lane 1
-is barred from `p1` because a high-priority defect deserves a person deciding
-who fixes it. That reasoning survives here rather than being set aside: the
-architect is that person, and the ruling on the issue is the record of the
-decision. A ready defect with no ruling is not in the fallback pool. This is
-the argument #97 used to make `p1` safe for these lanes, which is that the gate
-has already run and a person still merges.
+**The ruling with criteria is a fence, and it is not a person deciding.** A
+ready issue with no ruling is not in the fallback pool, because without
+acceptance criteria a lane cannot show it did what was asked. The ruling does
+not stand in for a person, though: the architect also runs as an unattended
+routine, so a ruling can be written with nobody watching. That is why the
+priority and owner bounds stay the skill's, and why a ruling does not open
+`p1` to the fallback.
 
 **Stopping stays the floor.** If the fallback is empty too, the lane says which
 issues are blocked and on what, and stops. A lane that claims an unruled issue
@@ -104,10 +119,18 @@ honest and cheap and it leaves throughput equal to the owner's merge rate. What
 made it the wrong first answer is that it was being taken while nine ruled,
 unblocked issues sat claimable by nobody.
 
-**Let the maintenance desk take them instead.** Rejected. Those lanes are
-barred from `p0` and `p1`, from two-owner diffs and from `src/fbe/types.py`,
-which is most of what that list held. Widening the maintenance pool to fit
-would move the fence rather than keep it.
+**Let the maintenance desk take them instead.** Rejected for the part of the
+list that fits the skill's bound. Build lane 1 claims only issues carrying
+`routine-safe`, which triage applies, and the ruled issues on that list did not
+carry it. On the day this was filed build lane 1 was working and the
+implementation lanes were idle, so the fallback uses slots that were going
+unused. The part of the list that does not fit, `p1` and two-owner work, is
+reachable by neither, and stays with a session a person starts.
+
+**Let the fallback reach `p1` and two-owner work, as the ruling first said.**
+Rejected by the owner. It would let an unattended run do what the skill bars,
+on the strength of a ruling that may itself have been written unattended. If
+that bound should move, it moves in the skill, on #313.
 
 ## Consequences
 
@@ -122,6 +145,9 @@ would move the fence rather than keep it.
   maintenance desk's own key does not reach it. That is the same gap this
   record widens the lanes to cover, one step further out, and it stays a
   labelling question for triage rather than something a lane decides.
+- A ruled, unblocked issue at `p1`, or one whose diff spans two owners, is
+  still claimed by no routine. It waits for a person to start a session on it,
+  and #313 is where that may change.
 - The rule lived only in a GitHub comment from 25 to 28 September while
   `docs/routines.md` described the key it replaced. Three lane runs claimed
   from it in that window, counted in the claim comment on #270 that opened the
@@ -130,14 +156,14 @@ would move the fence rather than keep it.
 
 ## Status
 
-Accepted, 2026-09-25, ruled on #270, which carries the work.
+Accepted, 2026-09-25, ruled on #270, which carries the work. Narrowed by the
+owner before it merged, so that the fallback stays inside the `issue-workflow`
+skill's bound on unattended runs.
 
 **On the number.** The ruling named `docs/decisions/0015-*.md`. 0015 was free
 when it was written on 25 September and was taken the same day by the
 series-scope decision for #275, so this record cannot be 0015 without
-overwriting a different accepted decision. 0016 is the next number free on
-`main`, and `tests/test_adr_index.py` requires the sequence to have no gaps, so
-0016 is what it has to be.
+overwriting a different accepted decision.
 
 **This record was written as 0016 and renumbered to 0017 when it merged
 second.** #296's source-declines-a-ref decision took 0016 first. The collision
@@ -151,9 +177,3 @@ and never deleted". That holds from the merge onward, which is what the test
 can see. A record on an unmerged branch has not been published under its
 number, so renumbering it before it lands is what keeps the invariant true
 afterwards rather than an exception to it.
-
-`tests/test_adr_index.py` states the invariant as "A record is never renumbered
-and never deleted". That holds from the merge onward, which is what the test
-can see. A record on an unmerged branch has not been published under its
-number, so renumbering it before it lands is the thing that keeps the
-invariant true afterwards rather than an exception to it.

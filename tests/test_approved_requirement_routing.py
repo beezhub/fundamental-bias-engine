@@ -211,26 +211,21 @@ def test_both_halves_of_the_no_pool_rule_stand_or_fall_together() -> None:
 def test_the_section_says_how_such_an_issue_is_actually_worked() -> None:
     """#258's second criterion. A category with no route out is a complaint.
 
-    ``/next 172`` already works and is what reaches these on demand. Naming the
-    mechanism is what turns the paragraph from a description of a gap into an
-    instruction.
+    ``/next 172`` already works and is the only thing that reaches these. Naming
+    the mechanism is what turns the paragraph from a description of a gap into
+    an instruction.
 
-    "On demand" was added with #270. The sentence read "the only route that
-    reaches it", which was true when #258 landed and stopped being true hours
-    later when the implementation lanes gained a fallback: a ruled, unblocked
-    defect is exactly what a lane claims on a day its own pool is shut, and
-    #172 is in the list the ruling counted. The qualification is asserted
-    rather than dropped, because a reader who takes the unqualified sentence
-    away concludes that a defect fixed by a lane was claimed against the rules.
-
-    The fallback is still not a route anyone can plan around, which is the part
-    of #258's criterion that matters and is asserted separately.
+    The implementation lanes' fallback, added with #270, does not change that.
+    A defect lands here because its diff spans two owners or changes a contract,
+    and the fallback is held to one owner's files and never changes
+    `src/fbe/types.py`. The paragraph says so, because a reader who knows the
+    fallback exists would otherwise assume it reaches these.
     """
     body = _pools()
 
     assert "/next 172" in body
-    assert "only route that reaches it on demand" in body
-    assert "not a route to plan around" in body
+    assert "only route that reaches it" in body
+    assert "The fallback below does not reach it either" in body
 
 
 def test_the_section_does_not_freeze_a_count_that_will_go_stale() -> None:
