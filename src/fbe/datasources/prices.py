@@ -145,9 +145,34 @@ FRED_RISK_SERIES: Mapping[str, str] = {
     "financial_stress": "STLFSI4",
     "dollar_index_broad": "DTWEXBGS",
 }
-"""Risk-regime series, all verified live on FRED and all current. VIXCLS is the
-headline; the rest are corroboration, and a risk pillar that reads only VIX
-will call every equity wobble a crisis."""
+"""Risk-regime identifiers checked live on FRED, kept for the checking.
+
+**The regime does not read this mapping, and it is not short of inputs.**
+`docs/scoring-spec.md` section 3.7 is the authority for what it reads, and it
+specifies two keys, each at a sub-weight of 0.50 into ``R``:
+``world_equity_index`` for the drawdown from a 52-week high, and ``vol_index``
+for the volatility z-score. `fbe.pillars.risk.RiskPillar` requires exactly
+those two and the registry routes them to ``SP500`` and ``VIXCLS``. A third
+input has nowhere to go, because ``R`` is a two-term sum rather than an average
+over whatever happens to be available.
+
+**One identifier here is live.** ``vix`` names ``VIXCLS``, which the registry
+routes for ``vol_index``. The other six are routed by nothing and fetched by
+nothing, and nothing imports this mapping: the registry holds its own refs and
+is what fetches.
+
+Those six are held candidates rather than gaps. Registering them would add six
+`fbe.datasources.registry.IndicatorSpec` entries and their identifier legs to
+feed a pillar with no slot to read them, and `registry.coverage_report` and
+`registry.stale_refs` would then report on indicators nothing scores. Whether
+``R`` should read more than two inputs is a change to a specified formula, so
+it belongs to the macro strategist as a proposal rather than to a reader of
+this file. Ruled on #302.
+
+What the table is worth is the checking: each identifier was confirmed live on
+FRED and returning data, which is the part that costs something to re-establish,
+so the six stay written down against the day one of them is wanted.
+"""
 
 FRED_SPOT_SERIES: Mapping[str, str] = {
     "EURUSD": "DEXUSEU",
@@ -178,13 +203,26 @@ FRED_COMMODITY_SERIES: Mapping[str, str] = {
     "copper": "PCOPPUSDM",
     "coal_australia": "PCOALAUUSDM",
 }
-"""Commodity proxies, all verified live. ``crude_wti`` is daily; the IMF index
-family is monthly and runs about two months behind.
+"""Commodity identifiers checked live on FRED, kept for the checking.
+
+**Three of the nine are live.** The registry routes ``PALLFNFINDEXM``,
+``DCOILWTICO`` and ``PIORECRUSDM``, all three under the one key
+``commodity_price``. The other six are routed by nothing and fetched by
+nothing, and nothing imports this mapping.
+
+Those six are held candidates of the same kind as the unrouted entries in
+`FRED_RISK_SERIES`, and for the same reason: confirming an identifier live is
+the expensive part. Registering one changes what gets scored, so it wants an
+issue rather than a reading of this table. Ruled on #302.
+
+``crude_wti`` is daily; the IMF index family is monthly and runs about two
+months behind.
 
 The gap: no dairy price index exists on FRED, so the New Zealand dollar has no
 free terms-of-trade proxy. The GlobalDairyTrade auction index is the right
 series and is published fortnightly on globaldairytrade.info. ``food`` is a poor
-substitute, since the dairy component is a small share of it."""
+substitute, since the dairy component is a small share of it.
+"""
 
 SPOT_LOOKBACK_DAYS = 30
 """How far back `PricesSource.spot` asks FRED for, in calendar days.
