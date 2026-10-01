@@ -48,6 +48,7 @@ from fbe.datasources.oecd import (
     THROTTLE_MARKER,
     OecdSource,
 )
+from fbe.types import Frequency
 
 FIXTURES = Path(__file__).parent / "fixtures"
 GBR_MONTHLY = (FIXTURES / "oecd_gbr_cpi_monthly.csv").read_text()
@@ -898,3 +899,28 @@ def test_offline_on_a_cold_cache_is_available_and_fetch_raises(
     with pytest.raises(SourceError, match="offline"):
         offline.fetch(["cpi_yoy"], ["GBP"], START, END)
     assert route.call_count == 0
+
+
+def test_every_key_asks_for_the_cadence_the_registry_records() -> None:
+    """The `FREQ` segment of the key and `SeriesRef.frequency` must agree.
+
+    Two different readers use them. `_key_frequency` takes the letter from the
+    key to stamp a period on the answer, and `registry.empty_is_judgeable`
+    takes `SeriesRef.frequency` to decide whether an empty answer proves the
+    series dead (#298). Where the two disagree, an edit to one alone would put
+    a quarterly series behind a monthly cycle and lag, and a 76-day window
+    would then name a live series dead. Nothing else checks this, so it is
+    checked here rather than left to the next registry edit to discover.
+    """
+    letters = {"D": Frequency.DAILY, "M": Frequency.MONTHLY, "Q": Frequency.QUARTERLY}
+
+    disagreeing = [
+        f"{indicator}/{currency}"
+        for indicator, spec in registry.INDICATORS.items()
+        for currency, ref in spec.series.items()
+        if ref.source == registry.SOURCE_OECD
+        and letters.get(ref.series_id.split("/", 1)[1].split(".")[1])
+        is not ref.frequency
+    ]
+
+    assert disagreeing == []

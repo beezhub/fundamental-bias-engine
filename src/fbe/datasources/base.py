@@ -47,6 +47,7 @@ __all__ = [
     "RetryPolicy",
     "SourceError",
     "UndatedRevisionError",
+    "WindowTooNarrow",
     "checked_vintage",
     "undated_revision",
 ]
@@ -162,6 +163,23 @@ def checked_vintage(observation: Observation, where: str = "") -> Observation:
             "the figure that was published. ADR 0007."
         )
     return observation
+
+
+class WindowTooNarrow(SourceError):
+    """A series served nothing over a window that could not judge it either way.
+
+    Not a failure and not a reading. `fbe.datasources.registry` decides which
+    by arithmetic: the window, shifted back by the leg's own publication lag,
+    must span at least one release cycle before an empty answer means the
+    series is dead. Below that a live series is legitimately empty, so naming
+    it dead is a false cause and calling it served is the silent empty success
+    ADR 0015 rule 3 removed.
+
+    A `SourceError` so that a caller which catches the base class still catches
+    it, since not returning observations is what they both mean. The separate
+    type is what lets `fbe.datasources.collect` record the third answer rather
+    than choosing one of the other two.
+    """
 
 
 @dataclass(frozen=True, slots=True)

@@ -72,7 +72,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, timedelta
 
 from fbe.types import Frequency, PillarName
 from fbe.universe import G10
@@ -102,6 +102,7 @@ __all__ = [
     "UNCONSUMED_INDICATORS",
     "VERIFIED_ON",
     "coverage_report",
+    "empty_is_judgeable",
     "identifier_coverage",
     "full_weight_age",
     "indicators_for_pillar",
@@ -2565,6 +2566,57 @@ def staleness_allowance(ref: SeriesRef | None, frequency: Frequency) -> int:
 
     """
     return publication_lag(ref, frequency) + 2 * CYCLE_DAYS[frequency]
+
+
+def empty_is_judgeable(
+    ref: SeriesRef | None, frequency: Frequency, start: date, end: date
+) -> bool:
+    """Say whether an empty answer for this window proves anything.
+
+    A source that serves nothing for a series it was asked for has either told
+    you the series is dead or told you nothing at all, and only the window
+    decides which. ``(end - lag) - start >= cycle``: the window, shifted back
+    by the leg's own publication lag, must be at least one release cycle long.
+
+    Both halves are load-bearing, and the lag is the one a rule written on
+    frequency alone misses. A 92-day window does contain a quarterly period
+    boundary, so on frequency alone it looks judgeable; that period carries a
+    120-day lag and is not published yet, so a live series is legitimately
+    empty over it. Shifting by the lag removes that case. The cycle half is
+    exact rather than approximate against a period-keyed request, because
+    `CYCLE_DAYS` is the longest calendar gap between consecutive periods of a
+    punctual series (ADR 0014), so a window at least that long must contain a
+    boundary and a shorter one can fall entirely between prints.
+
+    The lag shift assumes ``end`` is at or near the date the request is made,
+    which is what every caller does today: `fbe refresh` ends its window at
+    today and every other caller passes the full lookback. For a window that
+    ended well in the past, every period inside it has long since published, so
+    the shift is too strict and this answers False where an empty reply would
+    in fact prove the series dead. That is the safe direction, and a caller
+    that wants to judge a historical window needs this rule changed rather than
+    reused.
+
+    Args:
+        ref: The leg's registry entry, or ``None`` when the registry carries
+            none, in which case the default lag for the frequency applies.
+        frequency: The leg's own cadence, from `SeriesRef.frequency`. Never
+            the parent `IndicatorSpec`'s, which differs on 36 legs.
+        start: Earliest period requested, inclusive.
+        end: Latest period requested, inclusive.
+
+    Returns:
+        True when an empty answer is evidence that the series is dead or
+        mis-keyed, so a source may raise on it. False when the window is too
+        narrow to judge, where an empty answer is neither data nor a fault and
+        a caller must say so rather than choosing one. The default five-year
+        lookback clears it by a wide margin: 1826 - 120 = 1706 against a
+        quarterly cycle of 92.
+
+    """
+    return (end - timedelta(days=publication_lag(ref, frequency)) - start).days >= (
+        CYCLE_DAYS[frequency]
+    )
 
 
 def series_for(indicator: str, currency: str) -> SeriesRef | None:
