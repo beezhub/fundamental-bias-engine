@@ -1026,12 +1026,17 @@ a share of. `tests/test_pillar_component_floor.py` asserts that boundary, and it
 is the live CHF, AUD and NZD case on the registry as it stands.
 
 The
-pillar's own factor is the sub-weighted mean of its components' factors, from
-`BasePillar.pillar_freshness`, and that is what multiplies the pillar weight in
-section 4.2. A single pillar-level age cannot do this: GROWTH would report the
-age of whichever series updated last and carry the other at full weight.
+pillar's own factor comes from `BasePillar.pillar_freshness`, and that is what
+multiplies the pillar weight in section 4.2. A single pillar-level age cannot do
+this: GROWTH would report the age of whichever series updated last and carry the
+other at full weight.
 
-**The mean is taken over the components that blended.** Those are the ones
+    phi(p) = ( sum over c in blended(p) of w(c) * phi(c) ) / ( sum over c in declared(p) of w(c) )
+
+with a blended component that has no measured age left out of both sums, as
+described below.
+
+**The numerator runs over the components that blended.** Those are the ones
 `BasePillar.blend_components` produced a z for, recorded on
 `BasePillar.last_contributing`, and not every component the pillar measured an
 age for. The two sets differ: a component built from two series with one of
@@ -1039,36 +1044,51 @@ them missing has an age and no z, so it answers the first question and not the
 second, and weighing it in handed the pillar weight for a component that moved
 no score.
 
-Two components inside that set leave both sides of the mean rather than
-entering the denominator at zero. A component at `phi = 0.0` has missed a whole
-release cycle and no longer counts toward coverage, so keeping its sub-weight in
-the denominator would charge it twice, once through its factor and once through
-the share it occupies, and an expired component would cost more than an absent
-one. A component with no measured factor has no age to weigh at all: counting
-it as 1.0 would invent a measurement and counting it as 0.0 would charge an
-unknown as a failure. Both are left out and the mean is taken over what
-remains.
+**The denominator is the declared sub-weight total, always.** Every component
+the pillar declares sits in it, whether it blended fresh, blended past its
+allowance at `phi = 0.0`, or never blended at all. So an absent component and an
+expired one weigh exactly the same, and both weigh zero.
 
-The rule those two come to is one sentence: a component past its allowance is
-treated exactly as an absent one, so it gets the same two answers absence gets.
-The renormalisation is the first. `MIN_COMPONENT_WEIGHT` is the second, and it
-applies here as well as in the blend: if the components that both blended and
-still count hold no more than that fraction of the declared sub-weight, the
-pillar's factor is 0.0 and it takes no weight. Without it a pillar holding one
-fresh component and four expired ones would renormalise onto the fresh one and
-report 1.0, while the same pillar with those four missing instead falls under
-the floor in `BasePillar.blend_components` and does not speak at all. The two
-floors ask different questions on purpose: the blend's is judged on presence
-before the factors, because it asks about substitution, and this one is judged
-after them, because it asks what is left still counting.
+One case leaves both sides: a component that blended without observations, so
+has no age. EXTERNAL's `terms_of_trade` is 0.0 by design for a currency with no
+commodity link, a modelling statement rather than an absence. Charging it as
+expired would cut EXTERNAL's weight by its 0.30 sub-weight for five currencies
+on every run, and counting it as fresh would invent a measurement, so it is left
+out of the mean. Whether a component has observations does not change as they
+age, so this adds no step in age.
 
-The consequence is the symmetry issue #172 was opened for. Take MONETARY on a
-currency whose `cpi_yoy` is four hundred days old. `real_policy_rate` still
-computes, so it blends, but at `phi = 0.0` it no longer counts, and the factor
-is taken over the remaining 0.85 of sub-weight: `(0.15*1.0 + 0.70*0.5) / 0.85`,
-which is 0.588. Drop that CPI entirely and the component never blends, so the
-same 0.85 carries the mean and the answer is the same 0.588. A run that says
-how old its data is is not penalised against one that says nothing.
+That one rule gives the three properties this section needs:
+
+- **Continuous in age.** A component ageing towards its allowance pulls the
+  factor down along the ramp and reaches the expired value with no step. An
+  earlier rule lifted a component at exactly `phi = 0.0` out of both sides of
+  the mean while one at 0.0001 stayed in both, so MONETARY's factor fell as the
+  CPI aged and then rose on the day it expired: 0.534 at 100 days, 0.510 at
+  105, 0.588 at 110.
+- **Monotonic.** Older data never earns more weight. Under that earlier rule a
+  CPI between about 89 and 106 days old was worth less to MONETARY than no CPI
+  at all.
+- **Absent equals expired.** Issue #172 required that an absent component get
+  no more weight than an expired one. Equality is the only answer that is also
+  continuous, because if absence weighed more, a component just short of expiry
+  would weigh less than none.
+
+The price is that absence now costs weight here rather than being renormalised
+away. That is deliberate: a pillar standing on part of its sub-weight carries
+that part of its weight, rather than borrowing the missing part from the
+components that are there. It is also why this factor has no floor of its own.
+A pillar with one fresh component and four expired ones reports that component's
+own share, 0.15 on MONETARY, rather than 1.0 cut to 0.0 by a second
+`MIN_COMPONENT_WEIGHT` test, which would be a cliff. `MIN_COMPONENT_WEIGHT`
+still decides, in `BasePillar.blend_components`, whether the pillar speaks for
+the currency at all.
+
+Worked on MONETARY with a 0.15 `policy_rate` at `phi = 1.0`, 0.70 of yield
+components at `phi = 0.5`, and `real_policy_rate` at 0.15. With `cpi_yoy` four
+hundred days old the component blends at `phi = 0.0`; with `cpi_yoy` absent it
+never blends. Both give `(0.15*1.0 + 0.70*0.5) / 1.0`, which is 0.50. With a
+fresh CPI it is 0.65, and every day of ageing between the two moves the factor
+down along the ramp and never up.
 
 The pillar's factor travels to the scorer on `PillarScore.freshness_factor`,
 written by `BasePillar.compute` and read by `scoring.score_currencies`, which
@@ -1100,7 +1120,7 @@ at `phi = 0.5`.
     coverage = sum over p of w_eff(p)
 
 where `phi(p)` is the pillar's own factor from section 4.1, the sub-weighted mean
-over the components that blended and still count toward coverage.
+of the components that blended over everything the pillar declares.
 
 Since the weights sum to 1.0, `coverage` is directly the fraction of pillar weight
 that had usable, fresh data. It is stored on `CurrencyScore.coverage`.

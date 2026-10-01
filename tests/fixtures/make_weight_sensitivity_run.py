@@ -368,6 +368,35 @@ does not rank the three the same way the rate differentials do. A fixture
 where every component agrees cannot show a weight mattering.
 """
 
+TRADE_BALANCE_3M_AGO: Mapping[str, float] = {
+    "USD": -61_656_000_000.0,
+    "EUR": 19_814_000_000.0,
+    "GBP": -16_956_000_000.0,
+    "JPY": 3_572_000_000.0,
+    "CHF": 3_420_500_000.0,
+    "CAD": -1_724_000_000.0,
+    "AUD": 5_748_000_000.0,
+    "NZD": -843_400_000.0,
+}
+"""The trade balance three months before the run, in US dollars.
+
+Each is the current balance less 0.01% of nominal GDP per point of current
+account, so the three-month change in percent of GDP is proportional to
+``current_account_gdp`` and ``trade_trend`` z-scores exactly as that component
+does. That keeps EXTERNAL ranking the eight as it did before the component
+blended, so the near-boundary pairs the sensitivity tests rely on stay where
+they were placed.
+
+`fbe.pillars.external` scores ``trade_trend`` as the three-month change, so a
+single print gives it no window and the component never blends. The earlier
+version of this file had one print, and the freshness rule of the time hid it:
+a component that blended nowhere was renormalised away, so EXTERNAL looked
+whole. `BasePillar.pillar_freshness` now keeps an absent component's sub-weight
+in the denominator, which made the missing 0.30 visible as lost coverage. A
+second print is what the fixture intended all along, since every input here is
+meant to be present and fresh.
+"""
+
 UNEMPLOYMENT_6M_AGO: Mapping[str, float] = {
     "USD": 4.45,
     "EUR": 6.20,
@@ -505,6 +534,14 @@ def observations() -> tuple[Observation, ...]:
                 currency,
                 UNEMPLOYMENT_6M_AGO[currency],
                 months_back=6,
+            )
+        )
+        rows.append(
+            _observation(
+                "trade_balance",
+                currency,
+                TRADE_BALANCE_3M_AGO[currency],
+                months_back=3,
             )
         )
         if currency in COMMODITY_PRICES:

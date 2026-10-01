@@ -396,13 +396,13 @@ def test_pillar_freshness_is_the_sub_weighted_mean_of_its_components() -> None:
     always carry the same factor, and a mean of one number cannot tell a
     sub-weighted mean from a plain one.
 
-    The mean is taken over the components that blended, so the same two
-    observations answer differently when only one of them carried weight. The
-    second half of this test names core alone, which is 0.60 of the sub-weight
-    and clears `MIN_COMPONENT_WEIGHT`, and gets core's own 0.5 back rather than
-    the 0.70 the pair gives. A mean over everything measured could not produce
-    that. Headline alone is 0.40, under the floor, so the pillar does not speak
-    for the currency at all.
+    Only the components that blended add to the numerator, and the denominator
+    is the declared sub-weight total either way, so the same two observations
+    answer differently when only one of them carried weight. Core alone is
+    ``0.60 * 0.5 = 0.30`` and headline alone is ``0.40 * 1.0 = 0.40``. An
+    earlier rule renormalised over what blended and floored headline alone to
+    0.0; that renormalisation is what let a component's expiry raise the factor,
+    and the floor was a cliff, so both are gone.
     """
     pillar = InflationPillar()
     extracted = {
@@ -424,8 +424,8 @@ def test_pillar_freshness_is_the_sub_weighted_mean_of_its_components() -> None:
     assert factor == pytest.approx(0.70)
     assert CONFIG.weights[InflationPillar.name] * factor == pytest.approx(0.105)
 
-    assert pillar.pillar_freshness(extracted, ASOF, ("core_gap",)) == pytest.approx(0.5)
-    assert pillar.pillar_freshness(extracted, ASOF, ("cpi_gap",)) == 0.0
+    assert pillar.pillar_freshness(extracted, ASOF, ("core_gap",)) == pytest.approx(0.3)
+    assert pillar.pillar_freshness(extracted, ASOF, ("cpi_gap",)) == pytest.approx(0.4)
 
 
 def test_pillar_freshness_of_a_pillar_with_no_inputs_is_zero() -> None:

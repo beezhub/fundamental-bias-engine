@@ -1628,58 +1628,64 @@ class BasePillar(ABC):
                 caller derive it a third way.
 
         Returns:
-            The sub-weighted mean of `component_freshness` over the components
-            in ``contributing`` that still count toward coverage, in
-            ``[0.0, 1.0]``. ``0.0`` when none does, since a pillar that moved no
-            score on this currency, or moved it with data that has stopped
-            counting, has earned no weight on it.
+            A unitless factor in ``[0.0, 1.0]``: the sum, over the components in
+            ``contributing``, of each one's sub-weight times its
+            `component_freshness` factor, divided by the **declared** sub-weight
+            total of `component_weights`, not by the share that is present. A
+            declared component that did not blend, or that blended past its
+            allowance, stays in the denominator and adds ``phi = 0.0`` to the
+            numerator. ``0.0`` when nothing blended, and ``0.0`` for a pillar
+            that declares no sub-weight.
 
-            Two components in ``contributing`` are left out of the mean, and
-            both leave **both** sides of it rather than entering the denominator
-            at zero:
+            One case leaves both sides: a component that blended but that
+            `component_freshness` did not measure, because it was computed
+            without observations. EXTERNAL's ``terms_of_trade`` is ``0.0`` by
+            design for a currency with no ``commodity_link``, which
+            `fbe.pillars.external` documents as a modelling statement rather
+            than an absence. It has no age, so charging it as expired would cut
+            EXTERNAL's weight by its 0.30 sub-weight on five currencies on every
+            run, and counting it as fully fresh would invent a measurement. It
+            is left out of the mean, and since being unmeasured does not change
+            as data ages, this adds no step in age.
 
-            A component at a freshness of ``0.0`` has missed a whole release
-            cycle, which `fbe.scoring.freshness` defines as no longer counting
-            toward coverage. Keeping its sub-weight in the denominator would
-            charge it twice, once through its own factor and once through the
-            share it occupies, and would make an expired component cost more
-            than an absent one. That asymmetry is half of issue #172: the
-            better-documented run was penalised and the blind one was not.
+        The rule is that **an absent component and an expired one weigh the
+        same, and both weigh zero**. Three properties follow from the fixed
+        denominator, and each was broken by an earlier rule:
 
-            A component `component_freshness` did not measure has no age to
-            weigh. Counting it as fully fresh would be the same defect in
-            reverse, inventing a measurement for a component the pillar has no
-            observations for; counting it as zero would charge an unknown as a
-            failure. It is left out and the mean is taken over what was
-            measured.
+        It is continuous in age. A component ageing towards its allowance pulls
+        the factor down along the ramp of section 4.1 of `docs/scoring-spec.md`
+        and reaches the expired value smoothly, with no step on the day ``phi``
+        reaches 0.0. The rule this replaces lifted a component at exactly 0.0
+        out of both sides of the mean while one at 0.0001 stayed in both, so on
+        MONETARY the factor fell as the CPI aged and then rose the day it
+        expired: 0.534 at 100 days, 0.510 at 105, 0.588 at 110.
 
-        The authoritative set is the blend's, not `component_freshness`'s.
-        Those are two different questions: `component_freshness` measures how
-        old the observations were, which is true of every component that had
-        any, while the blend knows which components produced a z and carried
-        weight. A component built from two indicators with one of them missing
-        answers the first and not the second, and weighing it in handed the
-        pillar weight for a component that moved nothing. Issue #172; the
-        earlier text here asserted the two answers agreed.
+        It is monotonic. Older data never earns more weight, so between those
+        days a CPI the run held was worth less than no CPI at all, which was
+        issue #172's asymmetry still alive.
 
-        Absence is still handled once. A component with no z never reaches the
-        blend, so it is not in ``contributing`` and is not charged here as if it
-        were stale; `MIN_COMPONENT_WEIGHT` and the renormalisation in
-        `blend_components` remain where absence is judged.
+        Absent equals expired, which is #172's requirement that an absent
+        component get no more weight than an expired one, met with equality.
+        The price is that absence now costs weight here, where it used to be
+        renormalised away. That is deliberate: a pillar standing on part of its
+        sub-weight carries part of its weight, in proportion, rather than
+        borrowing the missing part from the components that are there. It is
+        also why there is no separate floor. The earlier rule needed one
+        because renormalising onto a lone fresh component reported 1.0; under a
+        fixed denominator that pillar reports that component's own sub-weight
+        share, and a floor would only add a cliff the ramp exists to avoid.
+        `MIN_COMPONENT_WEIGHT` still decides, in `blend_components`, whether
+        the pillar speaks for the currency at all.
 
-        The rule the two paragraphs above come to is one sentence: **a component
-        past its allowance is treated exactly as an absent one**, so it gets the
-        same two answers absence gets, the renormalisation and the floor. The
-        floor is the second half and it is not optional. Without it a pillar
-        holding one fresh component and four expired ones would renormalise onto
-        the fresh one alone and report 1.0, taking its whole weight into the
-        composite on data the registry has stopped counting, while the same
-        pillar with those four components missing instead falls under
-        `MIN_COMPONENT_WEIGHT` in `blend_components` and does not speak at all.
-        That is the asymmetry of issue #172 pointing the other way and it is
-        larger, so the same constant decides both. `blend_components` judges its
-        floor on presence before the factors, which is the right question there
-        and a different one from this.
+        The authoritative set of what counts is the blend's, not
+        `component_freshness`'s. Those are two different questions:
+        `component_freshness` measures how old the observations were, which is
+        true of every component that had any, while the blend knows which
+        components produced a z and carried weight. A component built from two
+        indicators with one of them missing answers the first and not the
+        second, and weighing it in handed the pillar weight for a component
+        that moved nothing. Issue #172; the earlier text here asserted the two
+        answers agreed.
 
         Nothing here reaches the blend's arithmetic. An expired component still
         carries its full sub-weight in the z-score, because the factors are not
@@ -1700,16 +1706,12 @@ class BasePillar(ABC):
         """
         factors = self.component_freshness(extracted, asof)
         weights = self.component_weights
-        counted = {
-            component: factors[component]
-            for component in contributing
-            if factors.get(component, 0.0) > 0.0
-        }
-        share = sum(weights[component] for component in counted)
-        declared = sum(weights.values())
-        if declared <= 0.0 or share / declared <= MIN_COMPONENT_WEIGHT:
+        unaged = sum(weights[c] for c in contributing if c not in factors)
+        denominator = sum(weights.values()) - unaged
+        if denominator <= 0.0:
             return 0.0
-        return sum(weights[c] * phi for c, phi in counted.items()) / share
+        held = sum(weights[c] * factors[c] for c in contributing if c in factors)
+        return held / denominator
 
     def missing_score(
         self,

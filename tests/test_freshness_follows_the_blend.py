@@ -47,6 +47,7 @@ from fbe.datasources.registry import (
 from fbe.pillars import default_pillars
 from fbe.pillars.base import MIN_COMPONENT_WEIGHT, MIN_CROSS_SECTION, BasePillar
 from fbe.pillars.employment import EmploymentPillar
+from fbe.pillars.external import ExternalPillar
 from fbe.pillars.inflation import InflationPillar
 from fbe.pillars.monetary import MonetaryPillar
 from fbe.pillars.positioning import PositioningPillar
@@ -82,11 +83,17 @@ than copied, which is the point of the exercise.
 FRESH = 0.15 * 1.0 + 0.70 * 0.5
 """Sub-weight times factor over the components that blend: 0.15 + 0.35."""
 
-BLENDED_WEIGHT = 0.85
-"""Sub-weight of those four components. ``real_policy_rate``'s 0.15 is the rest."""
+DECLARED_WEIGHT = 1.0
+"""MONETARY's declared sub-weight total, which is the denominator.
 
-EXPECTED_FRESHNESS = FRESH / BLENDED_WEIGHT
-"""0.588235..., the sub-weighted mean over what actually blended."""
+``real_policy_rate``'s 0.15 stays in it whether that component is absent or
+expired, so the two weigh the same and the factor is continuous in age. An
+earlier version of this file divided by the 0.85 that blended and expected
+0.588235; that rule made the factor rise the day the CPI expired.
+"""
+
+EXPECTED_FRESHNESS = FRESH / DECLARED_WEIGHT
+"""0.50, the components that blended weighed over everything MONETARY declares."""
 
 REPORTED_BEFORE = FRESH + 0.15 * 1.0
 """0.65, the mean the defect reported: ``real_policy_rate`` at the fresh half's
@@ -171,7 +178,11 @@ def test_the_effective_weight_is_the_one_the_composite_should_read() -> None:
     """The same figure where it lands: pillar weight times the factor.
 
     `scoring.score_currencies` multiplies the configured weight by this, so the
-    0.0173 between the two readings is real weight in the composite.
+    0.045 between the two readings, 0.195 before and 0.150 now, is real weight
+    in the composite. The issue's own criterion quoted 0.1641, renormalised over
+    the components that blended; that rule is the one that made the factor rise
+    on the day a component expired, so the figure here is over the declared
+    sub-weight instead.
     """
     score = scored(monetary_run())["USD"]
     weight = ScoringConfig().weights[score.pillar]
@@ -241,9 +252,9 @@ def test_an_expired_component_blends_but_carries_no_weight() -> None:
     A 400-day-old CPI still produces a real policy rate, so the component is in
     the blend and `last_contributing` says so: it moved the score. It has also
     missed a whole release cycle, which `fbe.scoring.freshness` defines as no
-    longer counting toward coverage, so it is out of the weight. Keeping its
-    sub-weight in the denominator at a factor of zero would charge it twice and
-    make an expired component cost more than an absent one.
+    longer counting toward coverage, so it adds nothing to the weight. Its
+    sub-weight stays in the denominator, exactly as an absent component's does,
+    which is what makes the two cost the same.
     """
     pillar = MonetaryPillar()
     score = dict(pillar.compute(monetary_run(cpi_age=400), list(G10), ASOF))["USD"]
@@ -275,30 +286,35 @@ def test_a_component_below_the_cross_section_floor_contributes_nothing() -> None
     assert scores[with_cpi].freshness_factor == pytest.approx(EXPECTED_FRESHNESS)
 
 
-def test_a_wholly_absent_component_is_unchanged() -> None:
-    """Criterion 5. Absence is still handled once, by the floor and the
-    renormalisation, and is not charged again as staleness."""
+def test_a_wholly_absent_component_weighs_what_an_expired_one_does() -> None:
+    """A component with no observations at all sits in the denominator at zero.
+
+    An earlier version of this test asserted ``(0.15 + 0.45 * 0.5) / 0.60``,
+    renormalising over what was present. Renormalising absence while charging
+    expiry is the rule that made the factor rise the day a component expired,
+    so absence now costs its sub-weight here the same way expiry does, and the
+    pillar carries the share of its weight its data supports. Whether the
+    pillar speaks at all is still `MIN_COMPONENT_WEIGHT`'s question, in
+    `blend_components`.
+    """
     rows = [row for row in monetary_run() if row.indicator != "yield_2y_chg_3m"]
     pillar = MonetaryPillar()
     score = dict(pillar.compute(rows, list(G10), ASOF))["USD"]
 
     assert "yield_2y_chg_3m" not in factors(score)
     assert "yield_2y_chg_3m" not in pillar.last_contributing["USD"]
-    assert score.freshness_factor == pytest.approx((0.15 * 1.0 + 0.45 * 0.5) / 0.60)
+    assert score.freshness_factor == pytest.approx((0.15 * 1.0 + 0.45 * 0.5) / 1.0)
 
 
-def test_a_pillar_left_holding_too_little_fresh_weight_takes_none() -> None:
-    """The other side of the asymmetry, which the exclusion above opens.
+def test_a_pillar_left_holding_one_fresh_component_takes_its_share() -> None:
+    """Weight in proportion to what still counts, with no cliff below it.
 
-    Lifting an expired component out of both sides of the mean is what makes an
-    expired `cpi_yoy` cost the same as an absent one. Taken alone it also lets a
-    pillar renormalise onto whatever is left: `policy_rate` fresh with all four
-    other components expired would report 1.0 and take MONETARY's whole 0.30
-    into the composite, on a score blended 0.85 from data the registry has
-    stopped counting. The same pillar with those four absent instead falls under
-    `MIN_COMPONENT_WEIGHT` in `blend_components` and does not speak at all, so
-    the same constant has to decide both or the fix trades one asymmetry for a
-    larger one.
+    `policy_rate` fresh with all four other components expired is 0.15 of the
+    declared sub-weight still counting, so MONETARY carries 0.15 of its weight.
+    An earlier rule renormalised onto the fresh component, reported 1.0, and
+    then needed a second `MIN_COMPONENT_WEIGHT` floor to drop that to 0.0. The
+    fixed denominator gives the proportional answer directly, and a floor would
+    only reintroduce a step that section 4.1 of `docs/scoring-spec.md` forbids.
     """
     pillar = MonetaryPillar()
     expired = {name: 100 for name in MONETARY_AGES} | {"policy_rate": 5}
@@ -318,7 +334,7 @@ def test_a_pillar_left_holding_too_little_fresh_weight_takes_none() -> None:
         if name != "policy_rate"
     )
     assert pillar.last_contributing["USD"] == frozenset(MONETARY_AGES)
-    assert score.freshness_factor == 0.0
+    assert score.freshness_factor == pytest.approx(0.15)
 
 
 class _UnnormalisedPillar(BasePillar):
@@ -326,8 +342,8 @@ class _UnnormalisedPillar(BasePillar):
 
     `BasePillar.blend_components` already judges its floor as a fraction of what
     the weight map declares, for the stated reason that passing a subset must not
-    put every currency under it. `pillar_freshness` has to read the same map the
-    same way. A denominator hardcoded at 1.0 agrees with every pillar shipped
+    put every currency under it. `pillar_freshness` divides by the same map's
+    total. A denominator hardcoded at 1.0 agrees with every pillar shipped
     today and disagrees with the next one written, which is the config-drift
     failure in miniature: the same quantity derived in one place and assumed in
     another.
@@ -365,33 +381,38 @@ def _leg(indicator: str, age_days: int) -> list[Observation]:
     return [observation(indicator, "USD", 2.0, age_days, ref.frequency)]
 
 
-def test_the_floor_reads_the_scale_the_weights_declare() -> None:
-    """Half of a map summing to 2.0 is half, not twice the floor.
+def test_the_denominator_reads_the_scale_the_weights_declare() -> None:
+    """Half of a map summing to 2.0 is half, not all of it.
 
-    `alpha` is fresh and `beta` has missed a cycle, so the counted share is 1.0
-    of a declared 2.0. That is exactly `MIN_COMPONENT_WEIGHT` and the pillar
-    takes no weight. Read against a denominator of 1.0 the same run would come
-    out at a share of 1.0 and report full freshness.
+    `alpha` is measured and `beta` has missed a cycle, so the counted
+    sub-weight is 1.0 of a declared 2.0 and the factor is half of `alpha`'s.
+    Read against a denominator of 1.0 the same run would report `alpha`'s whole
+    factor, as if the expired component were not declared at all.
     """
     pillar = _UnnormalisedPillar()
     extracted = {
         "cpi_yoy": _leg("cpi_yoy", 30),
         "core_cpi_yoy": _leg("core_cpi_yoy", 900),
     }
+    measured = pillar.component_freshness(extracted, ASOF)
 
     assert sum(pillar.component_weights.values()) == 2.0
-    assert pillar.component_freshness(extracted, ASOF)["beta"] == pytest.approx(0.0)
-    assert pillar.pillar_freshness(extracted, ASOF, ("alpha", "beta")) == 0.0
+    assert measured["alpha"] > 0.0
+    assert measured["beta"] == pytest.approx(0.0)
+    assert pillar.pillar_freshness(extracted, ASOF, ("alpha", "beta")) == (
+        pytest.approx(measured["alpha"] / 2.0)
+    )
 
 
-def test_the_floor_is_reached_at_the_boundary_not_past_it() -> None:
-    """EMPLOYMENT's two components are 0.50 each, so the boundary is live.
+def test_half_the_sub_weight_expired_is_half_the_weight_not_none() -> None:
+    """EMPLOYMENT's two components are 0.50 each, so half is a live case.
 
-    `blend_components` refuses at ``<=`` rather than ``<``, and this is the same
-    constant deciding the same question one stage later. A pillar left standing
-    on exactly half its sub-weight is a coin toss reported as a reading, and the
-    two floors disagreeing about the boundary is how one run would be refused by
-    the blend and admitted by the weight.
+    An earlier rule dropped this pillar to 0.0 at exactly half its sub-weight
+    expired, by a second `MIN_COMPONENT_WEIGHT` floor. That is a cliff: one more
+    day of age on `employment_trend` took the weight from about half to none.
+    The fixed denominator carries the surviving half at its own factor instead.
+    `blend_components` still applies `MIN_COMPONENT_WEIGHT` to presence, which
+    is where the question of whether the pillar speaks at all is asked.
     """
     pillar = EmploymentPillar()
     assert pillar.component_weights == {"unemployment_6m": 0.5, "employment_trend": 0.5}
@@ -404,18 +425,42 @@ def test_the_floor_is_reached_at_the_boundary_not_past_it() -> None:
     measured = pillar.component_freshness(extracted, ASOF)
     assert measured["unemployment_6m"] > 0.0
     assert measured["employment_trend"] == pytest.approx(0.0)
-    assert (
-        pillar.pillar_freshness(extracted, ASOF, tuple(pillar.component_weights)) == 0.0
-    )
+    assert pillar.pillar_freshness(
+        extracted, ASOF, tuple(pillar.component_weights)
+    ) == pytest.approx(0.5 * measured["unemployment_6m"])
 
 
-def test_the_floor_is_a_fraction_of_the_declared_sub_weight() -> None:
-    """`MIN_COMPONENT_WEIGHT` is a fraction, not a number of components.
+def test_a_component_blended_without_observations_is_not_charged_as_expired() -> None:
+    """EXTERNAL's ``terms_of_trade`` is 0.0 by design for a currency with no
+    commodity link, so it blends with no observations and has no age.
 
-    INFLATION's two components are 0.40 and 0.60, so core alone clears the floor
-    and headline alone does not. A floor counted in components rather than in
-    sub-weight would treat the two the same, and a pillar carrying 0.40 of its
-    weight would speak at full strength.
+    Charging it at ``phi = 0.0`` would cut EXTERNAL's weight by 0.30 for USD,
+    EUR, GBP, JPY and CHF on every run, for a component that is not missing.
+    It leaves both sides of the mean instead, so USD with fresh balances gets
+    1.0 and USD missing ``trade_trend`` gets ``0.40 / 0.70``.
+    """
+    pillar = ExternalPillar()
+    ref = INDICATORS["current_account_gdp"].series["USD"]
+    age = publication_lag(ref, ref.frequency)
+    extracted = {"current_account_gdp": _leg("current_account_gdp", age)}
+    phi = pillar.component_freshness(extracted, ASOF)["current_account_gdp"]
+
+    assert phi == pytest.approx(1.0)
+    assert "terms_of_trade" not in pillar.component_freshness(extracted, ASOF)
+    assert pillar.pillar_freshness(
+        extracted, ASOF, ("current_account_gdp", "terms_of_trade")
+    ) == pytest.approx(0.40 * phi / 0.70)
+    assert pillar.pillar_freshness(extracted, ASOF, ("terms_of_trade",)) == 0.0
+
+
+def test_the_weight_is_a_fraction_of_the_declared_sub_weight() -> None:
+    """The factor counts sub-weight, not components.
+
+    INFLATION's two components are 0.40 and 0.60. Either one alone and fully
+    fresh carries its own sub-weight share of the pillar's weight, 0.60 for core
+    and 0.40 for headline. A rule counting components would give both 0.5, and
+    one renormalising over what blended would give both 1.0, so a pillar holding
+    0.40 of its data would speak at full strength.
     """
     pillar = InflationPillar()
     fresh = {
@@ -435,8 +480,8 @@ def test_the_floor_is_a_fraction_of_the_declared_sub_weight() -> None:
     }
 
     assert pillar.component_weights == {"cpi_gap": 0.40, "core_gap": 0.60}
-    assert pillar.pillar_freshness(fresh, ASOF, ("core_gap",)) == pytest.approx(1.0)
-    assert pillar.pillar_freshness(fresh, ASOF, ("cpi_gap",)) == 0.0
+    assert pillar.pillar_freshness(fresh, ASOF, ("core_gap",)) == pytest.approx(0.60)
+    assert pillar.pillar_freshness(fresh, ASOF, ("cpi_gap",)) == pytest.approx(0.40)
 
 
 # --- what the set says for a currency the pillar could not score ------------
@@ -677,20 +722,12 @@ def test_every_pillar_weighs_freshness_over_the_set_it_reports(
         )
 
         measured = factors(scores[code])
-        # The components that both blended and still count toward coverage: a
-        # component at zero freshness, or one the pillar never measured, leaves
-        # both sides of the mean rather than entering the denominator.
-        counted = {
-            component: measured[component]
-            for component in reported
-            if measured.get(component, 0.0) > 0.0
-        }
-        share = sum(weights[component] for component in counted)
-        expected = (
-            sum(weights[component] * phi for component, phi in counted.items()) / share
-            if share > 0.0
-            else 0.0
-        )
+        # Every declared component sits in the denominator and one that did not
+        # blend adds zero to the numerator. One that blended with no measured
+        # age leaves both sides.
+        unaged = sum(weights[c] for c in reported if c not in measured)
+        held = sum(weights[c] * measured[c] for c in reported if c in measured)
+        expected = held / (sum(weights.values()) - unaged)
         assert scores[code].freshness_factor == pytest.approx(expected), code
 
 
@@ -790,3 +827,63 @@ def test_the_docstring_no_longer_claims_the_two_definitions_agree() -> None:
     assert "components the currency actually has" not in text
     assert "blend" in text
     assert "contributing" in text
+
+
+# --- the weight follows the age, with no step anywhere ----------------------
+
+
+def _usd_cpi_lag() -> int:
+    """The age in days at which a USD CPI print is first visible to the run.
+
+    Below it `BasePillar._visible` hides the print, so the component is absent
+    for a reason that has nothing to do with staleness. The sweeps start here so
+    they measure ageing and nothing else.
+    """
+    ref = INDICATORS["cpi_yoy"].series["USD"]
+    return publication_lag(ref, ref.frequency)
+
+
+def test_monetary_weight_never_rises_as_the_cpi_ages() -> None:
+    """Older data never earns more weight, on any day of the ramp.
+
+    The earlier rule lifted a component out of the mean the day its factor
+    reached 0.0, while a factor of 0.0001 stayed in both sides of it. So the
+    factor fell as the CPI aged and then jumped back up the day it expired:
+    0.534 at 100 days, 0.510 at 105, 0.588 at 110. Section 4.1 of
+    `docs/scoring-spec.md` has a ramp so that a day of ageing never moves the
+    weight in a step, and a step upward is the worst kind, because it rewards
+    the run for its data getting older.
+
+    Every day from first visibility to 200 days is checked, which runs past the
+    allowance, so the expiry day itself is inside the sweep.
+    """
+    ages = range(_usd_cpi_lag(), 201)
+    weights = [
+        scored(monetary_run(cpi_age=age))["USD"].freshness_factor for age in ages
+    ]
+
+    rises = [
+        (age, before, after)
+        for age, before, after in zip(ages[1:], weights[:-1], weights[1:], strict=True)
+        if after > before + 1e-12
+    ]
+    assert not rises, f"the factor rose with age at (age, before, after): {rises}"
+    assert weights[0] > weights[-1]
+
+
+def test_an_absent_cpi_weighs_exactly_what_an_expired_one_does() -> None:
+    """Absent and expired are the same fact for the weight: nothing counting.
+
+    Issue #172 asks that absent get no more than expired. Equality is the only
+    answer that also keeps the ramp continuous: if absent weighed more, a CPI a
+    few days short of expiry would be worth less than no CPI at all, and the run
+    that has the print would be penalised against the one that does not. The
+    loop pins that no visible age falls below absence.
+    """
+    absent = scored(monetary_run())["USD"].freshness_factor
+    expired = scored(monetary_run(cpi_age=400))["USD"].freshness_factor
+
+    assert absent == pytest.approx(expired)
+    for age in range(_usd_cpi_lag(), 201):
+        held = scored(monetary_run(cpi_age=age))["USD"].freshness_factor
+        assert held >= absent - 1e-12, age
