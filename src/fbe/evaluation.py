@@ -1,10 +1,12 @@
 """Join a past bias record to the move that followed it.
 
-This module answers one question and refuses the next one: what actually
-happened after the engine published a view. It produces rows. It computes no
-hit rate, no average and no interval, because a wrong join buried inside a
-statistic is a statistic nobody can audit, and the statistics are
-`docs/roadmap.md` Phase 6's separate piece of work.
+This module answers what actually happened after the engine published a
+view. The join produces rows first, and every summary is built from those rows
+rather than alongside them, because a wrong join buried inside a statistic is a
+statistic nobody can audit. `evaluate` then summarises the rows per conviction
+band with an interval, and says the record is too thin to judge until it holds
+enough independent as-of windows. Nothing here is a measured result until that
+threshold is met on the real forward record.
 
 Why the bias record rather than the journal
 -------------------------------------------
