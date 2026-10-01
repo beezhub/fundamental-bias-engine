@@ -18,7 +18,7 @@ import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -29,6 +29,7 @@ from typer.testing import CliRunner, Result
 from fbe.cli import EXIT_OK, EXIT_UNUSABLE, app
 from fbe.config import DataConfig
 from fbe.datasources import collect as collect_module
+from fbe.datasources import registry
 from fbe.datasources.base import BaseDataSource, RateLimit, RetryPolicy, SourceError
 from fbe.datasources.cache import BODY_SUFFIX, META_SUFFIX
 from fbe.datasources.curves import RBA_F2_URL, RbaSource
@@ -1129,7 +1130,7 @@ def test_every_indicator_with_a_gap_is_printed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gaps = {f"indicator_{n}": ("JPY", "NZD") for n in range(12)}
-    monkeypatch.setattr(collect_module, "stale_refs", lambda asof=None: gaps)
+    monkeypatch.setattr(collect_module, "observed_gaps", lambda *_: gaps)
     alpha, _ = _source(
         "alpha",
         refs=[("cpi_yoy", "GBP")],
@@ -1147,7 +1148,7 @@ def test_the_gap_list_names_the_currencies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        collect_module, "stale_refs", lambda asof=None: {"cpi_yoy": ("JPY", "NZD")}
+        collect_module, "observed_gaps", lambda *_: {"cpi_yoy": ("JPY", "NZD")}
     )
     alpha, _ = _source(
         "alpha",
@@ -1165,7 +1166,7 @@ def test_the_gap_list_names_the_currencies(
 def test_a_registry_with_no_gaps_says_so_rather_than_printing_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(collect_module, "stale_refs", lambda asof=None: {})
+    monkeypatch.setattr(collect_module, "observed_gaps", lambda *_: {})
     alpha, _ = _source(
         "alpha",
         refs=[("cpi_yoy", "GBP")],
@@ -1178,29 +1179,131 @@ def test_a_registry_with_no_gaps_says_so_rather_than_printing_nothing(
     assert "coverage" in printed
 
 
-def test_the_gaps_are_aged_against_the_run_date_not_the_registry_default(
+def test_a_gap_on_an_unscored_indicator_says_it_costs_no_score(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``pmi_composite`` is missing for all eight and no pillar reads it.
+
+    Without the note it reads exactly like ``yield_2y_chg_3m`` missing for all
+    eight, which empties the heaviest component in the model.
+    """
+    unscored = sorted(registry.UNCONSUMED_INDICATORS)[0]
+    monkeypatch.setattr(
+        collect_module,
+        "observed_gaps",
+        lambda *_: {unscored: ("JPY",), "cpi_yoy": ("JPY",)},
+    )
+    alpha, _ = _source(
+        "alpha",
+        refs=[("cpi_yoy", "GBP")],
+        observations=[_observation("cpi_yoy", "GBP", 2.4)],
+    )
+    _cli_sources(monkeypatch, alpha)
+
+    lines = _run(_config_file(tmp_path)).stdout.splitlines()
+
+    marked = [line for line in lines if "not scored" in line]
+    assert len(marked) == 1
+    assert unscored in marked[0]
+
+
+def _gbp_cpi_allowance() -> int:
+    """The allowance the pillars would age a monthly GBP print against."""
+    return registry.staleness_allowance(
+        registry.series_for("cpi_yoy", "GBP"), Frequency.MONTHLY
+    )
+
+
+def _gap_asof() -> date:
+    """A run date at which the registry's own hand-check date has expired.
+
+    Derived rather than typed, so the cases keep testing the defect after the
+    registry is next re-verified: the old list would report GBP here whatever
+    the run fetched.
+    """
+    routed = registry.series_for("cpi_yoy", "GBP")
+    assert routed is not None
+    assert routed.last_observed is not None
+    return routed.last_observed + timedelta(days=2 * _gbp_cpi_allowance())
+
+
+def _gap_case(
+    data_config: DataConfig, observations: Sequence[Observation]
+) -> Mapping[str, tuple[str, ...]]:
+    """Collect GBP ``cpi_yoy`` from a source named as the registry routes it.
+
+    The gap list only judges refs whose source ran, so the stand-in has to
+    carry the routed source's name or nothing is judged at all.
+    """
+    routed = registry.series_for("cpi_yoy", "GBP")
+    assert routed is not None
+    source, _ = _source(
+        routed.source, refs=[("cpi_yoy", "GBP")], observations=observations
+    )
+    result = collect_module.collect(
+        data_config,
+        start=START,
+        end=_gap_asof(),
+        sources=(source,),
+        indicators=["cpi_yoy"],
+        currencies=["GBP"],
+    )
+    return result.gaps
+
+
+def test_a_fresh_print_is_not_a_gap_whatever_the_registry_last_checked(
     data_config: DataConfig,
 ) -> None:
-    """Defaulting to ``VERIFIED_ON`` would report a year-old registry as healthy."""
-    seen: list[date | None] = []
+    """The defect: the list aged the registry's hand-check date, not the data.
 
-    def _record(asof: date | None = None) -> Mapping[str, tuple[str, ...]]:
-        seen.append(asof)
-        return {}
+    On 2026-10-01 a refresh that fetched a two-day-old two-year yield printed
+    it as a gap for every currency, because ``last_observed`` had been typed
+    on 8 September. The list now reads the observation the run holds.
+    """
+    fresh = _observation("cpi_yoy", "GBP", 3.3, period=_gap_asof())
 
-    alpha, _ = _source("alpha", refs=[("cpi_yoy", "GBP")])
+    assert "cpi_yoy" not in _gap_case(data_config, [fresh])
 
-    collect_module.collect(
+
+def test_no_observation_is_a_gap(data_config: DataConfig) -> None:
+    assert _gap_case(data_config, [])["cpi_yoy"] == ("GBP",)
+
+
+def test_a_print_past_its_allowance_is_a_gap(data_config: DataConfig) -> None:
+    """Aged from ``period`` against the leg's own allowance, as the pillars do."""
+    allowance = _gbp_cpi_allowance()
+    edge = _observation(
+        "cpi_yoy", "GBP", 3.3, period=_gap_asof() - timedelta(days=allowance)
+    )
+    late = _observation(
+        "cpi_yoy", "GBP", 3.3, period=_gap_asof() - timedelta(days=allowance + 1)
+    )
+
+    assert "cpi_yoy" not in _gap_case(data_config, [edge])
+    assert _gap_case(data_config, [late])["cpi_yoy"] == ("GBP",)
+
+
+def test_a_ref_whose_source_did_not_run_is_not_judged(
+    data_config: DataConfig,
+) -> None:
+    """``fbe refresh --source`` must not report every other source's data missing.
+
+    The run holds no observation for a source it did not ask, and an absence
+    it never looked for is not evidence of a gap.
+    """
+    routed = registry.series_for("cpi_yoy", "GBP")
+    assert routed is not None
+    other, _ = _source(f"not-{routed.source}", refs=[])
+    result = collect_module.collect(
         data_config,
         start=START,
         end=END,
-        sources=(alpha,),
+        sources=(other,),
         indicators=["cpi_yoy"],
         currencies=["GBP"],
-        stale=_record,
     )
 
-    assert seen == [END]
+    assert "cpi_yoy" not in result.gaps
 
 
 # --- criterion 9: --source and --since ---------------------------------------

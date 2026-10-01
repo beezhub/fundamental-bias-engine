@@ -47,7 +47,7 @@ three times in two days and taking the other 38 with it each time.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
@@ -55,7 +55,13 @@ from enum import StrEnum
 from fbe.config import DataConfig
 from fbe.datasources import ALL_SOURCES
 from fbe.datasources.base import BaseDataSource, WindowTooNarrow
-from fbe.datasources.registry import GLOBAL, INDICATORS, SOURCE_MANUAL, stale_refs
+from fbe.datasources.registry import (
+    GLOBAL,
+    INDICATORS,
+    SOURCE_MANUAL,
+    SeriesRef,
+    staleness_allowance,
+)
 from fbe.types import Observation
 from fbe.universe import G10
 
@@ -67,10 +73,8 @@ __all__ = [
     "UnjudgedSeries",
     "collect",
     "lookback_start",
+    "observed_gaps",
 ]
-
-StaleRefs = Callable[..., Mapping[str, tuple[str, ...]]]
-"""Signature of `fbe.datasources.registry.stale_refs`, injectable for testing."""
 
 
 class SourceStatus(StrEnum):
@@ -216,8 +220,10 @@ class CollectionResult:
         outcomes: One per source in ``ALL_SOURCES`` order, including the ones
             that were skipped, because a source missing from the output and a
             source that returned nothing are different facts.
-        gaps: Coverage gaps from `fbe.datasources.registry.stale_refs`, keyed by
-            indicator with the currencies that have no usable ref.
+        gaps: Coverage gaps in what this run holds, keyed by indicator with
+            the currencies that have no usable observation. Built by
+            `observed_gaps` from the observations above, not from the
+            registry's hand-check dates.
 
     """
 
@@ -639,7 +645,6 @@ def collect(
     indicators: Iterable[str] | None = None,
     currencies: Iterable[str] | None = None,
     force: bool = False,
-    stale: StaleRefs | None = None,
 ) -> CollectionResult:
     """Fan one request out across every source and reconcile the answers.
 
@@ -666,9 +671,6 @@ def collect(
         currencies: ISO 4217 codes. Defaults to the G10 plus ``GLOBAL``.
         force: Drop each selected source's cached responses before fetching, so
             a request inside the TTL goes back to the provider.
-        stale: The coverage gap function, defaulting to
-            `fbe.datasources.registry.stale_refs`. Injectable so a test can
-            assert what it was aged against without standing up a registry.
 
     Returns:
         A `CollectionResult`. No source failure reaches the caller as an
@@ -754,12 +756,107 @@ def collect(
             key = (observation.indicator, observation.currency, observation.period)
             merged[key] = observation
 
-    resolve = stale_refs if stale is None else stale
-    return CollectionResult(
-        observations=tuple(
-            observation
-            for _, observation in sorted(merged.items(), key=lambda item: item[0])
-        ),
-        outcomes=tuple(outcomes),
-        gaps=resolve(asof=end),
+    held = tuple(
+        observation
+        for _, observation in sorted(merged.items(), key=lambda item: item[0])
     )
+    return CollectionResult(
+        observations=held,
+        outcomes=tuple(outcomes),
+        gaps=observed_gaps(held, end, _judged(requested, chosen)),
+    )
+
+
+def _judged(
+    requested: frozenset[tuple[str, str]], ran: Collection[str]
+) -> frozenset[tuple[str, str]]:
+    """Return the requested pairs whose absence this run could have seen.
+
+    Args:
+        requested: Every ``(indicator, currency)`` the run asked for.
+        ran: The source keys that were selected for the run.
+
+    Returns:
+        The pairs whose registry ref names a source that ran, plus the pairs
+        the registry has no ref for at all. A pair routed to a source the run
+        did not select is left out: ``fbe refresh --source fred`` holds no
+        OECD observation because it never asked for one, and reporting that as
+        a gap would print every other source's data as missing.
+
+    """
+    judged: set[tuple[str, str]] = set()
+    for indicator, currency in requested:
+        spec = INDICATORS.get(indicator)
+        if spec is None:
+            continue
+        ref = spec.series.get(currency)
+        if ref is None or ref.source in ran:
+            judged.add((indicator, currency))
+    return frozenset(judged)
+
+
+def observed_gaps(
+    observations: Iterable[Observation],
+    asof: date,
+    judged: Collection[tuple[str, str]],
+) -> Mapping[str, tuple[str, ...]]:
+    """List the currencies the run holds no usable observation for.
+
+    Args:
+        observations: What the run collected, from every source that answered.
+        asof: The run date, which every newest print is aged against.
+        judged: The ``(indicator, currency)`` pairs the run could have seen,
+            from `_judged`. Anything outside it is not reported either way.
+
+    Returns:
+        Indicator key to the currencies with a gap, in ``G10`` order.
+        Indicators with no gap are omitted, so an empty mapping means every
+        judged pair holds a print inside its allowance. An indicator with a
+        ``GLOBAL`` ref reports the whole of ``G10`` when that one print is
+        missing or late, because it serves all eight currencies at once.
+
+    A pair is a gap when the run holds no observation for it, or when its
+    newest observation is older than `registry.staleness_allowance` for its
+    own leg and frequency. Age is ``asof`` less the newest ``period``, floored
+    at zero, which is how `fbe.pillars.base.BasePillar.staleness_days` ages
+    the same print. A gap here is therefore a leg the pillars will score at
+    zero weight or not at all, and nothing else.
+
+    This replaced `registry.stale_refs` as the source of the list on
+    2026-10-01. That function ages ``SeriesRef.last_observed``, the date a
+    person last checked the series by hand, so a refresh that had just fetched
+    a two-day-old yield printed it as missing for every currency.
+
+    """
+    newest: dict[tuple[str, str], Observation] = {}
+    for observation in observations:
+        key = (observation.indicator, observation.currency)
+        current = newest.get(key)
+        if current is None or observation.period > current.period:
+            newest[key] = observation
+
+    def unusable(indicator: str, currency: str, ref: SeriesRef | None) -> bool:
+        latest = newest.get((indicator, currency))
+        if latest is None:
+            return True
+        age = max(0, (asof - latest.period).days)
+        return age > staleness_allowance(ref, latest.frequency)
+
+    gaps: dict[str, tuple[str, ...]] = {}
+    for indicator, spec in INDICATORS.items():
+        global_ref = spec.series.get(GLOBAL)
+        if global_ref is not None:
+            if (indicator, GLOBAL) in judged and unusable(
+                indicator, GLOBAL, global_ref
+            ):
+                gaps[indicator] = tuple(G10)
+            continue
+        missing = tuple(
+            code
+            for code in G10
+            if (indicator, code) in judged
+            and unusable(indicator, code, spec.series.get(code))
+        )
+        if missing:
+            gaps[indicator] = missing
+    return gaps
