@@ -242,7 +242,7 @@ def _uncovered_message(uncovered: list[Path]) -> str:
     nothing any test could see.
     """
     return "modules under src/fbe/ with no row in the CLAUDE.md status table: " + (
-        ", ".join(str(path.relative_to(REPO)) for path in uncovered)
+        ", ".join(path.relative_to(REPO).as_posix() for path in uncovered)
     )
 
 
