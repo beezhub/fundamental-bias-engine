@@ -889,15 +889,25 @@ Three things the output does that a reader should rely on:
   control. If they perform like the backed bands then the conviction ladder
   separated nothing, and the two rows sitting next to each other is how that
   becomes visible.
-- **A group under thirty observations is marked as a record rather than
-  evidence**, in its own row and in a sentence above the tables. On a record
-  that began this month that is most of them, so the marking reads as the
-  normal case rather than as an alarm.
+- **A group under thirty independent windows is marked as a record rather
+  than evidence**, in its own row and in a sentence above the tables. On a
+  record that began this month that is most of them, so the marking reads as
+  the normal case rather than as an alarm.
+- **Evidence is counted in windows, not rows.** A window is a report's as-of
+  date taken greedily from the earliest, each at least `horizon_days` after the
+  last one taken, so no two windows share a day of price. One report adds 28
+  rows that are one view of eight currencies, and daily reports under a ten
+  day horizon share nine days of price with the next. Counted as rows, two
+  mornings clear thirty, and five mornings calling the dollar short in a
+  fortnight the dollar fell would print as a finding. Counted as windows, that
+  is one. Row counts are still printed, as `n`, and are not evidence. The
+  journal split is the exception: it counts closed trades, the unit
+  `journal.EVIDENCE_THRESHOLD_TRADES` was set in.
 - **It can conclude that nothing separated from chance**, and says so in those
   words. A group is named as separating only when its whole interval sits above
-  50% and it clears the evidence threshold: Wilson's lower end at five wins
-  from five is about 0.57, so a rule reading the interval alone would announce
-  a finding from five rows.
+  50% and it clears the evidence threshold in windows: Wilson's lower end at
+  five wins from five is about 0.57, so a rule reading the interval alone would
+  announce a finding from five rows.
 
 A hit is judged against the sign of the recorded spread rather than against
 `Direction`. The two agree wherever the engine graded a direction, because
@@ -917,9 +927,16 @@ weights that made them, so the caveat is loud instead.
 | `--journal` | the packaged journal path | Journal file for the alignment split. |
 | `--format` | `table` | `table`, `json` or `csv`, all carrying the same figures. |
 
+Prices are daily FRED fixings for the seven dollar pairs, one request per series
+over the whole window from the day after the earliest as-of to the latest as-of
+plus `horizon_days`, clipped at today. The run is online unless `--offline` or
+`data.offline` says otherwise; offline, the cache has to hold that window.
+
 Exit codes: 0 when an evaluation was produced, including one that concluded
-nothing separated. 1 when the reports directory is absent or empty, and when no
-report's window could be priced, which is the ordinary state while the newest
+nothing separated. 1 when the reports directory is absent or empty, when the
+forward prices could not be read (no FRED key, a failed request, or a cold
+cache on an offline run, named on stderr), and when no report's window could be
+priced, which is the ordinary state while the newest
 reports are younger than `horizon_days`. Zeros printed for an unmeasurable
 record would read as a model that called nothing right, which is a different
 fact. Problems from the join go to stderr, so a redirected JSON or CSV stays
@@ -927,19 +944,22 @@ machine readable and a dropped day still reaches the reader.
 
 ```console
 $ fbe evaluate
-Forward record: 84 rows, 81 carrying a call.
-Every figure below 30 observations is a record of what happened, not evidence
-about what will. On a record that started this month that is most of them.
+Forward record: 84 rows, 81 carrying a call, from 1 independent windows.
+Every figure below 30 independent windows is a record of what happened, not
+evidence about what will. A window is a report at least the horizon after the
+last one counted, because one morning's 28 pairs share eight currencies and
+reports a day apart share most of their prices. On a record that started this
+month that is most of them.
 
 By conviction
-  group                                   n     hit      95% interval    avg move
-  high                                    9   55.6%    26.7% to  81.1%      0.112%  record only
-  medium                                 17   47.1%    26.2% to  69.0%     -0.051%  record only
-  none                                   55   50.9%    38.0% to  63.7%      0.004%  record only
+  group                                 win    n     hit      95% interval    avg move
+  high                                    1    9   55.6%    26.7% to  81.1%      0.112%  record only
+  medium                                  1   17   47.1%    26.2% to  69.0%     -0.051%  record only
+  none                                    1   55   50.9%    38.0% to  63.7%      0.004%  record only
 
 No group separates from chance on this record: every interval includes 50%, or
-the group holds too few observations to say. That is a result, not a missing
-answer.
+the group holds too few independent windows to say. That is a result, not a
+missing answer.
 ```
 
 The figures in that block are a layout, not a measurement. Nothing in this

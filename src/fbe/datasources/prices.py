@@ -724,22 +724,6 @@ class PricesSource(BaseDataSource):
                 "fixing belongs to a session, not to a moment in one."
             )
 
-        try:
-            series_id = FRED_SPOT_SERIES[pair]
-        except KeyError as error:
-            served = ", ".join(sorted(FRED_SPOT_SERIES))
-            # Named for FRED rather than for self.name. This class is named
-            # "stooq" for the refs it owns, but the fixings come from FRED, and
-            # an operator sent to look at Stooq would find its anti-bot
-            # challenge and conclude that was the cause.
-            raise SourceError(
-                f"no FRED spot series is configured for {pair!r}. "
-                f"spot serves {served}. Pairs are named the way the market "
-                "writes them, so a pair is not served by asking for its "
-                "inverse: USDEUR is not EURUSD and will not be answered with "
-                "EURUSD's rate."
-            ) from error
-
         # The window ends at the session asked for rather than at today, so no
         # fixing dated after `on` can come back.
         #
@@ -750,22 +734,8 @@ class PricesSource(BaseDataSource):
         # vintage and this signature has nowhere to put one.
         end = on if on is not None else _today()
         start = end - timedelta(days=SPOT_LOOKBACK_DAYS)
-
-        # Through FredSource rather than a second client, so the run keeps one
-        # key and one cache for FRED. Nothing here touches the value:
-        # FRED_SPOT_SERIES has already resolved the quoting direction by key,
-        # and a second normalisation is how a rate ends up inverted.
-        fred = self._fred()
-        if not fred.available():
-            # Asked before the request rather than after, because FRED answers
-            # a keyless call with a bare 400 that names no cause, and an
-            # operator reading that goes looking at the network.
-            raise SourceError(
-                f"no FRED credential is configured, so {series_id} cannot be "
-                f"fetched for {pair}. Set FRED_API_KEY, or run offline to read "
-                "what is already cached."
-            )
-        rows = fred.fetch_series(series_id, start, end)
+        series_id = _spot_series_id(pair)
+        rows = self._spot_rows(pair, series_id, start, end)
 
         if on is not None:
             for period, value in rows:
@@ -798,3 +768,128 @@ class PricesSource(BaseDataSource):
                 "Refusing rather than returning it as the current rate."
             )
         return value
+
+    def spot_history(
+        self, pair: str, start: date, end: date
+    ) -> Sequence[tuple[date, float]]:
+        """Return every fixing for a pair over a window, in one request.
+
+        `spot` asks for one session, and a caller wanting a run of sessions
+        that loops over it sends one request per calendar day, weekends
+        included. Each of those is its own cache key, so an offline run misses
+        on nearly every one, and an online run spends the FRED throttle on days
+        the market was shut. This asks once for the whole window.
+
+        Args:
+            pair: Six-character pair in market convention, e.g. ``"EURUSD"``.
+            start: First session wanted, inclusive.
+            end: Last session wanted, inclusive. Nothing dated after it comes
+                back. The caller decides whether that may be later than today;
+                FRED answers a future end with the sessions it has.
+
+        Returns:
+            ``(session, rate)`` pairs, ascending by session, quoted base per
+            quote as the market writes the pair, in the quote currency per one
+            unit of the base. Callers must not invert them, for the reason
+            `spot` gives. A session absent from the result is a session the
+            market published no fixing for: nothing is carried forward from
+            the day before. An empty result means the window held no fixing at
+            all, which is data rather than a failure.
+
+        Raises:
+            SourceError: When ``start`` or ``end`` is a ``datetime`` rather than
+                a ``date``, when ``start`` is after ``end``, when ``pair`` is
+                not served, when no FRED credential is configured on an online
+                run, and, unchanged, for the failures the shared request path
+                reports: an exhausted retry, an unreadable body, or an offline
+                run whose cache holds nothing for this window.
+
+        """
+        if isinstance(start, datetime) or isinstance(end, datetime):
+            raise SourceError(
+                f"spot_history takes dates, got {start!r} to {end!r}. A fixing "
+                "belongs to a session, not to a moment in one."
+            )
+        if start > end:
+            raise SourceError(
+                f"spot_history was asked for {start.isoformat()} to "
+                f"{end.isoformat()}, which ends before it starts."
+            )
+        series_id = _spot_series_id(pair)
+        rows = self._spot_rows(pair, series_id, start, end)
+        # Filtered and sorted here rather than trusted: FRED's window is its
+        # own promise, and a row outside the one asked for is a price the
+        # caller did not ask to see.
+        return sorted(
+            (period, value) for period, value in rows if start <= period <= end
+        )
+
+    def _spot_rows(
+        self, pair: str, series_id: str, start: date, end: date
+    ) -> Sequence[tuple[date, float]]:
+        """Fetch one spot series over a window through the run's FRED source.
+
+        Through `FredSource` rather than a second client, so the run keeps one
+        key and one cache for FRED. Nothing here touches the value:
+        `FRED_SPOT_SERIES` has already resolved the quoting direction by key,
+        and a second normalisation is how a rate ends up inverted.
+
+        Args:
+            pair: The pair, named in the credential error.
+            series_id: Its FRED series, from `_spot_series_id`.
+            start: ``observation_start``.
+            end: ``observation_end``.
+
+        Returns:
+            The rows FRED returned, unfiltered and in its order.
+
+        Raises:
+            SourceError: When no FRED credential is configured and the run is
+                online, and unchanged from `FredSource.fetch_series`.
+
+        """
+        fred = self._fred()
+        if not fred.available():
+            # Asked before the request rather than after, because FRED answers
+            # a keyless call with a bare 400 that names no cause, and an
+            # operator reading that goes looking at the network.
+            raise SourceError(
+                f"no FRED credential is configured, so {series_id} cannot be "
+                f"fetched for {pair}. Set FRED_API_KEY, or run offline to read "
+                "what is already cached."
+            )
+        return fred.fetch_series(series_id, start, end)
+
+
+def _spot_series_id(pair: str) -> str:
+    """Return the FRED series serving a pair, or refuse it by name.
+
+    Args:
+        pair: Six-character pair in market convention.
+
+    Returns:
+        The series identifier from `FRED_SPOT_SERIES`.
+
+    Raises:
+        SourceError: When the pair is not served. An unserved pair answered
+            with ``None`` or an empty history would make a typo and a data gap
+            indistinguishable at the call site, and ``"USDEUR"`` is in this
+            case: a pair written against market convention is refused rather
+            than quietly answered with the rate for its inverse.
+
+    """
+    try:
+        return FRED_SPOT_SERIES[pair]
+    except KeyError as error:
+        served = ", ".join(sorted(FRED_SPOT_SERIES))
+        # Named for FRED rather than for the source's own name. PricesSource is
+        # named "stooq" for the refs it owns, but the fixings come from FRED,
+        # and an operator sent to look at Stooq would find its anti-bot
+        # challenge and conclude that was the cause.
+        raise SourceError(
+            f"no FRED spot series is configured for {pair!r}. "
+            f"spot serves {served}. Pairs are named the way the market "
+            "writes them, so a pair is not served by asking for its "
+            "inverse: USDEUR is not EURUSD and will not be answered with "
+            "EURUSD's rate."
+        ) from error

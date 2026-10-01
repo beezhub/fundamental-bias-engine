@@ -65,7 +65,7 @@ from fbe.scoring import score_currencies
 from fbe.types import Conviction, Direction, PillarName
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
     from pathlib import Path
 
     from fbe.bias import EventHorizonGuard
@@ -85,6 +85,7 @@ __all__ = [
     "WeightMove",
     "WeightSensitivity",
     "evaluate",
+    "independent_windows",
     "join_report",
     "join_reports",
     "weight_sensitivity",
@@ -580,13 +581,28 @@ class GroupStats:
             `fbe.journal.hit_rate_interval`. The same implementation the
             journal uses, because two intervals over the same kind of rate will
             disagree and the disagreement will not be visible.
-        hit_rate_high: Upper end of the same interval.
-        below_evidence_threshold: True when ``observations`` is under
-            `fbe.journal.EVIDENCE_THRESHOLD_TRADES`, so the bucket is a record
-            of what happened rather than evidence about what will. On a forward
-            record that began this month every bucket carries this, which is
-            why it is a flag the renderer prints as the normal case rather than
-            an alarm.
+        hit_rate_high: Upper end of the same interval. Both ends treat the
+            observations as independent, which rows of the forward record are
+            not, so the interval is narrower than the record deserves. That is
+            why ``below_evidence_threshold`` counts windows and not rows.
+        windows: Independent as-of windows behind the bucket's forward-record
+            rows: distinct as-of dates, taken greedily from the earliest, each
+            at least `fbe.config.ScoringConfig.horizon_days` after the last
+            one taken, so no two share a day of price. ``None`` for the two
+            journal buckets, which count closed trades instead, the unit
+            `fbe.journal.EVIDENCE_THRESHOLD_TRADES` was set in and the one
+            `fbe.journal.ConvictionStats` judges the same trades by.
+        below_evidence_threshold: True when ``windows`` is under
+            `fbe.journal.EVIDENCE_THRESHOLD_TRADES`, or, for a journal bucket,
+            when ``observations`` is. Then the bucket is a record of what
+            happened rather than evidence about what will. Windows rather than
+            rows, because one report adds 28 rows that share eight currencies,
+            and daily reports under a ten day horizon share nine days of price
+            with the next: five mornings calling the dollar short in a
+            fortnight the dollar fell are 35 hits and one bet. On a forward
+            record that began this month every bucket carries this flag, which
+            is why the renderer prints it as the normal case rather than an
+            alarm.
         avg_move: Mean realised move in the direction the call pointed, as a
             fraction rather than a percentage. Positive means the calls were
             right on average by that much; negative means they were wrong on
@@ -602,6 +618,7 @@ class GroupStats:
     hit_rate: float
     hit_rate_low: float
     hit_rate_high: float
+    windows: int | None
     below_evidence_threshold: bool
     avg_move: float
 
@@ -624,16 +641,22 @@ class Evaluation:
             holds no closed record, which is the normal state of a fresh clone
             and is different from a journal whose trades all lost.
         digests: Distinct config digests behind the rows, in first-seen order.
+        windows: Independent as-of windows across every called row, counted
+            as `GroupStats.windows` counts them. The figure that says how much
+            evidence the whole record holds, which ``rows`` does not.
         separating: Labels of the buckets whose interval sits entirely above a
-            half **and** which clear the evidence threshold. Empty is the
-            honest answer for this record today and for some time.
+            half **and** which clear the evidence threshold in independent
+            windows. Empty is the honest answer for this record today and for
+            some time.
 
     The question this answers is whether the model separated anything, and the
     answer it is built to be able to give is no. A bucket is only listed in
     ``separating`` when its whole interval is above chance and it holds enough
-    observations to be evidence: Wilson's lower end at five wins from five
-    trades is about 0.57, so separation judged on the interval alone would
-    announce a finding from five rows.
+    independent windows to be evidence. Neither alone is enough. Wilson's lower
+    end at five wins from five is about 0.57, so separation judged on the
+    interval alone would announce a finding from five rows. And a row count
+    alone is cleared by two mornings' reports, whose 28 pairs each are one view
+    of eight currencies over one stretch of prices.
 
     Nothing here is a claim about what the model will do. These are counts over
     what it did, with the width of each one stated beside it.
@@ -647,6 +670,7 @@ class Evaluation:
     by_agreement: tuple[GroupStats, ...] = ()
     by_alignment: tuple[GroupStats, ...] = ()
     digests: tuple[str, ...] = ()
+    windows: int = 0
     separating: tuple[str, ...] = ()
 
     @property
@@ -731,12 +755,56 @@ def _signed(row: ForwardRow, call: Direction) -> float:
     return row.move if call is Direction.LONG else -row.move
 
 
-def _stats(label: str, outcomes: Sequence[tuple[bool, float]]) -> GroupStats:
+_Outcome = tuple[bool, float, date | None]
+"""``(hit, signed_move, asof)`` for one observation.
+
+``asof`` is the report's as-of for a forward-record row and ``None`` for a
+journal trade, which is how `_stats` knows which unit of evidence to count.
+"""
+
+
+def independent_windows(asofs: Iterable[date], horizon_days: int) -> int:
+    """Count the as-of windows that share no day of price with one another.
+
+    Greedy from the earliest: the first as-of is taken, and each later one is
+    taken only when it falls at least ``horizon_days`` after the last one
+    taken. Greedy from the earliest gives the largest such set, so the count is
+    not understated by the choice of where to start.
+
+    Why windows and not rows. One report adds 28 rows, and the 28 pairs are
+    built from eight currencies, so a view on the dollar is seven rows that
+    are one opinion. Reports a day apart under a ten day horizon share nine of
+    their ten days of price, so their outcomes are mostly the same outcome.
+    A row count treats all of that as independent and clears thirty on the
+    second morning.
+
+    Args:
+        asofs: As-of dates, in any order, repeats allowed.
+        horizon_days: `fbe.config.ScoringConfig.horizon_days`, the length of
+            the window each row's move is measured over, in calendar days.
+
+    Returns:
+        The count. Zero for no dates.
+
+    """
+    count = 0
+    last: date | None = None
+    for asof in sorted(set(asofs)):
+        if last is None or (asof - last).days >= horizon_days:
+            count += 1
+            last = asof
+    return count
+
+
+def _stats(label: str, outcomes: Sequence[_Outcome], horizon_days: int) -> GroupStats:
     """Build one bucket from its outcomes.
 
     Args:
         label: The bucket's name in the output.
-        outcomes: ``(hit, signed_move)`` per observation.
+        outcomes: ``(hit, signed_move, asof)`` per observation. Every outcome
+            in one bucket is either a forward-record row or a journal trade;
+            the two are never mixed in a bucket.
+        horizon_days: Spacing for `independent_windows`.
 
     Returns:
         The bucket. Never called with an empty sequence: a bucket nothing fell
@@ -746,8 +814,11 @@ def _stats(label: str, outcomes: Sequence[tuple[bool, float]]) -> GroupStats:
 
     """
     observations = len(outcomes)
-    hits = sum(1 for hit, _ in outcomes if hit)
+    hits = sum(1 for hit, _, _ in outcomes if hit)
     low, high = hit_rate_interval(hits, observations)
+    asofs = [asof for _, _, asof in outcomes if asof is not None]
+    windows = independent_windows(asofs, horizon_days) if asofs else None
+    evidence = windows if windows is not None else observations
     return GroupStats(
         label=label,
         observations=observations,
@@ -755,17 +826,21 @@ def _stats(label: str, outcomes: Sequence[tuple[bool, float]]) -> GroupStats:
         hit_rate=hits / observations,
         hit_rate_low=low,
         hit_rate_high=high,
-        below_evidence_threshold=observations < EVIDENCE_THRESHOLD_TRADES,
-        avg_move=fsum(move for _, move in outcomes) / observations,
+        windows=windows,
+        below_evidence_threshold=evidence < EVIDENCE_THRESHOLD_TRADES,
+        avg_move=fsum(move for _, move, _ in outcomes) / observations,
     )
 
 
 def _grouped(
-    buckets: Mapping[str, list[tuple[bool, float]]],
+    buckets: Mapping[str, list[_Outcome]],
     order: Sequence[str],
+    horizon_days: int,
 ) -> tuple[GroupStats, ...]:
     """Turn the collected buckets into stats, in the given label order."""
-    return tuple(_stats(label, buckets[label]) for label in order if buckets[label])
+    return tuple(
+        _stats(label, buckets[label], horizon_days) for label in order if buckets[label]
+    )
 
 
 def evaluate(
@@ -786,13 +861,18 @@ def evaluate(
             number where an absence belongs. Defaults to none, which leaves the
             alignment split out of the report rather than printing zeros.
         scoring: Supplies ``min_agreement``, the threshold the agreement
-            buckets split at. Defaults to `ScoringConfig`'s packaged values.
+            buckets split at, and ``horizon_days``, the spacing independent
+            windows are counted at. Defaults to `ScoringConfig`'s packaged
+            values. Pass the config the rows were joined under: a horizon that
+            differs from the join's counts windows the moves were not measured
+            over.
 
     Returns:
         An `Evaluation`. Every rate carries its count and its interval, every
-        bucket under `fbe.journal.EVIDENCE_THRESHOLD_TRADES` observations is
-        marked, and ``separating`` names only the buckets that clear both
-        chance and that threshold.
+        bucket under `fbe.journal.EVIDENCE_THRESHOLD_TRADES` independent
+        windows is marked (closed trades, for the journal buckets), and
+        ``separating`` names only the buckets that clear both chance and that
+        threshold.
 
         An empty record comes back as an empty evaluation rather than as zeros:
         `Evaluation.shows_no_separation` is true for it, which is correct, and
@@ -809,17 +889,14 @@ def evaluate(
     """
     config = scoring if scoring is not None else ScoringConfig()
 
-    conviction: dict[str, list[tuple[bool, float]]] = {
-        band.value: [] for band in Conviction
-    }
-    direction: dict[str, list[tuple[bool, float]]] = {
-        way.value: [] for way in Direction
-    }
-    agreement: dict[str, list[tuple[bool, float]]] = {
+    conviction: dict[str, list[_Outcome]] = {band.value: [] for band in Conviction}
+    direction: dict[str, list[_Outcome]] = {way.value: [] for way in Direction}
+    agreement: dict[str, list[_Outcome]] = {
         AGREEMENT_BROAD: [],
         AGREEMENT_NARROW: [],
     }
     digests: list[str] = []
+    asofs: list[date] = []
     called = 0
 
     for row in rows:
@@ -829,13 +906,14 @@ def evaluate(
         if call is None:
             continue
         called += 1
-        outcome = (_hit(row, call), _signed(row, call))
+        outcome = (_hit(row, call), _signed(row, call), row.asof)
+        asofs.append(row.asof)
         conviction[row.conviction.value].append(outcome)
         direction[row.direction.value].append(outcome)
         broad = row.agreement >= config.min_agreement
         agreement[AGREEMENT_BROAD if broad else AGREEMENT_NARROW].append(outcome)
 
-    alignment: dict[str, list[tuple[bool, float]]] = {ALIGNED: [], AGAINST: []}
+    alignment: dict[str, list[_Outcome]] = {ALIGNED: [], AGAINST: []}
     for record in trades:
         if record.r_multiple is None:
             continue
@@ -843,12 +921,13 @@ def evaluate(
         # A trade closed exactly at breakeven counts in the denominator and not
         # in the numerator, which is what `ConvictionStats` does with the same
         # trade and what `_hit` does with a move of exactly zero.
-        alignment[label].append((record.r_multiple > 0.0, record.r_multiple))
+        alignment[label].append((record.r_multiple > 0.0, record.r_multiple, None))
 
-    by_conviction = _grouped(conviction, [band.value for band in Conviction])
-    by_direction = _grouped(direction, [way.value for way in Direction])
-    by_agreement = _grouped(agreement, [AGREEMENT_BROAD, AGREEMENT_NARROW])
-    by_alignment = _grouped(alignment, [ALIGNED, AGAINST])
+    horizon = config.horizon_days
+    by_conviction = _grouped(conviction, [band.value for band in Conviction], horizon)
+    by_direction = _grouped(direction, [way.value for way in Direction], horizon)
+    by_agreement = _grouped(agreement, [AGREEMENT_BROAD, AGREEMENT_NARROW], horizon)
+    by_alignment = _grouped(alignment, [ALIGNED, AGAINST], horizon)
 
     return Evaluation(
         rows=len(rows),
@@ -858,6 +937,7 @@ def evaluate(
         by_agreement=by_agreement,
         by_alignment=by_alignment,
         digests=tuple(digests),
+        windows=independent_windows(asofs, horizon),
         separating=tuple(
             entry.label
             for entry in (*by_conviction, *by_direction, *by_agreement, *by_alignment)

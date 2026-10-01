@@ -13,10 +13,11 @@ about words rather than numbers live:
   a backtested result,
 * and that the three formats carry the same figures.
 
-Nothing here reaches the network. The price source is replaced in every test
-that gets as far as pricing, and the journal lives in ``tmp_path`` rather than
-at `fbe.journal.JOURNAL_PATH`, which a fresh clone does not have and which is
-the owner's private file where it does.
+Nothing here reaches the network. The price source is replaced by a table in
+most tests that get as far as pricing, and the ones that drive the real source
+answer FRED through `respx`. The journal lives in ``tmp_path`` rather than at
+`fbe.journal.JOURNAL_PATH`, which a fresh clone does not have and which is the
+owner's private file where it does.
 """
 
 from __future__ import annotations
@@ -28,10 +29,14 @@ import re
 from datetime import date, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
+import respx
 from typer.testing import CliRunner
 
 from fbe.cli import EXIT_OK, EXIT_UNUSABLE, app
+from fbe.datasources.fred import BASE_URL as FRED_BASE_URL
+from fbe.datasources.fred import ENDPOINTS
 from fbe.datasources.prices import FRED_SPOT_SERIES
 from fbe.journal import append
 from fbe.report import load_report, write_report
@@ -80,6 +85,16 @@ class _Prices:
         strengthens_dollar = not pair.startswith(("EUR", "GBP", "AUD", "NZD"))
         factor = 1.0 + _Prices.drift * offset * (1.0 if strengthens_dollar else -1.0)
         return BASE_RATES[pair] * factor
+
+    def spot_history(
+        self, pair: str, start: date, end: date
+    ) -> list[tuple[date, float]]:
+        history = []
+        for session in sorted(self.sessions):
+            rate = self.spot(pair, on=session)
+            if start <= session <= end and rate is not None:
+                history.append((session, rate))
+        return history
 
     def close(self) -> None:
         self.closed = True
@@ -178,6 +193,23 @@ def test_the_figures_are_marked_as_a_record_rather_than_evidence(
     assert "record only" in result.stdout
 
 
+def test_five_mornings_in_a_row_are_not_printed_as_a_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Five daily reports are 140 rows and one independent window.
+
+    The drift follows each pair's dollar leg the whole way, so a row count
+    would clear thirty in every bucket with an interval above a half. The output
+    has to say the record holds one window and name nothing as separating.
+    """
+    result = run(tmp_path, monkeypatch, copies=5)
+
+    assert result.exit_code == EXIT_OK
+    assert "from 1 independent windows" in result.stdout
+    assert "Above chance" not in result.stdout
+    assert "No group separates from chance" in result.stdout
+
+
 def test_every_rate_is_printed_beside_its_interval_and_its_count(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -212,10 +244,11 @@ def test_no_price_at_or_before_the_as_of_is_ever_asked_for(
     asked: list[date] = []
 
     class _Recording(_Prices):
-        def spot(self, pair: str, on: date | None = None) -> float | None:
-            assert on is not None
-            asked.append(on)
-            return super().spot(pair, on=on)
+        def spot_history(
+            self, pair: str, start: date, end: date
+        ) -> list[tuple[date, float]]:
+            asked.append(start)
+            return super().spot_history(pair, start, end)
 
     _Prices.drift = 0.01
     _Prices.sessions = tuple(ASOF + timedelta(days=n) for n in range(1, 21))
@@ -431,3 +464,124 @@ def test_a_gap_in_the_record_is_reported_rather_than_dropped(
     assert result.exit_code == EXIT_OK
     json.loads(result.stdout)
     assert "2026-06-29" in result.stderr
+
+
+# ----------------------------------------------------------------------
+# The real price source, behind a mocked FRED
+# ----------------------------------------------------------------------
+
+OBSERVATIONS_URL = f"{FRED_BASE_URL}{ENDPOINTS['observations']}"
+SERIES_PAIRS = {series: pair for pair, series in FRED_SPOT_SERIES.items()}
+
+
+def _fred_answers(request: httpx.Request) -> httpx.Response:
+    """Answer one observations request with a fixing on every weekday it spans.
+
+    Built from the request's own window, so a command that asked for the wrong
+    dates gets the wrong dates back rather than a fixture that hides it.
+    """
+    params = request.url.params
+    pair = SERIES_PAIRS[params["series_id"]]
+    start = date.fromisoformat(params["observation_start"])
+    end = date.fromisoformat(params["observation_end"])
+    observations = []
+    session = start
+    while session <= end:
+        if session.weekday() < 5:
+            observations.append(
+                {"date": session.isoformat(), "value": f"{BASE_RATES[pair]:.4f}"}
+            )
+        session += timedelta(days=1)
+    return httpx.Response(200, json={"observations": observations})
+
+
+def _real_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the real source at a cold cache under ``tmp_path``, with a key set."""
+    monkeypatch.setenv("FRED_API_KEY", "k" * 32)
+    monkeypatch.setenv("FBE_DATA_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr("fbe.datasources.base.time.sleep", lambda seconds: None)
+
+
+@respx.mock
+def test_the_real_source_is_asked_once_per_series_over_the_whole_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Seven requests for the whole record, not one per pair per calendar day.
+
+    Asking day by day sends a request for every weekend and holiday, and with
+    each window keyed into the cache on its own, an offline run misses on
+    nearly all of them. One request per series over the whole window is what
+    the cache can answer and what FRED can serve without a throttle.
+    """
+    _real_source(tmp_path, monkeypatch)
+    route = respx.get(OBSERVATIONS_URL).mock(side_effect=_fred_answers)
+    directory = reports(tmp_path, copies=3)
+
+    result = runner.invoke(app, ["evaluate", "--reports", str(directory)])
+
+    assert result.exit_code == EXIT_OK, result.output
+    asked = [call.request.url.params["series_id"] for call in route.calls]
+    assert sorted(asked) == sorted(FRED_SPOT_SERIES.values())
+    for call in route.calls:
+        start = call.request.url.params["observation_start"]
+        assert date.fromisoformat(start) > ASOF
+
+
+@respx.mock
+def test_no_price_dated_after_today_is_asked_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A report younger than the horizon asks up to today and no further.
+
+    A window reaching into the future asks FRED for sessions that have not
+    happened, and on an offline run looks for a cache entry nothing ever wrote.
+    """
+    from dataclasses import replace
+
+    _real_source(tmp_path, monkeypatch)
+    route = respx.get(OBSERVATIONS_URL).mock(side_effect=_fred_answers)
+    directory = tmp_path / "reports"
+    directory.mkdir()
+    recent = date.today() - timedelta(days=3)
+    write_report(replace(load_report(FIXTURE), asof=recent), directory)
+
+    runner.invoke(app, ["evaluate", "--reports", str(directory)])
+
+    assert route.calls
+    for call in route.calls:
+        end = call.request.url.params["observation_end"]
+        assert date.fromisoformat(end) <= date.today()
+
+
+@respx.mock
+def test_a_price_fetch_that_fails_is_named_and_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dead FRED is a fact about the run, and it reaches the reader as a line.
+
+    Not a traceback, and not an empty evaluation: zeros would read as a model
+    that called nothing right.
+    """
+    _real_source(tmp_path, monkeypatch)
+    respx.get(OBSERVATIONS_URL).mock(return_value=httpx.Response(503))
+    directory = reports(tmp_path)
+
+    result = runner.invoke(app, ["evaluate", "--reports", str(directory)])
+
+    assert result.exit_code == EXIT_UNUSABLE
+    assert isinstance(result.exception, SystemExit)
+    assert "Could not read the forward prices" in result.stderr
+
+
+def test_an_offline_run_with_a_cold_cache_is_named_and_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The global ``--offline`` reads the cache, and a cold one is said so."""
+    _real_source(tmp_path, monkeypatch)
+    directory = reports(tmp_path)
+
+    result = runner.invoke(app, ["--offline", "evaluate", "--reports", str(directory)])
+
+    assert result.exit_code == EXIT_UNUSABLE
+    assert isinstance(result.exception, SystemExit)
+    assert "Could not read the forward prices" in result.stderr

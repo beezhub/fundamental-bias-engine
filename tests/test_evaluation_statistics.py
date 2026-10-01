@@ -29,7 +29,7 @@ Nothing reaches the network. Every row is built in the test.
 from __future__ import annotations
 
 import random
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -49,6 +49,16 @@ from fbe.types import Conviction, Direction
 
 ASOF = date(2026, 9, 10)
 DIGEST = "digest-a"
+HORIZON = ScoringConfig().horizon_days
+
+
+def spaced(index: int, *, every: int = HORIZON) -> date:
+    """The as-of of the ``index``-th report in a run spaced ``every`` days apart.
+
+    At the default spacing each report's window ends where the next one starts,
+    so every report is an independent window and none overlaps another.
+    """
+    return ASOF + timedelta(days=every * index)
 
 
 def row(
@@ -181,7 +191,11 @@ def test_a_record_that_does_separate_says_which_groups_did() -> None:
     ever answer "no separation" would pass the test above and fail here.
     """
     rows = [
-        row(spread=1.0 if index % 2 else -1.0, move=0.01 if index % 2 else -0.01)
+        row(
+            spread=1.0 if index % 2 else -1.0,
+            move=0.01 if index % 2 else -0.01,
+            asof=spaced(index // 2),
+        )
         for index in range(200)
     ]
 
@@ -393,12 +407,16 @@ def test_a_control_performing_like_the_backed_group_is_visible() -> None:
     only the backed band.
     """
     rows = [
-        *(row(spread=2.0, move=0.01 if index % 4 else -0.01) for index in range(20)),
+        *(
+            row(spread=2.0, move=0.01 if index % 4 else -0.01, asof=spaced(index))
+            for index in range(20)
+        ),
         *(
             row(
                 spread=0.2,
                 move=0.01 if index % 4 else -0.01,
                 conviction=Conviction.NONE,
+                asof=spaced(20 + index),
             )
             for index in range(20)
         ),
@@ -409,9 +427,10 @@ def test_a_control_performing_like_the_backed_group_is_visible() -> None:
     assert group(stats, Conviction.HIGH.value).hit_rate == pytest.approx(0.75)
     assert group(stats, Conviction.NONE.value).hit_rate == pytest.approx(0.75)
     # Neither conviction bucket is named as separating, and not because the
-    # rate is low: twenty observations is under the evidence threshold, so the
-    # gate holds even at 75%. The agreement bucket pools all forty and is
-    # named, which is the same rows judged where there are enough of them.
+    # rate is low: twenty windows is under the evidence threshold, so the gate
+    # holds even at 75%. The agreement bucket pools all forty, from forty
+    # spaced reports, and is named, which is the same rows judged where there
+    # are enough of them.
     assert Conviction.HIGH.value not in stats.separating
     assert Conviction.NONE.value not in stats.separating
     assert stats.separating == (AGREEMENT_BROAD,)
@@ -422,14 +441,90 @@ def test_a_control_performing_like_the_backed_group_is_visible() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_a_bucket_under_thirty_observations_is_marked() -> None:
-    """Every figure on this record for months, so the marking is the normal case."""
-    assert EVIDENCE_THRESHOLD_TRADES == 30
-    thin = evaluate([row(spread=2.0, move=0.01) for _ in range(29)])
-    thick = evaluate([row(spread=2.0, move=0.01) for _ in range(30)])
+def test_a_bucket_under_thirty_independent_windows_is_marked() -> None:
+    """Every figure on this record for months, so the marking is the normal case.
 
+    Thirty reports spaced a full horizon apart is thirty windows that share no
+    day of price, and that is the first count at which a bucket is evidence.
+    """
+    assert EVIDENCE_THRESHOLD_TRADES == 30
+    thin = evaluate([row(spread=2.0, move=0.01, asof=spaced(n)) for n in range(29)])
+    thick = evaluate([row(spread=2.0, move=0.01, asof=spaced(n)) for n in range(30)])
+
+    assert group(thin, Conviction.HIGH.value).windows == 29
     assert group(thin, Conviction.HIGH.value).below_evidence_threshold is True
+    assert group(thick, Conviction.HIGH.value).windows == 30
     assert group(thick, Conviction.HIGH.value).below_evidence_threshold is False
+    assert Conviction.HIGH.value in thick.separating
+
+
+def test_five_mornings_calling_the_dollar_short_in_a_fortnight_is_one_window() -> None:
+    """The early false finding this threshold exists to refuse.
+
+    Five daily reports, each calling the dollar short on all seven dollar pairs,
+    in a fortnight the dollar fell. That is 35 rows, every one a hit, and a
+    count of rows clears thirty with an interval well above a half. It is one
+    bet: the seven pairs share a leg, and five ten-day windows a day apart share
+    almost every day of price. Counted as windows it is one, and the output has
+    to say it is a record rather than evidence.
+    """
+    dollar_pairs = {
+        "EURUSD": 1.0,
+        "GBPUSD": 1.0,
+        "AUDUSD": 1.0,
+        "NZDUSD": 1.0,
+        "USDJPY": -1.0,
+        "USDCHF": -1.0,
+        "USDCAD": -1.0,
+    }
+    rows = [
+        row(
+            spread=2.0 * sign,
+            move=0.01 * sign,
+            pair=pair,
+            asof=ASOF + timedelta(days=day),
+        )
+        for day in range(5)
+        for pair, sign in dollar_pairs.items()
+    ]
+
+    stats = evaluate(rows)
+    high = group(stats, Conviction.HIGH.value)
+
+    assert high.observations == 35
+    assert high.hit_rate_low > 0.5
+    assert high.windows == 1
+    assert high.below_evidence_threshold is True
+    assert stats.separating == ()
+    assert stats.shows_no_separation is True
+
+
+def test_windows_closer_than_the_horizon_count_once_greedily_from_the_earliest() -> (
+    None
+):
+    """Reports nine days apart under a ten day horizon overlap, so not all count.
+
+    Greedy from the earliest: day 0 is taken, day 9 overlaps it, day 18 is far
+    enough from day 0 and is taken, day 27 overlaps day 18. Two windows from
+    four reports.
+    """
+    rows = [row(spread=2.0, move=0.01, asof=spaced(n, every=9)) for n in range(4)]
+
+    assert group(evaluate(rows), Conviction.HIGH.value).windows == 2
+
+
+def test_the_window_spacing_follows_a_configured_horizon() -> None:
+    """Read from `ScoringConfig.horizon_days`, not from a literal ten.
+
+    The same four reports nine days apart are four windows under a five day
+    horizon, because none of them shares a day of price with the next.
+    """
+    rows = [row(spread=2.0, move=0.01, asof=spaced(n, every=9)) for n in range(4)]
+
+    stats = evaluate(rows, scoring=ScoringConfig(horizon_days=5))
+
+    assert group(stats, Conviction.HIGH.value).windows == 4
+    assert stats.windows == 4
 
 
 def test_a_marked_bucket_cannot_be_reported_as_separating() -> None:

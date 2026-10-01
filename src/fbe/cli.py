@@ -5019,21 +5019,27 @@ def journal_review(
 
 
 EVIDENCE_CAVEAT = (
-    "Every figure below {threshold} observations is a record of what happened, "
-    "not evidence about what will. On a record that started this month that is "
-    "most of them."
+    "Every figure below {threshold} independent windows is a record of what "
+    "happened, not evidence about what will. A window is a report at least the "
+    "horizon after the last one counted, because one morning's 28 pairs share "
+    "eight currencies and reports a day apart share most of their prices. On a "
+    "record that started this month that is most of them."
 )
 """Sentence printed above the tables whenever any bucket is thin.
 
 Criterion 6 of issue #286 asks for this in words rather than leaving the reader
 to notice a count. It is a statement about the record's age, so it reads as the
 normal case rather than as an alarm: on this account it will be true of every
-figure for months.
+figure for months. It names windows rather than rows because the row count is
+printed beside it and is the larger number: a reader comparing the two against
+the threshold would otherwise conclude the record is evidence on its second
+morning.
 """
 
 NO_SEPARATION = (
     "No group separates from chance on this record: every interval includes "
-    "50%, or the group holds too few observations to say. That is a result, "
+    "50%, or the group holds too few independent windows to say. That is a "
+    "result, "
     "not a missing answer."
 )
 """What the command prints when nothing in the record beat a coin.
@@ -5081,28 +5087,39 @@ def _forward_rates(
         forward from the day before. A stale rate reported as that day's is a
         move measured against a price that did not exist.
 
+        The window is clipped at today. A report younger than the horizon has
+        a far edge that has not happened yet, and asking for it would ask the
+        feed for sessions that do not exist; `fbe.evaluation.join_report`
+        names that report as unmeasurable instead.
+
+    Each series is asked for once over the whole window, not once per day.
+    Asking day by day sends a request for every weekend and holiday, and each
+    of those is its own cache key, so an offline run misses on nearly all of
+    them and an online one spends the throttle on days the market was shut.
+
+    The run is online unless the operator asked for offline, through
+    ``--offline`` or `fbe.config.DataConfig.offline`. Forcing it offline here
+    would make a fresh machine's first evaluation fail on a cold cache.
+
     Raises:
-        fbe.datasources.base.SourceError: From the price source, when the cache
-            cannot answer on an offline run. A cold cache and a market holiday
-            are different facts and only the second is an absence.
+        fbe.datasources.base.SourceError: From the price source, when a series
+            cannot be read: no credential, an exhausted retry, or a cold cache
+            on an offline run. A failed read and a market holiday are
+            different facts and only the second is an absence.
 
     """
-    source = PricesSource(replace(config.data, offline=True))
+    end = min(last, date.today())
     table: dict[date, dict[str, float]] = {}
+    if end < first:
+        return table
+    source = PricesSource(config.data)
     try:
-        session = first
-        while session <= last:
-            fixings = {
-                pair: rate
-                for pair in MAJORS
-                if (rate := source.spot(pair, on=session)) is not None
-            }
-            if fixings:
-                table[session] = fixings
-            session += timedelta(days=1)
+        for pair in MAJORS:
+            for session, rate in source.spot_history(pair, first, end):
+                table.setdefault(session, {})[pair] = rate
     finally:
         source.close()
-    return table
+    return dict(sorted(table.items()))
 
 
 def _group_payload(stats: GroupStats) -> dict[str, object]:
@@ -5114,6 +5131,7 @@ def _group_payload(stats: GroupStats) -> dict[str, object]:
         "hit_rate": round(stats.hit_rate, 4),
         "hit_rate_low": round(stats.hit_rate_low, 4),
         "hit_rate_high": round(stats.hit_rate_high, 4),
+        "independent_windows": stats.windows,
         "below_evidence_threshold": stats.below_evidence_threshold,
         "avg_move": round(stats.avg_move, 6),
     }
@@ -5129,6 +5147,7 @@ def _evaluation_payload(result: Evaluation) -> dict[str, object]:
     return {
         "rows": result.rows,
         "called": result.called,
+        "independent_windows": result.windows,
         "config_digests": list(result.digests),
         "mixed_digests": result.mixed_digests,
         "separating": list(result.separating),
@@ -5153,6 +5172,7 @@ def _evaluation_csv(result: Evaluation) -> str:
             "hit_rate",
             "hit_rate_low",
             "hit_rate_high",
+            "independent_windows",
             "below_evidence_threshold",
             "avg_move",
         )
@@ -5173,6 +5193,7 @@ def _evaluation_csv(result: Evaluation) -> str:
                     f"{entry.hit_rate:.4f}",
                     f"{entry.hit_rate_low:.4f}",
                     f"{entry.hit_rate_high:.4f}",
+                    "" if entry.windows is None else entry.windows,
                     str(entry.below_evidence_threshold).lower(),
                     f"{entry.avg_move:.6f}",
                 )
@@ -5189,7 +5210,8 @@ def _evaluation_table(result: Evaluation) -> str:
     from twenty lines up.
     """
     lines: list[str] = [
-        f"Forward record: {result.rows} rows, {result.called} carrying a call.",
+        f"Forward record: {result.rows} rows, {result.called} carrying a call, "
+        f"from {result.windows} independent windows.",
     ]
     if result.mixed_digests:
         lines.append(
@@ -5220,13 +5242,15 @@ def _evaluation_table(result: Evaluation) -> str:
             continue
         lines.append(title)
         lines.append(
-            f"  {'group':<36}{'n':>5}{'hit':>8}{'95% interval':>18}{'avg move':>12}"
+            f"  {'group':<36}{'win':>5}{'n':>5}{'hit':>8}{'95% interval':>18}"
+            f"{'avg move':>12}"
         )
         for entry in entries:
             interval = f"{entry.hit_rate_low:6.1%} to {entry.hit_rate_high:6.1%}"
             mark = "  record only" if entry.below_evidence_threshold else ""
+            windows = "-" if entry.windows is None else str(entry.windows)
             lines.append(
-                f"  {entry.label:<36}{entry.observations:>5}"
+                f"  {entry.label:<36}{windows:>5}{entry.observations:>5}"
                 f"{entry.hit_rate:>8.1%}{interval:>18}{entry.avg_move:>12.3%}{mark}"
             )
         lines.append("")
@@ -5235,7 +5259,7 @@ def _evaluation_table(result: Evaluation) -> str:
         lines.append(NO_SEPARATION)
     else:
         lines.append(
-            "Above chance, with enough observations to say: "
+            "Above chance, with enough independent windows to say: "
             + ", ".join(result.separating)
             + ". That is what this record shows, over these rows, under these "
             "weights. It is not a forecast."
@@ -5290,10 +5314,15 @@ def evaluate(
 
     Every rate carries the number of observations behind it and a Wilson
     interval around it, and a group under `fbe.journal.EVIDENCE_THRESHOLD_TRADES`
-    observations is marked as a record rather than evidence, in the row and in a
-    sentence above the tables. The pairs the engine put at ``NONE`` are reported
-    as their own group: they are the control, and if they perform like the
-    backed ones then the conviction ladder separated nothing.
+    independent as-of windows is marked as a record rather than evidence, in the
+    row and in a sentence above the tables. Windows rather than rows, because
+    one report's 28 rows are one view of eight currencies, and reports closer
+    together than the horizon share most of their prices; see
+    `fbe.evaluation.independent_windows`.
+
+    The pairs the engine put at ``NONE`` are reported as their own group: they
+    are the control, and if they perform like the backed ones then the
+    conviction ladder separated nothing.
 
     Args:
         ctx: Typer context carrying the effective config.
@@ -5303,7 +5332,8 @@ def evaluate(
 
     Raises:
         typer.Exit: With `EXIT_UNUSABLE` when the reports directory holds no
-            readable report, or when no report's window could be priced. An
+            readable report, when the forward prices could not be read, or
+            when no report's window could be priced. An
             empty evaluation printed as zeros would read as a model that called
             nothing right, which is a different fact from a record that cannot
             be measured yet.
@@ -5342,11 +5372,21 @@ def evaluate(
         )
         raise typer.Exit(EXIT_UNUSABLE)
 
-    rates = _forward_rates(
-        config,
-        asofs[0] + timedelta(days=1),
-        asofs[-1] + timedelta(days=config.scoring.horizon_days),
-    )
+    try:
+        rates = _forward_rates(
+            config,
+            asofs[0] + timedelta(days=1),
+            asofs[-1] + timedelta(days=config.scoring.horizon_days),
+        )
+    except SourceError as error:
+        # A failed read is not an empty window. Reported as one, the command
+        # would go on to say the reports are younger than the horizon, which
+        # sends the operator after the wrong cause.
+        typer.echo(
+            f"Could not read the forward prices, so nothing can be evaluated: {error}",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UNUSABLE) from error
     joined = join_reports(directory, rates, scoring=config.scoring)
     if not joined.rows:
         for problem in joined.problems:
