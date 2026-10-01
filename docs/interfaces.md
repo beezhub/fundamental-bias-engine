@@ -88,16 +88,29 @@ Loading is not judging. A config that `Config.validate` would reject still
 loads, so `fbe doctor` can print the problem rather than the resolver hiding
 it behind an exception.
 
-Once resolved, the config is validated before it is used. `fbe doctor` and
-every command that scores or sizes from the config (`score`, `bias`, `report`
-and `size`) call `Config.validate` first and refuse to run on a non-empty
-result, printing each problem on its own line. `dashboard` is not in that list:
-it neither scores nor sizes, it renders a run that was already scored. `validate` rejects
-weights that do not cover every pillar, are negative or do not sum to 1.0, a
-risk cap above the plan's 2%, and any threshold ordering that would leave a
-scoring formula undefined or a conviction band empty. A config that fails here
-would not crash the engine. It would produce a report that looks normal and is
-wrong, which is why the refusal happens before any number is computed.
+Once resolved, the config is validated before it is used. Every command that
+scores or sizes from the config (`score`, `bias`, `report` and `size`) calls
+`Config.validate` first through `cli._require_valid_config`, and refuses to run
+on a non-empty result, printing each problem on its own line to stderr and
+exiting 1. `dashboard` is not in that list: it neither scores nor sizes, it
+renders a run that was already scored. `validate` rejects weights that do not
+cover every pillar, are negative or do not sum to 1.0, a risk cap above the
+plan's 2%, and any threshold ordering that would leave a scoring formula
+undefined or a conviction band empty. A config that fails here would not crash
+the engine. It would produce a report that looks normal and is wrong, which is
+why the refusal happens before any number is computed, and why `report` refuses
+before it writes rather than after: the file is the committed audit trail and
+re-running the date does not recover the correct call.
+
+`fbe doctor` calls `validate` too and does not refuse. It reports every problem
+as its first check and carries on with the rest, because reporting is what it is
+for and a `doctor` that stopped on a bad config would hide the other checks the
+operator ran it to see. Its exit codes are unchanged: 1 on a failing check, 0 on
+a warning without `--strict`.
+
+The refusal goes to stderr rather than stdout so that `fbe score --format csv >
+monday.csv` puts it in front of the operator instead of into the file, where a
+parser would meet prose in place of rows.
 
 ## The daily sequence
 
@@ -1040,9 +1053,28 @@ Single column, in the order the trading day needs it:
 5. **Shortlist as cards**, one per idea: pair, direction, conviction, reasoning,
    size if attached, blackout if any. Cards rather than a table because this is
    the part read on a phone at arm's length.
-6. **Calendar strip.** A 24 hour axis with blackout windows shaded, events
-   ticked and the current time marked, so "is the window clear" is answered by
-   looking rather than by reading.
+6. **Calendar strip.** A 24 hour axis from the run's generation time, with
+   blackout windows shaded, events ticked and the current time marked, so "is
+   the window clear" is answered by looking rather than by reading. The event
+   list under it carries the same releases, because a band is thin on a phone
+   and a value only available by hovering is a value a phone cannot read.
+
+   Every time on this page prints its zone. The instants are aware UTC and the
+   page is read away from the machine that built it, where nothing else on
+   screen fixes the zone: a bare `13:00` read in Johannesburg stands aside two
+   hours late. The strip prints UTC rather than converting, because the
+   renderer cannot know where the page will be opened. `fbe calendar` does
+   convert, because it runs on the owner's own machine.
+
+   **An empty strip is not a clear strip.** The windows are drawn from the
+   events the run held, and a run whose calendar was not consulted, or was
+   consulted and could not answer, holds none. Both states are named above the
+   strip with the number of pairs carrying them, read from the pairs' own
+   `event:unchecked` and `event:unknown` markers, because a `BiasReport` holds
+   its pairs and not the `CalendarCoverage` behind them. An unknown marker
+   carrying no reason says so rather than printing an empty one. A run whose
+   calendar answered carries no caveat at all: a caveat on every page is a
+   caveat nobody reads.
 7. **Coverage, warnings and the run-to-run diff** in the footer. Both matter and
    neither should be the first thing on the screen.
 

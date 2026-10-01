@@ -45,26 +45,36 @@ counts and the intervals in front of them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from fbe.config import ScoringConfig
-from fbe.report import SIDECAR_GLOB, load_report
+from fbe.bias import build_pair_biases
+from fbe.config import Config, ScoringConfig
+from fbe.pillars import default_pillars
+from fbe.report import SIDECAR_GLOB, load_report, ranked_pairs
 from fbe.risk import MissingRateError, convert_rate
-from fbe.types import Conviction, Direction
+from fbe.scoring import score_currencies
+from fbe.types import Conviction, Direction, PillarName
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-    from fbe.types import BiasReport
+    from fbe.bias import EventHorizonGuard
+    from fbe.types import BiasReport, CurrencyScore, Observation, PairBias
 
 __all__ = [
+    "CROSS_SECTION_NOTE",
+    "DEFAULT_WEIGHT_STEP",
     "ForwardRow",
     "ForwardJoin",
+    "WeightMove",
+    "WeightSensitivity",
     "join_report",
     "join_reports",
+    "weight_sensitivity",
 ]
 
 
@@ -516,3 +526,485 @@ def join_reports(
     # could then be dropped and the other would hide it.
     rows.sort(key=lambda row: row.asof)
     return ForwardJoin(rows=tuple(rows), problems=tuple(problems))
+
+
+CROSS_SECTION_NOTE = (
+    "These figures describe how far one run's cross-section moves when one "
+    "weight moves, and say nothing about returns. A pillar whose weight can "
+    "be moved without disturbing the ranking is not thereby useless, and one "
+    "that disturbs it a lot is not thereby right: both are statements about "
+    "this morning's eight currencies and the 28 pairs built from them, not "
+    "about whether any of it was correct. Read the two counts against "
+    "coverage before concluding anything about a pillar: a weight can move "
+    "conviction by changing how much of the model had an opinion, without "
+    "moving any currency's score, and a pillar that scored nothing at all "
+    "can do it."
+)
+"""What the sensitivity figures are, and the two conclusions they do not support.
+
+Carried on `WeightSensitivity` rather than left in this docstring, because the
+figures are read by someone deciding whether to propose a weight change and a
+caveat in the source is one they never see. Both wrong readings are named:
+either alone invites the other, and a reader given only "a small move does not
+mean the pillar is useless" concludes that a large move means it is right.
+"""
+
+DEFAULT_WEIGHT_STEP = 0.05
+"""How far a pillar weight is moved, in weight units, absolute.
+
+Absolute rather than a fraction of the weight. The only quantified precedent in
+this repository is `docs/scoring-spec.md`'s own comparison, "6.07% of tiers for
+a single 0.05 shift between two pillar weights", and a second convention beside
+it would make the two figures look comparable when they are not.
+
+That precedent fixes the size and not the construction, and the two differ.
+The spec's figure moves two weights against each other, MONETARY from 0.30 to
+0.35 and EXTERNAL from 0.10 to 0.05, over synthetic runs. This function moves
+one weight and scales the other six proportionally. So the 6.07% is why 0.05
+is a recognisable size in this codebase, and it is not a number this function
+should be expected to reproduce. Nothing here tries to: the figure comes from
+runs that were never committed, so no test could check it honestly.
+
+The cost of absolute is that the seven moves are not comparable with each
+other: 0.05 on ``MONETARY``'s 0.30 is a sixth of it and 0.05 on ``RISK``'s 0.10
+is half. `WeightMove` carries ``weight_before`` and ``weight_after`` so a
+reader can see the relative size of the move that produced each count, rather
+than inferring it from a weight they have to look up.
+
+A parameter on `weight_sensitivity`, so this is the default and not the rule.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class WeightMove:
+    """One pillar's weight moved one way, and what the ranking did.
+
+    Attributes:
+        pillar: The pillar whose weight was moved.
+        step: How far it moved, in weight units, signed. Negative is down.
+        weight_before: The weight in the configuration handed in.
+        weight_after: ``weight_before + step``. Carried rather than recomputed
+            so the relative size of the move is on the row: a reader comparing
+            two pillars needs both numbers and the step alone gives neither.
+        weights: The whole perturbed vector, summing to 1.0. A copy; writing
+            through it reaches nothing.
+        directions_changed: How many of the run's pairs came back with a
+            different `fbe.types.Direction`. **Not the same as how many
+            changed side.** `fbe.bias.build_pair_biases` forces ``NEUTRAL``
+            on any pair it grades ``Conviction.NONE``, so a pair demoted out
+            of the bands counts here without its spread having crossed zero.
+            Read with ``coverage_after``: where that fell through
+            ``coverage_demotion`` the count is mostly demotions, and where
+            it held the count is mostly genuine flips.
+        convictions_changed: How many came back in a different
+            `fbe.types.Conviction` band, counted in either direction. A band
+            change moves position size through `fbe.risk`, so it is not
+            cosmetic even where the direction held. Subject to the same
+            coverage caveat.
+        coverage_before: The lowest `fbe.types.CurrencyScore.coverage` in the
+            run at the configured weights, which is the leg that decides the
+            demotion for any pair it appears in.
+        coverage_after: The same at the perturbed weights. It moves whenever
+            a pillar that scored nothing has its weight changed, because
+            coverage is the share of weight that scored, and it is the
+            channel by which a dead pillar moves the two counts above while
+            moving no composite at all.
+        largest_rank_move: The furthest any single pair travelled in the
+            ranking, in places, against `fbe.report.ranked_pairs`. Zero means
+            the order was untouched.
+        largest_rank_move_pair: Which pair travelled that far, or ``None`` when
+            nothing moved. Named so a reader can look at the pair rather than
+            at the number.
+
+    """
+
+    pillar: PillarName
+    step: float
+    weight_before: float
+    weight_after: float
+    weights: Mapping[PillarName, float]
+    directions_changed: int
+    convictions_changed: int
+    largest_rank_move: int
+    coverage_before: float
+    coverage_after: float
+    largest_rank_move_pair: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WeightSensitivity:
+    """A whole sensitivity run: every pillar moved both ways.
+
+    Attributes:
+        asof: The as-of of the run that was perturbed. A figure with no date
+            outlives the cross-section it describes.
+        step: The step the run used, so the output states the number rather
+            than assuming the reader passed the default.
+        baseline: The pairs as rescored at the configured weights, in
+            ``universe.ALL_PAIRS`` order, which is the order
+            `fbe.bias.build_pair_biases` returns and not necessarily the
+            order the report's sidecar was written in. That it reproduced
+            the report is not a field here: a run that cannot rebuild its
+            own starting point raises, so a flag could only ever read true
+            and would tell a reader nothing.
+        moves: Fourteen rows, seven pillars up and down, in
+            `fbe.types.PillarName` order with the upward move first. Fewer
+            when a step cannot be applied, with a line in ``problems`` for
+            each one left out.
+        problems: One sentence per perturbation that could not be made. Never
+            silently empty: a pillar missing from ``moves`` with nothing said
+            about it reads as a pillar nothing moved.
+        note: `CROSS_SECTION_NOTE`, travelling with the figures.
+
+    """
+
+    asof: date
+    step: float
+    baseline: tuple[PairBias, ...] = ()
+    moves: tuple[WeightMove, ...] = ()
+    problems: tuple[str, ...] = ()
+    note: str = CROSS_SECTION_NOTE
+
+
+def _perturbed_weights(
+    weights: Mapping[PillarName, float], pillar: PillarName, step: float
+) -> dict[PillarName, float]:
+    """One weight moved by ``step``, the other six renormalised around it.
+
+    Args:
+        weights: The configured vector, which is read and not written.
+        pillar: The weight to move.
+        step: How far, signed, in weight units.
+
+    Returns:
+        A new dict summing to 1.0, in which ``pillar`` carries
+        ``weights[pillar] + step`` and every other weight is scaled by
+        ``(1 - moved) / (1 - before)``. Scaling the rest preserves their
+        proportions to each other, so the measurement isolates the one weight
+        rather than mixing in a second re-weighting among the six.
+
+    Raises:
+        ValueError: When the moved weight would leave ``0.0 .. 1.0``, or when
+            the other six sum to zero so there is nothing to renormalise.
+            Clipping to the boundary instead would report a move of 0.10 as a
+            move of 0.5 and attribute the ranking's behaviour to the larger
+            number, which is a wrong figure that looks right.
+
+    """
+    before = weights[pillar]
+    moved = before + step
+    if not 0.0 <= moved <= 1.0:
+        raise ValueError(
+            f"moving {pillar.value} by {step:+} from {before} lands at {moved}, "
+            "outside 0.0 to 1.0. A weight outside the band is not a weighting, "
+            "and clipping it would label the result with a step that was not "
+            "taken."
+        )
+    rest = 1.0 - before
+    if rest <= 0.0:
+        raise ValueError(
+            f"{pillar.value} already carries the whole weight, so moving it by "
+            f"{step:+} leaves nothing to renormalise against."
+        )
+    scale = (1.0 - moved) / rest
+    return {
+        name: (moved if name is pillar else weight * scale)
+        for name, weight in weights.items()
+    }
+
+
+def _rescore(
+    observations: Sequence[Observation],
+    config: Config,
+    weights: Mapping[PillarName, float],
+    asof: date,
+    guard: EventHorizonGuard | None,
+) -> tuple[Sequence[CurrencyScore], tuple[PairBias, ...]]:
+    """Run the real pipeline at one weight vector.
+
+    Args:
+        observations: The run's own observations. Nothing is fetched here: a
+            refetch would read revised series and fold a data change into a
+            figure labelled as a weight change.
+        config: The configuration to copy. Never modified.
+        weights: The vector to score at, already summing to 1.0.
+        asof: The date the run represents, so staleness is measured against
+            the morning the report was built rather than against today.
+        guard: The event horizon guard the report was produced under, or
+            ``None``.
+
+    Returns:
+        The currency scores and the 28 pair rows, in
+        ``universe.ALL_PAIRS`` order. The scores come back because coverage
+        is read off them: it is the share of weight that scored, so it
+        moves with the weights, and it is the channel by which a pillar
+        that scored nothing still changes a conviction.
+
+    The two functions are `fbe.scoring.score_currencies` and
+    `fbe.bias.build_pair_biases`, called rather than reimplemented, because a
+    second copy of the composite or of the conviction ladder would grade this
+    run differently from the report it is being compared against and every
+    difference would be attributed to the weight.
+
+    The guard is forwarded rather than decided here. Passing ``None`` is not
+    the same as passing a guard that found something:
+    `fbe.bias._events_within_24h` reads no guard as ``False`` for every
+    currency and applies no cap, which is the right default for a backtest.
+    A report built under a guard that answered ``True`` or ``None`` for some
+    leg carries a cap on those pairs, and rescoring it without the guard
+    lifts the cap rather than adding one. Either way the difference is
+    conviction that no weight moved.
+
+    """
+    scoring = replace(config.scoring, weights=dict(weights))
+    scores = score_currencies(observations, default_pillars(scoring), scoring, asof)
+    return scores, tuple(
+        build_pair_biases(
+            scores,
+            replace(config, scoring=scoring),
+            asof,
+            event_horizon_guard=guard,
+        )
+    )
+
+
+def _counts(
+    baseline: Sequence[PairBias], moved: Sequence[PairBias]
+) -> tuple[int, int, int, str | None]:
+    """Count the three figures, against the unperturbed run.
+
+    Args:
+        baseline: The pairs at the configured weights.
+        moved: The same pairs rescored at the perturbed weights.
+
+    Returns:
+        Directions changed, convictions changed, the largest rank move in
+        places, and the pair that made it, or ``None`` when the order held.
+
+    Raises:
+        KeyError: When the two runs do not hold the same pairs. Comparing a
+            27-pair run against a 28-pair one by name would silently drop the
+            missing pair from every count and report a smaller movement than
+            happened.
+
+    """
+    before = {row.pair: row for row in baseline}
+    after = {row.pair: row for row in moved}
+    missing = set(before) ^ set(after)
+    if missing:
+        raise KeyError(
+            "the perturbed run does not hold the same pairs as the baseline: "
+            + ", ".join(sorted(missing))
+        )
+
+    directions = sum(
+        1 for pair, row in before.items() if row.direction is not after[pair].direction
+    )
+    convictions = sum(
+        1
+        for pair, row in before.items()
+        if row.conviction is not after[pair].conviction
+    )
+
+    before_rank = {row.pair: i for i, row in enumerate(ranked_pairs(baseline))}
+    after_rank = {row.pair: i for i, row in enumerate(ranked_pairs(moved))}
+    moves = {pair: abs(before_rank[pair] - after_rank[pair]) for pair in before_rank}
+    largest = max(moves.values(), default=0)
+    # Ties broken by pair name so the reported pair does not depend on dict
+    # order, which would make the same run name a different pair on a rerun.
+    worst = (
+        min(pair for pair, places in moves.items() if places == largest)
+        if largest
+        else None
+    )
+    return directions, convictions, largest, worst
+
+
+def _memoised(guard: EventHorizonGuard | None) -> EventHorizonGuard | None:
+    """Wrap a guard so it answers each currency once for the whole run.
+
+    Args:
+        guard: The caller's guard, or ``None``.
+
+    Returns:
+        ``None`` unchanged, or a callable holding the first answer it got
+        for each currency and returning it thereafter.
+
+    A sensitivity run rescores fifteen times, and `fbe.bias` asks the guard
+    once per currency per rescore, so an eight-currency universe asks 120
+    times. `fbe.bias.apply_filters` already puts the memoisation on the
+    caller in writing, for the same reason at a fourteenth of the scale: a
+    guard backed by a live fetch can time out and answer ``None``, which
+    `fbe.bias.conviction_for` treats exactly as ``True``, and every pair on
+    that leg caps at ``LOW``.
+
+    Unmemoised, that arrives as a count. One perturbation reports seven
+    conviction changes on the dollar's pairs, the table says a weight did
+    it, and nothing anywhere records that a calendar lookup failed. Every
+    figure here is a difference between two runs, so the two runs have to
+    differ in one thing.
+
+    """
+    if guard is None:
+        return None
+
+    answers: dict[str, bool | None] = {}
+
+    def once(currency: str, asof: date) -> bool | None:
+        if currency not in answers:
+            answers[currency] = guard(currency, asof)
+        return answers[currency]
+
+    return once
+
+
+def weight_sensitivity(
+    report: BiasReport,
+    observations: Sequence[Observation],
+    *,
+    config: Config | None = None,
+    event_horizon_guard: EventHorizonGuard | None = None,
+    step: float = DEFAULT_WEIGHT_STEP,
+) -> WeightSensitivity:
+    """Move each pillar weight in turn and report how far the ranking travelled.
+
+    Args:
+        report: A run already written and read back. Its pairs are the thing
+            every count is measured against.
+        observations: The observations that run was scored from, handed over
+            rather than fetched. A `fbe.types.BiasReport` carries neither its
+            observations nor a pointer to them, so the caller supplies them:
+            the live path holds them from the run it just made, and a fixture
+            commits them beside the report. Refetching would read revised macro
+            series and fold a data change into a figure labelled as a weight
+            change, which is the one thing this measurement cannot survive.
+        config: The configuration the report was produced under. Defaults to
+            the packaged `fbe.config.Config`; a caller holding the operator's
+            should pass it, because perturbing weights the run did not use
+            measures a vector nobody scored with. Never modified: every
+            perturbation is scored through a copy.
+        event_horizon_guard: The guard the report was produced under, which
+            is memoised here so every rescore sees the same answer for a
+            given currency. A guard that answered differently between two
+            of the fifteen runs would show up as a conviction change with a
+            weight's name on it. It has to be the same one. ``None`` is the
+            correct value for a report built without a guard, and is not a
+            neutral choice for
+            one built with a live calendar: `fbe.bias._events_within_24h`
+            reads an absent guard as ``False`` everywhere and applies no
+            cap, so rescoring a capped run without its guard lifts the cap
+            on whichever pairs had an event near them and raises their
+            conviction. The reproduction check refuses that rather than
+            counting it, but the refusal reads as a data problem unless a
+            caller knows to look here.
+        step: How far to move each weight, in weight units, absolute and
+            unsigned. Each pillar is moved up by it and down by it. Defaults to
+            `DEFAULT_WEIGHT_STEP`.
+
+    Returns:
+        Fourteen rows where the step could be applied, one per pillar per
+        direction, plus a sentence for every pillar where it could not. Each
+        row carries the perturbed vector and the three counts against the
+        unperturbed run.
+
+    Raises:
+        ValueError: When ``step`` is not above zero, since a step of zero
+            perturbs nothing and would report fourteen rows of honest-looking
+            zeroes. And when rescoring at the configured weights does not
+            reproduce ``report``, because every count in the output is a
+            difference against that run: if the starting point cannot be
+            rebuilt, the differences carry whatever else moved, most likely the
+            observations being from a different morning than the report.
+
+    What this measures, and the two things it does not:
+
+    A weight that can move without disturbing the ranking is a weight this
+    morning's cross-section was not resting on. That is not evidence that the
+    pillar is unnecessary, and a weight that does disturb the ranking is not
+    thereby wrong. `CROSS_SECTION_NOTE` states both and travels on the result.
+
+    It is also not a search for a better weight vector. Choosing weights by how
+    stable they make the output fits to the shape of the data, which
+    `docs/roadmap.md` rules out until there is a forward record to fit against,
+    and this function reports movement rather than ranking the vectors it
+    produced. Nothing here writes a weight back.
+
+    """
+    if not math.isfinite(step) or step <= 0.0:
+        raise ValueError(
+            f"step must be a finite number above zero, got {step}. A step of "
+            "zero moves no weight and would report every pillar as having "
+            "changed nothing, and every comparison against NaN is False, so "
+            "an unusable number passes a bare range check and comes back as "
+            "a run with fourteen refusals and no rows."
+        )
+
+    run_config = config if config is not None else Config()
+    weights = run_config.scoring.weights
+    guard = _memoised(event_horizon_guard)
+
+    base_scores, baseline = _rescore(
+        observations, run_config, weights, report.asof, guard
+    )
+    coverage_before = min(score.coverage for score in base_scores)
+    original = {row.pair: row for row in report.pairs}
+    reproduced = len(baseline) == len(original) and all(
+        row.pair in original
+        and row.spread == original[row.pair].spread
+        and row.direction is original[row.pair].direction
+        and row.conviction is original[row.pair].conviction
+        for row in baseline
+    )
+    if not reproduced:
+        raise ValueError(
+            f"rescoring the {report.asof} run at its own weights does not "
+            "reproduce it, so nothing measured against it would mean what it "
+            "says. The usual causes are observations from a different run "
+            "than the report, a configuration whose scoring section is not "
+            "the one the report was produced under, and an event horizon "
+            "guard that is not the one the run used, which moves conviction "
+            "on whichever pairs had an event near them without touching a "
+            "weight. A fourth becomes possible the day the runner starts "
+            "loading blend standard deviations from past reports: the "
+            "pillars here are built without that history, so a report "
+            "scored on the rolling divisor cannot be rebuilt on the "
+            "run-local one. Check PillarScore.blend_divisor_path on the "
+            "report if the first three do not explain it."
+        )
+
+    moves: list[WeightMove] = []
+    problems: list[str] = []
+    for pillar in PillarName:
+        for signed in (step, -step):
+            try:
+                perturbed = _perturbed_weights(weights, pillar, signed)
+            except ValueError as error:
+                problems.append(str(error))
+                continue
+            moved_scores, moved_pairs = _rescore(
+                observations, run_config, perturbed, report.asof, guard
+            )
+            directions, convictions, largest, worst = _counts(baseline, moved_pairs)
+            moves.append(
+                WeightMove(
+                    pillar=pillar,
+                    step=signed,
+                    weight_before=weights[pillar],
+                    weight_after=perturbed[pillar],
+                    weights=perturbed,
+                    directions_changed=directions,
+                    convictions_changed=convictions,
+                    largest_rank_move=largest,
+                    coverage_before=coverage_before,
+                    coverage_after=min(score.coverage for score in moved_scores),
+                    largest_rank_move_pair=worst,
+                )
+            )
+
+    return WeightSensitivity(
+        asof=report.asof,
+        step=step,
+        baseline=baseline,
+        moves=tuple(moves),
+        problems=tuple(problems),
+    )
