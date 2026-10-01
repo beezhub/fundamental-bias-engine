@@ -124,9 +124,8 @@ def test_collect_still_defaults_to_the_whole_registry() -> None:
     stops exercising the fetch path behind ``yield_10y`` and ``equity_index``,
     sixteen fetchable series that are registered but unread so each stays cheap
     to re-adopt. It also splits `fbe.datasources.collect.CollectionResult.gaps`,
-    filled from `registry.stale_refs` and reporting on the whole registry
-    regardless of what the run asked for, away from the set the run actually
-    fetched. ``pmi_composite``, the third unconsumed key, is manual on all
+    filled by `observed_gaps` over the whole registry, away from the set the
+    run actually fetched. ``pmi_composite``, the third unconsumed key, is manual on all
     eight legs, so no fetch reaches it either way.
     """
     source = inspect.getsource(collect)

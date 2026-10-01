@@ -116,6 +116,7 @@ from fbe.datasources.collect import (
     lookback_start,
 )
 from fbe.datasources.prices import PricesSource
+from fbe.datasources.registry import UNCONSUMED_INDICATORS
 from fbe.evaluation import Evaluation, ForwardRow, GroupStats, join_reports
 from fbe.evaluation import evaluate as evaluate_record
 from fbe.journal import (
@@ -1580,8 +1581,9 @@ def _render_gaps(gaps: Mapping[str, tuple[str, ...]], asof: date) -> list[str]:
     """Return the coverage gap block.
 
     Args:
-        gaps: Indicator key to the currencies with no usable ref, exactly as
-            `fbe.datasources.registry.stale_refs` returned it.
+        gaps: Indicator key to the currencies with no usable observation in
+            this run, exactly as `fbe.datasources.collect.observed_gaps`
+            returned it.
         asof: The date the refs were aged against.
 
     Returns:
@@ -1596,7 +1598,14 @@ def _render_gaps(gaps: Mapping[str, tuple[str, ...]], asof: date) -> list[str]:
         return [f"Coverage: no gaps, aged at {asof}."]
     lines = [f"Coverage gaps, aged at {asof}:"]
     for indicator, currencies in sorted(gaps.items()):
-        lines.append(f"  {indicator.ljust(SOURCE_WIDTH + 8)}{', '.join(currencies)}")
+        line = f"  {indicator.ljust(SOURCE_WIDTH + 8)}{', '.join(currencies)}"
+        if indicator in UNCONSUMED_INDICATORS:
+            # Registered so each stays cheap to re-adopt, and read by no
+            # pillar, so its gap costs no score. Said on the line because an
+            # operator reading eight missing currencies has no other way to
+            # tell this gap from one that empties a pillar.
+            line += "  (registered, not scored)"
+        lines.append(line)
     return lines
 
 

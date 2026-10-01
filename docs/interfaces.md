@@ -245,10 +245,19 @@ than `failed` and carrying the window, the lag and the cycle. The status is
 unaffected: a source that lost nothing is still completed, with the observations
 it served, which for a window this narrow can be none.
 
-The closing block lists every indicator that `registry.stale_refs` reports a gap
-for, aged against the run date rather than against the date the registry was
-last verified. A registry that has not been re-checked in a year reports its
-staleness here rather than passing as healthy.
+The closing block lists every indicator the run holds no usable observation
+for, built by `fbe.datasources.collect.observed_gaps`. A currency is listed
+when the run holds no print for it, or when its newest print is older than that
+leg's staleness allowance on the run date, aged from `period` the way the
+pillars age it. Only legs routed to a source that ran are judged, so
+`--source fred` does not list every OECD series as missing. An indicator no
+pillar reads carries `(registered, not scored)` on its line, because its gap
+costs no score.
+
+Until 2026-10-01 this block came from `registry.stale_refs`, which ages the
+date a person last checked each series by hand rather than the data fetched.
+A refresh that had just fetched a two-day-old yield printed it as missing for
+all eight currencies.
 
 Exit 1 means the run reconciled no observations at all, which covers both every
 source failing and coverage collapsing.
@@ -267,8 +276,9 @@ snb           skipped (not selected)
 rbnz          skipped (not selected)
 cftc          failed (SourceError: cftc could not fetch ... after 3 attempts)
 Coverage gaps, aged at 2026-09-15:
-  pmi_composite         USD, EUR, GBP, JPY, CHF, CAD, AUD, NZD
-  yield_2y              CHF, AUD, NZD
+  current_account_gdp   USD, EUR, GBP, JPY, CHF, CAD, AUD, NZD
+  yield_2y_chg_1m       USD, EUR
+  yield_2y_chg_3m       USD, EUR
 Cache: 41 entries, newest 0m old.
 ```
 

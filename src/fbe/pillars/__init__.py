@@ -113,11 +113,11 @@ def required_indicators(
       the cost of losing ``yield_10y`` at re-verifying eight sources.
       ``pmi_composite`` is unaffected either way: all eight of its legs are
       manual, so no fetch reaches it.
-    * `fbe.datasources.collect.CollectionResult.gaps` is filled from
-      `registry.stale_refs`, which iterates ``INDICATORS`` whole and answers
-      from registry metadata rather than from what the run fetched. Narrowing
-      the fetch without narrowing that leaves one result describing two
-      different universes.
+    * `fbe.datasources.collect.CollectionResult.gaps` is filled by
+      `fbe.datasources.collect.observed_gaps`, which iterates ``INDICATORS``
+      whole and judges every requested leg whose source ran. Narrowing the
+      fetch would turn every leg dropped from it into a reported gap, so the
+      two would describe different universes.
 
     What this is for is the argument to ``collect(indicators=...)`` when a
     caller does want a narrower fetch, and a direct answer to what a given

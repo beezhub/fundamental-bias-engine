@@ -968,8 +968,11 @@ is the whole point.
   problem. If coverage is 0.0 and identifiers are 1.0, every identifier is
   right and the source stopped publishing.
 
-`registry.stale_refs()` gives the actionable form: which currencies are
-unusable, per indicator.
+`registry.stale_refs()` gives the registry's form: which currencies have a
+ref whose hand-checked `last_observed` date has run past its allowance. It
+reads metadata, not data, so it says when the registry is due a re-check.
+What a run actually holds is `fbe.datasources.collect.observed_gaps`, which is
+the list `fbe refresh` prints.
 
 ### Staleness allowances
 
