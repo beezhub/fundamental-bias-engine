@@ -25,6 +25,16 @@ one means a subclass is incomplete, not that a phase is unfinished. Only the
 scaffold marker counts here, which is the same rule `tests/test_stubs.py`
 enforces from the other side.
 
+**This file guards two directions, and a new test belongs to one of them.** The
+first six walk table to filesystem: they catch a row naming a file that is gone
+and a row whose status contradicts the stub markers. The sweep at the end walks
+filesystem to table: it catches a module with no row at all. Six tests
+accumulated on the first side and none on the second, and
+`src/fbe/pillar_audit.py` sat outside the table for as long as that lasted, 591
+lines and imported by `fbe.cli`, with a green suite throughout. Issue #300
+carries the measurement. A guard that answers one direction of a
+two-directional claim reads, from a green suite, as though it answered both.
+
 Nothing here reaches the network. Every assertion reads the repository.
 """
 
@@ -183,3 +193,134 @@ def test_nothing_in_claude_md_calls_load_config_unimplemented() -> None:
         "`load_config` is scaffolded",
     ):
         assert phrase not in body, phrase
+
+
+# --- the other direction, which is #300 --------------------------------------
+
+
+PACKAGE_INITIALISER = "__init__.py"
+"""Excluded from the sweep below, for a reason worth stating where it is applied.
+
+The table already covers three package initialisers through the globs
+``src/fbe/pillars/*``, ``src/fbe/datasources/*`` and ``src/fbe/dashboard/*``,
+and naming each one in its own row would turn a status summary into a file
+inventory. Ruled on #300.
+
+An initialiser that grew real code would escape this sweep, which is the cost of
+the exclusion. It is bounded: `tests/test_stubs.py` walks the package from the
+other side, and a scaffolded callable in one would fail
+`test_each_row_matches_the_modules_it_names` through the glob that names it.
+"""
+
+
+def _modules() -> list[Path]:
+    """Every module the table is expected to account for, sorted.
+
+    Read from the filesystem rather than from the table, which is the whole
+    point of the test below: a list derived from the table could not detect a
+    module the table forgot.
+    """
+    return sorted(
+        path
+        for path in (REPO / "src" / "fbe").rglob("*.py")
+        if path.name != PACKAGE_INITIALISER
+    )
+
+
+def _covered() -> set[Path]:
+    """Every module some row resolves to, after glob expansion."""
+    return {path for cell, _ in _table() for path in _paths(cell)}
+
+
+def _uncovered_message(uncovered: list[Path]) -> str:
+    """The failure text for the sweep, as its own function so it can be tested.
+
+    #300's fourth criterion asks that the message name the uncovered module, so
+    the next omission is one line to fix rather than a search. Inline in the
+    assertion it was unreachable: the sweep passes, so the string it would have
+    built never ran, and a mutation replacing it with a bare sentence changed
+    nothing any test could see.
+    """
+    return "modules under src/fbe/ with no row in the CLAUDE.md status table: " + (
+        ", ".join(path.relative_to(REPO).as_posix() for path in uncovered)
+    )
+
+
+def test_every_module_under_src_has_a_row() -> None:
+    """The missing direction, and the reason #300 exists at all.
+
+    All six tests above walk table to filesystem. A row naming a deleted file
+    fails, and a row whose status contradicts the stub markers fails, but a
+    module with no row at all passes every one of them, because nothing asks
+    the question. `src/fbe/pillar_audit.py` sat outside the table that way: 591
+    lines, no stubs, imported by `fbe.cli` and reachable from ``fbe score
+    --audit``, with a green suite the whole time.
+
+    That is the shape this repository keeps finding rather than a fact about
+    this module. A guard that answers one direction of a two-directional claim
+    reads, from a green suite, as though it answered both.
+
+    The message names the uncovered modules so the next omission is one line to
+    fix rather than a search, which is #300's fourth criterion.
+    """
+    uncovered = sorted(set(_modules()) - _covered())
+
+    assert not uncovered, _uncovered_message(uncovered)
+
+
+def test_the_walked_side_of_the_sweep_does_not_read_the_table(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The sweep is vacuous if both of its sides come from the table.
+
+    This is the one mutation that matters and the hard one to catch, because
+    while the table is complete a set built from it and a set built from the
+    filesystem hold the same modules. Two earlier attempts could not tell them
+    apart: comparing the sets, and asserting the covered side holds the package
+    initialisers the walked side drops, both survive a `_modules` that reads
+    the table and applies the same filter.
+
+    So this tests the dependency rather than the contents. Point `CLAUDE_MD` at
+    a document whose table has no rows and the covered side empties, while the
+    walked side must not move. A `_modules` reading the table would return
+    nothing and fail here.
+    """
+    before = _modules()
+    empty = tmp_path / "CLAUDE.md"
+    empty.write_text(
+        "## What is implemented and what is not\n\n"
+        "| Module | Status |\n| --- | --- |\n\n"
+        "## Next section\n"
+    )
+    monkeypatch.setattr("tests.test_module_status_table.CLAUDE_MD", empty)
+
+    assert _table() == [], "fixture drifted: the blanked table still has rows"
+    assert _covered() == set()
+    assert _modules() == before
+
+
+def test_the_sweep_names_the_module_it_could_not_find_a_row_for() -> None:
+    """#300's fourth criterion, exercised rather than assumed.
+
+    The message only runs when the sweep fails, which it does not, so it is
+    checked here against a module that is in fact covered. What is under test
+    is the wording, not the state of the table.
+    """
+    message = _uncovered_message([REPO / "src" / "fbe" / "pillar_audit.py"])
+
+    assert "src/fbe/pillar_audit.py" in message
+    assert "CLAUDE.md" in message
+
+
+def test_the_sweep_finds_the_modules_it_is_meant_to_walk() -> None:
+    """Guards the sweep against passing because it found nothing to check.
+
+    If `_modules` ever returned an empty list, every module would be covered
+    vacuously and the suite would report green on a table nobody checked. That
+    is the same failure as the one above, one level down.
+    """
+    modules = _modules()
+
+    assert len(modules) > 20, modules
+    assert all(path.suffix == ".py" for path in modules)
+    assert not any(path.name == PACKAGE_INITIALISER for path in modules)

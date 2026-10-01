@@ -80,6 +80,7 @@ __all__ = [
     "PairChange",
     "ReportDiff",
     "build_context",
+    "ranked_pairs",
     "render_report",
     "write_report",
     "load_report",
@@ -197,6 +198,33 @@ class ReportDiff:
     config_changed: bool = False
 
 
+def ranked_pairs(pairs: Sequence[PairBias]) -> tuple[PairBias, ...]:
+    """Order the 28 pairs the way a reader is shown them.
+
+    Args:
+        pairs: The run's pair rows, in any order. Usually
+            ``BiasReport.pairs``, which is in ``universe.ALL_PAIRS`` order.
+
+    Returns:
+        A new tuple sorted by absolute spread, widest first, ties broken by the
+        pair's own name so the order is total and two runs holding the same
+        spreads print the same table. The input is not modified.
+
+    Absolute rather than signed: on the signed spread every short pair falls
+    below every long one, so the widest disagreement in the run ends up in the
+    middle of the table and the top of it is a list of long ideas rather than
+    of strong ones.
+
+    One function rather than the sort key written wherever a ranking is needed.
+    `build_context` orders the report and the dashboard with it and
+    `fbe.evaluation.weight_sensitivity` measures rank moves against it, and a
+    rank move measured on a different order from the one on the page is a
+    figure about a table nobody looks at.
+
+    """
+    return tuple(sorted(pairs, key=lambda row: (-abs(row.spread), row.pair)))
+
+
 def build_context(
     report: BiasReport,
     *,
@@ -277,9 +305,7 @@ def build_context(
         "currencies": tuple(
             sorted(report.currencies, key=lambda row: (-row.composite, row.currency))
         ),
-        "pairs": tuple(
-            sorted(report.pairs, key=lambda row: (-abs(row.spread), row.pair))
-        ),
+        "pairs": ranked_pairs(report.pairs),
         "unknown_prefix": "event" + UNKNOWN_SUFFIX,
     }
 
