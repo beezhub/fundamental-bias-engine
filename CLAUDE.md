@@ -64,9 +64,10 @@ the repository root so the row can be checked against the file it names, which
 | `src/fbe/pillars/*` | Implemented. All seven, and the base class they share. |
 | `src/fbe/risk.py` | Implemented. Sizing, the conviction ladder, and the per-limit report. |
 | `src/fbe/journal.py` | Implemented. The append-only record, the conviction split and the discipline flags. |
-| `src/fbe/evaluation.py` | Implemented. The forward-record join: a past report's pairs against the move that followed. |
+| `src/fbe/evaluation.py` | Implemented. The forward-record join, and the weight-sensitivity run. |
 | `src/fbe/calendar_guard.py` | In progress |
 | `src/fbe/report.py` | Implemented. The dated Markdown, its JSON sidecar and the run-to-run diff. |
+| `src/fbe/pillar_audit.py` | Implemented. The cross-section diagnostic behind `fbe score --audit`. |
 | `src/fbe/dashboard/*` | Implemented. The page, the publishing checks and the one file it writes. |
 | `src/fbe/cli.py` | In progress |
 

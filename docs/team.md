@@ -13,7 +13,7 @@ account", or let the coordinator route the work.
 | Agent | Role | Owns | Ask them about |
 |---|---|---|---|
 | `macro-strategist` | Macro Strategist | `docs/methodology.md`, the pillar definitions | Why the model believes what it believes; adding or retiring a pillar; reading a live macro situation |
-| `quant-analyst` | Quant Analyst | `src/fbe/pillars/`, `scoring.py`, `bias.py` | Transformations, z-scores, weighting, the conviction decision table, whether a change is an improvement or a curve fit |
+| `quant-analyst` | Quant Analyst | `src/fbe/pillars/`, `scoring.py`, `bias.py`, `pillar_audit.py` | Transformations, z-scores, weighting, the conviction decision table, whether a change is an improvement or a curve fit |
 | `data-engineer` | Data Engineer | `src/fbe/datasources/`, `docs/data-sources.md` | Series IDs, coverage gaps, release lags, caching, a number that looks wrong |
 | `risk-manager` | Risk Manager | `src/fbe/risk.py`, `RiskConfig` | Position sizing, ZAR pip value, exposure limits, anything that could breach the 1-2% rule |
 | `execution-desk` | Execution Desk | `src/fbe/calendar_guard.py` | News blackouts, broker constraints, spread cost, whether a pair is tradeable right now |
