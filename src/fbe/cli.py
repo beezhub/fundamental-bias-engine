@@ -4371,6 +4371,7 @@ def journal_add(
 
     """
     config = _effective_config(ctx)
+    _require_valid_config(config)
     normalised = pair.upper()
     _checked_journal_pair(normalised)
     if direction is Direction.NEUTRAL:

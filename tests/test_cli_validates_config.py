@@ -229,6 +229,48 @@ def test_report_refuses_an_invalid_config_and_writes_nothing(
     assert list(out_dir.iterdir()) == []
 
 
+def test_journal_add_refuses_before_scoring_and_writes_no_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`journal add` scores the pair to snapshot its conviction at entry.
+
+    That snapshot is the one number in the project nothing can regenerate. The
+    journal is append-only and git-ignored, so a MEDIUM recorded where an empty
+    LOW band should have read LOW stays in the record and skews the conviction
+    split `journal.evaluate` reports. As with `report`, the exit code is not the
+    assertion that matters. The absent file is.
+    """
+    path = write(tmp_path, ONE_PROBLEM)
+    journal = tmp_path / "trades.jsonl"
+    monkeypatch.setattr("fbe.journal.JOURNAL_PATH", journal)
+    calls = refuse_collect(monkeypatch)
+
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(path),
+            "journal",
+            "add",
+            "EURUSD",
+            "--direction",
+            "short",
+            "--entry",
+            "1.0850",
+            "--stop",
+            "1.0888",
+            "--lots",
+            "0.10",
+            "--opened",
+            "2026-09-09 09:00",
+        ],
+    )
+
+    assert result.exit_code == EXIT_UNUSABLE
+    assert calls == []
+    assert not journal.exists()
+
+
 def test_every_problem_is_printed_not_only_the_first(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -382,7 +424,7 @@ def test_validate_is_called_from_exactly_two_places() -> None:
     assert _callers_of("validate") == {"_check_config", "_require_valid_config"}
 
 
-@pytest.mark.parametrize("command", ["score", "bias", "report"])
+@pytest.mark.parametrize("command", ["score", "bias", "report", "journal_add"])
 def test_each_scoring_command_calls_the_guard(command: str) -> None:
     """Criterion 3, the half that says the guard is actually wired.
 
