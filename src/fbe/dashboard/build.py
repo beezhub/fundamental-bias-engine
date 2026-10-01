@@ -89,7 +89,7 @@ from urllib.parse import urlsplit
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from fbe.bias import kind_of
+from fbe.bias import UNCHECKED_SUFFIX, UNKNOWN_SUFFIX, kind_of
 from fbe.calendar_guard import blackout_windows, is_high_impact
 from fbe.config import Config, DataConfig, ScoringConfig
 from fbe.report import build_context
@@ -186,6 +186,39 @@ class _Window:
     start: datetime
     end: datetime
     label: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CalendarNote:
+    """What the run can say about the calendar the strip is drawn from.
+
+    Attributes:
+        unchecked: Pairs carrying an ``event:unchecked`` marker, meaning no
+            calendar was consulted for them at all.
+        unknown: Pairs carrying an ``event:unknown`` marker, meaning a guard
+            ran and could not answer: a failed fetch, or a cached week that
+            does not reach the date.
+        reasons: The distinct reasons behind the unknown markers, in the order
+            first seen. Distinct because one failed fetch is one reason on 28
+            pairs, and printed 28 times it fills the panel and stops being
+            read.
+        total: Pairs in the run, so a count is read against something.
+
+    Both counts zero is the only state in which the strip stands on its own. An
+    empty strip otherwise is a check that did not run rather than a clear 24
+    hours, and those are opposite facts: `docs/decisions/0002-representing-not-known.md`
+    rule 3 for why an unrendered marker does not exist, and rule 4 for why the
+    two states are counted apart rather than together. The dashboard reads them
+    off `fbe.types.PairBias.blockers` because a `fbe.types.BiasReport` carries
+    the run's pairs and not the `fbe.calendar_guard.CalendarCoverage` behind
+    them.
+
+    """
+
+    unchecked: int
+    unknown: int
+    reasons: tuple[str, ...]
+    total: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +345,8 @@ class _View:
         horizon: Right edge, `STRIP_HOURS` later.
         blackouts: Windows to shade, already merged by the guard.
         hour_marks: ``(instant, label)`` pairs for the strip's hour ticks.
+        calendar: What the run can say about the calendar behind the strip,
+            which is not the same question as what the strip draws.
         blocker_counts: Every blocker kind the run carries, with the number of
             pairs carrying it, widest first. Empty when no pair is marked,
             which the template reads as "print no run conditions" rather than
@@ -337,6 +372,7 @@ class _View:
     horizon: datetime
     blackouts: tuple[_Window, ...]
     hour_marks: tuple[tuple[datetime, str], ...]
+    calendar: _CalendarNote
     blocker_counts: tuple[_BlockerCount, ...]
     details: Mapping[str, _Expansion]
     coverage: Mapping[str, float]
@@ -612,9 +648,67 @@ def _view(
         horizon=horizon,
         blackouts=_windows(report.events, data),
         hour_marks=_hour_marks(origin, horizon),
+        calendar=_calendar_note(report.pairs),
         blocker_counts=counts,
         details=_expansions(report, counts, pillar_order),
         coverage={row.currency: row.coverage for row in report.currencies},
+    )
+
+
+def _calendar_note(pairs: Sequence[PairBias]) -> _CalendarNote:
+    """Read what the run's pairs say about the calendar behind them.
+
+    Args:
+        pairs: The run's pairs in market convention. Counting the grid instead
+            would count every pair twice and report 56 of 56 for a run of 28.
+
+    Returns:
+        The `_CalendarNote`. A pair carrying several markers of one kind counts
+        once for it: the figure answers how many pairs are affected, and a pair
+        with two calendar reasons is still one pair.
+
+        The reasons come from the ``event:unknown`` markers, whose format is
+        ``"event:unknown: <reason>"``, and are deduplicated in first-seen
+        order. One failed fetch is one reason however many pairs it touched.
+        An unknown marker carrying no reason contributes to ``unknown`` and
+        nothing to ``reasons``, and the page says the reason was not recorded
+        rather than printing an empty one: a caveat with a blank reason reads
+        as a caveat whose reason the reader missed.
+
+        A pair carrying markers of both kinds counts in both figures. Each is
+        "pairs carrying at least one marker of this kind", and the two states
+        are different questions rather than two halves of one.
+
+    Nothing here decides whether a window exists. It decides whether an empty
+    strip is an answer, which is the question `fbe.calendar_guard.coverage_gap`
+    answers for a live run and which a rendered report can only answer from the
+    markers its pairs carry.
+
+    """
+    unknown_prefix = "event" + UNKNOWN_SUFFIX
+    unchecked_marker = "event" + UNCHECKED_SUFFIX
+    unchecked = 0
+    unknown = 0
+    reasons: list[str] = []
+    for row in pairs:
+        blind = [marker for marker in row.blockers if marker.startswith(unknown_prefix)]
+        if blind:
+            unknown += 1
+            for marker in blind:
+                reason = marker[len(unknown_prefix) :].lstrip(": ").strip()
+                if reason and reason not in reasons:
+                    reasons.append(reason)
+        # Prefixed rather than equal. `apply_filters` emits this kind as the
+        # key itself, so equality is correct today, and a variant carrying a
+        # reason would then be counted as nothing at all: an undercount is the
+        # quiet failure, and a marker nobody rendered does not exist.
+        if any(marker.startswith(unchecked_marker) for marker in row.blockers):
+            unchecked += 1
+    return _CalendarNote(
+        unchecked=unchecked,
+        unknown=unknown,
+        reasons=tuple(reasons),
+        total=len(pairs),
     )
 
 
@@ -789,7 +883,7 @@ def _hour_marks(
     marks = []
     cursor = first
     while cursor < horizon:
-        marks.append((cursor, f"{cursor:%H:%M}"))
+        marks.append((cursor, f"{cursor:%H:%M %Z}"))
         cursor += timedelta(hours=_STRIP_MARK_HOURS)
     return tuple(marks)
 
@@ -989,6 +1083,14 @@ def check_constraints(html: str) -> list[str]:
           wraps a ``url()``, which is how a stylesheet normally writes it.
         * A background set through a ``style=`` attribute rather than in a
           stylesheet is not seen.
+        * An ``@import`` inside a CSS string, such as a ``content`` value, is
+          reported as though it were real. Telling the two apart needs a CSS
+          parser rather than a pattern, which is a larger change than #278
+          asked for. A commented-out one is handled and is not reported.
+        * ``@import layer(name) "sheet.css"`` and the ``supports()`` form are
+          not matched, because the quote no longer follows the keyword. Both
+          are rare in a hand-written template, which is what this checker
+          guards.
         * ``http:`` on an allowed host is accepted here and blocked by the
           browser as mixed content.
         * The allow-lists are matched on host, so any path on an allowed host
@@ -1023,6 +1125,31 @@ _CSS_URL = re.compile(r"""url\(\s*(?P<quote>['"]?)(?P<target>[^'")]*)(?P=quote)\
 A font or an image referenced from CSS never appears as an attribute, so a
 check that walked only ``src`` and ``href`` would pass every externally hosted
 font ever embedded.
+"""
+
+_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+"""One CSS comment, stripped before the ``@import`` scan and nothing else.
+
+Only that scan, deliberately. A ``url()`` inside a comment was reported before
+#278 and still is, which is arguably a false positive of its own, but it is the
+behaviour on ``main`` and widening the strip to cover it would weaken a check
+that works while fixing one that did not.
+``tests/test_dashboard_constraints.py`` pins both halves.
+"""
+
+_CSS_IMPORT = re.compile(r"""@import\s+(?P<quote>['"])(?P<target>[^'"]*)(?P=quote)""")
+"""``@import`` naming its stylesheet directly, without wrapping it in ``url()``.
+
+Both are valid CSS and mean the same thing, and the bare form is the one a
+hand-written template is likelier to carry because it is shorter. `_CSS_URL`
+matches on ``url(``, so it caught one and not the other, and a stylesheet the
+checker cannot see is a page that publishes with an unreachable stylesheet:
+the sandbox blocks the request, the page still renders, and the panel that
+stylesheet styled is unstyled or absent. Nothing raises at either end. Issue
+#278 carries the reproduction.
+
+Requiring a quote immediately after the whitespace is what keeps this from
+also matching ``@import url(...)`` and reporting that target twice.
 """
 
 _CUSTOM_PROPERTY = re.compile(r"--[\w-]+\s*:")
@@ -1086,6 +1213,22 @@ class _Document:
         return [
             ("style", "url()", match.group("target"))
             for match in _CSS_URL.finditer(self.css)
+        ]
+
+    def css_imports(self) -> list[tuple[str, str, str]]:
+        """``@import "..."`` targets, shaped like a reference.
+
+        Separate from `css_urls` rather than folded into one pattern, so the
+        message can name the construct the reader wrote. An ``@import`` and a
+        ``url()`` are different things to go and look for in a template.
+
+        Comments are stripped first, so a commented-out import is not reported.
+        `build_dashboard` refuses to write a page that breaks a constraint, so
+        a false positive here costs a run rather than a warning.
+        """
+        return [
+            ("style", "@import", match.group("target"))
+            for match in _CSS_IMPORT.finditer(_CSS_COMMENT.sub("", self.css))
         ]
 
 
@@ -1249,7 +1392,8 @@ def _reference_violations(document: _Document) -> list[str]:
 
     """
     messages: list[str] = []
-    for tag, attribute, value in document.references + document.css_urls():
+    references = document.references + document.css_urls() + document.css_imports()
+    for tag, attribute, value in references:
         target = value.strip()
         if target.startswith(("#", "data:")):
             continue

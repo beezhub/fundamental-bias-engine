@@ -140,6 +140,14 @@ per the `Observation` contract, so the monthly figure of 45 days covers a month
 elapsing plus the usual two-week statistical lag, and the quarterly figure of
 120 days covers a quarter elapsing plus a month.
 
+**Each figure dates an original print and cannot date a revision.** A
+correction describes the same period as the print it corrects, so this table
+gives both the same date and a consumer reading the higher revision would read
+it from the original's date. That is why ADR 0007 requires an observation with
+``revision`` above zero to carry `Observation.released_at`, and why
+`fbe.datasources.base.checked_vintage` refuses the shape at the boundary rather
+than leaving this table to answer a question it has no way to answer.
+
 The annual figure of 552 days is measured rather than assumed. The World Bank
 nominal GDP family on FRED, the only annual series the registry carries, last
 published its 2025 reference year on 2026-07-07, and 2025-01-01 to 2026-07-07 is

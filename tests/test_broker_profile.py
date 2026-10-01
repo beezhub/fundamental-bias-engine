@@ -280,6 +280,9 @@ def _dashboard_context() -> dict[str, object]:
             legend=(),
             hour_marks=(),
             blackouts=(),
+            # The calendar note over the strip, stubbed to a run that
+            # consulted its calendar: this test is about one label.
+            calendar=SimpleNamespace(unchecked=0, unknown=0, reasons=(), total=0),
             # The pair detail below the matrix, stubbed the same way: this test is
             # about one label, and the expansion has its own file.
             blocker_counts=(),

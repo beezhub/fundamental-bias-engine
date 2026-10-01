@@ -170,6 +170,32 @@ published in ``docs/interfaces.md``. A continuation line leaves the label
 column blank, so a check that has several things to say still reads as one
 check."""
 
+RECORD_WEEKDAYS = frozenset(range(5))
+"""``date.weekday()`` values the forward record is expected to cover: Monday
+to Friday.
+
+The spot market is shut over the weekend, so a Saturday with no bias is not a
+morning anybody missed. Public holidays are a different matter and are counted
+as gaps here, because this engine carries no holiday calendar and inventing one
+per currency to suppress eight lines a year would be a larger and less reliable
+thing than the check itself. A gap that turns out to be Christmas costs the
+owner one look; a gap that is never reported costs the month."""
+
+
+GAP_SAMPLE_LIMIT = 8
+"""How many missing mornings the forward-record line names before it stops
+listing them and counts the rest.
+
+Eight is enough to show the shape of a gap, a scattered week against a solid
+month, and enough to show where the hole starts, which is what the sample is
+read for. It does not fit the column layout on one line: a full eight-date
+sample runs to about 177 characters and wraps. That is the cost of the
+alternative being worse, since a check that answers a three-month hole with
+eighty-two lines is one an operator scrolls past, which is the same silence
+this check exists to end. The count is always exact; only the listing is
+bounded."""
+
+
 SOURCE_WIDTH = 14
 """Column width for the ``refresh`` per-source lines. Wide enough for
 ``forexfactory``, which is the longest source key in ``ALL_SOURCES``."""
@@ -518,6 +544,55 @@ def _effective_config(ctx: typer.Context) -> Config:
         resolved = replace(resolved, data=replace(resolved.data, offline=True))
     ctx.meta[_CONFIG_META_KEY] = resolved
     return resolved
+
+
+def _require_valid_config(config: Config) -> None:
+    """Refuse to compute anything on a config `Config.validate` rejects.
+
+    Every command that turns the config into a number calls this first, which
+    `docs/interfaces.md` has specified since the command surface was written and
+    which nothing implemented. `Config.validate` had one caller in the package,
+    inside `_check_config`, reached only from `doctor`: the one command that
+    computes no score was the only one that asked.
+
+    The refusal lives here rather than in `_effective_config` because `doctor`
+    exists to print these problems, and a resolver that raised would hide the
+    thing the operator ran `doctor` to see. It lives in one function rather than
+    in each command because the commands still landing should pick it up by
+    calling it, not by copying it.
+
+    Args:
+        config: The effective config, from `_effective_config`.
+
+    Raises:
+        typer.Exit: With `EXIT_UNUSABLE` when `Config.validate` returns anything.
+            One is the code `docs/interfaces.md` reserves for "it ran, but the
+            result should not be traded on", which is what a config this wrong
+            would have produced. Two belongs to the argument parser and the
+            arguments are fine.
+
+    Every problem is printed rather than the first, because `Config.validate`
+    accumulates them for that reason and an operator fixing them one run at a
+    time is an operator running the command five times. They go to stderr, so
+    ``fbe score --format csv > monday.csv`` puts the refusal in front of the
+    operator instead of into the file where a parser expects rows.
+
+    Nothing is printed and nothing is raised on a valid config. A warning here
+    would be read past, which is the failure mode this guard exists to close:
+    the run it would have warned about produces a table that looks normal.
+
+    """
+    problems = config.validate()
+    if not problems:
+        return
+    typer.echo(
+        "This config cannot be used, so nothing was computed. "
+        "Fix these and run again, or run fbe doctor for the full check:",
+        err=True,
+    )
+    for problem in problems:
+        typer.echo(f"  {problem}", err=True)
+    raise typer.Exit(EXIT_UNUSABLE)
 
 
 def _check_config(config: Config) -> list[CheckLine]:
@@ -929,6 +1004,12 @@ def _check_reports(config: Config) -> list[CheckLine]:
     if not sidecars:
         return [CheckLine("reports", CheckStatus.OK, "no previous report to diff")]
 
+    # Computed before the digest read and appended to whichever verdict that
+    # produces, so a sidecar nobody can decode still gets its record checked.
+    # The two findings are independent: one is about the newest file's
+    # contents, the other about which days have a file at all.
+    record = _check_record(sidecars, _now().date())
+
     newest = sidecars[-1]
     try:
         payload = json.loads(newest.read_text(encoding="utf-8"))
@@ -939,7 +1020,8 @@ def _check_reports(config: Config) -> list[CheckLine]:
                 "reports",
                 CheckStatus.WARN,
                 f"{newest.name} could not be read ({type(error).__name__})",
-            )
+            ),
+            *record,
         ]
 
     asof = str(payload.get("asof", newest.stem))
@@ -947,15 +1029,173 @@ def _check_reports(config: Config) -> list[CheckLine]:
         return [
             CheckLine(
                 "reports", CheckStatus.OK, f"last report {asof}, config digest matches"
-            )
+            ),
+            *record,
         ]
     return [
         CheckLine(
             "reports",
             CheckStatus.WARN,
             f"last report {asof} used digest {recorded}, not comparable",
+        ),
+        *record,
+    ]
+
+
+def _weekdays(start: date, end: date) -> list[date]:
+    """Return the weekdays from ``start`` up to but not including ``end``.
+
+    Args:
+        start: First day considered, included when it is a weekday.
+        end: The day the window stops at, excluded.
+
+    Returns:
+        Monday-to-Friday dates in order, per `RECORD_WEEKDAYS`. Empty when
+        ``end`` is not after ``start``, which is a window holding no days
+        rather than an error: a record that begins today has nothing behind it
+        to be missing.
+
+    """
+    span = (end - start).days
+    return [
+        day
+        for day in (start + timedelta(days=offset) for offset in range(max(span, 0)))
+        if day.weekday() in RECORD_WEEKDAYS
+    ]
+
+
+def _check_record(sidecars: Sequence[Path], today: date) -> list[CheckLine]:
+    """Report the weekdays between the first report and today that have none.
+
+    Phase 6 rests on an unbroken run of daily biases recorded before the
+    outcome was known, and a gap in it cannot be repaired: the macro series
+    have been revised since and the cross-sectional scores depended on the rest
+    of the universe on the day. So the cost of noticing late is the record
+    itself, and this is the only line that makes a missing morning visible
+    while the cause can still be fixed.
+
+    Presence is read from the filename and nothing else. Decoding a sidecar to
+    establish that it exists would file a damaged report as a morning nobody
+    ran, which is a worse answer than either finding on its own: the file is
+    there and the day was not missed. The digest line above reports a damaged
+    sidecar when it is the newest one, which is the case an operator hits
+    first; an older one it does not read is reported by neither line, and that
+    gap is `_check_reports`'s rather than this function's.
+
+    Args:
+        sidecars: Every path under `fbe.report.SIDECAR_GLOB`, in any order.
+        today: The day the window stops before. Excluded, because doctor runs
+            before the morning's report at least as often as after it, and a
+            check that reports today as missing every morning is one nobody
+            reads by Wednesday. For a zone at or ahead of UTC that also
+            absorbs the hours-wide difference between the local date a report
+            is named with and the UTC date read here.
+
+    Returns:
+        One continuation line under the reports check. ``ok`` when every
+        expected weekday has a report, naming the span so an unbroken record
+        cannot be confused with a check that did not run. ``warn`` naming the
+        count and up to `GAP_SAMPLE_LIMIT` of the missing days otherwise: a
+        gap is worth acting on and is not a reason to call the install
+        unusable, so it becomes an exit 1 only under ``--strict``.
+
+        ``warn`` naming the files, and no gap list at all, when a name the
+        glob matched carries no date or carries one after ``today``. An
+        undated file could be any morning, so the days around it cannot
+        honestly be called missing; a file dated ahead of today sits outside
+        the window, and reporting the record around it would assert an
+        unbroken span over days nothing examined. Both are reported rather
+        than skipped, and the listing is bounded the same way the gap list is.
+
+    """
+    dated: list[tuple[date, Path]] = []
+    undateable: list[str] = []
+    for sidecar in sidecars:
+        try:
+            dated.append((report_module.asof_in(sidecar), sidecar))
+        except ValueError:
+            undateable.append(sidecar.name)
+
+    if undateable:
+        return [
+            CheckLine(
+                "",
+                CheckStatus.WARN,
+                f"{_bounded(undateable)} {_is_are(undateable)} not dated, so "
+                f"the forward record cannot be checked",
+            )
+        ]
+
+    ahead = [path.name for day, path in dated if day > today]
+    if ahead:
+        # Not a gap and not a missing morning: a file that should not exist
+        # yet. Reporting the record around it would mean asserting an
+        # unbroken span over days nothing has looked at, which is the one
+        # sentence this check exists to make trustworthy.
+        return [
+            CheckLine(
+                "",
+                CheckStatus.WARN,
+                f"{_bounded(ahead)} {_is_are(ahead)} dated after "
+                f"{today.isoformat()}, so the forward record cannot be checked",
+            )
+        ]
+
+    present = {day for day, _ in dated}
+    start = min(present)
+    missing = [day for day in _weekdays(start, today) if day not in present]
+    if not missing:
+        return [
+            CheckLine(
+                "",
+                CheckStatus.OK,
+                f"forward record unbroken, {len(present)} "
+                f"report{'s' if len(present) != 1 else ''} from "
+                f"{start.isoformat()} to {max(present).isoformat()}",
+            )
+        ]
+
+    return [
+        CheckLine(
+            "",
+            CheckStatus.WARN,
+            f"{len(missing)} weekday{'s' if len(missing) != 1 else ''} missing "
+            f"from the forward record: "
+            f"{_bounded([day.isoformat() for day in missing])}",
         )
     ]
+
+
+def _bounded(items: Sequence[str]) -> str:
+    """Join ``items`` for one printed line, listing at most the sample limit.
+
+    Args:
+        items: What to list, in the order the reader should see it.
+
+    Returns:
+        The first `GAP_SAMPLE_LIMIT` items, comma separated, followed by how
+        many were not listed. The count of what is left is exact; only the
+        listing is bounded, so nothing is dropped without saying so.
+
+    """
+    listed = ", ".join(items[:GAP_SAMPLE_LIMIT])
+    if len(items) > GAP_SAMPLE_LIMIT:
+        listed += f" and {len(items) - GAP_SAMPLE_LIMIT} more"
+    return listed
+
+
+def _is_are(items: Sequence[str]) -> str:
+    """Return the verb agreeing in number with ``items``.
+
+    Args:
+        items: What the sentence is about.
+
+    Returns:
+        ``is`` or ``are``. A line an operator reads every morning, and one
+        that reads as broken is one they stop reading.
+
+    """
+    return "is" if len(items) == 1 else "are"
 
 
 @app.command(
@@ -1436,13 +1676,15 @@ def score(
             outside `fbe.universe.G10`, when ``--asof`` is in the future, or
             when ``scoring.lookback_years`` cannot produce a window. Each would
             otherwise print a table that looked like a run with no opinions.
-        typer.Exit: With `EXIT_UNUSABLE` when the cache held nothing for the
-            window, and when every currency came back at zero coverage, which
-            is the coverage-collapsed case ``docs/interfaces.md`` gives for
-            exit 1.
+        typer.Exit: With `EXIT_UNUSABLE` when `Config.validate` rejects the
+            config, before anything is collected or scored; when the cache held
+            nothing for the window; and when every currency came back at zero
+            coverage, which is the coverage-collapsed case
+            ``docs/interfaces.md`` gives for exit 1.
 
     """
     config = _effective_config(ctx)
+    _require_valid_config(config)
     run_date = asof.date() if asof is not None else date.today()
     if run_date > date.today():
         raise typer.BadParameter(
@@ -2038,12 +2280,14 @@ def bias(
             rather than a refusal. A CSV of the grid is a flat list of 56
             cells, 28 of them pairs written backwards, and a pair list is the
             one thing a mirrored cell must never reach.
-        typer.Exit: With `EXIT_UNUSABLE` when the cache held nothing for the
-            window, so an empty table cannot read as a working engine with no
-            opinions.
+        typer.Exit: With `EXIT_UNUSABLE` when `Config.validate` rejects the
+            config, before anything is collected or scored, and when the cache
+            held nothing for the window, so an empty table cannot read as a
+            working engine with no opinions.
 
     """
     config = _effective_config(ctx)
+    _require_valid_config(config)
     run_date = asof.date() if asof is not None else date.today()
     if run_date > date.today():
         raise typer.BadParameter(
@@ -3567,12 +3811,14 @@ def report(
             ``--compare`` names a path that does not exist. A missing baseline
             silently treated as no baseline would print a report whose
             what-changed section said "first run" on the hundredth.
-        typer.Exit: With `EXIT_UNUSABLE` when the cache held nothing for the
-            window, and when every currency came back at zero coverage, so a
-            report of a run that scored nothing cannot read as a working
-            engine with no opinions. Neither case writes a file: the report is
-            the committed audit trail and it is also tomorrow's baseline, so a
-            report of an outage becomes a fundamental move overnight.
+        typer.Exit: With `EXIT_UNUSABLE` when `Config.validate` rejects the
+            config, when the cache held nothing for the window, and when every
+            currency came back at zero coverage, so a report of a run that
+            scored nothing cannot read as a working engine with no opinions.
+            None of the three writes a file: the report is the committed audit
+            trail and it is also tomorrow's baseline, so a report of an outage
+            becomes a fundamental move overnight, and one written under a
+            config nobody validated cannot be recovered by re-running the date.
         TypeError: When an `fbe.types.Observation`'s free-form ``meta`` holds a
             value JSON has no type for, which today means an unquoted date in
             ``data/manual/*.yaml``. `fbe.report.write_report` refuses it rather
@@ -3581,6 +3827,7 @@ def report(
 
     """
     config = _effective_config(ctx)
+    _require_valid_config(config)
     run_date = asof.date() if asof is not None else date.today()
     if run_date > date.today():
         raise typer.BadParameter(
@@ -4124,6 +4371,7 @@ def journal_add(
 
     """
     config = _effective_config(ctx)
+    _require_valid_config(config)
     normalised = pair.upper()
     _checked_journal_pair(normalised)
     if direction is Direction.NEUTRAL:
