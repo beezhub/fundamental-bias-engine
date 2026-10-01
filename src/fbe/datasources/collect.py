@@ -54,7 +54,7 @@ from enum import StrEnum
 
 from fbe.config import DataConfig
 from fbe.datasources import ALL_SOURCES
-from fbe.datasources.base import BaseDataSource
+from fbe.datasources.base import BaseDataSource, WindowTooNarrow
 from fbe.datasources.registry import GLOBAL, INDICATORS, SOURCE_MANUAL, stale_refs
 from fbe.types import Observation
 from fbe.universe import G10
@@ -64,6 +64,7 @@ __all__ = [
     "SeriesFailure",
     "SourceOutcome",
     "SourceStatus",
+    "UnjudgedSeries",
     "collect",
     "lookback_start",
 ]
@@ -92,7 +93,10 @@ class SourceStatus(StrEnum):
     FAILED = "failed"
     """It was asked and it raised. A named gap, not a reason to stop.
 
-    For a series-scoped source, every series raised; each is on ``failures``.
+    For a series-scoped source, it served nothing and at least one series
+    raised; each of those is on ``failures``. The rest may be on ``unjudged``,
+    which is not a failure and does not make the source one on its own: a run
+    that judged nothing and lost nothing is completed with no observations.
     """
 
 
@@ -115,6 +119,31 @@ class SeriesFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class UnjudgedSeries:
+    """One series whose empty answer proved nothing either way.
+
+    Neither served nor lost, so it is neither on the counts nor on
+    ``failures``. A window narrower than one release cycle, after the leg's own
+    publication lag, is empty from a live series as readily as from a dead one:
+    see `fbe.datasources.registry.empty_is_judgeable`. Recording it as a
+    failure is a false cause on the refresh line, and dropping it is the silent
+    empty success ADR 0015 rule 3 removed, so it is its own answer.
+
+    Attributes:
+        indicator: Canonical indicator key.
+        currency: ISO 4217 code, or ``GLOBAL``.
+        reason: The source's own message, which names the window, the lag and
+            the cycle, so an operator can see why the request could not answer
+            the question rather than only that it did not.
+
+    """
+
+    indicator: str
+    currency: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class SourceOutcome:
     """One source's contribution to one collection.
 
@@ -132,10 +161,24 @@ class SourceOutcome:
             for a series-scoped source. Zero for a source that was never asked.
         detail: Why it was skipped, or what it raised. For a partial or a
             series-scoped failure, how many series were asked and how many
-            failed. Empty when it completed.
+            failed, and beside that how many the window could not judge.
+            Empty only when a source completed with nothing else to say, so a
+            renderer cannot read an empty ``detail`` as a clean run: a
+            completed outcome that judged nothing carries the count here.
         failures: The series a series-scoped source could not serve, in the
             order they were asked. Empty for a source-scoped source, whose one
             failure is on ``detail``, and always empty on a completed outcome.
+        unjudged: The series whose empty answer proved nothing, in the order
+            they were asked. These are not failures: the provider answered
+            every one of them, and no count of them alone makes a source
+            partial or failed. They do decide one boundary, because a series
+            nobody could judge was not a series served: where every series
+            either failed or went unjudged, nothing was served and the status
+            is ``FAILED``. They are always on ``detail`` and on their own
+            lines, because a source that served nothing and says nothing more
+            is the quiet empty success this vocabulary exists to prevent. A
+            completed outcome may carry these, and that combination is the
+            point rather than a contradiction.
 
     Raises:
         ValueError: On construction, when ``status`` is completed and
@@ -152,6 +195,7 @@ class SourceOutcome:
     elapsed_seconds: float
     detail: str = ""
     failures: tuple[SeriesFailure, ...] = ()
+    unjudged: tuple[UnjudgedSeries, ...] = ()
 
     def __post_init__(self) -> None:
         """Refuse the one combination of fields that would hide a failure."""
@@ -443,9 +487,14 @@ def _collect_by_series(
     rate limiter and the one client hold across the calls.
 
     The status follows from the counts with no threshold. No failure is
-    completed; some is partial; all is failed. 38 of 39 failing therefore reads
-    as partial rather than failed, which ADR 0015 accepts: there is no free
-    parameter to defend, and coverage makes the case visible on the page.
+    completed; some failed with something served is partial; nothing served at
+    all is failed. 38 of 39 failing therefore reads as partial rather than
+    failed, which ADR 0015 accepts: there is no free parameter to defend, and
+    coverage makes the case visible on the page.
+
+    A series the window could not judge is none of those three. It is on
+    ``unjudged`` and on ``detail``, it is not served and it is not lost, and it
+    never moves the status by itself (#298).
 
     Args:
         source: The constructed, series-scoped source.
@@ -456,17 +505,26 @@ def _collect_by_series(
 
     Returns:
         The outcome and every observation the served series returned. For a
-        failed outcome the observations are empty and every series is named.
+        failed outcome the observations are empty and every series is named,
+        on ``failures`` or on ``unjudged``.
 
     """
     name = source.name
     served: list[Observation] = []
     failures: list[SeriesFailure] = []
+    unjudged: list[UnjudgedSeries] = []
     elapsed = 0.0
     for indicator, currency in sorted(pairs):
         started = time.monotonic()
         try:
             served.extend(source.fetch([indicator], [currency], start, end))
+        except WindowTooNarrow as error:
+            # Caught before the general case and on its own, because this is
+            # not a failure: the provider answered, and the window could not
+            # ask the question. Naming it a failure is the false cause #298
+            # reported, and dropping it is the silent empty success ADR 0015
+            # rule 3 removed.
+            unjudged.append(UnjudgedSeries(indicator, currency, str(error)))
         except Exception as error:  # noqa: BLE001
             # The same breadth as the whole-source catch, for the same reason:
             # one bad row in one series is that series' problem alone.
@@ -485,10 +543,23 @@ def _collect_by_series(
                 series=len({(o.indicator, o.currency) for o in observations}),
                 observations=len(observations),
                 elapsed_seconds=elapsed,
+                detail=_unjudged_detail(unjudged, asked),
+                unjudged=tuple(unjudged),
             ),
             observations,
         )
-    if len(failures) == asked:
+    if len(failures) + len(unjudged) == asked:
+        # Every series either failed or could not be judged, so nothing was
+        # served. A series nobody could judge was not a series served, which
+        # makes this ADR 0015's none-served case, and partial would claim a
+        # success the counts do not show. Written from the two counts rather
+        # than from an empty observations tuple so a source that returns no
+        # rows without raising keeps the status it had before #298.
+        lost = (
+            f"all {asked} series failed"
+            if len(failures) == asked
+            else f"{len(failures)} of {asked} series failed"
+        )
         return (
             SourceOutcome(
                 source=name,
@@ -496,8 +567,9 @@ def _collect_by_series(
                 series=0,
                 observations=0,
                 elapsed_seconds=elapsed,
-                detail=f"all {asked} series failed",
+                detail=_with_unjudged(lost, unjudged),
                 failures=tuple(failures),
+                unjudged=tuple(unjudged),
             ),
             (),
         )
@@ -508,11 +580,53 @@ def _collect_by_series(
             series=len({(o.indicator, o.currency) for o in observations}),
             observations=len(observations),
             elapsed_seconds=elapsed,
-            detail=f"{len(failures)} of {asked} series failed",
+            detail=_with_unjudged(
+                f"{len(failures)} of {asked} series failed", unjudged
+            ),
             failures=tuple(failures),
+            unjudged=tuple(unjudged),
         ),
         observations,
     )
+
+
+def _unjudged_detail(unjudged: Sequence[UnjudgedSeries], asked: int) -> str:
+    """Return the detail for a source that lost nothing.
+
+    Args:
+        unjudged: The series whose empty answer proved nothing.
+        asked: How many series the source was asked for.
+
+    Returns:
+        Empty when every series answered, so a clean fetch prints the line it
+        always did. Otherwise how many of them could not be judged, because a
+        source that served nothing and says nothing else is indistinguishable
+        from one that served everything there was, which is the failure #298
+        reported one level along.
+
+    """
+    if not unjudged:
+        return ""
+    return f"{len(unjudged)} of {asked} series not judged"
+
+
+def _with_unjudged(detail: str, unjudged: Sequence[UnjudgedSeries]) -> str:
+    """Return ``detail`` with the unjudged count appended, where there is one.
+
+    Args:
+        detail: What the status already had to say, which already carries how
+            many series were asked, so this adds the count alone.
+        unjudged: The series whose empty answer proved nothing.
+
+    Returns:
+        Both facts on one line, in that order. A run can lose some series and
+        fail to judge others, and reporting only the first would leave the
+        second invisible on exactly the line an operator reads to find it.
+
+    """
+    if not unjudged:
+        return detail
+    return f"{detail}, {len(unjudged)} not judged"
 
 
 def collect(

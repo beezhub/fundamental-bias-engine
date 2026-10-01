@@ -21,12 +21,15 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from fbe.config import ScoringConfig
 from fbe.datasources import registry
+from fbe.datasources.collect import lookback_start
 from fbe.datasources.registry import (
     CYCLE_DAYS,
     DEFAULT_PUBLICATION_LAG_DAYS,
     VERIFIED_ON,
     SeriesRef,
+    empty_is_judgeable,
     publication_lag,
 )
 from fbe.pillars.base import BasePillar
@@ -252,3 +255,107 @@ def test_every_override_says_how_it_was_measured() -> None:
         if ref.publication_lag_days is not None and "lag" not in ref.note.lower()
     ]
     assert unexplained == []
+
+
+# --- the window gate on an empty answer (issue #298) ------------------------
+#
+# ADR 0015 rule 3 lets a source raise when a series it was asked for serves
+# nothing. That reasons about the default five-year lookback. `fbe refresh
+# --since` a few days back asks every quarterly series for a window it cannot
+# hold a print in, and rule 3 then names each as dead. The gate is arithmetic
+# rather than a heuristic: the window, shifted back by the leg's own lag, must
+# span at least one release cycle.
+
+END = date(2026, 9, 25)
+
+
+def _window(days: int) -> tuple[date, date]:
+    """A window of ``days`` ending on the fixed END."""
+    return END - timedelta(days=days), END
+
+
+@pytest.mark.parametrize("frequency", list(Frequency))
+def test_the_default_lookback_can_judge_every_frequency(
+    frequency: Frequency,
+) -> None:
+    """Rule 3 survives for the case it was written for, which is the point of
+    the gate rather than an afterthought. Quarterly is the worked example:
+    1826 - 120 = 1706 against a cycle of 92, so a five-year window that comes
+    back empty still means dead.
+
+    The window comes from `ScoringConfig.lookback_years` through the same
+    `lookback_start` a refresh uses, not from a literal that happens to equal
+    it. A shorter configured lookback would stop the gate judging the slowest
+    legs, and the annual ones go first: 552 + 366 is 918 days, so two years
+    would turn a dead annual series into one nobody judged, silently.
+    """
+    end = date(2026, 9, 25)
+    start = lookback_start(end, ScoringConfig().lookback_years)
+
+    assert empty_is_judgeable(_ref(frequency), frequency, start, end)
+
+
+def test_a_five_day_window_judges_nothing() -> None:
+    """The reported case. `--since 2026-09-20` run on the 25th."""
+    start, end = _window(5)
+
+    assert not empty_is_judgeable(
+        _ref(Frequency.QUARTERLY), Frequency.QUARTERLY, start, end
+    )
+
+
+def test_a_window_of_exactly_one_quarterly_cycle_judges_nothing() -> None:
+    """The case a gate written on frequency alone gets wrong, and the reason
+    the lag is in the rule. 92 days contains a quarterly period boundary, so on
+    frequency alone it looks judgeable; that period carries a 120-day lag and
+    is not published yet, so a live series is legitimately empty over it."""
+    start, end = _window(CYCLE_DAYS[Frequency.QUARTERLY])
+
+    assert not empty_is_judgeable(
+        _ref(Frequency.QUARTERLY), Frequency.QUARTERLY, start, end
+    )
+
+
+def test_a_month_long_window_judges_no_monthly_series() -> None:
+    """The same shape one frequency down: 31 - 45 is negative against a cycle
+    of 31."""
+    start, end = _window(CYCLE_DAYS[Frequency.MONTHLY])
+
+    assert not empty_is_judgeable(
+        _ref(Frequency.MONTHLY), Frequency.MONTHLY, start, end
+    )
+
+
+@pytest.mark.parametrize("frequency", list(Frequency))
+def test_the_boundary_is_lag_plus_cycle_for_every_frequency(
+    frequency: Frequency,
+) -> None:
+    """Computed from the two tables rather than from the implementation, at the
+    exact day either side, so an off-by-one in the comparison fails here."""
+    span = DEFAULT_PUBLICATION_LAG_DAYS[frequency] + CYCLE_DAYS[frequency]
+
+    below = _window(span - 1)
+    exactly = _window(span)
+
+    assert not empty_is_judgeable(_ref(frequency), frequency, *below)
+    assert empty_is_judgeable(_ref(frequency), frequency, *exactly)
+
+
+def test_a_measured_lag_moves_the_boundary_with_it() -> None:
+    """The leg's own lag, not the frequency's default. A source whose provider
+    publishes late needs a wider window before an empty answer means anything,
+    and the registry already records that per leg."""
+    slow = _ref(Frequency.MONTHLY, lag=200)
+    start, end = _window(DEFAULT_PUBLICATION_LAG_DAYS[Frequency.MONTHLY] + 31)
+
+    assert empty_is_judgeable(_ref(Frequency.MONTHLY), Frequency.MONTHLY, start, end)
+    assert not empty_is_judgeable(slow, Frequency.MONTHLY, start, end)
+
+
+def test_a_reversed_window_judges_nothing() -> None:
+    """A window ending before it starts asks for no days at all, so an empty
+    answer over it is not evidence of anything. The subtraction is signed, so
+    this is the case that would go wrong if it were not."""
+    assert not empty_is_judgeable(
+        _ref(Frequency.DAILY), Frequency.DAILY, END, END - timedelta(days=30)
+    )

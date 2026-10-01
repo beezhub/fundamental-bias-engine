@@ -235,6 +235,16 @@ the indicator and the error. The counts are what was served, so the line still
 reconciles with the cache. A partial source is usable and does not change the
 exit code (ADR 0015).
 
+Such a source can also report a series it could not judge, which is a third
+answer and not a failure. A window narrower than one release cycle of that
+series, after its own publication lag, is empty whether the series is live or
+dead, so the source says so instead of naming it dead. `--since` a few days back
+is what produces it. The counts line then carries how many of the series were
+not judged, and each takes its own indented line, worded `not judged` rather
+than `failed` and carrying the window, the lag and the cycle. The status is
+unaffected: a source that lost nothing is still completed, with the observations
+it served, which for a window this narrow can be none.
+
 The closing block lists every indicator that `registry.stale_refs` reports a gap
 for, aged against the run date rather than against the date the registry was
 last verified. A registry that has not been re-checked in a year reports its
@@ -261,6 +271,24 @@ Coverage gaps, aged at 2026-09-15:
   yield_2y              CHF, AUD, NZD
 Cache: 41 entries, newest 0m old.
 ```
+
+A window too narrow to judge anything, which is the same run on 2026-09-28
+asked for eight days instead of five years. The series are named in indicator
+then currency order, and two of the 38 lines are picked out here:
+
+```console
+$ fbe refresh -s oecd --since 2026-09-20
+oecd          0 series         0 observations         114.0s  (38 of 38 series not judged)
+  ...
+  oecd        AUD cpi_yoy not judged (oecd served no observation for cpi_yoy AUD (...) between 2026-09-20 and 2026-09-28; that window judges nothing, because 8 days less this leg's 120-day publication lag does not span the 92-day quarterly cycle)
+  ...
+  oecd        GBP cpi_yoy not judged (oecd served no observation for cpi_yoy GBP (...) between 2026-09-20 and 2026-09-28; that window judges nothing, because 8 days less this leg's 45-day publication lag does not span the 31-day monthly cycle)
+  ...
+```
+
+Nothing there is a failure, and nothing is named dead. The run still exits 1,
+because it reconciled no observations, which is the rule above rather than a
+verdict on the source.
 
 ### `fbe score`
 

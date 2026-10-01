@@ -1488,6 +1488,8 @@ def _render_refresh(result: CollectionResult, config: Config, asof: date) -> Non
         typer.echo(_render_outcome(outcome))
         for line in _render_failures(outcome):
             typer.echo(line)
+        for line in _render_unjudged(outcome):
+            typer.echo(line)
     for line in _render_gaps(result.gaps, asof):
         typer.echo(line)
     typer.echo(_render_cache(config))
@@ -1501,12 +1503,15 @@ def _render_outcome(outcome: SourceOutcome) -> str:
 
     Returns:
         For a completed source, its series and observation counts and the time
-        inside its fetch. For a partial one, the same counts followed by the
-        word partial and how many series failed, so the line still reconciles
-        with the cache and still cannot be read as a clean fetch. For anything
-        else, the word and the reason, because a source that was skipped and a
-        source that returned nothing are different facts and an operator
-        chasing a missing currency needs to know which one they have.
+        inside its fetch, followed by how many series the window could not
+        judge where there were any: a completed source that served nothing is
+        otherwise a clean-looking line with no data behind it. For a partial
+        one, the same counts followed by the word partial and how many series
+        failed, so the line still reconciles with the cache and still cannot be
+        read as a clean fetch. For anything else, the word and the reason,
+        because a source that was skipped and a source that returned nothing
+        are different facts and an operator chasing a missing currency needs to
+        know which one they have.
 
     """
     label = outcome.source.ljust(SOURCE_WIDTH)
@@ -1516,6 +1521,11 @@ def _render_outcome(outcome: SourceOutcome) -> str:
         counts = f"{label}{series}{observations}{outcome.elapsed_seconds:.1f}s"
         if outcome.status is SourceStatus.PARTIAL:
             return f"{counts}  partial ({outcome.detail})"
+        if outcome.unjudged:
+            # A completed source that judged nothing served nothing, and a bare
+            # counts line there reads as a provider with no data rather than a
+            # window that asked nothing. See #298.
+            return f"{counts}  ({outcome.detail})"
         return counts
     return f"{label}{outcome.status.value} ({outcome.detail})"
 
@@ -1539,6 +1549,30 @@ def _render_failures(outcome: SourceOutcome) -> list[str]:
     return [
         f"{label}{failure.currency} {failure.indicator} failed ({failure.error})"
         for failure in outcome.failures
+    ]
+
+
+def _render_unjudged(outcome: SourceOutcome) -> list[str]:
+    """Return one line per series whose empty answer proved nothing.
+
+    Args:
+        outcome: What that source did.
+
+    Returns:
+        Empty for a source that judged every series it asked for. Otherwise one
+        line each, indented under the source's own line and naming the source,
+        the currency, the indicator and why the window could not answer.
+
+        Named rather than counted, for the reason the failures are: an operator
+        reading this is looking for one currency's missing pillar. Worded as
+        not judged rather than failed, because the provider answered and the
+        request was the thing at fault.
+
+    """
+    label = f"  {outcome.source}".ljust(SOURCE_WIDTH)
+    return [
+        f"{label}{series.currency} {series.indicator} not judged ({series.reason})"
+        for series in outcome.unjudged
     ]
 
 
