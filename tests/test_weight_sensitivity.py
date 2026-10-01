@@ -577,10 +577,9 @@ def test_no_unmeasured_claim_anywhere_in_the_module() -> None:
     source = (Path(__file__).resolve().parents[1] / "src/fbe/evaluation.py").read_text()
     added = source[source.index("CROSS_SECTION_NOTE = (") :].lower()
 
-    # Bounded to what #287 added. The module's own opening docstring says it
-    # "computes no hit rate, no average and no interval", which is the
-    # standing instruction being honoured rather than breached, and a search
-    # of the whole file reads the disclaimer as the claim.
+    # Bounded to what #287 added. The rest of the module names hit rates
+    # because `evaluate` computes them behind an evidence threshold, and a
+    # search of the whole file would read that vocabulary as a claim.
     for claim in ("backtested", "proven", "win rate", "hit rate"):
         assert claim not in added, claim
     assert " edge" not in added
