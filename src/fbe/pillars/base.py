@@ -19,7 +19,7 @@ already fetched, cached and keyed to the canonical indicator names.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from math import fsum, sqrt
@@ -245,6 +245,31 @@ class BasePillar(ABC):
         `fbe.types.Pillar` protocol, which is the same reason the history
         arrives at construction.
         """
+        self.last_contributing: Mapping[str, frozenset[str]] = {}
+        """Which components actually blended, per currency, from the last run.
+
+        A component contributes when it produced a z for that currency, which is
+        what "blended" means: it was a term in the weighted mean that became the
+        pillar's score. A component with no z was never in the arithmetic, and
+        whether it had observations is a different question that
+        `component_freshness` answers. `pillar_freshness` weighs over this set,
+        so the weight a pillar takes into the composite is judged on the
+        components that moved its score.
+
+        Empty for a currency the pillar could not score, and reset by `compute`
+        before every run so a previous run's set cannot be read as this one's.
+        It rides on the instance for the same reason `last_blend_sd` does:
+        `compute`'s signature is fixed by the `fbe.types.Pillar` protocol.
+
+        **A `_normalise` override must set this itself.** `PositioningPillar`
+        and `RiskPillar` score directly and never call `blend_components`, so
+        nothing else can know what they used. An override that leaves it empty
+        reports zero freshness and loses the pillar's weight; one that reports
+        every component regardless reproduces issue #172 in the one pillar that
+        skipped the fix. Both are silent, which is why
+        ``tests/test_freshness_follows_the_blend.py`` drives every pillar in
+        `fbe.pillars.default_pillars` and asserts the weight matches the set.
+        """
         self.last_undated_revisions: Mapping[str, int] = {}
         """Per currency, how many observations this run refused as undated
         revisions, from the last `compute`.
@@ -363,6 +388,7 @@ class BasePillar(ABC):
         # clothes.
         self.last_blend_sd = None
         self.last_blend_divisor_path = ""
+        self.last_contributing = {}
 
         extracted = self._extract(observations, currencies, asof)
         components = self._transform(extracted, asof)
@@ -437,7 +463,9 @@ class BasePillar(ABC):
                 # put the registry's indicator keys in front of a module that is
                 # deliberately free of them. The absent branch above does not
                 # reach this: `missing_score` states its own 0.0.
-                freshness_factor=self.pillar_freshness(per_currency, asof),
+                freshness_factor=self.pillar_freshness(
+                    per_currency, asof, self.last_contributing.get(currency, ())
+                ),
             )
         return scores
 
@@ -903,9 +931,19 @@ class BasePillar(ABC):
         currencies = list(components)
         if len(weights) == 1:
             (only,) = weights
-            return self.cross_sectional_z(
+            scores = self.cross_sectional_z(
                 {currency: components[currency].get(only) for currency in currencies}
             )
+            # This path never reaches `blend_components`, so it records the
+            # contributing set itself. No default pillar takes it today,
+            # because both single-component pillars override this method, but a
+            # future one that does not would otherwise report zero freshness
+            # and lose its whole weight without saying so. Issue #172.
+            self.last_contributing = {
+                currency: frozenset({only}) if z is not None else frozenset()
+                for currency, z in scores.items()
+            }
+            return scores
 
         # Only the components carrying a sub-weight are z-scored. A pillar may
         # emit others from `_transform` to fill `headline_component`, and those
@@ -1375,9 +1413,11 @@ class BasePillar(ABC):
                     currencies.append(currency)
 
         blends: dict[str, float | None] = {}
+        contributing: dict[str, frozenset[str]] = {}
         for currency in currencies:
             present: list[float] = []
             discounted: list[tuple[float, float]] = []
+            used: set[str] = set()
             for component, weight in sub_weights.items():
                 z = component_z.get(component, {}).get(currency)
                 if z is None:
@@ -1385,12 +1425,15 @@ class BasePillar(ABC):
                 present.append(weight)
                 phi = factors.get(component, {}).get(currency, 1.0)
                 discounted.append((weight * phi, z))
+                used.add(component)
+            contributing[currency] = frozenset(used)
 
             # The floor is judged on the sub-weight present, before the
             # freshness factors, because it asks about substitution rather than
             # about age. See `MIN_COMPONENT_WEIGHT`.
             if fsum(present) / declared <= MIN_COMPONENT_WEIGHT:
                 blends[currency] = None
+                contributing[currency] = frozenset()
                 continue
 
             denominator = fsum(weight for weight, _ in discounted)
@@ -1399,6 +1442,7 @@ class BasePillar(ABC):
                 # there is no weight left to renormalise over. That is an
                 # absence, not a reading of zero.
                 blends[currency] = None
+                contributing[currency] = frozenset()
                 continue
 
             blends[currency] = (
@@ -1409,6 +1453,9 @@ class BasePillar(ABC):
         if len(usable) < MIN_CROSS_SECTION:
             # Too thin to standardise against, so the pillar has no
             # cross-section this run and says so for everyone. ADR 0008.
+            # Nothing blended, so nothing contributed: a currency whose
+            # components all had data still took no weight from them.
+            self.last_contributing = dict.fromkeys(blends, frozenset())
             return dict.fromkeys(blends)
 
         mean = fsum(usable) / len(usable)
@@ -1421,6 +1468,7 @@ class BasePillar(ABC):
         # places and therefore two arithmetics.
         self.last_blend_sd = run_sd
         self.last_blend_divisor_path = path
+        self.last_contributing = contributing
         if divisor < 1e-9:
             return {
                 currency: (0.0 if blend is not None else None)
@@ -1566,23 +1614,84 @@ class BasePillar(ABC):
         self,
         extracted: Mapping[str, Sequence[Observation]],
         asof: date,
+        contributing: Collection[str],
     ) -> float:
         """Return the factor this pillar's configured weight is multiplied by.
 
         Args:
             extracted: One currency's slice of `_extract`'s output.
             asof: Run date.
+            contributing: The components that actually blended for this
+                currency, from `last_contributing`. Required rather than
+                defaulted: the defect this argument closes was two functions
+                deriving that set independently, and a default here would let a
+                caller derive it a third way.
 
         Returns:
-            The sub-weighted mean of `component_freshness` over the components
-            the currency actually has, in ``[0.0, 1.0]``. ``0.0`` when the
-            currency has no component at all, since no data is not fresh data.
+            A unitless factor in ``[0.0, 1.0]``: the sum, over the components in
+            ``contributing``, of each one's sub-weight times its
+            `component_freshness` factor, divided by the **declared** sub-weight
+            total of `component_weights`, not by the share that is present. A
+            declared component that did not blend, or that blended past its
+            allowance, stays in the denominator and adds ``phi = 0.0`` to the
+            numerator. ``0.0`` when nothing blended, and ``0.0`` for a pillar
+            that declares no sub-weight.
 
-        The mean runs over the components present rather than over all of them,
-        so a missing component is handled once, by `MIN_COMPONENT_WEIGHT` and the
-        renormalisation in `blend_components`, and is not charged again here as
-        if it were stale. Staleness and absence are separate facts and each is
-        counted in exactly one place.
+            One case leaves both sides: a component that blended but that
+            `component_freshness` did not measure, because it was computed
+            without observations. EXTERNAL's ``terms_of_trade`` is ``0.0`` by
+            design for a currency with no ``commodity_link``, which
+            `fbe.pillars.external` documents as a modelling statement rather
+            than an absence. It has no age, so charging it as expired would cut
+            EXTERNAL's weight by its 0.30 sub-weight on five currencies on every
+            run, and counting it as fully fresh would invent a measurement. It
+            is left out of the mean, and since being unmeasured does not change
+            as data ages, this adds no step in age.
+
+        The rule is that **an absent component and an expired one weigh the
+        same, and both weigh zero**. Three properties follow from the fixed
+        denominator, and each was broken by an earlier rule:
+
+        It is continuous in age. A component ageing towards its allowance pulls
+        the factor down along the ramp of section 4.1 of `docs/scoring-spec.md`
+        and reaches the expired value smoothly, with no step on the day ``phi``
+        reaches 0.0. The rule this replaces lifted a component at exactly 0.0
+        out of both sides of the mean while one at 0.0001 stayed in both, so on
+        MONETARY the factor fell as the CPI aged and then rose the day it
+        expired: 0.534 at 100 days, 0.510 at 105, 0.588 at 110.
+
+        It is monotonic. Older data never earns more weight, so between those
+        days a CPI the run held was worth less than no CPI at all, which was
+        issue #172's asymmetry still alive.
+
+        Absent equals expired, which is #172's requirement that an absent
+        component get no more weight than an expired one, met with equality.
+        The price is that absence now costs weight here, where it used to be
+        renormalised away. That is deliberate: a pillar standing on part of its
+        sub-weight carries part of its weight, in proportion, rather than
+        borrowing the missing part from the components that are there. It is
+        also why there is no separate floor. The earlier rule needed one
+        because renormalising onto a lone fresh component reported 1.0; under a
+        fixed denominator that pillar reports that component's own sub-weight
+        share, and a floor would only add a cliff the ramp exists to avoid.
+        `MIN_COMPONENT_WEIGHT` still decides, in `blend_components`, whether
+        the pillar speaks for the currency at all.
+
+        The authoritative set of what counts is the blend's, not
+        `component_freshness`'s. Those are two different questions:
+        `component_freshness` measures how old the observations were, which is
+        true of every component that had any, while the blend knows which
+        components produced a z and carried weight. A component built from two
+        indicators with one of them missing answers the first and not the
+        second, and weighing it in handed the pillar weight for a component
+        that moved nothing. Issue #172; the earlier text here asserted the two
+        answers agreed.
+
+        Nothing here reaches the blend's arithmetic. An expired component still
+        carries its full sub-weight in the z-score, because the factors are not
+        passed to `blend_components` on the `_normalise` path. That gap is #115
+        and is not this method's to close: the score and the weight it is
+        carried at are two numbers, and this one is the weight.
 
         `compute` records the result on `PillarScore.freshness_factor`, and
         `scoring.score_currencies` reads it there and passes it to
@@ -1597,10 +1706,12 @@ class BasePillar(ABC):
         """
         factors = self.component_freshness(extracted, asof)
         weights = self.component_weights
-        present = sum(weights[component] for component in factors)
-        if present <= 0.0:
+        unaged = sum(weights[c] for c in contributing if c not in factors)
+        denominator = sum(weights.values()) - unaged
+        if denominator <= 0.0:
             return 0.0
-        return sum(weights[c] * phi for c, phi in factors.items()) / present
+        held = sum(weights[c] * factors[c] for c in contributing if c in factors)
+        return held / denominator
 
     def missing_score(
         self,

@@ -264,7 +264,7 @@ def test_the_counts_are_recomputed_against_the_unperturbed_run(
 ) -> None:
     """Criterion 3, checked by recomputing one row from the report itself.
 
-    ``INFLATION`` up by the default step is rescored here from the same two
+    ``GROWTH`` up by the default step is rescored here from the same two
     functions, and the three figures are counted off the two pair lists by
     hand. If the module and this test agree, they agree about a number neither
     took from the other. The comment below says why this row and not another.
@@ -274,7 +274,7 @@ def test_the_counts_are_recomputed_against_the_unperturbed_run(
     from fbe.scoring import score_currencies
 
     config = Config()
-    perturbed = _renormalised(config.scoring.weights, PillarName.INFLATION, 0.05)
+    perturbed = _renormalised(config.scoring.weights, PillarName.GROWTH, 0.05)
     scoring = ScoringConfig(
         weights=perturbed,
         **{
@@ -319,14 +319,14 @@ def test_the_counts_are_recomputed_against_the_unperturbed_run(
         for m in weight_sensitivity(
             report, observations, event_horizon_guard=no_events
         ).moves
-        if m.pillar is PillarName.INFLATION and m.step > 0
+        if m.pillar is PillarName.GROWTH and m.step > 0
     )
 
-    # INFLATION up, which is the one row that recomputes all three figures.
-    # MONETARY up has both counts at zero, so comparing 0 against 0 checked
-    # only the rank move. EXTERNAL up has them equal at 2, so a conviction
-    # count that was really the direction count passed against it. Here they
-    # are 2 and 3, and the assertion below fails if either drifts.
+    # GROWTH up, which recomputes all three figures. MONETARY up has no
+    # direction change, so comparing 0 against 0 checks only the rank move,
+    # and INFLATION up is the same since `trade_trend` started blending in the
+    # fixture; this row was INFLATION until then. Here they are 2 and 4, and
+    # the assertion below fails if either drifts or the two coincide.
     assert directions > 0, "the recomputed row has stopped exercising the counts"
     assert convictions != directions, (
         "the recomputed row no longer separates the two counts, so a "

@@ -252,6 +252,18 @@
     "revision": 0
   },
   {
+    "indicator": "trade_balance",
+    "currency": "USD",
+    "value": -61656000000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "TRADE_BALANCE_USD",
+    "unit": "usd",
+    "frequency": "monthly",
+    "released_at": "2025-11-02T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "policy_rate",
     "currency": "EUR",
     "value": 2.4,
@@ -501,6 +513,18 @@
     "unit": "percent",
     "frequency": "monthly",
     "released_at": "2025-08-02T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "trade_balance",
+    "currency": "EUR",
+    "value": 19814000000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "TRADE_BALANCE_EUR",
+    "unit": "usd",
+    "frequency": "monthly",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -756,6 +780,18 @@
     "revision": 0
   },
   {
+    "indicator": "trade_balance",
+    "currency": "GBP",
+    "value": -16956000000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "TRADE_BALANCE_GBP",
+    "unit": "usd",
+    "frequency": "monthly",
+    "released_at": "2025-11-02T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "policy_rate",
     "currency": "JPY",
     "value": 0.35,
@@ -1005,6 +1041,18 @@
     "unit": "percent",
     "frequency": "monthly",
     "released_at": "2025-08-02T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "trade_balance",
+    "currency": "JPY",
+    "value": 3572000000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "TRADE_BALANCE_JPY",
+    "unit": "usd",
+    "frequency": "monthly",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1260,6 +1308,18 @@
     "revision": 0
   },
   {
+    "indicator": "trade_balance",
+    "currency": "CHF",
+    "value": 3420500000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "TRADE_BALANCE_CHF",
+    "unit": "usd",
+    "frequency": "monthly",
+    "released_at": "2025-11-02T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "policy_rate",
     "currency": "CAD",
     "value": 3.05,
@@ -1509,6 +1569,18 @@
     "unit": "percent",
     "frequency": "monthly",
     "released_at": "2025-08-02T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "trade_balance",
+    "currency": "CAD",
+    "value": -1724000000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "TRADE_BALANCE_CAD",
+    "unit": "usd",
+    "frequency": "monthly",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
@@ -1788,6 +1860,18 @@
     "revision": 0
   },
   {
+    "indicator": "trade_balance",
+    "currency": "AUD",
+    "value": 5748000000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "TRADE_BALANCE_AUD",
+    "unit": "usd",
+    "frequency": "monthly",
+    "released_at": "2025-11-02T12:00:00+00:00",
+    "revision": 0
+  },
+  {
     "indicator": "commodity_price",
     "currency": "AUD",
     "value": 118.0,
@@ -2061,6 +2145,18 @@
     "unit": "percent",
     "frequency": "monthly",
     "released_at": "2025-08-02T12:00:00+00:00",
+    "revision": 0
+  },
+  {
+    "indicator": "trade_balance",
+    "currency": "NZD",
+    "value": -843400000.0,
+    "period": "2025-11-01",
+    "source": "fixture",
+    "series_id": "TRADE_BALANCE_NZD",
+    "unit": "usd",
+    "frequency": "monthly",
+    "released_at": "2025-11-02T12:00:00+00:00",
     "revision": 0
   },
   {
