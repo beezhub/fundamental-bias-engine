@@ -115,7 +115,15 @@ from fbe.datasources.collect import (
     collect,
     lookback_start,
 )
-from fbe.journal import TradeRecord
+from fbe.datasources.prices import PricesSource
+from fbe.evaluation import Evaluation, ForwardRow, GroupStats, join_reports
+from fbe.evaluation import evaluate as evaluate_record
+from fbe.journal import (
+    EVIDENCE_THRESHOLD_TRADES,
+    JOURNAL_PATH,
+    TradeRecord,
+    load,
+)
 from fbe.pillar_audit import audit_run
 from fbe.pillars import default_pillars
 from fbe.risk import MissingRateError, pip_size, pip_value, risk_fraction_for
@@ -1480,6 +1488,8 @@ def _render_refresh(result: CollectionResult, config: Config, asof: date) -> Non
         typer.echo(_render_outcome(outcome))
         for line in _render_failures(outcome):
             typer.echo(line)
+        for line in _render_unjudged(outcome):
+            typer.echo(line)
     for line in _render_gaps(result.gaps, asof):
         typer.echo(line)
     typer.echo(_render_cache(config))
@@ -1493,12 +1503,15 @@ def _render_outcome(outcome: SourceOutcome) -> str:
 
     Returns:
         For a completed source, its series and observation counts and the time
-        inside its fetch. For a partial one, the same counts followed by the
-        word partial and how many series failed, so the line still reconciles
-        with the cache and still cannot be read as a clean fetch. For anything
-        else, the word and the reason, because a source that was skipped and a
-        source that returned nothing are different facts and an operator
-        chasing a missing currency needs to know which one they have.
+        inside its fetch, followed by how many series the window could not
+        judge where there were any: a completed source that served nothing is
+        otherwise a clean-looking line with no data behind it. For a partial
+        one, the same counts followed by the word partial and how many series
+        failed, so the line still reconciles with the cache and still cannot be
+        read as a clean fetch. For anything else, the word and the reason,
+        because a source that was skipped and a source that returned nothing
+        are different facts and an operator chasing a missing currency needs to
+        know which one they have.
 
     """
     label = outcome.source.ljust(SOURCE_WIDTH)
@@ -1508,6 +1521,11 @@ def _render_outcome(outcome: SourceOutcome) -> str:
         counts = f"{label}{series}{observations}{outcome.elapsed_seconds:.1f}s"
         if outcome.status is SourceStatus.PARTIAL:
             return f"{counts}  partial ({outcome.detail})"
+        if outcome.unjudged:
+            # A completed source that judged nothing served nothing, and a bare
+            # counts line there reads as a provider with no data rather than a
+            # window that asked nothing. See #298.
+            return f"{counts}  ({outcome.detail})"
         return counts
     return f"{label}{outcome.status.value} ({outcome.detail})"
 
@@ -1531,6 +1549,30 @@ def _render_failures(outcome: SourceOutcome) -> list[str]:
     return [
         f"{label}{failure.currency} {failure.indicator} failed ({failure.error})"
         for failure in outcome.failures
+    ]
+
+
+def _render_unjudged(outcome: SourceOutcome) -> list[str]:
+    """Return one line per series whose empty answer proved nothing.
+
+    Args:
+        outcome: What that source did.
+
+    Returns:
+        Empty for a source that judged every series it asked for. Otherwise one
+        line each, indented under the source's own line and naming the source,
+        the currency, the indicator and why the window could not answer.
+
+        Named rather than counted, for the reason the failures are: an operator
+        reading this is looking for one currency's missing pillar. Worded as
+        not judged rather than failed, because the provider answered and the
+        request was the thing at fault.
+
+    """
+    label = f"  {outcome.source}".ljust(SOURCE_WIDTH)
+    return [
+        f"{label}{series.currency} {series.indicator} not judged ({series.reason})"
+        for series in outcome.unjudged
     ]
 
 
@@ -5008,3 +5050,400 @@ def journal_review(
     raise NotImplementedError(
         "fbe.cli.journal_review is scaffolded; see docs/roadmap.md Phase 6"
     )
+
+
+EVIDENCE_CAVEAT = (
+    "Every figure below {threshold} independent windows is a record of what "
+    "happened, not evidence about what will. A window is a report at least the "
+    "horizon after the last one counted, because one morning's 28 pairs share "
+    "eight currencies and reports a day apart share most of their prices. On a "
+    "record that started this month that is most of them."
+)
+"""Sentence printed above the tables whenever any bucket is thin.
+
+Criterion 6 of issue #286 asks for this in words rather than leaving the reader
+to notice a count. It is a statement about the record's age, so it reads as the
+normal case rather than as an alarm: on this account it will be true of every
+figure for months. It names windows rather than rows because the row count is
+printed beside it and is the larger number: a reader comparing the two against
+the threshold would otherwise conclude the record is evidence on its second
+morning.
+"""
+
+NO_SEPARATION = (
+    "No group separates from chance on this record: every interval includes "
+    "50%, or the group holds too few independent windows to say. That is a "
+    "result, "
+    "not a missing answer."
+)
+"""What the command prints when nothing in the record beat a coin.
+
+The output has to be able to say this plainly, which is criterion 5 of issue
+#286 and the reason the evaluation exists. An analysis with no way to return it
+is not an analysis.
+"""
+
+
+def _rate_sessions(rows: Sequence[ForwardRow]) -> tuple[date, ...]:
+    """Every session the joined rows priced, in order.
+
+    Args:
+        rows: Joined rows.
+
+    Returns:
+        The distinct opened and closed dates, sorted. Used only to report what
+        the join covered; the join itself was given the rates.
+
+    """
+    sessions = {row.opened_at for row in rows} | {row.closed_at for row in rows}
+    return tuple(sorted(sessions))
+
+
+def _forward_rates(
+    config: Config, first: date, last: date
+) -> dict[date, dict[str, float]]:
+    """Read daily spot fixings for the window the reports span.
+
+    Args:
+        config: The effective config, for the data settings the source reads.
+        first: Earliest session wanted, inclusive.
+        last: Latest session wanted, inclusive.
+
+    Returns:
+        ``{session: {pair: rate}}`` over `fbe.universe.MAJORS`, quoted in market
+        convention, base per quote, with a session absent when the market
+        published no fixing for it. Seven dollar pairs are enough for all 28,
+        because `fbe.risk.convert_rate` pivots the crosses through the dollar,
+        and asking for the crosses directly would invent rates the feed does
+        not publish.
+
+        A pair with no fixing on a session is left out rather than carried
+        forward from the day before. A stale rate reported as that day's is a
+        move measured against a price that did not exist.
+
+        The window is clipped at today. A report younger than the horizon has
+        a far edge that has not happened yet, and asking for it would ask the
+        feed for sessions that do not exist; `fbe.evaluation.join_report`
+        names that report as unmeasurable instead.
+
+    Each series is asked for once over the whole window, not once per day.
+    Asking day by day sends a request for every weekend and holiday, and each
+    of those is its own cache key, so an offline run misses on nearly all of
+    them and an online one spends the throttle on days the market was shut.
+
+    The run is online unless the operator asked for offline, through
+    ``--offline`` or `fbe.config.DataConfig.offline`. Forcing it offline here
+    would make a fresh machine's first evaluation fail on a cold cache.
+
+    Raises:
+        fbe.datasources.base.SourceError: From the price source, when a series
+            cannot be read: no credential, an exhausted retry, or a cold cache
+            on an offline run. A failed read and a market holiday are
+            different facts and only the second is an absence.
+
+    """
+    end = min(last, date.today())
+    table: dict[date, dict[str, float]] = {}
+    if end < first:
+        return table
+    source = PricesSource(config.data)
+    try:
+        for pair in MAJORS:
+            for session, rate in source.spot_history(pair, first, end):
+                table.setdefault(session, {})[pair] = rate
+    finally:
+        source.close()
+    return dict(sorted(table.items()))
+
+
+def _group_payload(stats: GroupStats) -> dict[str, object]:
+    """One bucket as plain data, the same figures the table prints."""
+    return {
+        "label": stats.label,
+        "observations": stats.observations,
+        "hits": stats.hits,
+        "hit_rate": round(stats.hit_rate, 4),
+        "hit_rate_low": round(stats.hit_rate_low, 4),
+        "hit_rate_high": round(stats.hit_rate_high, 4),
+        "independent_windows": stats.windows,
+        "below_evidence_threshold": stats.below_evidence_threshold,
+        "avg_move": round(stats.avg_move, 6),
+    }
+
+
+def _evaluation_payload(result: Evaluation) -> dict[str, object]:
+    """Return the whole evaluation as plain data.
+
+    The groups are carried under the name of their grouping rather than merged
+    into one list, because a reader asking "did conviction separate anything"
+    is asking about one of them and a flat list would make them reconstruct it.
+    """
+    return {
+        "rows": result.rows,
+        "called": result.called,
+        "independent_windows": result.windows,
+        "config_digests": list(result.digests),
+        "mixed_digests": result.mixed_digests,
+        "separating": list(result.separating),
+        "shows_no_separation": result.shows_no_separation,
+        "by_conviction": [_group_payload(entry) for entry in result.by_conviction],
+        "by_direction": [_group_payload(entry) for entry in result.by_direction],
+        "by_agreement": [_group_payload(entry) for entry in result.by_agreement],
+        "by_alignment": [_group_payload(entry) for entry in result.by_alignment],
+    }
+
+
+def _evaluation_csv(result: Evaluation) -> str:
+    """Return the same figures as rows, one per bucket, with its grouping named."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(
+        (
+            "grouping",
+            "label",
+            "observations",
+            "hits",
+            "hit_rate",
+            "hit_rate_low",
+            "hit_rate_high",
+            "independent_windows",
+            "below_evidence_threshold",
+            "avg_move",
+        )
+    )
+    for grouping, entries in (
+        ("conviction", result.by_conviction),
+        ("direction", result.by_direction),
+        ("agreement", result.by_agreement),
+        ("alignment", result.by_alignment),
+    ):
+        for entry in entries:
+            writer.writerow(
+                (
+                    grouping,
+                    entry.label,
+                    entry.observations,
+                    entry.hits,
+                    f"{entry.hit_rate:.4f}",
+                    f"{entry.hit_rate_low:.4f}",
+                    f"{entry.hit_rate_high:.4f}",
+                    "" if entry.windows is None else entry.windows,
+                    str(entry.below_evidence_threshold).lower(),
+                    f"{entry.avg_move:.6f}",
+                )
+            )
+    return buffer.getvalue().rstrip("\n")
+
+
+def _evaluation_table(result: Evaluation) -> str:
+    """Render the evaluation for a terminal.
+
+    The interval is printed beside every rate rather than instead of it, and a
+    thin bucket is marked in the row as well as in the sentence above the
+    tables: a reader scanning one line should not have to remember a caveat
+    from twenty lines up.
+    """
+    lines: list[str] = [
+        f"Forward record: {result.rows} rows, {result.called} carrying a call, "
+        f"from {result.windows} independent windows.",
+    ]
+    if result.mixed_digests:
+        lines.append(
+            "Pooled across "
+            f"{len(result.digests)} config digests ({', '.join(result.digests)}). "
+            "Cross-sectional scores depend on the weights that made them, so "
+            "these figures mix runs that are not strictly comparable."
+        )
+    if any(
+        entry.below_evidence_threshold
+        for entry in (
+            *result.by_conviction,
+            *result.by_direction,
+            *result.by_agreement,
+            *result.by_alignment,
+        )
+    ):
+        lines.append(EVIDENCE_CAVEAT.format(threshold=EVIDENCE_THRESHOLD_TRADES))
+    lines.append("")
+
+    for title, entries in (
+        ("By conviction", result.by_conviction),
+        ("By direction", result.by_direction),
+        ("By pillar agreement", result.by_agreement),
+        ("Journal, by alignment with the bias", result.by_alignment),
+    ):
+        if not entries:
+            continue
+        lines.append(title)
+        lines.append(
+            f"  {'group':<36}{'win':>5}{'n':>5}{'hit':>8}{'95% interval':>18}"
+            f"{'avg move':>12}"
+        )
+        for entry in entries:
+            interval = f"{entry.hit_rate_low:6.1%} to {entry.hit_rate_high:6.1%}"
+            mark = "  record only" if entry.below_evidence_threshold else ""
+            windows = "-" if entry.windows is None else str(entry.windows)
+            lines.append(
+                f"  {entry.label:<36}{windows:>5}{entry.observations:>5}"
+                f"{entry.hit_rate:>8.1%}{interval:>18}{entry.avg_move:>12.3%}{mark}"
+            )
+        lines.append("")
+
+    if result.shows_no_separation:
+        lines.append(NO_SEPARATION)
+    else:
+        lines.append(
+            "Above chance, with enough independent windows to say: "
+            + ", ".join(result.separating)
+            + ". That is what this record shows, over these rows, under these "
+            "weights. It is not a forecast."
+        )
+    return "\n".join(lines)
+
+
+@app.command(
+    help=(
+        "Report what the forward bias record and the journal say: hit rate "
+        "and average move by conviction, direction and pillar agreement, each "
+        "with its interval and its sample."
+    ),
+)
+def evaluate(
+    ctx: typer.Context,
+    reports_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--reports",
+            help=(
+                "Directory of dated report sidecars. Defaults to the "
+                "configured reports directory."
+            ),
+        ),
+    ] = None,
+    journal_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--journal",
+            help=(
+                "Journal file to split by alignment with the bias. Defaults "
+                "to the packaged journal path, which a fresh clone does not "
+                "have."
+            ),
+        ),
+    ] = None,
+    output_format: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--format",
+            help="Rendering: table for reading, json or csv for piping.",
+        ),
+    ] = OutputFormat.TABLE,
+) -> None:
+    """Report whether the recorded bias preceded the move, and whether it did not.
+
+    This is the only command that can answer the question the project exists to
+    ask, and the only one whose useful answer may be "nothing here". Phase 1
+    settled correctness and Phase 3 settled coherence; neither establishes that
+    the model predicts anything.
+
+    Every rate carries the number of observations behind it and a Wilson
+    interval around it, and a group under `fbe.journal.EVIDENCE_THRESHOLD_TRADES`
+    independent as-of windows is marked as a record rather than evidence, in the
+    row and in a sentence above the tables. Windows rather than rows, because
+    one report's 28 rows are one view of eight currencies, and reports closer
+    together than the horizon share most of their prices; see
+    `fbe.evaluation.independent_windows`.
+
+    The pairs the engine put at ``NONE`` are reported as their own group: they
+    are the control, and if they perform like the backed ones then the
+    conviction ladder separated nothing.
+
+    Args:
+        ctx: Typer context carrying the effective config.
+        reports_dir: Where the dated sidecars live.
+        journal_path: The journal to read for the alignment split.
+        output_format: table, json or csv. All three carry the same figures.
+
+    Raises:
+        typer.Exit: With `EXIT_UNUSABLE` when the reports directory holds no
+            readable report, when the forward prices could not be read, or
+            when no report's window could be priced. An
+            empty evaluation printed as zeros would read as a model that called
+            nothing right, which is a different fact from a record that cannot
+            be measured yet.
+
+    Nothing printed is a claim about what the model will do. The figures are
+    counts over what it did, and the interval beside each one is how wide the
+    record leaves the answer.
+
+    """
+    config = _effective_config(ctx)
+    directory = reports_dir if reports_dir is not None else config.data.reports_dir
+    if not directory.is_dir():
+        typer.echo(
+            f"No reports directory at {directory}, so there is no forward "
+            "record to evaluate. Run fbe report each morning to build one.",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
+
+    # Read only for the window's edges, so a sidecar that will not decode is
+    # skipped here and named by `join_reports` below rather than raising out of
+    # the command. A day that drops is the day something went wrong, and it has
+    # to reach the reader as a line rather than as a traceback.
+    asofs: list[date] = []
+    for sidecar in sorted(directory.glob(report_module.SIDECAR_GLOB)):
+        try:
+            asofs.append(report_module.load_report(sidecar).asof)
+        except (OSError, ValueError):
+            continue
+    asofs.sort()
+    if not asofs:
+        typer.echo(
+            f"No reports in {directory}, so there is no forward record to "
+            "evaluate. Run fbe report each morning to build one.",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
+
+    try:
+        rates = _forward_rates(
+            config,
+            asofs[0] + timedelta(days=1),
+            asofs[-1] + timedelta(days=config.scoring.horizon_days),
+        )
+    except SourceError as error:
+        # A failed read is not an empty window. Reported as one, the command
+        # would go on to say the reports are younger than the horizon, which
+        # sends the operator after the wrong cause.
+        typer.echo(
+            f"Could not read the forward prices, so nothing can be evaluated: {error}",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UNUSABLE) from error
+    joined = join_reports(directory, rates, scoring=config.scoring)
+    if not joined.rows:
+        for problem in joined.problems:
+            typer.echo(problem, err=True)
+        typer.echo(
+            "No report's window could be priced, so there is nothing to "
+            "evaluate yet. The reasons are above; the usual one is that the "
+            "newest reports are younger than the horizon.",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
+
+    path = journal_path if journal_path is not None else JOURNAL_PATH
+    result = evaluate_record(joined.rows, load(path=path), scoring=config.scoring)
+
+    if output_format is OutputFormat.JSON:
+        typer.echo(json.dumps(_evaluation_payload(result), indent=2))
+    elif output_format is OutputFormat.CSV:
+        typer.echo(_evaluation_csv(result))
+    else:
+        typer.echo(_evaluation_table(result))
+
+    for problem in joined.problems:
+        # To stderr, so a redirected json or csv stays machine readable. A gap
+        # that is not reported flatters every figure computed from what remains.
+        typer.echo(problem, err=True)

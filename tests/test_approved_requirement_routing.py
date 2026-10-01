@@ -108,13 +108,29 @@ def test_the_section_says_what_happens_to_a_requirement_in_neither_pool() -> Non
     The rule above routes the case that produced this issue. This one names the
     state itself, so a requirement that lands in it for some other reason is
     read as a labelling mistake rather than as work that is waiting its turn.
+
+    The sentence changed with #270. It read "belongs to no pool and nothing
+    will claim it", which was true when it was written and stopped being true
+    when the implementation lanes gained a fallback: on a day their own pool is
+    shut they reach outside it. The replacement is pinned whole, because the
+    whole sentence changed and half of it is the qualification that makes the
+    rest honest. What has to survive any later rewording is asserted
+    separately below: the state is a labelling mistake rather than a queue, and
+    a requirement in neither pool is reachable only through the fallback, which
+    needs an architect ruling that a converted requirement need not carry.
+
+    "Neither pool" rather than "no claim key", because the fallback is a branch
+    of the implementation lanes' claim key rather than a second one. Saying the
+    issue belongs to no claim key and then saying a lane reaches it through the
+    fallback contradicts itself in consecutive sentences.
     """
     body = _pools()
 
     assert (
         "A `type:requirement` carrying neither `roadmap` nor `routine-safe` "
-        "belongs to no pool and nothing will claim it.**" in body
+        "belongs to neither pool, and no lane claims it as ordinary work.**" in body
     )
+    assert "only through the fallback" in body
     assert "That is not a resting state, it is a labelling mistake" in body
 
 
@@ -198,11 +214,18 @@ def test_the_section_says_how_such_an_issue_is_actually_worked() -> None:
     ``/next 172`` already works and is the only thing that reaches these. Naming
     the mechanism is what turns the paragraph from a description of a gap into
     an instruction.
+
+    The implementation lanes' fallback, added with #270, does not change that.
+    A defect lands here because its diff spans two owners or changes a contract,
+    and the fallback is held to one owner's files and never changes
+    `src/fbe/types.py`. The paragraph says so, because a reader who knows the
+    fallback exists would otherwise assume it reaches these.
     """
     body = _pools()
 
     assert "/next 172" in body
     assert "only route that reaches it" in body
+    assert "The fallback below does not reach it either" in body
 
 
 def test_the_section_does_not_freeze_a_count_that_will_go_stale() -> None:
