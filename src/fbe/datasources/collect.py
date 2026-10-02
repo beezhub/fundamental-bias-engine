@@ -59,9 +59,12 @@ from fbe.datasources.registry import (
     GLOBAL,
     INDICATORS,
     SOURCE_MANUAL,
+    YIELD_CHANGE_LEVEL,
+    YIELD_CHANGE_MONTHS,
     SeriesRef,
     staleness_allowance,
 )
+from fbe.datasources.yield_changes import derive_yield_changes
 from fbe.types import Observation
 from fbe.universe import G10
 
@@ -719,6 +722,15 @@ def collect(
         for indicator in wanted_indicators
         for currency in wanted_currencies
     )
+    # A yield change is derived from the level, never fetched (#322), so a run
+    # asking for one has to fetch the level behind it even when the caller did
+    # not name the level. The level is dropped from the result again below
+    # when it was not asked for.
+    fetched = requested | frozenset(
+        (YIELD_CHANGE_LEVEL, currency)
+        for indicator, currency in requested
+        if indicator in YIELD_CHANGE_MONTHS
+    )
 
     outcomes: list[SourceOutcome] = []
     # Keyed by the triple the override rule is written in terms of, so a later
@@ -746,7 +758,7 @@ def collect(
             )
             continue
         try:
-            outcome, observations = _collect_one(source, requested, start, end, force)
+            outcome, observations = _collect_one(source, fetched, start, end, force)
         finally:
             # One client per source per run, and a run that leaves them open
             # leaks a socket for every source every morning.
@@ -756,9 +768,15 @@ def collect(
             key = (observation.indicator, observation.currency, observation.period)
             merged[key] = observation
 
+    for change in derive_yield_changes(merged.values()):
+        # A value a source supplied for the same key and session, which today
+        # can only be an operator's manual entry, wins over the derivation, for
+        # the same reason ManualSource runs last: an entry exists to override.
+        merged.setdefault((change.indicator, change.currency, change.period), change)
     held = tuple(
         observation
         for _, observation in sorted(merged.items(), key=lambda item: item[0])
+        if (observation.indicator, observation.currency) in requested
     )
     return CollectionResult(
         observations=held,

@@ -139,9 +139,11 @@ class MonetaryPillar(BasePillar):
 
         The two change series arrive as their own keys, ``yield_2y_chg_1m`` and
         ``yield_2y_chg_3m``, rather than being differenced here, so the
-        definition of "one month back" lives in one place: the registry's
-        ``chg_1m``/``chg_3m`` transform, which resamples to month-end or
-        quarter-end before differencing. That matters because the two-year
+        definition of "one month back" lives in one place:
+        `fbe.datasources.yield_changes`, which implements ADR 0004's trailing
+        window ending at the latest session, with the earlier endpoint the last
+        session on or before the same calendar day back. That matters because
+        the two-year
         yield is daily and the currencies keep different holiday calendars;
         differencing raw daily observations locally would make a one-month
         change mean "twenty-one business days back from whichever day this

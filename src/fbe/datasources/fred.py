@@ -296,7 +296,9 @@ class FredSource(BaseDataSource):
         ``chg`` is the change from the previous observation, a one-day change
         on a daily series, so mapping it would emit a number roughly thirty
         times too small under a label saying otherwise. ADR 0004 settles the
-        derivation and no source computes it yet. Declined here rather than
+        derivation, and since #322 `fbe.datasources.yield_changes` computes it
+        in the collector from ``DGS2``, which this source does serve. Declined
+        here rather than
         raised on inside ``fetch``: raising took every other FRED series down
         with it (#169), and under series scope an empty answer for a ref
         nobody could serve would print a failure line every morning (ADR

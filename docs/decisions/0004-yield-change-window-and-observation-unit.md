@@ -297,6 +297,27 @@ its own components, so this is not a new leak, but whether two change horizons
 earn 0.45 between them is a scoring question and Phase 6 is the first point at
 which it can be answered.
 
+## Ruling on the unresolved numbers, 2026-10-01 (#322)
+
+**Tolerance: 7 calendar days**, `registry.YIELD_CHANGE_TOLERANCE_DAYS`. Measured
+on five years of `yield_2y` sessions: the longest run without a session was 4
+days for USD, 5 for EUR, CAD and AUD, and 7 for JPY over the New Year closure, so
+the earlier endpoint sits at most 6 days before its target on any holiday seen.
+NZD's 16-day hole in October 2021 was missing data and is refused, which is
+what the tolerance is for. A registry number rather than a `ScoringConfig` one,
+because it describes how the series is built and no scoring choice turns on it.
+
+**Staleness: no separate number.** Since #126 the allowance is derived from
+the leg, and the change refs are the level's refs, so a change ages exactly as
+the session it ends on. The 10 days this record inherited is no longer a
+number anyone sets.
+
+**Where it is built:** once, in `fbe.datasources.yield_changes`, called by the
+collector on the reconciled level. The sources keep declining the refs, which
+keeps ADR 0016's guard true. Coverage on 2026-10-01 is 6 of 8: GBP lacks
+history in the Bank of England sheet, and CHF is typed by hand, as the
+Consequences above already accepted.
+
 ## Reopening
 
 Reopen decision 1 with a measurement, not a preference. The comparison that

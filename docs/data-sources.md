@@ -1009,8 +1009,8 @@ carry a dead series fails on the next verification rather than passing quietly.
 | --- | --- | --- | --- |
 | `policy_rate` | 8/8 | 8/8 | good |
 | `yield_2y` | 7/8 | 7/8 | CHF manual, see below; NZD from the owner's connection only |
-| `yield_2y_chg_1m` | 0/8 | 0/8 | derived from `yield_2y`, served by no source until ADR 0004 is implemented; see below |
-| `yield_2y_chg_3m` | 0/8 | 0/8 | derived from `yield_2y`, served by no source until ADR 0004 is implemented; see below |
+| `yield_2y_chg_1m` | 0/8 | 0/8 | derived from `yield_2y`; 0/8 on this date, 6/8 since #322 (2026-10-01), see below |
+| `yield_2y_chg_3m` | 0/8 | 0/8 | derived from `yield_2y`; 0/8 on this date, 6/8 since #322 (2026-10-01), see below |
 | `yield_10y` | 8/8 | 8/8 | good, but **consumed by no pillar**; see below |
 | `cpi_yoy` | 8/8 | 8/8 | good, was 2/8 before the OECD API |
 | `core_cpi_yoy` | 8/8 | 8/8 | good, was 2/8 |
@@ -1260,9 +1260,13 @@ One-month and three-month trailing changes in the two-year government bond yield
 
 Neither is a separately published series. No source in this registry, or found by search, publishes a pre-differenced government bond yield change for any G10 issuer. Both reuse `yield_2y`'s own source, series ID, unit and `last_observed` for every currency, under the registry's `chg_1m` and `chg_3m` transforms, which is why their source table is not repeated here: it is `yield_2y`'s table above, currency for currency, source for source.
 
-**Served by no source today.** ADR 0004 settles the derivation but no source computes it yet, so `fbe.datasources.fred` and `fbe.datasources.curves` pass these refs over without a request rather than approximate them, and the registry marks every ref unverified so `stale_refs` lists all eight currencies. The monetary pillar blends its score over the three components it has, and its freshness factor keeps the two absent components' 0.45 of sub-weight in the denominator, so MONETARY carries at most 0.55 of its configured weight until they are served (`docs/scoring-spec.md` section 4.1). Once a source implements the derivation, coverage and freshness become identical to `yield_2y`'s, currency for currency, and the flag flips back in that commit. Issue #169 records the interim.
+**Derived in the collector, not fetched.** Since #322, `fbe.datasources.yield_changes` computes both from the `yield_2y` sessions every source returns, once, so the window is the same whichever source served the level. `fbe.datasources.fred` and `fbe.datasources.curves` still decline the two refs, because a provider's own "change" unit is a different quantity (FRED's `chg` is one day), and the registry keeps them unverified for that reason: no provider serves them. A run asking for either key fetches the level behind it.
 
-Pillar: **monetary**. Canonical unit: `basis_points`. Staleness allowance: 10 days. Fresh coverage: 0% (both), until ADR 0004 is implemented.
+The window is ADR 0004's: the later endpoint is a session, the earlier endpoint is the last session on or before the same calendar day one or three months back (the month's last day when that day does not exist), and the value is the difference times 100, in basis points. When the earlier endpoint is more than `registry.YIELD_CHANGE_TOLERANCE_DAYS`, 7, before its target, no value is emitted for that session. The 7 was ruled on #322 from five years of sessions: the longest holiday run in any G10 market was the Japanese New Year at 7 days, and the one longer gap, NZD's 16 days in October 2021, was missing data.
+
+Coverage measured on 2026-10-01: 6 of 8 for both keys. **GBP holds none**, because the Bank of England sheet the level comes from carries the current month only, 22 sessions, and a one-month change needs a session a month back. **CHF holds none**, because its level is typed by hand and ADR 0004 accepts that a hand-typed level rarely has a session within 7 days of a month back.
+
+Pillar: **monetary**. Canonical unit: `basis_points`. Staleness allowance: the level's, since the refs are `yield_2y`'s and a change is as old as the session it ends on. Fresh coverage: 6/8 (both), GBP and CHF missing.
 
 #### `yield_10y`
 

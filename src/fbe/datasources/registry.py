@@ -101,6 +101,9 @@ __all__ = [
     "TRANSFORMS",
     "UNCONSUMED_INDICATORS",
     "VERIFIED_ON",
+    "YIELD_CHANGE_LEVEL",
+    "YIELD_CHANGE_MONTHS",
+    "YIELD_CHANGE_TOLERANCE_DAYS",
     "coverage_report",
     "empty_is_judgeable",
     "identifier_coverage",
@@ -323,11 +326,13 @@ contract count, which left the ref's declared unit naming a quantity no
 consumer wanted; issue #174 completed it. The hint covers the whole reduction
 because it is used by that one key and by nothing else, so there is no second
 consumer to surprise.
-``chg_1m`` and ``chg_3m`` mean the source
-publishes a percent level and the caller must resample it to month-end (or
-quarter-end for the three-month case), difference over one or three periods,
-and rescale the percentage-point result into basis points by multiplying by
-100.
+``chg_1m`` and ``chg_3m`` mean the source publishes a percent level and the
+value is a trailing change in it, per ADR 0004: the later endpoint is a session,
+the earlier endpoint is the last session on or before the same calendar day one
+or three months back (the month's last day when that day does not exist), and
+the percentage-point difference is multiplied by 100 into basis points. No
+source applies these two. `fbe.datasources.yield_changes` computes them once,
+in the collector, from the level every source returns.
 
 The last two exist for one reason: no source anywhere publishes a
 pre-differenced government bond yield change. ``yield_2y_chg_1m`` and
@@ -785,14 +790,17 @@ def _yield_change_series(transform: str, note_suffix: str) -> Mapping[str, Serie
     indicators the moment this function runs again, rather than needing three
     tables edited in step.
 
-    Why ``verified`` is False rather than copied. The level ref's identifier
-    was confirmed live, but confirming it says nothing about the change:
-    `fbe.datasources.fred` and `fbe.datasources.curves` both pass these refs
-    over because no source computes the ADR 0004 derivation yet. Copying
-    ``verified`` made `stale_refs` name CHF and AUD as the only gaps while
-    nothing served the other six either, which is the quiet misreport issue
-    #169 is about. The flag flips back in the commit that implements the
-    derivation, since that commit is what makes the ref retrievable.
+    Why ``verified`` is False rather than copied. ``verified`` says a
+    provider was confirmed to serve the ref, and no provider serves a change:
+    `fbe.datasources.fred` and `fbe.datasources.curves` both decline these
+    refs, and must, because FRED's own ``chg`` unit is a one-day change that
+    would arrive about thirty times too small under this label. Since #322 the
+    value is computed by `fbe.datasources.yield_changes` in the collector from
+    the level, which is a derivation rather than a retrieval, so the flag stays
+    False and ADR 0016's guard, that every declined ref is unverified, holds.
+    What a run actually holds is judged from its observations by
+    `fbe.datasources.collect.observed_gaps`, not from this flag, so the
+    derived keys leave the refresh gap list wherever the level is served.
 
     """
     return {
@@ -813,7 +821,8 @@ YIELD_2Y_CHG_1M = IndicatorSpec(
     frequency=Frequency.DAILY,
     description=(
         "One-month change in the two-year government bond yield, in basis "
-        "points, resampled to month-end before differencing. Carries a fifth "
+        "points, over a trailing window ending at the latest session (ADR "
+        "0004). Carries a fifth "
         "of the monetary pillar on its own: the direction of repricing "
         "typically leads the level in FX. There is no separately published "
         "series for this anywhere; see `_yield_change_series` for how it is "
@@ -823,8 +832,9 @@ YIELD_2Y_CHG_1M = IndicatorSpec(
     ),
     series=_yield_change_series(
         "chg_1m",
-        "derived: one-month, month-end-resampled change in this same series, "
-        "in basis points, not a separately published number",
+        "derived: one-month trailing change in this same series, ending at "
+        "the latest session, in basis points, computed by "
+        "fbe.datasources.yield_changes rather than published",
     ),
 )
 
@@ -836,7 +846,8 @@ YIELD_2Y_CHG_3M = IndicatorSpec(
     frequency=Frequency.DAILY,
     description=(
         "Three-month change in the two-year government bond yield, in basis "
-        "points, resampled to quarter-end before differencing. The single "
+        "points, over a trailing window ending at the latest session (ADR "
+        "0004). The single "
         "heaviest sub-indicator in the model at 0.25 of the monetary pillar, "
         "which is itself the heaviest pillar in the composite. Derived from "
         "`yield_2y` the same way `yield_2y_chg_1m` is; see "
@@ -845,10 +856,44 @@ YIELD_2Y_CHG_3M = IndicatorSpec(
     ),
     series=_yield_change_series(
         "chg_3m",
-        "derived: three-month, quarter-end-resampled change in this same "
-        "series, in basis points, not a separately published number",
+        "derived: three-month trailing change in this same series, ending at "
+        "the latest session, in basis points, computed by "
+        "fbe.datasources.yield_changes rather than published",
     ),
 )
+
+
+YIELD_CHANGE_LEVEL: str = "yield_2y"
+"""The level both change keys are derived from."""
+
+YIELD_CHANGE_MONTHS: Mapping[str, int] = {
+    YIELD_2Y_CHG_1M.key: 1,
+    YIELD_2Y_CHG_3M.key: 3,
+}
+"""Each derived key and how many months back its earlier endpoint sits.
+
+The two transforms differ only in this lag, which is the seam ADR 0004 names
+for a ``chg_6m`` should one ever be wanted. Read by
+`fbe.datasources.yield_changes` and by `fbe.datasources.collect`, which fetches
+the level behind any change a run asks for."""
+
+YIELD_CHANGE_TOLERANCE_DAYS: int = 7
+"""How far before its target date the earlier endpoint may sit, in days.
+
+Ruled on #322 from five years of ``yield_2y`` sessions measured on 2026-10-01.
+The longest run of days without a session was 4 for USD, 5 for EUR, CAD and
+AUD at Easter and Christmas, and 7 for JPY over the New Year closure, which
+puts the earlier endpoint at most 6 days before its target. Seven covers every
+holiday run seen in any G10 market. It refuses NZD's 16-day hole in October
+2021, which was missing data rather than a holiday: a change over a window two
+weeks longer than the key names is a wrong number with the right label, and
+ADR 0004 prefers the absence.
+
+A registry number rather than a `ScoringConfig` one because it is a property of
+how the series is built, like a publication lag, and no scoring choice turns on
+it. The staleness allowance of the two keys needs no number of its own: their
+refs are `yield_2y`'s, so `staleness_allowance` already ages a change exactly
+as it ages the session it ends on."""
 
 
 YIELD_10Y = IndicatorSpec(
