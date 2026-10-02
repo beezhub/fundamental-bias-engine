@@ -81,6 +81,7 @@ CONTEXT_KEYS = {
     "currencies",
     "pairs",
     "unknown_prefix",
+    "calendar_unread",
 }
 """The keys `fbe.report.build_context` documents.
 

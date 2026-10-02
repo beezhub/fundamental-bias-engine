@@ -59,7 +59,7 @@ from typing import TYPE_CHECKING, Any, Union, get_args, get_origin, get_type_hin
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from fbe.bias import UNKNOWN_SUFFIX, blocking
+from fbe.bias import UNCHECKED_SUFFIX, UNKNOWN_SUFFIX, blocking
 from fbe.types import (
     BiasReport,
     Conviction,
@@ -266,6 +266,15 @@ def build_context(
             waits on `fbe.dashboard.build`, which is still scaffolded. This key
             is supplied to both because `build_context` builds one context, not
             two.
+        calendar_unread: How many of the run's pairs carry an
+            ``event:unchecked`` or ``event:unknown`` marker, meaning no
+            calendar answered for them. Read by the Markdown template beside an
+            empty event list: without it, "no events" on a run that read no
+            calendar prints as a clear calendar, which is issue #320. A count
+            from the pairs' own markers rather than a new `BiasReport` field,
+            because the markers already say it and a second copy could
+            disagree. The dashboard answers the same question from
+            `fbe.dashboard.build._calendar_note`, which it already carried.
 
     Args:
         report: The run to render.
@@ -307,7 +316,32 @@ def build_context(
         ),
         "pairs": ranked_pairs(report.pairs),
         "unknown_prefix": "event" + UNKNOWN_SUFFIX,
+        "calendar_unread": _calendar_unread(report.pairs),
     }
+
+
+def _calendar_unread(pairs: Sequence[PairBias]) -> int:
+    """Count the pairs no calendar answered for.
+
+    Args:
+        pairs: The run's pairs, each counted once however many calendar
+            markers it carries.
+
+    Returns:
+        The number of pairs carrying ``event:unchecked``, where no calendar was
+        consulted, or a marker starting ``event:unknown``, where one was asked
+        and could not answer. Zero means every pair's calendar was read, and
+        only then is an empty event list a clear calendar.
+
+    """
+    unchecked = "event" + UNCHECKED_SUFFIX
+    unknown = "event" + UNKNOWN_SUFFIX
+    return sum(
+        any(
+            marker == unchecked or marker.startswith(unknown) for marker in row.blockers
+        )
+        for row in pairs
+    )
 
 
 def render_report(

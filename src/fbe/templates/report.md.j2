@@ -158,8 +158,19 @@ Blockers: {{ idea.bias.blockers | join('; ') }}
 
 ## 4. Calendar and blackouts
 
+{% if calendar_unread %}
+**The calendar was not read for {{ calendar_unread }} of {{ report.pairs | length }} pairs on this run.**
+The blackout filter and the 24-hour conviction cap did not run for them, so no
+event listed for them means nobody looked, not that nothing is scheduled. Check
+the economic calendar by hand before acting on any of those pairs.
+
+{% endif %}
 {% if not report.events %}
+{% if not calendar_unread %}
 No qualifying events in the horizon.
+{% elif calendar_unread < report.pairs | length %}
+No qualifying events for the {{ report.pairs | length - calendar_unread }} pairs whose calendar was read.
+{% endif %}
 {% else %}
 | When | CCY | Event | Impact | Forecast | Previous |
 |---|---|---|---|---:|---:|
