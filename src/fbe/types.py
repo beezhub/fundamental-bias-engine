@@ -169,6 +169,9 @@ class PillarScore:
             penalty and effective weight after it, and anything reproducing the
             arithmetic must say which stage its inputs came from.
         staleness_days: Age of the newest input. Feeds the freshness penalty.
+            Meaningless when ``z`` is ``None``: a pillar with no data has no
+            newest input, and ``z`` is the marker that says so, not this
+            number (#223).
         inputs: Observations the pillar consumed, for audit and for the
             "show your working" section of the report.
 

@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import ast
 import inspect
-import re
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date
@@ -510,65 +509,8 @@ def test_the_component_discount_is_applied_where_the_blend_happens() -> None:
 # ----------------------------------------------------------------------
 #
 # `staleness_days` answers "how old is the freshest of these observations".
-# For an empty set there is no such age, and its docstring says it returns
-# `ScoringConfig.max_staleness_days + 1` so an absent pillar sorts as stale
-# rather than as fresh. It was a `@staticmethod`, so it had no `self.config`
-# to read that from and built a fresh `ScoringConfig()` instead, which ignores
-# every override.
-#
-# That is the config-drift trap, and it is quiet. An owner who sets
-# `max_staleness_days = 60` gets 46 back, which is inside the allowance, so the
-# ramp reports an absent pillar as a late release at partial weight instead of
-# as absent. See issue #28.
-
-
-def test_the_empty_set_sentinel_follows_the_pillars_own_config() -> None:
-    """Criterion 2. Override the ceiling and the sentinel must move with it.
-
-    65 rather than the default 45, so a sentinel that happens to equal
-    ``ScoringConfig().max_staleness_days + 1`` cannot pass. This is the wire,
-    not the constant.
-    """
-    pillar = MonetaryPillar(config=ScoringConfig(max_staleness_days=65))
-
-    assert pillar.staleness_days([], ASOF) == 66
-
-
-def test_the_empty_set_sentinel_is_the_one_missing_score_documents() -> None:
-    """One sentinel, one owner.
-
-    `missing_score` takes the same value as the default for its own
-    ``staleness_days`` argument. If these two ever disagree, a report shows one
-    number for an absent pillar and the aggregator acts on the other.
-    """
-    for ceiling in (30, 45, 65):
-        pillar = MonetaryPillar(config=ScoringConfig(max_staleness_days=ceiling))
-        assert pillar.staleness_days([], ASOF) == pillar.config.max_staleness_days + 1
-
-
-def test_staleness_days_reads_config_off_the_instance() -> None:
-    """Criterion 1, checked against the method rather than the whole module.
-
-    The two ways to honour the docstring from a static method were a literal
-    46 or a fresh `ScoringConfig()`. Neither may come back: the first drifts
-    silently from config, and the second ignores overrides while looking like
-    it reads them.
-
-    Scoped to this method's own source. `BasePillar.__init__` constructs a
-    default `ScoringConfig()` legitimately, since that is how ``self.config``
-    comes to exist when a caller passes none, and a module-wide ban would
-    forbid the one construction that has to happen.
-    """
-    source = inspect.getsource(BasePillar.staleness_days)
-
-    assert "self.config.max_staleness_days" in source
-    assert "ScoringConfig()" not in source, (
-        "building a default ScoringConfig here ignores any override the run "
-        "was given; read self.config instead"
-    )
-    assert not re.search(r"return\s+4[56]\b", source), (
-        "a bare staleness value here is a second copy of a number config holds"
-    )
+# For an empty set there is no such age, and since #223 it refuses rather than
+# inventing one: `tests/test_absent_pillar_age.py` pins that.
 
 
 def test_the_age_of_a_non_empty_set_is_the_newest_period() -> None:

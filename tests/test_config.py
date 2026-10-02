@@ -127,11 +127,12 @@ def test_the_ramp_has_no_configured_ordering_left_to_reject() -> None:
     pair of configured numbers here that can be put the wrong way round.
 
     This replaces a check that ``staleness_full_days`` sat below
-    ``max_staleness_days``. The ordering it guarded now lives in
-    `fbe.scoring.freshness`, which refuses a ``full_days`` at or past its
-    ``allowance_days`` on every call rather than once at startup.
+    ``max_staleness_days``, and both fields are now gone (#223). The ordering
+    it guarded now lives in `fbe.scoring.freshness`, which refuses a
+    ``full_days`` at or past its ``allowance_days`` on every call rather than
+    once at startup.
     """
-    assert _scoring_problems(max_staleness_days=10) == []
+    assert _scoring_problems() == []
 
 
 def test_coverage_demotion_below_the_hard_floor_is_rejected() -> None:
@@ -307,7 +308,6 @@ def test_digest_ignores_data_config_entirely(default_config: Config) -> None:
     ("name", "value"),
     [
         ("min_spread_low", 0.80),
-        ("max_staleness_days", 60),
         ("score_clip", 2.5),
         ("min_agreement", 0.70),
         ("horizon_days", 5),

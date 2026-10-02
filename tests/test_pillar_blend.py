@@ -834,35 +834,6 @@ def test_missing_score_carries_the_pillars_configured_weight(asof: date) -> None
     )
 
 
-def test_missing_score_ages_the_pillar_past_its_useful_life(asof: date) -> None:
-    """The default marks the pillar as beyond the ramp rather than as fresh.
-
-    ``max_staleness_days + 1`` is past the point where the freshness factor
-    reaches zero, which is what makes a missing pillar carry no effective
-    weight. A default of ``0`` would report it as the freshest thing in the run.
-    """
-    config = ScoringConfig()
-    pillar = Double({"alpha": 1.0}, config=config)
-
-    assert (
-        pillar.missing_score("AUD", asof).staleness_days
-        == config.max_staleness_days + 1
-    )
-
-
-def test_missing_score_reads_the_staleness_default_from_config(asof: date) -> None:
-    """The wire, not the number. A hardcoded 46 passes the test above.
-
-    `ScoringConfig.max_staleness_days` is 45 by default, so an implementation
-    that writes 46 and never reads config is indistinguishable until the config
-    moves.
-    """
-    config = ScoringConfig(max_staleness_days=90)
-    pillar = Double({"alpha": 1.0}, config=config)
-
-    assert pillar.missing_score("AUD", asof).staleness_days == 91
-
-
 def test_missing_score_takes_an_explicit_staleness_override(asof: date) -> None:
     """A caller that knows the real age says so rather than accepting the mark."""
     pillar = even_split()

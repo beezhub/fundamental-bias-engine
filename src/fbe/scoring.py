@@ -164,7 +164,7 @@ def score_currencies(
             )
             for currency in currencies:
                 per_currency[currency][pillar.name] = _unscored(
-                    pillar.name, currency, weight, config, asof, reason, failed=True
+                    pillar.name, currency, weight, asof, reason, failed=True
                 )
             continue
 
@@ -185,7 +185,6 @@ def score_currencies(
                     pillar.name,
                     currency,
                     weight,
-                    config,
                     asof,
                     f"{pillar.name.value} returned no score for {currency}",
                 )
@@ -227,7 +226,6 @@ def _unscored(
     pillar: PillarName,
     currency: str,
     weight: float,
-    config: ScoringConfig,
     asof: date,
     reason: str,
     *,
@@ -241,7 +239,6 @@ def _unscored(
         weight: The pillar's configured weight, carried so a report can say what
             the run lost. It does not reach the composite, because ``z`` is
             ``None`` and every consumer here tests that first.
-        config: Scoring configuration, for the staleness marker.
         asof: Run date.
         reason: Why, naming the pillar. Reaches a reader through
             ``PillarScore.notes``.
@@ -272,7 +269,6 @@ def _unscored(
         score=0.0,
         weight=weight,
         asof=asof,
-        staleness_days=config.max_staleness_days + 1,
         notes=reason,
         diagnostics={PILLAR_FAILED: 1.0} if failed else {},
     )
@@ -670,7 +666,8 @@ def apply_staleness_penalty(
     **Re-ageing a stored score**, which a replay needs, is done by passing the
     factor the replay wants. This function derives no age of its own and takes
     no date. ``staleness_days`` on the score is carried into the expiry note
-    and read nowhere else.
+    and read nowhere else, and only for a pillar that had data: an absent one,
+    ``z`` already ``None``, keeps its own reason and gets no age (#223).
 
     """
     if freshness_factor is None:
@@ -692,6 +689,12 @@ def apply_staleness_penalty(
         )
     penalised = replace(pillar_score, weight=pillar_score.weight * factor)
     if factor > 0.0:
+        return penalised
+    if pillar_score.z is None:
+        # Already absent, and its notes already say what was missing. An
+        # expiry note here would quote an age the pillar never had, which is
+        # how "past its staleness allowance at 46 days" came to sit beside
+        # "no usable unemployment_rate" (#223).
         return penalised
 
     # Past the allowance the weight is zero, but weight alone is not the marker
