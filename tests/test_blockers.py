@@ -37,7 +37,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 import fbe
 from fbe.bias import BLOCKERS, UNCHECKED_SUFFIX, UNKNOWN_SUFFIX, blocking, kind_of
 from fbe.dashboard.build import render_dashboard
-from fbe.report import render_report
+from fbe.report import _calendar_unread, render_report
 from fbe.types import BiasReport, Conviction, Direction, PairBias, TradeIdea
 
 PACKAGE_ROOT = Path(fbe.__file__).resolve().parent
@@ -99,6 +99,7 @@ def _report_context(pairs: tuple[PairBias, ...]) -> dict[str, Any]:
             shortlist=(),
             events=(),
             warnings=(),
+            pairs=pairs,
         ),
         "diff": None,
         "config": None,
@@ -110,6 +111,9 @@ def _report_context(pairs: tuple[PairBias, ...]) -> dict[str, Any]:
         # run. Taken from `fbe.bias` rather than written out, for the reason
         # `build_context` supplies it at all: one copy of the string.
         "unknown_prefix": "event" + UNKNOWN_SUFFIX,
+        # Computed by the function `build_context` uses, so this hand-built
+        # context cannot disagree with the real one about #320's count.
+        "calendar_unread": _calendar_unread(pairs),
     }
 
 

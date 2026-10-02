@@ -558,7 +558,17 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
           <td>{{ event.impact }}</td>
         </tr>
         {% else %}
+        {#- An empty table is only a clear calendar when every pair's calendar
+            was read. Issue #320: on a run that read none, this row said the
+            calendar was clear. The counts are the view's own, the same ones
+            the notes above the strip print. -#}
+        {% if view.calendar.unchecked or view.calendar.unknown %}
+        <tr><td colspan="4" class="meta">No events listed, because the calendar
+          was not read for every pair. See the note above and check it by
+          hand.</td></tr>
+        {% else %}
         <tr><td colspan="4" class="meta">No qualifying events in the horizon.</td></tr>
+        {% endif %}
         {% endfor %}
       </tbody>
     </table>
