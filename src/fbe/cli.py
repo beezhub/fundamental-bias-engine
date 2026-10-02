@@ -121,7 +121,6 @@ from fbe.evaluation import Evaluation, ForwardRow, GroupStats, join_reports
 from fbe.evaluation import evaluate as evaluate_record
 from fbe.journal import (
     EVIDENCE_THRESHOLD_TRADES,
-    JOURNAL_PATH,
     TradeRecord,
     load,
 )
@@ -1175,6 +1174,69 @@ def _check_record(sidecars: Sequence[Path], today: date) -> list[CheckLine]:
     ]
 
 
+NOT_A_BACKUP_CHECK = "not a backup check"
+"""Closes every journal line in ``doctor``, whatever its status. The engine can
+see the file and cannot see whether a copy of it exists anywhere else, and a
+line reading ``ok`` beside the word journal is otherwise exactly what gets read
+as "your record is safe" (#303)."""
+
+
+def _check_journal(config: Config) -> list[CheckLine]:
+    """State what the journal file holds, and nothing about whether it is safe.
+
+    The journal is the one file in the project nothing can recreate, and
+    before #328 no command ever mentioned it. This line is facts only: the
+    resolved path, so a wrong ``journal_dir`` is visible, the number of
+    distinct trades, so a count lower than the owner knows they took can be
+    noticed, and the date the newest one opened.
+
+    Args:
+        config: The effective config.
+
+    Returns:
+        ``ok`` when `fbe.journal.load` reads the file, with the count and the
+        newest date. ``warn`` when there is no file: a fresh install has none,
+        but after trading starts a missing file is the loss this exists to
+        surface, so ``--strict`` exits 1 on it, as it already does for an
+        unconfirmed broker. ``fail`` when ``load`` refuses a line, quoting why,
+        because a corrupt record is reported rather than counted around.
+
+    """
+    path = _journal_path(config)
+    if not path.exists():
+        return [
+            CheckLine(
+                "journal",
+                CheckStatus.WARN,
+                f"no journal at {path}: no trade recorded yet, or it is "
+                f"somewhere else; {NOT_A_BACKUP_CHECK}",
+            )
+        ]
+    try:
+        records = journal_module.load(path=path)
+    except (OSError, ValueError) as error:
+        return [
+            CheckLine(
+                "journal",
+                CheckStatus.FAIL,
+                f"{path} could not be read: {error}; {NOT_A_BACKUP_CHECK}",
+            )
+        ]
+    # `load` keeps the latest line per trade_id, so a trade journalled at entry
+    # and again at exit counts once, and returns them oldest first.
+    count = f"{len(records)} trade{'' if len(records) == 1 else 's'}"
+    newest = (
+        f", newest opened {records[-1].opened_at.date().isoformat()}" if records else ""
+    )
+    return [
+        CheckLine(
+            "journal",
+            CheckStatus.OK,
+            f"{path}: {count}{newest}; {NOT_A_BACKUP_CHECK}",
+        )
+    ]
+
+
 def _bounded(items: Sequence[str]) -> str:
     """Join ``items`` for one printed line, listing at most the sample limit.
 
@@ -1329,6 +1391,7 @@ def doctor(
     emit(_check_cache(config))
     emit(_check_sources(config, timeout))
     emit(_check_reports(config))
+    emit(_check_journal(config))
 
     typer.echo(_summarise(failures, warnings))
 
@@ -3716,12 +3779,12 @@ def size(
     reads as knowledge of the book. Ruled on issue #46 with the owner's answer
     on how trades reach the journal.
 
-    So this command reads `fbe.journal.JOURNAL_PATH` at call time, passes it
-    explicitly to `fbe.journal.load`, prints what the file holds, and passes
-    ``None`` for the open book, for ``realised_pnl_today`` and for
-    ``equity_peak``, which is `check_limits`'s vocabulary for not tracked. The
-    dependency still runs one way: this layer reads the journal, `fbe.risk`
-    never imports it.
+    So this command resolves the journal from ``config.data.journal_dir``
+    through `_journal_path`, passes it explicitly to `fbe.journal.load`, prints
+    what the file holds, and passes ``None`` for the open book, for
+    ``realised_pnl_today`` and for ``equity_peak``, which is `check_limits`'s
+    vocabulary for not tracked. The dependency still runs one way: this layer
+    reads the journal, `fbe.risk` never imports it.
 
     What the limits block on the ticket says, and why each part is there:
 
@@ -4423,6 +4486,19 @@ def journal_add(
     """
     config = _effective_config(ctx)
     _require_valid_config(config)
+    journal_path = _journal_path(config)
+    if not journal_path.parent.is_dir():
+        # Refused rather than created. `journal.append` would make the
+        # directory, and a journal_dir left pointing at the old place after the
+        # data tree moved would then start an empty journal there while the real
+        # history sat somewhere nothing reads (#328).
+        typer.echo(
+            f"The journal directory {journal_path.parent} does not exist, so "
+            "nothing was written. Point data.journal_dir at the folder that "
+            "holds trades.jsonl, or create it if this is a new journal.",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UNUSABLE)
     normalised = pair.upper()
     _checked_journal_pair(normalised)
     if direction is Direction.NEUTRAL:
@@ -4518,7 +4594,7 @@ def journal_add(
     )
 
     try:
-        journal_module.append(record, journal_module.JOURNAL_PATH)
+        journal_module.append(record, journal_path)
     except OSError as error:
         # Never swallowed. A trade that was taken and not recorded is
         # discovered at the review, by which time the entry price and the
@@ -4532,6 +4608,25 @@ def journal_add(
         absence,
         risk_fraction_for(record.conviction, config.risk) * config.risk.account_balance,
     )
+
+
+def _journal_path(config: Config) -> Path:
+    """Return the journal file the running config names.
+
+    Every command that reads or writes the journal resolves it here, from
+    ``config.data.journal_dir``, so moving the data tree through config moves
+    the journal with the other three directories (#328).
+
+    Args:
+        config: The effective config.
+
+    Returns:
+        ``journal_dir / trades.jsonl``. Whether it exists is the caller's to
+        check: absent means a fresh install to ``doctor`` and ``evaluate``, and a
+        wrong location to ``journal add``.
+
+    """
+    return config.data.journal_dir / journal_module.JOURNAL_FILENAME
 
 
 def _checked_journal_pair(pair: str) -> tuple[str, str]:
@@ -4672,7 +4767,7 @@ def _entry_view(
     try:
         existing = {
             record.trade_id: record
-            for record in journal_module.load(path=journal_module.JOURNAL_PATH)
+            for record in journal_module.load(path=_journal_path(config))
         }.get(trade_id)
     except (OSError, ValueError) as error:
         typer.echo(
@@ -5335,8 +5430,8 @@ def evaluate(
             "--journal",
             help=(
                 "Journal file to split by alignment with the bias. Defaults "
-                "to the packaged journal path, which a fresh clone does not "
-                "have."
+                "to trades.jsonl in data.journal_dir, which a fresh clone "
+                "does not have."
             ),
         ),
     ] = None,
@@ -5442,7 +5537,7 @@ def evaluate(
         )
         raise typer.Exit(EXIT_UNUSABLE)
 
-    path = journal_path if journal_path is not None else JOURNAL_PATH
+    path = journal_path if journal_path is not None else _journal_path(config)
     result = evaluate_record(joined.rows, load(path=path), scoring=config.scoring)
 
     if output_format is OutputFormat.JSON:

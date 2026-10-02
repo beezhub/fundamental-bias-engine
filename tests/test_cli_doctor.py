@@ -150,8 +150,21 @@ def _config_file(tmp_path: Path, body: str = "", *, with_key: bool = False) -> P
         f"data:\n"
         f"  cache_dir: {tmp_path / 'cache'}\n"
         f"  reports_dir: {tmp_path / 'reports'}\n"
+        f"  journal_dir: {tmp_path / 'journal'}\n"
         f"  manual_dir: {tmp_path / 'manual'}{key}\n" + body
     )
+    return path
+
+
+def _journal(tmp_path: Path) -> Path:
+    """Give the install an empty journal, which ``doctor`` reports as ``ok``.
+
+    A clean run has one: without it the journal line warns, as it should on an
+    install that has never recorded a trade (#328).
+    """
+    path = tmp_path / "journal" / "trades.jsonl"
+    path.parent.mkdir(exist_ok=True)
+    path.touch()
     return path
 
 
@@ -1009,6 +1022,7 @@ def _clean_but_for_the_record(
     path = _config_file(tmp_path, "broker:\n  confirmed: true\n", with_key=True)
     _record(path, tmp_path, *days)
     _fill_cache(tmp_path)
+    _journal(tmp_path)
     return path
 
 
@@ -1473,6 +1487,7 @@ def test_strict_does_not_turn_a_clean_run_into_a_failure(
     # with three weeks of holes in it, and this run would not be clean.
     _record(path, tmp_path, date.today().isoformat())
     _fill_cache(tmp_path)
+    _journal(tmp_path)
 
     assert _run(path, "--strict").exit_code == EXIT_OK
 
@@ -1490,6 +1505,7 @@ def _otherwise_clean(
     respx.get(PROBE_URL).mock(return_value=httpx.Response(200))
     monkeypatch.setattr("fbe.cli.ALL_SOURCES", (_Reachable,))
     path = _config_file(tmp_path, body, with_key=True)
+    _journal(tmp_path)
     # Today's date, so the forward record is one morning long and unbroken. A
     # report dated in the past would add a gap warning here, and the exit-code
     # tests below would stop turning on the broker line alone.
@@ -1656,8 +1672,19 @@ def test_the_published_console_block_reproduces(
     _fill_cache(tmp_path, entries=37)
     _age_every_entry(tmp_path, hours=18.5)
     _record(path, tmp_path, "2026-09-08")
+    from fbe.journal import append
+    from tests.test_journal import record
 
-    produced = _run(path).stdout.rstrip("\n").split("\n")
+    journal = _journal(tmp_path)
+    for day in (9, 10, 11):
+        opened = datetime(2026, 9, day, 9, 0, tzinfo=UTC)
+        append(record(f"T{day}", opened_at=opened), journal)
+
+    # The doc shows the default location; the run reads tmp_path's.
+    produced = [
+        line.replace(str(journal), "data/journal/trades.jsonl")
+        for line in _run(path).stdout.rstrip("\n").split("\n")
+    ]
 
     assert len(produced) == len(published)
     for got, want in zip(produced, published, strict=True):
@@ -1865,10 +1892,11 @@ def test_the_summary_counts_every_warning(
         for line in result.stdout.splitlines()
         if line[LABEL_WIDTH:].startswith("warn")
     )
-    # Five, not four: the default broker profile is unconfirmed, which is its
-    # own warning. The count and the summary have to agree whatever the mix.
-    assert warnings == 5
-    assert result.stdout.rstrip().endswith("5 warnings.")
+    # Six, not four: the default broker profile is unconfirmed, and this
+    # install has no journal, and each is its own warning. The count and the
+    # summary have to agree whatever the mix.
+    assert warnings == 6
+    assert result.stdout.rstrip().endswith("6 warnings.")
 
 
 @respx.mock
@@ -2107,3 +2135,111 @@ def test_no_shipped_source_reports_as_scaffolded(tmp_path: Path) -> None:
     assert "scaffolded" not in result.stdout
     for name in ("ecb", "boc", "rba", "oecd", "stooq"):
         assert f"{name} available, offline so no probe" in result.stdout
+
+
+# --- the journal line (#328) ---------------------------------------------------
+#
+# Facts, never a verdict about safety: the engine can see the file and cannot
+# see whether a copy of it exists anywhere else, so every state says so.
+
+
+def _journal_lines(result: Result) -> list[str]:
+    lines = result.stdout.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("journal "))
+    block = [lines[start]]
+    for line in lines[start + 1 :]:
+        if not line.startswith(" "):
+            break
+        block.append(line)
+    return block
+
+
+@respx.mock
+def test_the_journal_line_prints_after_reports(
+    tmp_path: Path, only_scaffolded: None
+) -> None:
+    result = _run(_config_file(tmp_path))
+
+    assert result.stdout.index("\nreports ") < result.stdout.index("\njournal ")
+
+
+@respx.mock
+def test_an_absent_journal_warns_and_names_the_path(
+    tmp_path: Path, only_scaffolded: None
+) -> None:
+    """A fresh install has none; after trading starts, none is the loss."""
+    result = _run(_config_file(tmp_path))
+    line = " ".join(_journal_lines(result))
+
+    assert line.split()[1] == "warn"
+    assert "trades.jsonl" in line
+    assert "not a backup check" in line
+
+
+@respx.mock
+def test_a_readable_journal_reports_path_count_and_newest_trade(
+    tmp_path: Path, only_scaffolded: None
+) -> None:
+    from fbe.journal import append
+    from tests.test_journal import record
+
+    journal = tmp_path / "journal" / "trades.jsonl"
+    append(record("A", opened_at=datetime(2026, 9, 21, 9, 0, tzinfo=UTC)), journal)
+    append(record("B", opened_at=datetime(2026, 10, 2, 9, 0, tzinfo=UTC)), journal)
+    result = _run(_config_file(tmp_path))
+    line = " ".join(_journal_lines(result))
+
+    assert line.split()[1] == "ok"
+    assert "trades.jsonl" in line
+    assert "2 trades" in line
+    assert "2026-10-02" in line
+    assert "not a backup check" in line
+
+
+@respx.mock
+def test_a_trade_journalled_twice_counts_once(
+    tmp_path: Path, only_scaffolded: None
+) -> None:
+    """Entry then exit is two lines and one trade, which is what `load` returns."""
+    from fbe.journal import append
+    from tests.test_journal import record
+
+    journal = tmp_path / "journal" / "trades.jsonl"
+    append(record("A"), journal)
+    append(record("A", exit_price=1.0900), journal)
+    result = _run(_config_file(tmp_path))
+
+    assert "1 trade" in " ".join(_journal_lines(result))
+    assert "2 trades" not in " ".join(_journal_lines(result))
+
+
+@respx.mock
+def test_a_journal_load_refuses_is_a_failure_quoting_why(
+    tmp_path: Path, only_scaffolded: None
+) -> None:
+    """A corrupt record is reported, never counted around."""
+    journal = tmp_path / "journal" / "trades.jsonl"
+    journal.parent.mkdir()
+    journal.write_text("{not json\n", encoding="utf-8")
+    result = _run(_config_file(tmp_path))
+    line = " ".join(_journal_lines(result))
+
+    assert line.split()[1] == "fail"
+    assert "trades.jsonl" in line
+    assert "not a backup check" in line
+    assert result.exit_code != 0
+
+
+@respx.mock
+def test_the_journal_line_reads_the_configured_directory(
+    tmp_path: Path, only_scaffolded: None
+) -> None:
+    """Moving ``journal_dir`` moves what doctor reads, like the other three."""
+    path = _config_file(tmp_path)
+    assert str(tmp_path / "journal") in " ".join(_journal_lines(_run(path)))
+
+    elsewhere = tmp_path / "moved"
+    path.write_text(path.read_text().replace(str(tmp_path / "journal"), str(elsewhere)))
+    moved = _run(path)
+
+    assert str(elsewhere) in " ".join(_journal_lines(moved))

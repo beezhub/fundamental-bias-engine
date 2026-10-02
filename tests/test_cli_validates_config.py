@@ -242,7 +242,7 @@ def test_journal_add_refuses_before_scoring_and_writes_no_record(
     """
     path = write(tmp_path, ONE_PROBLEM)
     journal = tmp_path / "trades.jsonl"
-    monkeypatch.setattr("fbe.journal.JOURNAL_PATH", journal)
+    monkeypatch.setenv("FBE_DATA_JOURNAL_DIR", str(journal.parent))
     calls = refuse_collect(monkeypatch)
 
     result = runner.invoke(
