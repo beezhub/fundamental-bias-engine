@@ -340,24 +340,11 @@ def test_the_removed_config_field_is_gone_rather_than_unread() -> None:
     assert not hasattr(ScoringConfig(), "staleness_full_days")
 
 
-def test_the_surviving_config_ceiling_is_only_the_absent_pillar_sentinel() -> None:
-    """``max_staleness_days`` stays, read by the sentinel that marks a pillar
-    with no data at all. It no longer bounds any ramp, and #223 carries its
-    retirement with the sentinel itself.
-
-    The field's own docstring is read from the source, because an attribute
-    docstring is not on the class at runtime and this is a claim about what
-    the next reader is told.
-    """
-    import inspect
-
-    import fbe.config as config_module
-
-    assert ScoringConfig().max_staleness_days > 0
-    source = inspect.getsource(config_module)
-    field_doc = source.split("max_staleness_days: int = 45", 1)[1][:900]
-    assert "Sentinel age" in field_doc
-    assert "bounds no ramp" in field_doc
+def test_the_absent_pillar_sentinel_is_retired_with_its_field() -> None:
+    """``max_staleness_days`` survived ADR 0014 only as the sentinel age of a
+    pillar with no data. #223 retired both: an absent pillar quotes no age, and
+    ``z is None`` is the one marker."""
+    assert not hasattr(ScoringConfig(), "max_staleness_days")
 
 
 def test_validate_no_longer_judges_the_removed_ordering() -> None:

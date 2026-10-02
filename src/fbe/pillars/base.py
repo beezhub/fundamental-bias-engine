@@ -1499,28 +1499,22 @@ class BasePillar(ABC):
         Returns:
             ``(asof - newest period).days``, floored at ``0`` for periods dated
             after ``asof``, which happens with forward-dated survey data.
-            Returns ``self.config.max_staleness_days + 1`` for an empty set,
-            so an absent pillar sorts as stale rather than as fresh.
 
-        An instance method rather than a static one, and the reason is the empty
-        set. The sentinel is a configured value plus one, so a static method can
-        only reach it by writing the number out or by building a default
-        `ScoringConfig`, and both stop tracking a run that overrode the ceiling.
-        This one returned 46 against a configured 60, which is inside the
-        allowance, so the ramp reported an absent pillar as a late release at
-        partial weight rather than as absent. See issue #28.
-
-        **`missing_score` is the intended path for an absent pillar**, not this
-        sentinel. An absent pillar needs ``z`` set to ``None``, which is what the
-        aggregator detects and what excludes the weight from the composite; the
-        age is only how such a pillar sorts once it is already marked absent.
-        `missing_score` defaults its own ``staleness_days`` argument to the same
-        expression for that reason. Reaching for this value to build the absent
-        case would produce a pillar that looks stale and still carries weight.
+        Raises:
+            ValueError: On an empty set. There is no newest observation to age,
+                and any number returned would be invented. This once returned
+                ``ScoringConfig.max_staleness_days + 1``, a sentinel whose only
+                effect was an expiry note quoting an age the pillar never had
+                (#223). `missing_score` is the path for a pillar with nothing,
+                and a pillar that raises here is marked failed and absent by
+                `fbe.scoring.score_currencies`, with this message as the reason.
 
         """
         if not observations:
-            return self.config.max_staleness_days + 1
+            raise ValueError(
+                f"{self.name.value} has no observations to age; a pillar with "
+                "no data is built by missing_score, not given an age"
+            )
         newest = max(observation.period for observation in observations)
         return max(0, (asof - newest).days)
 
@@ -1718,7 +1712,7 @@ class BasePillar(ABC):
         currency: str,
         asof: date,
         notes: str = "",
-        staleness_days: int | None = None,
+        staleness_days: int = 0,
     ) -> PillarScore:
         """Build the score a pillar returns when it cannot score a currency.
 
@@ -1739,11 +1733,12 @@ class BasePillar(ABC):
             asof: Run date.
             notes: Short human-readable reason, shown in the report's working.
                 Say which indicator was missing, not just that data was thin.
-            staleness_days: Override for the reported age. Defaults to
-                ``ScoringConfig.max_staleness_days + 1``, marking the pillar as
-                past its useful life. It is reported, not acted on: the discount
-                is decided by ``freshness_factor`` below, so overriding this does
-                not buy an absent pillar any weight back.
+            staleness_days: The age to record, for a caller that knows one.
+                Defaults to ``0``, which means nothing: ``PillarScore`` says the
+                field is meaningless when ``z`` is ``None``, and ``z`` is the
+                marker. No age is quoted for an absent pillar (#223), and the
+                discount is decided by ``freshness_factor`` below, so no value
+                here buys an absent pillar any weight back.
 
         Returns:
             A neutral `PillarScore` carrying this pillar's configured weight and
@@ -1753,17 +1748,11 @@ class BasePillar(ABC):
             reads; the weight is what a report shows to say what the run lost.
 
             The ``0.0`` is stated rather than left to the age-based fallback,
-            which reaches the same answer today only because the default age is
-            one day past the ramp. A run configuring a higher
-            ``max_staleness_days`` would separate them and hand an absent pillar
-            partial weight, which is issue #28 one level down.
+            because the age of an absent pillar is not a measurement and must
+            not decide its weight. Deriving the weight from an age is what once
+            handed an absent pillar partial weight, issue #28.
 
         """
-        age = (
-            self.config.max_staleness_days + 1
-            if staleness_days is None
-            else staleness_days
-        )
         return PillarScore(
             pillar=self.name,
             currency=currency,
@@ -1772,13 +1761,12 @@ class BasePillar(ABC):
             score=0.0,
             weight=self.weight,
             asof=asof,
-            staleness_days=age,
+            staleness_days=staleness_days,
             notes=notes,
             # No data is not fresh data, which is `pillar_freshness`'s own rule
             # for a currency holding no component at all. Stating it here rather
             # than leaving ``None`` keeps an absent pillar off the age-based
-            # fallback, where the sentinel age happens to give 0.0 as well and
-            # the agreement would be a coincidence rather than a decision.
+            # fallback, which would read an age this pillar does not have.
             freshness_factor=0.0,
         )
 

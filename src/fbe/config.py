@@ -232,22 +232,6 @@ class ScoringConfig:
     reasoning "at least five of seven" and writing ``0.71`` would cap every pair
     whose dissent includes MONETARY at 0.30, whatever the other six pillars do,
     because one heavy dissenter alone puts the ratio at 0.70."""
-    max_staleness_days: int = 45
-    """Sentinel age for a pillar with no usable data at all, and nothing else.
-
-    `BasePillar.staleness_days` returns this plus one for an empty set, and
-    `scoring.missing_score` stamps an absent pillar with it, so an absent
-    pillar sorts as stale rather than as fresh.
-
-    It bounds no ramp. Since #126 the ramp derives both of its ages from the
-    leg that produced the observation, through
-    `fbe.datasources.registry.full_weight_age` and
-    `fbe.datasources.registry.staleness_allowance`, so nothing reads this to
-    decide what a real series is worth. Retiring the sentinel itself, and this
-    field with it, belongs with the decision on how an absent pillar is marked,
-    and issue #223 carries it. The note a sentinel produces quotes an age that
-    is not the reason for the absence, which #173 recorded.
-    """
     max_dispersion: float = 1.20
     """Dispersion above which conviction is demoted one step, in
     ``bias.conviction_for``. Compared against ``CurrencyScore.dispersion``,
