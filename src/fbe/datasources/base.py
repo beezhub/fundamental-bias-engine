@@ -482,7 +482,7 @@ class BaseDataSource(ABC):
         accepts its ref, so a declined ref is never asked for: no request, no
         observation, no failure line. The base accepts everything. A source
         overrides this for a ref it holds by registry but cannot serve, such
-        as a transform no source computes yet (ADR 0004), so that under series
+        as a transform the collector derives instead (ADR 0004), so that under series
         scope the collector does not ask for it alone and then record its
         empty answer as a failure (ADR 0016).
 

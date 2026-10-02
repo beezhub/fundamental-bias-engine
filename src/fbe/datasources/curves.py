@@ -403,9 +403,10 @@ SERVED_TRANSFORMS: frozenset[str] = frozenset({"level"})
 
 ``chg_1m`` and ``chg_3m`` reuse the same refs and are deliberately absent. ADR
 0004 settles their derivation, a trailing window ending at the latest session,
-and no source computes it yet; until one does the emitted value would be in
-basis points while the ref it is built from says ``percent``.
-`fbe.datasources.fred` passes them over for the same reason. ``yield_2y_chg_3m``
+and since #322 `fbe.datasources.yield_changes` computes it once, in the
+collector, from the level this source returns. A source computing it as well
+would be a second window definition. `fbe.datasources.fred` passes them over
+for the same reason. ``yield_2y_chg_3m``
 is documented as the heaviest sub-indicator in the model, so guessing is the one
 thing not to do."""
 
