@@ -884,7 +884,7 @@ Optional: `unit`, `frequency`, `released_at`, `revision`, `meta`.
 
 | File | Contents |
 | --- | --- |
-| `pmi.yaml` | Manufacturing and services PMIs for all eight. The largest manual burden, and a recurring monthly one. |
+| `pmi.yaml` | Manufacturing and services PMIs for all eight. **Optional:** no pillar reads `pmi_composite` since ADR 0005, so nothing typed here changes a score. `ManualSource.missing()` still lists the eight gaps because the key stays registered; skip them. |
 | `yields.yaml` | The CHF 2y government yield only. The other seven are fetched. |
 | `zz-overrides.yaml` | Ad-hoc corrections and the one-off gaps: AUD retail sales, EUR employment change, NZD dairy. Named to sort last, so it wins: precedence is filename order and nothing else, and `overrides.yaml` would sort ahead of `pmi.yaml` and `yields.yaml` and be overridden by the two files it exists to override. |
 
@@ -1020,8 +1020,8 @@ carry a dead series fails on the next verification rather than passing quietly.
 | `employment_level` | 7/8 | 7/8 | EUR absent; derived from `employment_chg`'s refs |
 | `retail_sales_yoy` | 7/8 | 7/8 | AUD frozen at 2025Q2, unverified since #222 |
 | `indpro_yoy` | 4/8 | 4/8 | worst of the growth inputs; EUR frozen at 2023-12, unverified since #222 |
-| `pmi_composite` | 0/8 | 0/8 | licensed, entirely manual |
-| `business_confidence_mfg` | 8/8 | 8/8 | free, **consumed by no pillar**; see below |
+| `pmi_composite` | 0/8 | 0/8 | licensed, entirely manual; **consumed by no pillar** since ADR 0005, see below |
+| `business_confidence_mfg` | 8/8 | 8/8 | free; carries 0.30 of GROWTH since ADR 0005, see below |
 | `trade_balance` | 8/8 | 8/8 | good |
 | `current_account_gdp` | 0/8 | 0/8 | all eight frozen at 2024Q4, unverified since #222 |
 | `gdp_nominal_usd` | 8/8 | 8/8 | annual; one year behind on every leg by design |
@@ -1088,8 +1088,11 @@ and that is the accepted outcome. `yields.yaml` stays as the place a
 deliberate one-off entry goes, not as a routine.
 
 **2. PMIs, all eight.** S&P Global and ISM license these and no free API
-carries them. Permanently manual unless a licence is bought. This is the one
-gap where the manual burden is a recurring monthly chore rather than a one-off.
+carries them. Permanently manual unless a licence is bought. Since ADR 0005 no
+pillar reads `pmi_composite`: GROWTH's leading component is
+`business_confidence_mfg` instead, so this gap costs no score and entering
+PMIs is optional. The key stays registered so re-adopting it is a one-line
+change if a licence is ever bought.
 
 **3. Current account, all eight.** Every leg of the FRED `B6BLTT02` family
 stopped at 2024Q4 and no free replacement was found; the OECD API's balance of
@@ -1136,7 +1139,7 @@ Affected: `unemployment_rate`, `retail_sales_yoy`,
 | Gap | File | Where the number comes from |
 | --- | --- | --- |
 | 2y yield, CHF | `yields.yaml` | a broker terminal, as a deliberate one-off; daily entry is rejected, see above |
-| PMIs, all eight | `pmi.yaml` | S&P Global releases, ISM for the US |
+| PMIs, all eight (optional, read by no pillar) | `pmi.yaml` | S&P Global releases, ISM for the US |
 | Retail sales AUD | `zz-overrides.yaml` | ABS monthly retail turnover |
 | Employment change EUR | `zz-overrides.yaml` | Eurostat quarterly employment release |
 | Industrial production CHF, AUD, NZD | `pmi.yaml` or its own file | the registry carries manual refs for all three, so `ManualSource.missing()` lists them. Entering them is optional and leaving them out is a visible gap rather than a broken run; what is not acceptable is inventing a figure. |
@@ -1203,8 +1206,8 @@ a free machine-readable source, not the operator's typing.
 | `employment_level` | employment | `persons` | monthly | 270d | 88% | 88% |
 | `retail_sales_yoy` | growth | `percent` | monthly | 270d | 88% | 100% |
 | `indpro_yoy` | growth | `percent` | monthly | 180d | 50% | 62% |
-| `pmi_composite` | growth | `index` | monthly | 75d | 0% | 0% |
-| `business_confidence_mfg` | growth (unconsumed) | `percentage_balance` | monthly | 270d | 100% | 100% |
+| `pmi_composite` | growth (unconsumed) | `index` | monthly | 75d | 0% | 0% |
+| `business_confidence_mfg` | growth | `percentage_balance` | monthly | 270d | 100% | 100% |
 | `trade_balance` | external | `usd` | monthly | 150d | 100% | 100% |
 | `current_account_gdp` | external | `percent_of_gdp` | quarterly | 210d | 0% | 100% |
 | `gdp_nominal_usd` | external | `usd` | annual | 916d | 100% | 100% |
@@ -1432,7 +1435,7 @@ Pillar: **growth**. Canonical unit: `percent`. Staleness allowance: 180 days. Fr
 
 #### `pmi_composite`
 
-Composite purchasing managers' index, manufacturing and services blended, 50 being the expansion line. The best leading indicator in the growth pillar and the one with zero free coverage, which is why the manual source exists at all. Until an operator has a services print to blend in, entering the manufacturing headline alone under this key is a stated approximation: note it as such in the manual entry's `meta` rather than presenting it as the real composite. The free OECD business-confidence series found in "Question 5" of `docs/answers/data.md` is a different, real thing (a percentage balance, not a 50-centred diffusion index) and now lives under its own key, `business_confidence_mfg`, below. It is not a replacement for this entry and the two must not be blended: nothing consumes it yet, and whether growth takes it is an open scoring decision. The allowance is 75 rather than 45 because 45 is the age of a punctual monthly print under first-day period stamping, so the series was expiring on the day it published. 75 is this table's own rule: a month elapsing, the survey's own lag, and one more month before the next print is due.
+Composite purchasing managers' index, manufacturing and services blended, 50 being the expansion line. Licensed, with zero free coverage, and since ADR 0005 consumed by no pillar: GROWTH takes `business_confidence_mfg` for its leading component instead, and this key is listed in `UNCONSUMED_INDICATORS` so re-adopting it is a one-line change if a licence is ever bought. Until an operator has a services print to blend in, entering the manufacturing headline alone under this key is a stated approximation: note it as such in the manual entry's `meta` rather than presenting it as the real composite. The free OECD business-confidence series found in "Question 5" of `docs/answers/data.md` is a different, real thing (a percentage balance, not a 50-centred diffusion index) and now lives under its own key, `business_confidence_mfg`, below. The two must not be blended under one key. The allowance is 75 rather than 45 because 45 is the age of a punctual monthly print under first-day period stamping, so the series was expiring on the day it published. 75 is this table's own rule: a month elapsing, the survey's own lag, and one more month before the next print is due.
 
 Pillar: **growth**. Canonical unit: `index`. Staleness allowance: 75 days. Fresh coverage: 0%.
 
@@ -1453,9 +1456,9 @@ OECD composite business confidence for manufacturing, from the Business Tendency
 
 **Neutral is zero, not 50.** This is not a purchasing managers' index and must never be blended with `pmi_composite` under one key. A PMI is a diffusion index whose expansion line is 50; a percentage balance sits either side of zero and is routinely negative in a healthy economy. German manufacturing confidence was -11.0 in August 2026 while German manufacturing was not contracting by eleven of anything. Code written against distance from 50 and pointed here would shift every currency in the universe the same way, the cross-sectional z-score would absorb the offset, and the ranking would still come out looking orderly with nothing raising anywhere. That is the reason for a separate key rather than a second source behind the PMI one. See "Question 5" in `docs/answers/data.md` and issue #6.
 
-**Nothing consumes this yet.** It is held for the growth pillar's leading component, which `pmi_composite` cannot fill because it is licensed and 0/8 on free coverage, so it arrives only in months an operator keys eight numbers in by hand. Whether growth actually takes this series, and at what sub-weight, is a scoring decision that has not been taken. The proposal that added the series split the data question from the scoring one and approved only the first. Until the second is answered the key is listed in `UNCONSUMED_INDICATORS` and its coverage figure above should be read as a series held ready, not as a live input.
+**GROWTH consumes this at a sub-weight of 0.30.** It fills the growth pillar's leading component, which `pmi_composite` cannot fill because it is licensed and 0/8 on free coverage. The scoring decision was taken in ADR 0005 and #119, so the key is no longer in `UNCONSUMED_INDICATORS` and its coverage figure above is a live input.
 
-**The mixed cadence is a real cost, not a rounding error.** Four currencies survey monthly and four quarterly, because the OECD republishes each country's own survey at the cadence that country runs it: Japan's is the quarterly Tankan, and the Australian and New Zealand series are the equally quarterly NAB and ANZ business outlooks. So half the universe would be compared against a number up to a quarter older than the other half. The component-level freshness discount in `fbe.pillars.base.BasePillar.component_freshness` is what makes that visible rather than silent, and it is one of the things the scoring decision has to weigh.
+**The mixed cadence is a real cost, not a rounding error.** Four currencies survey monthly and four quarterly, because the OECD republishes each country's own survey at the cadence that country runs it: Japan's is the quarterly Tankan, and the Australian and New Zealand series are the equally quarterly NAB and ANZ business outlooks. So half the universe would be compared against a number up to a quarter older than the other half. The component-level freshness discount in `fbe.pillars.base.BasePillar.component_freshness` is what makes that visible rather than silent, and it is a cost ADR 0005 accepted rather than one it removed.
 
 **What it is not.** Each leg is the country's own national survey as the OECD compiles it, which is a family relationship to the ifo, KOF, Tankan, NAB and ANZ headline figures rather than an identity. None was verified to match its national headline number for number. Anything describing this series should say what it is rather than calling it a PMI proxy.
 
@@ -1629,7 +1632,7 @@ What is worth refetching, and how often.
 | GDP | FRED | quarterly | weekly |
 | COT positioning | CFTC | weekly, Friday 15:30 ET | Saturday, or Monday morning |
 | Economic calendar | Forex Factory | weekly, current week only | Monday, then cached all week |
-| PMIs, manual entries | you | monthly | first business day of the month |
+| PMIs, manual entries (optional, read by no pillar) | you | monthly | first business day of the month |
 
 Note the split in the first two rows. The 2-year yields are the only macro
 input that genuinely needs a daily fetch, because they are the only daily macro
@@ -1720,7 +1723,8 @@ data. Run `registry.stale_refs()` for the actionable list. If it is CHF, it
 is almost certainly the missing 2-year yield taking the monetary pillar with
 it; see "The gaps that remain" above. If it is NZD, the engine is probably
 running from a network the RBNZ blocks; see the RBNZ entry under "Central
-banks and debt offices". Otherwise it is PMI, which is manual for everyone.
+banks and debt offices". It is not PMI: no pillar reads `pmi_composite`, so
+a missing PMI cannot lower coverage.
 
 **`coverage_report()` and `identifier_coverage()` disagree**
 That is them working. `identifier_coverage()` at 1.0 with `coverage_report()` at
