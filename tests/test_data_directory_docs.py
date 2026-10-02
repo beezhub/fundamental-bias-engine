@@ -143,18 +143,18 @@ def test_the_closing_sentence_marks_the_journal_as_untracked() -> None:
     assert "untracked" in sentence or "not tracked" in sentence
 
 
-def test_the_prose_records_the_missing_journal_dir_as_a_known_gap() -> None:
-    """Criterion 5. Recorded as known, with no value proposed.
+def test_the_prose_says_journal_dir_moves_with_the_other_three() -> None:
+    """Criterion 5, as resolved by #328.
 
-    `DataConfig` carries `cache_dir`, `manual_dir` and `reports_dir`.
-    `JOURNAL_PATH` is a module constant, so an operator who relocates the data
-    tree moves three directories and leaves behind the only one holding data no
-    rerun can recreate.
+    This once asserted that the missing `journal_dir` was recorded as a known
+    gap. The field now exists, so the section must say so, and must no longer
+    describe the journal as a module constant left behind when the tree moves.
     """
     section = _data_section()
 
-    assert "journal_dir" in section
-    assert "DataConfig" in section
+    assert "`DataConfig` carries `journal_dir`" in section
+    assert "known gap" not in section
+    assert "not a backup check" in section
 
 
 # --- the behaviour, which is criterion 6 -----------------------------------

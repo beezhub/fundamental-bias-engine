@@ -206,12 +206,13 @@ the owner's own machine. The journal is therefore the owner's to back up.
 Nothing else in this repository will do it, and Phase 6 of `docs/roadmap.md` is
 the point at which its absence would be discovered too late to fix.
 
-A known gap, recorded rather than resolved: `DataConfig` carries `cache_dir`,
-`manual_dir` and `reports_dir`, so those three can be relocated, while
-`JOURNAL_PATH` is a module constant with no `journal_dir` beside them. An
-operator who moves the data tree moves three directories and leaves the fourth
-behind, and it is the one holding data no rerun can recreate. Whether to add the
-field is a separate decision and is not taken here.
+`DataConfig` carries `journal_dir` beside `cache_dir`, `manual_dir` and
+`reports_dir`, so moving the data tree through config moves all four (#328).
+Before that field the journal was a module constant, and an operator who moved
+the tree left behind the one directory holding data no rerun can recreate.
+`fbe journal add` refuses a `journal_dir` that does not exist rather than
+starting a new journal there, and `fbe doctor` prints the resolved path, the
+trade count and the newest trade, and says it is not a backup check.
 
 If deleting `data/cache/` loses information, that information was in the wrong
 place, and it belongs in `data/manual/`, in `reports/`, or in the journal. Of

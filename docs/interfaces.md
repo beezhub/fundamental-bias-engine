@@ -148,8 +148,8 @@ state and its `min_lot`, `lot_step` and `contract_size`, an unconfirmed profile
 warning so `--strict` exits 1 on it; presence of each credential;
 cache writability, entry count and age against `cache_ttl_hours`;
 `DataSource.available` plus a live probe for every source unless `--offline`;
-and whether a previous report exists to diff against. Each check prints its own
-verdict, so one failure does not hide the rest.
+whether a previous report exists to diff against; and what the trade journal
+holds. Each check prints its own verdict, so one failure does not hide the rest.
 
 The reports check prints a second line for the forward record: the weekdays
 between the earliest report on disk and today that have no report, counted, or
@@ -175,6 +175,18 @@ around it cannot honestly be called missing. A name dated after today is a file
 that should not exist yet, and reporting the record around it would assert an
 unbroken span over days nothing examined. Both listings are bounded the same
 way the gap list is.
+
+The journal line states facts about `trades.jsonl` in `data.journal_dir`: the
+resolved path, so a wrong setting is visible, the number of distinct trades, so
+a count lower than the trades you know you took can be noticed, and the date the
+newest one opened. A trade journalled at entry and again at exit counts once.
+The status follows what was read: `ok` for a readable file, `warn` when there is
+no file, and `fail` when a line cannot be parsed, quoting why. A fresh install
+has no journal, so `--strict` exits 1 on that warning until the first trade is
+recorded, as it does for an unconfirmed broker. Every journal line ends with
+`not a backup check`. The engine can see the file and cannot see whether a copy
+of it exists anywhere else, and the journal is git-ignored, so backing it up is
+yours.
 
 The probe is a request the source vouches for, not a bare GET of its root. A
 source that describes one (`BaseDataSource.probe_request`) is asked that, and a
@@ -205,6 +217,7 @@ sources         ok        fred 240ms, stooq 310ms, cftc 890ms
                 warn      forexfactory unreachable (timeout after 5.0s)
 reports         ok        last report 2026-09-08, config digest matches
                 warn      4 weekdays missing from the forward record: 2026-09-09, 2026-09-10, 2026-09-11, 2026-09-14
+journal         ok        data/journal/trades.jsonl: 3 trades, newest opened 2026-09-11; not a backup check
 4 warnings.
 ```
 

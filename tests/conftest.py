@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
 
-from fbe.config import Config, DataConfig, RiskConfig, ScoringConfig
+from fbe.config import DATA_DIR, Config, DataConfig, RiskConfig, ScoringConfig
 from fbe.types import Frequency, Observation, PillarName
 from fbe.universe import G10
 
@@ -181,3 +182,29 @@ def no_fred_key(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Remove FRED_API_KEY so a test cannot accidentally reach the network."""
     monkeypatch.delenv("FRED_API_KEY", raising=False)
     yield
+
+
+REAL_JOURNAL_DIR = (DATA_DIR / "journal").resolve()
+"""Where the owner's real journal lives in a checkout. Private, git-ignored and
+append-only, so a test record written there could never be taken back out."""
+
+
+@pytest.fixture(autouse=True)
+def never_the_real_journal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail any test whose command writes into the owner's real journal.
+
+    The CLI resolves the journal from ``config.data.journal_dir`` (#328), so a
+    test that forgets to point that setting at ``tmp_path`` would otherwise
+    append to the owner's trading record on their machine and pass on every
+    fresh clone, where the directory holds only ``.gitkeep``.
+    """
+    from fbe import journal
+
+    real_append = journal.append
+
+    def guarded(record: object, path: Path = journal.JOURNAL_PATH) -> None:
+        if Path(path).resolve().is_relative_to(REAL_JOURNAL_DIR):
+            pytest.fail(f"a test wrote to the real journal at {path}")
+        real_append(record, path)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(journal, "append", guarded)

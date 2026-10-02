@@ -31,11 +31,12 @@ from math import sqrt
 from pathlib import Path
 from statistics import NormalDist
 
-from fbe.config import DATA_DIR, RiskConfig
+from fbe.config import DataConfig, RiskConfig
 from fbe.types import Conviction, Direction, PillarName
 
 __all__ = [
     "JOURNAL_DIR",
+    "JOURNAL_FILENAME",
     "JOURNAL_PATH",
     "REVENGE_WINDOW_MINUTES",
     "OVERTRADING_TRADES_PER_WEEK",
@@ -55,10 +56,16 @@ __all__ = [
 ]
 
 
-JOURNAL_DIR: Path = DATA_DIR / "journal"
-"""Directory holding the journal files."""
+JOURNAL_DIR: Path = DataConfig().journal_dir
+"""Default directory holding the journal, read from `DataConfig.journal_dir`'s
+default rather than typed a second time, so the two cannot disagree (#328). The
+commands resolve the directory from the running config instead; this default
+serves `append` and `load` when a caller passes no path."""
 
-JOURNAL_PATH: Path = JOURNAL_DIR / "trades.jsonl"
+JOURNAL_FILENAME = "trades.jsonl"
+"""The journal's file name inside its directory, whichever directory that is."""
+
+JOURNAL_PATH: Path = JOURNAL_DIR / JOURNAL_FILENAME
 """Canonical journal file: one JSON object per line, newest appended last.
 
 JSONL rather than a spreadsheet, for four reasons that all bite on a real

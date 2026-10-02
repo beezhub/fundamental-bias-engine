@@ -851,7 +851,7 @@ def fixture_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     stamp = JOURNAL_WRITTEN_AT.timestamp()
     os.utime(path, (stamp, stamp))
-    monkeypatch.setattr("fbe.journal.JOURNAL_PATH", path)
+    monkeypatch.setenv("FBE_DATA_JOURNAL_DIR", str(path.parent))
     return path
 
 
@@ -897,7 +897,7 @@ def test_an_unreadable_journal_says_open_positions_are_not_known(
     """
     path = tmp_path / "trades.jsonl"
     path.write_text("{not json at all\n")
-    monkeypatch.setattr("fbe.journal.JOURNAL_PATH", path)
+    monkeypatch.setenv("FBE_DATA_JOURNAL_DIR", str(path.parent))
 
     output = _size()
 
@@ -911,7 +911,7 @@ def test_an_absent_journal_is_zero_open_positions_and_names_the_path(
 ) -> None:
     """Criterion 9, second half. A fresh install legitimately has no trades."""
     path = tmp_path / "trades.jsonl"
-    monkeypatch.setattr("fbe.journal.JOURNAL_PATH", path)
+    monkeypatch.setenv("FBE_DATA_JOURNAL_DIR", str(path.parent))
 
     output = _size()
 

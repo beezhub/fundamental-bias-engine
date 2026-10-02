@@ -25,9 +25,9 @@ ahead of the one being journalled, and the filter demotes the conviction one
 rung, so a command that took the first row it was handed or skipped the filter
 fails rather than passes unnoticed.
 
-Nothing writes to `fbe.journal.JOURNAL_PATH` either. That file holds the
-owner's real entry prices and profit and loss on a live account and is
-git-ignored for that reason, so every test points the command at ``tmp_path``.
+Nothing writes to the real journal either. That file holds the owner's real
+entry prices and profit and loss on a live account and is git-ignored for that
+reason, so every test's config points ``journal_dir`` at ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -233,6 +233,7 @@ def config_file(
         f"  cache_dir: {tmp_path / 'cache'}\n"
         f"  reports_dir: {tmp_path / 'reports'}\n"
         f"  manual_dir: {tmp_path / 'manual'}\n"
+        f"  journal_dir: {tmp_path}\n"
         f"risk:\n"
         f"  account_currency: {account_currency}\n"
         f"  account_balance: {account_balance}\n" + broker,
@@ -315,7 +316,6 @@ def add(
     monkeypatch.setattr("fbe.cli.score_currencies", fake_score_currencies)
     monkeypatch.setattr("fbe.cli.build_pair_biases", fake_build_pair_biases)
     monkeypatch.setattr("fbe.cli.apply_filters", fake_apply_filters)
-    monkeypatch.setattr("fbe.journal.JOURNAL_PATH", journal)
 
     result = runner.invoke(app, ["--config", str(config_path), "journal", "add", *args])
     output = result.output

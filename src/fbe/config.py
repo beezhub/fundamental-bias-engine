@@ -300,6 +300,19 @@ class DataConfig:
     cache_dir: Path = DATA_DIR / "cache"
     manual_dir: Path = DATA_DIR / "manual"
     reports_dir: Path = DATA_DIR / "reports"
+    journal_dir: Path = DATA_DIR / "journal"
+    """Directory holding the trade journal, ``trades.jsonl``, written by
+    ``fbe journal add`` and read by ``fbe evaluate`` and ``fbe doctor``.
+
+    A setting beside the other three so that moving the data tree moves all
+    four (#328). Before it, the journal sat at a module constant, and relocating
+    the tree left behind the one directory holding data no rerun can recreate.
+    Git-ignored on purpose: it is the owner's private record of a real account
+    in a public repository, so a fresh clone has none and the owner backs it
+    up. A path that exists and is not a directory is refused by
+    `Config.validate`; one that does not exist is refused by ``journal add``
+    alone, which will not start a new journal somewhere the owner did not
+    expect."""
     cache_ttl_hours: int = 12
     offline: bool = False
     """When true, sources read cache only and never touch the network. Makes
@@ -493,6 +506,7 @@ class Config:
         problems.extend(self._threshold_problems())
         problems.extend(self._risk_problems())
         problems.extend(self._broker_problems())
+        problems.extend(self._journal_problems())
         return problems
 
     def _weight_problems(self) -> list[str]:
@@ -620,6 +634,24 @@ class Config:
             if value <= 0.0:
                 problems.append(f"broker.{name} is {value}, expected above 0")
         return problems
+
+    def _journal_problems(self) -> list[str]:
+        """Check that ``journal_dir`` is not occupied by a file.
+
+        The one setting here that touches the disk, because the failure it
+        guards is a path, not an ordering. A file where the journal directory
+        should be means every ``journal add`` fails at the write, after the
+        trade has been scored and while the owner thinks it is being recorded.
+        A directory that does not exist is not a problem for every command:
+        ``journal add`` refuses it itself, and ``fbe doctor`` reports it.
+        """
+        directory = self.data.journal_dir
+        if directory.exists() and not directory.is_dir():
+            return [
+                f"data.journal_dir is {directory}, which is a file, not a "
+                "directory, so no trade can be journalled there"
+            ]
+        return []
 
 
 _BOOLEAN_WORDS: Mapping[str, bool] = {
