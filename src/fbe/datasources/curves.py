@@ -163,6 +163,7 @@ from fbe.types import Observation
 __all__ = [
     "BOC_BASE_URL",
     "BOE_BASE_URL",
+    "BOE_GLC_HISTORY_ZIP",
     "BOE_GLC_SERIES_PREFIX",
     "BOE_IADB_URL",
     "BOE_YIELD_CURVE_ZIP",
@@ -254,6 +255,18 @@ BOE_YIELD_CURVE_ZIP = (
 month.xlsx``, ``OIS daily data current month.xlsx``. The nominal one holds the
 2-year gilt spot rate."""
 
+BOE_GLC_HISTORY_ZIP = (
+    f"{BOE_BASE_URL}-/media/boe/files/statistics/yield-curves/glcnominalddata.zip"
+)
+"""Verified live on 2026-10-02. The full daily nominal history, about 39 MB, as
+eight workbooks named ``GLC Nominal daily data_<from> to <to>.xlsx`` from 1979,
+the newest ending ``to present``. Same sheets and header rows as the
+current-month workbook. It holds completed months only and is republished once
+a month: on the morning of 2026-10-02 it still ended on 2026-08-28, last
+modified 2026-09-03, and was republished with September at 15:36 GMT that day,
+the second business day. `fetch_boe_curve` therefore reads it beside
+`BOE_YIELD_CURVE_ZIP` rather than instead of it (#323)."""
+
 BOE_PROBE_WINDOW_DAYS = 14
 """How far back `BoeSource.probe_request` asks the database for Bank Rate.
 Two weeks always holds at least one business day, so a healthy database
@@ -261,6 +274,13 @@ answers with a row rather than an empty table, and the body is small."""
 
 BOE_GLC_SHEET = "3. spot, short end"
 BOE_GLC_MEMBER = "GLC Nominal daily data current month.xlsx"
+BOE_GLC_HISTORY_MEMBER_PATTERN = re.compile(
+    r"GLC Nominal daily data_(\d{4}) to (\d{4}|present)\.xlsx"
+)
+"""Names the members of `BOE_GLC_HISTORY_ZIP` by the years each one covers, so
+only the workbooks overlapping the window are opened. ``present`` is
+open-ended. The years in the name are the contract, not the member count: the
+newest workbook is re-cut as the years pass."""
 BOE_GLC_DATE_EPOCH = date(1899, 12, 30)
 """Column A of the sheet is days since this date, the Excel serial convention."""
 
@@ -1184,9 +1204,18 @@ class CurvesSource(BaseDataSource):
     ) -> Sequence[tuple[date, float]]:
         """Fetch a point off the Bank of England nominal spot curve.
 
-        Downloads `BOE_YIELD_CURVE_ZIP`, opens `BOE_GLC_MEMBER`, reads sheet
-        `BOE_GLC_SHEET`, and selects the column whose header maturity is
-        closest to ``maturity_years``.
+        Reads two archives and merges them, the way `fetch_jgb` does: the
+        members of `BOE_GLC_HISTORY_ZIP` whose years overlap the window, then
+        `BOE_GLC_MEMBER` from `BOE_YIELD_CURVE_ZIP`, which wins on a day both
+        carry because it is the fresher publication. Both are required. The
+        current-month workbook alone held 22 sessions, so no one-month or
+        three-month change could be derived for GBP (#323), and the history
+        alone stops at the end of the last month the Bank republished.
+
+        Between the 1st of a month and the Bank republishing the history a few
+        business days later, last month is in neither archive. The window
+        derivation's tolerance absorbs that for the newest sessions, and
+        `docs/data-sources.md` records it.
 
         Select the column from the header row every time. The maturity grid has
         been changed before, most recently when the curve was extended to 40
@@ -1200,36 +1229,135 @@ class CurvesSource(BaseDataSource):
             end: Latest date wanted.
 
         Returns:
-            ``(date, yield)`` pairs, oldest first.
+            ``(date, yield)`` pairs in percent, oldest first.
 
         Raises:
-            SourceError: On request failure, a missing member, a missing sheet,
-                or when no header maturity is within tolerance of the request.
+            SourceError: On request failure, a body that is not an archive, a
+                history archive with no daily member, an unreadable member, a
+                missing member or sheet, or when no header maturity is within
+                tolerance of the request.
 
         """
-        raw = self._request(self._path(BOE_YIELD_CURVE_ZIP), {})
+        merged: dict[date, float] = {}
+        history = self._boe_archive(BOE_GLC_HISTORY_ZIP)
+        for member in self._boe_history_members(history, start, end):
+            merged.update(
+                self._boe_spot_rows(history, member, maturity_years, start, end)
+            )
+        current = self._boe_archive(BOE_YIELD_CURVE_ZIP)
+        if BOE_GLC_MEMBER not in current.namelist():
+            raise SourceError(
+                f"boe archive holds no {BOE_GLC_MEMBER!r}; it holds "
+                f"{', '.join(current.namelist())}"
+            )
+        merged.update(
+            self._boe_spot_rows(current, BOE_GLC_MEMBER, maturity_years, start, end)
+        )
+        return sorted(merged.items())
+
+    def _boe_archive(self, url: str) -> zipfile.ZipFile:
+        """Download one Bank of England archive and open it.
+
+        Args:
+            url: `BOE_YIELD_CURVE_ZIP` or `BOE_GLC_HISTORY_ZIP`.
+
+        Returns:
+            The open archive.
+
+        Raises:
+            SourceError: On request failure, or a body that is not an archive.
+
+        """
+        raw = self._request(self._path(url), {})
         if not isinstance(raw, bytes):
             raise SourceError(
                 f"{self.name} decoded the archive into something unusable"
             )
         try:
-            archive = zipfile.ZipFile(io.BytesIO(raw))
+            return zipfile.ZipFile(io.BytesIO(raw))
         except zipfile.BadZipFile as error:
             raise SourceError(
                 f"boe served a body that is not an archive: {error}"
             ) from error
-        if BOE_GLC_MEMBER not in archive.namelist():
+
+    def _boe_history_members(
+        self, archive: zipfile.ZipFile, start: date, end: date
+    ) -> Sequence[str]:
+        """Name the history workbooks whose years overlap the window.
+
+        Args:
+            archive: `BOE_GLC_HISTORY_ZIP`, opened.
+            start: Earliest date wanted.
+            end: Latest date wanted.
+
+        Returns:
+            Member names, oldest first.
+
+        Raises:
+            SourceError: When no member matches
+                `BOE_GLC_HISTORY_MEMBER_PATTERN`. A renamed layout must not
+                quietly shrink GBP back to one month of sessions.
+
+        """
+        spans: list[tuple[int, int, str]] = []
+        for name in archive.namelist():
+            match = BOE_GLC_HISTORY_MEMBER_PATTERN.fullmatch(name)
+            if match is None:
+                continue
+            first = int(match.group(1))
+            last = end.year if match.group(2) == "present" else int(match.group(2))
+            spans.append((first, last, name))
+        if not spans:
             raise SourceError(
-                f"boe archive holds no {BOE_GLC_MEMBER!r}; it holds "
+                "boe history archive holds no member named like "
+                f"{BOE_GLC_HISTORY_MEMBER_PATTERN.pattern!r}; it holds "
                 f"{', '.join(archive.namelist())}"
             )
-        workbook = openpyxl.load_workbook(
-            io.BytesIO(archive.read(BOE_GLC_MEMBER)), read_only=True, data_only=True
-        )
+        return [
+            name
+            for first, last, name in sorted(spans)
+            if first <= end.year and last >= start.year
+        ]
+
+    def _boe_spot_rows(
+        self,
+        archive: zipfile.ZipFile,
+        member: str,
+        maturity_years: float,
+        start: date,
+        end: date,
+    ) -> Mapping[date, float]:
+        """Read one tenor out of the spot sheet of one workbook.
+
+        Args:
+            archive: The open archive holding ``member``.
+            member: Workbook name inside it.
+            maturity_years: Tenor wanted, e.g. ``2.0``.
+            start: Earliest date wanted.
+            end: Latest date wanted.
+
+        Returns:
+            Session to yield in percent. A blank reading is dropped, never
+            zeroed.
+
+        Raises:
+            SourceError: When the member is not a workbook, holds no
+                `BOE_GLC_SHEET`, has no `BOE_GLC_YEARS_ROW_LABEL` row, or no
+                header maturity is within tolerance of the request.
+
+        """
+        try:
+            workbook = openpyxl.load_workbook(
+                io.BytesIO(archive.read(member)), read_only=True, data_only=True
+            )
+        except (zipfile.BadZipFile, OSError, KeyError, ValueError) as error:
+            raise SourceError(
+                f"boe archive member {member!r} is not a readable workbook: {error}"
+            ) from error
         if BOE_GLC_SHEET not in workbook.sheetnames:
             raise SourceError(
-                f"boe workbook holds no {BOE_GLC_SHEET!r} sheet; it holds "
-                f"{', '.join(workbook.sheetnames)}"
+                f"boe workbook {member!r} holds no {BOE_GLC_SHEET!r} sheet; it "
+                f"holds {', '.join(workbook.sheetnames)}"
             )
         rows = list(workbook[BOE_GLC_SHEET].iter_rows(values_only=True))
         maturities = next(
@@ -1242,21 +1370,25 @@ class CurvesSource(BaseDataSource):
         )
         if maturities is None:
             raise SourceError(
-                f"boe spot sheet carries no {BOE_GLC_YEARS_ROW_LABEL!r} row, so "
-                "there is no way to tell which column holds which maturity"
+                f"boe spot sheet in {member!r} carries no "
+                f"{BOE_GLC_YEARS_ROW_LABEL!r} row, so there is no way to tell "
+                "which column holds which maturity"
             )
         column = self._nearest_maturity(maturities, maturity_years)
-        parsed: list[tuple[date, float]] = []
+        parsed: dict[date, float] = {}
         for row in rows[rows.index(maturities) + 1 :]:
             if not row or row[0] is None or len(row) <= column:
                 continue
             session = self._curve_session(row[0])
             if session is None or not start <= session <= end:
                 continue
-            value = self._reading(str(row[column]), "boe", session.isoformat())
+            # openpyxl reads an empty cell as None, which the history carries on
+            # holiday rows. It is a blank, not the text "None" and not a zero.
+            cell = row[column]
+            raw = "" if cell is None else str(cell)
+            value = self._reading(raw, "boe", session.isoformat())
             if value is not None:
-                parsed.append((session, value))
-        parsed.sort()
+                parsed[session] = value
         return parsed
 
     def _nearest_maturity(self, maturities: Sequence[object], wanted: float) -> int:
