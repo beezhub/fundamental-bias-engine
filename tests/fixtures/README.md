@@ -89,6 +89,7 @@ Captured 2026-09-14, no credential on any of them.
 | `jgbcme_all.csv` | `.../interest_rate/historical/jgbcme_all.csv` | 200 |
 | `boe_iadb_bank_rate.csv` | `https://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp?csv.x=yes&Datefrom=01/Sep/2026&Dateto=11/Sep/2026&SeriesCodes=IUDBEDR&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N` | 302 then 200 |
 | `boe_yield_curve.zip` | `https://www.bankofengland.co.uk/-/media/boe/files/statistics/yield-curves/latest-yield-curve-data.zip` | 200 |
+| `boe_yield_curve_history.zip` | `https://www.bankofengland.co.uk/-/media/boe/files/statistics/yield-curves/glcnominalddata.zip` | 200 |
 | `snb_rendoblid.csv` | `https://data.snb.ch/api/cube/rendoblid/data/csv/en` | 200 |
 
 `jgbcme.csv` and `boe_iadb_bank_rate.csv` are byte-exact. The other three are
@@ -106,6 +107,12 @@ truncated or narrowed, and nothing in any of them was typed:
   maturity headers and the yields are the published ones. A second member is a
   placeholder, present only so the member-selection test has something to not
   pick.
+- `boe_yield_curve_history.zip` is rebuilt from the live history archive as
+  downloaded on 2026-10-02: one member, `GLC Nominal daily data_2025 to
+  present.xlsx`, keeping the five real header rows of `3. spot, short end` and
+  the three real rows for 2026-08-26 to 2026-08-28, narrowed to the first 27
+  columns. With `boe_yield_curve.zip`, whose first row is 2026-09-01, it spans a
+  month boundary (#323). The live archive is about 39 MB in eight members.
 - `snb_rendoblid.csv` keeps the real two metadata lines, the real header, one
   real blank-valued row from 1988 and the four most recent real rows. The cube
   is frozen where the module docstring says it is: last observation

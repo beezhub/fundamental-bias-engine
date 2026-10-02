@@ -37,6 +37,7 @@ from fbe.datasources.base import SourceError
 from fbe.datasources.curves import (
     BOC_BASE_URL,
     BOE_GLC_DATE_EPOCH,
+    BOE_GLC_HISTORY_ZIP,
     BOE_GLC_MEMBER,
     BOE_GLC_SHEET,
     BOE_IADB_HEADER_START,
@@ -59,6 +60,7 @@ JGB_CURRENT = (FIXTURES / "jgbcme.csv").read_bytes()
 JGB_HISTORY = (FIXTURES / "jgbcme_all.csv").read_bytes()
 IADB_BODY = (FIXTURES / "boe_iadb_bank_rate.csv").read_text()
 YIELD_CURVE_ZIP = (FIXTURES / "boe_yield_curve.zip").read_bytes()
+YIELD_CURVE_HISTORY_ZIP = (FIXTURES / "boe_yield_curve_history.zip").read_bytes()
 SNB_BODY = (FIXTURES / "snb_rendoblid.csv").read_bytes()
 
 SNB_URL = SNB_CUBE_URL.format(cube=SNB_BOND_CUBE)
@@ -74,6 +76,7 @@ JGB_HISTORY_LAST = (date(2026, 8, 31), 1.743)
 JGB_DASH_DAY = date(1978, 5, 22)
 IADB_LAST = (date(2026, 9, 11), 3.75)
 CURVE_FIRST = (date(2026, 9, 1), 4.385949119079563)
+CURVE_HISTORY_LAST = (date(2026, 8, 28), 4.319050757790268)
 SNB_LAST = (date(2025, 7, 31), -0.083)
 
 
@@ -302,13 +305,169 @@ def test_a_blank_iadb_reading_is_dropped_not_zeroed(source: CurvesSource) -> Non
 # ---------------------------------------------------------------------------
 
 
+def _boe_curve_routes(
+    current: bytes = YIELD_CURVE_ZIP, history: bytes = YIELD_CURVE_HISTORY_ZIP
+) -> None:
+    respx.get(BOE_YIELD_CURVE_ZIP).mock(
+        return_value=httpx.Response(200, content=current)
+    )
+    respx.get(BOE_GLC_HISTORY_ZIP).mock(
+        return_value=httpx.Response(200, content=history)
+    )
+
+
+def _history_archive(rows: dict[str, list[tuple[date, float | None]]]) -> bytes:
+    """Build a history archive whose members carry the given two-year rows.
+
+    The header rows are the real ones from the current-month capture, so the
+    column holding the two-year point is found the same way as in production.
+    """
+    import io
+    import zipfile
+
+    import openpyxl
+
+    with zipfile.ZipFile(io.BytesIO(YIELD_CURVE_ZIP)) as capture:
+        live = openpyxl.load_workbook(
+            io.BytesIO(capture.read(BOE_GLC_MEMBER)), data_only=True
+        )
+    header = list(live[BOE_GLC_SHEET].iter_rows(max_row=5, values_only=True))
+    years = next(row for row in header if row[0] == "years:")
+    column = next(
+        index
+        for index, cell in enumerate(years)
+        if isinstance(cell, float) and abs(cell - 2.0) < 0.01
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, sessions in rows.items():
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            assert sheet is not None
+            sheet.title = BOE_GLC_SHEET
+            for row in header:
+                sheet.append(list(row))
+            for session, value in sessions:
+                cells: list[object] = [None] * len(years)
+                cells[0] = dt.datetime.combine(session, dt.time())
+                cells[column] = value
+                sheet.append(cells)
+            member = io.BytesIO()
+            workbook.save(member)
+            archive.writestr(name, member.getvalue())
+    return buffer.getvalue()
+
+
+@respx.mock
+def test_a_month_boundary_is_read_from_both_archives(source: CurvesSource) -> None:
+    """The current-month workbook alone held 22 sessions, so GBP had no change.
+
+    The history archive stops at the end of a completed month and the
+    current-month one starts the next, so a window across the boundary needs
+    both. Values read off the live captures by hand (#323).
+    """
+    _boe_curve_routes()
+    returned = dict(source.fetch_boe_curve(2.0, date(2026, 8, 1), END))
+    assert returned[CURVE_HISTORY_LAST[0]] == pytest.approx(CURVE_HISTORY_LAST[1])
+    assert returned[CURVE_FIRST[0]] == pytest.approx(CURVE_FIRST[1])
+    assert min(returned) < date(2026, 9, 1) <= max(returned)
+
+
+@respx.mock
+def test_a_history_member_outside_the_window_is_not_opened(
+    source: CurvesSource,
+) -> None:
+    """The archive runs back to 1979 in eight workbooks, about 40 MB unpacked.
+
+    A 2016 to 2024 member that is not a workbook is added beside the capture,
+    so opening it fails. A September 2026 window must not touch it; a window
+    reaching into 2024 must, and must say which member was unreadable.
+    """
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(YIELD_CURVE_HISTORY_ZIP)) as capture,
+        zipfile.ZipFile(buffer, "w") as archive,
+    ):
+        for name in capture.namelist():
+            archive.writestr(name, capture.read(name))
+        archive.writestr("GLC Nominal daily data_2016 to 2024.xlsx", b"not a workbook")
+    _boe_curve_routes(history=buffer.getvalue())
+    assert source.fetch_boe_curve(2.0, START, END)
+    with pytest.raises(SourceError) as excinfo:
+        source.fetch_boe_curve(2.0, date(2024, 12, 1), END)
+    assert "2016 to 2024" in str(excinfo.value)
+
+
+@respx.mock
+def test_the_current_month_wins_on_overlap_with_the_history(
+    source: CurvesSource,
+) -> None:
+    """Both archives can carry a day; the current-month one is the fresher."""
+    history = _history_archive(
+        {"GLC Nominal daily data_2025 to present.xlsx": [(CURVE_FIRST[0], 9.999)]}
+    )
+    _boe_curve_routes(history=history)
+    returned = dict(source.fetch_boe_curve(2.0, START, END))
+    assert returned[CURVE_FIRST[0]] == pytest.approx(CURVE_FIRST[1])
+    assert 9.999 not in returned.values()
+
+
+@respx.mock
+def test_an_empty_history_cell_is_absence_not_an_error(source: CurvesSource) -> None:
+    """The live history carries holiday rows whose cells are empty, 2021-12-27.
+
+    ``openpyxl`` reads an empty cell as ``None``. Read as the text ``'None'``
+    it failed the whole GBP fetch; read as a number it would be a zero yield.
+    It is neither: no session.
+    """
+    history = _history_archive(
+        {
+            "GLC Nominal daily data_2016 to present.xlsx": [
+                (date(2021, 12, 24), 0.62),
+                (date(2021, 12, 27), None),
+            ]
+        }
+    )
+    _boe_curve_routes(history=history)
+    returned = dict(source.fetch_boe_curve(2.0, date(2021, 12, 1), END))
+    assert returned[date(2021, 12, 24)] == 0.62
+    assert date(2021, 12, 27) not in returned
+
+
+@respx.mock
+def test_an_open_ended_member_reaches_the_window_end(source: CurvesSource) -> None:
+    """``present`` is read as the end of the window, not as a year to parse."""
+    history = _history_archive(
+        {"GLC Nominal daily data_2030 to present.xlsx": [(date(2031, 6, 2), 4.5)]}
+    )
+    _boe_curve_routes(history=history)
+    returned = dict(source.fetch_boe_curve(2.0, date(2031, 1, 1), date(2031, 12, 31)))
+    assert returned == {date(2031, 6, 2): 4.5}
+
+
+@respx.mock
+def test_a_history_archive_with_no_daily_member_raises(source: CurvesSource) -> None:
+    """A renamed layout must fail loudly, not quietly fall back to one month."""
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("GLC Nominal month end data.xlsx", b"not a daily member")
+    _boe_curve_routes(history=buffer.getvalue())
+    with pytest.raises(SourceError) as excinfo:
+        source.fetch_boe_curve(2.0, START, END)
+    assert "GLC Nominal month end data.xlsx" in str(excinfo.value)
+
+
 @respx.mock
 def test_the_two_year_point_comes_off_the_nominal_sheet(
     source: CurvesSource,
 ) -> None:
-    respx.get(BOE_YIELD_CURVE_ZIP).mock(
-        return_value=httpx.Response(200, content=YIELD_CURVE_ZIP)
-    )
+    _boe_curve_routes()
     returned = dict(source.fetch_boe_curve(2.0, START, END))
     assert returned[CURVE_FIRST[0]] == pytest.approx(CURVE_FIRST[1])
 
@@ -323,9 +482,7 @@ def test_the_column_is_found_by_header_not_by_position(
     equality match finds nothing and a fixed column letter finds the wrong
     tenor. Asking for a neighbouring maturity must return a different number.
     """
-    respx.get(BOE_YIELD_CURVE_ZIP).mock(
-        return_value=httpx.Response(200, content=YIELD_CURVE_ZIP)
-    )
+    _boe_curve_routes()
     two_year = dict(source.fetch_boe_curve(2.0, START, END))
     shorter = dict(source.fetch_boe_curve(1.5, START, END))
     assert two_year[CURVE_FIRST[0]] != shorter[CURVE_FIRST[0]]
@@ -334,9 +491,7 @@ def test_the_column_is_found_by_header_not_by_position(
 @respx.mock
 def test_a_maturity_outside_the_grid_raises(source: CurvesSource) -> None:
     """Silently returning the nearest 40-year point for a 2-year ask is the trap."""
-    respx.get(BOE_YIELD_CURVE_ZIP).mock(
-        return_value=httpx.Response(200, content=YIELD_CURVE_ZIP)
-    )
+    _boe_curve_routes()
     with pytest.raises(SourceError) as excinfo:
         source.fetch_boe_curve(30.0, START, END)
     assert "30.0" in str(excinfo.value)
@@ -353,6 +508,9 @@ def test_a_missing_member_raises(source: CurvesSource) -> None:
     respx.get(BOE_YIELD_CURVE_ZIP).mock(
         return_value=httpx.Response(200, content=buffer.getvalue())
     )
+    respx.get(BOE_GLC_HISTORY_ZIP).mock(
+        return_value=httpx.Response(200, content=YIELD_CURVE_HISTORY_ZIP)
+    )
     with pytest.raises(SourceError) as excinfo:
         source.fetch_boe_curve(2.0, START, END)
     assert BOE_GLC_MEMBER in str(excinfo.value)
@@ -362,6 +520,9 @@ def test_a_missing_member_raises(source: CurvesSource) -> None:
 def test_a_body_that_is_not_an_archive_raises(source: CurvesSource) -> None:
     respx.get(BOE_YIELD_CURVE_ZIP).mock(
         return_value=httpx.Response(200, content=b"<html>maintenance</html>")
+    )
+    respx.get(BOE_GLC_HISTORY_ZIP).mock(
+        return_value=httpx.Response(200, content=YIELD_CURVE_HISTORY_ZIP)
     )
     with pytest.raises(SourceError):
         source.fetch_boe_curve(2.0, START, END)
@@ -384,9 +545,7 @@ def test_the_sheet_named_in_the_constant_is_the_one_read(
     source: CurvesSource,
 ) -> None:
     assert BOE_GLC_SHEET == "3. spot, short end"
-    respx.get(BOE_YIELD_CURVE_ZIP).mock(
-        return_value=httpx.Response(200, content=YIELD_CURVE_ZIP)
-    )
+    _boe_curve_routes()
     assert source.fetch_boe_curve(2.0, START, END)
 
 
@@ -595,9 +754,7 @@ def _serve_every_provider() -> None:
     respx.get(MOF_JP_HISTORY_URL).mock(
         return_value=httpx.Response(200, content=JGB_HISTORY)
     )
-    respx.get(BOE_YIELD_CURVE_ZIP).mock(
-        return_value=httpx.Response(200, content=YIELD_CURVE_ZIP)
-    )
+    _boe_curve_routes()
     respx.get(url__startswith=BOE_IADB_URL).mock(
         return_value=httpx.Response(200, text=IADB_BODY)
     )
