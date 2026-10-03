@@ -206,9 +206,10 @@ week has gone.
 stop-distance move against it and still be at breakeven. That is the size of
 adverse move a high-impact release routinely produces, so it is the buffer that
 makes holding a defensible decision rather than a hopeful one. It is a
-threshold, not a measurement: revisit it once `journal.evaluate` can group
-outcomes by ``exit_reason`` and show what holding through windows has actually
-cost or saved.
+threshold, not a measurement: revisit it with
+`fbe.journal.evaluate_by_guard_action`, which compares closed trades held
+through a window against those tightened or flattened for one and against those
+no guard saw, and shows what holding has actually cost or saved.
 
 The comparison is inclusive. Exactly 1.0R is TIGHTEN, below it is FLATTEN.
 """
@@ -945,10 +946,10 @@ def action_for_open_position(
         explained later from the same string. It is ``None`` for
         `OpenPositionAction.HOLD`, which, per the first limit above, covers
         both a clear calendar and one that was never fetched.
-        `fbe.journal.TradeRecord.exit_reason` has no value for a news flatten
-        today, so the reason currently reaches the journal as free-text
-        ``notes`` and the grouping `TIGHTEN_BUFFER_R` asks for is not yet
-        available.
+        The action itself is recorded on the trade as
+        `fbe.journal.TradeRecord.guard_action`, beside rather than inside
+        ``exit_reason``, and `fbe.journal.evaluate_by_guard_action` groups on
+        it, which is the comparison `TIGHTEN_BUFFER_R` asks for.
 
     Raises:
         ValueError: If ``when`` is naive, ``pair`` is malformed, an event

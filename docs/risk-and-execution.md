@@ -550,8 +550,10 @@ The distinction is buffer, measured against `TIGHTEN_BUFFER_R`, which is
 The comparison is inclusive: exactly 1.0R tightens. Open profit is measured in R
 against `realised_risk_amount`, the same denominator the journal uses, so the
 number on the screen and the number in the file mean the same thing. 1.0R is a
-threshold, not a measurement. Revisit it once the journal can group outcomes by
-`exit_reason` and show what holding through windows has cost or saved.
+threshold, not a measurement. Revisit it with `journal.evaluate_by_guard_action`,
+which groups closed trades by `guard_action`: positions held through a window,
+tightened for one or flattened for one, against the trades no guard saw. The
+measurement is the comparison between those groups, not a count of flattens.
 
 This connects to the plan's time-based exit. A trade that has stalled and is
 drifting toward a scheduled release is not waiting for its thesis, it is waiting
@@ -671,9 +673,17 @@ flatters the model rather than the trader and is invisible in the output.
 
 **Technicals:** `setup` (`channel_bounce`, `trendline_break_retest`,
 `double_bottom_neckline`), `timeframe` (`1h` or `4h`), and `exit_reason`, which
-is one of the plan's five exits: `target`, `stop`, `trailing_stop`, `partial`,
+is one of the plan's six exits: `target`, `stop`, `trailing_stop`, `partial`,
 `structure_break`, `time_exit`. Grouping by `exit_reason` is how you find out
 whether the time-based exit saves money or cuts winners short.
+
+Beside it, `guard_action` records the last instruction the calendar guard gave
+about the position while it was open: `hold`, `tighten` or `flatten`, or empty
+when no guard was consulted. Empty never means the guard said hold. It is a
+separate field rather than a seventh exit, because a position flattened for a
+release still ends through one of the six mechanics; the release is the
+circumstance, not the exit. `journal.evaluate_by_guard_action` groups on it, and
+that comparison is how `TIGHTEN_BUFFER_R` gets calibrated.
 
 **The bias snapshot, which is the part that cannot be reconstructed later:**
 `base_score`, `quote_score`, `spread_score`, `conviction`, `base_pillars` and

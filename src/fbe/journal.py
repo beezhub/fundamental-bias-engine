@@ -23,14 +23,16 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum, StrEnum
 from math import sqrt
 from pathlib import Path
 from statistics import NormalDist
+from typing import TypeVar
 
+from fbe.calendar_guard import OpenPositionAction
 from fbe.config import DataConfig, RiskConfig
 from fbe.types import Conviction, Direction, PillarName
 
@@ -51,6 +53,7 @@ __all__ = [
     "append",
     "load",
     "evaluate",
+    "evaluate_by_guard_action",
     "discipline_flags",
     "hit_rate_interval",
 ]
@@ -246,7 +249,7 @@ class TradeRecord:
             vocabulary, e.g. ``"channel_bounce"``, ``"trendline_break_retest"``,
             ``"double_bottom_neckline"``.
         timeframe: Chart the entry was executed on, ``"1h"`` or ``"4h"``.
-        exit_reason: Which of the plan's five exit strategies ended the trade:
+        exit_reason: Which of the plan's six exit strategies ended the trade:
             ``"target"``, ``"stop"``, ``"trailing_stop"``, ``"partial"``,
             ``"structure_break"`` or ``"time_exit"``. Grouping outcomes by this
             field is how the owner finds out whether the time-based exit is
@@ -281,6 +284,18 @@ class TradeRecord:
             "consulted and the window was clear" and "consulted and blind, and
             the trade was taken anyway" are different facts and only the second
             is an override worth counting.
+        guard_action: The last instruction the calendar guard gave about this
+            position while it was open, as an
+            `fbe.calendar_guard.OpenPositionAction`: hold, tighten or flatten.
+            ``None`` means no guard was consulted while the position was open.
+            It is an explicit absence and must never be read as the guard
+            saying hold, for the same reason `BlackoutCheck.NOT_RUN` is not
+            ``CLEAR``. A field beside ``exit_reason`` rather than a seventh exit,
+            because the instruction is a circumstance and the exit is still one
+            of the six mechanics the trader chose. `evaluate_by_guard_action`
+            groups on it, which is the comparison `TIGHTEN_BUFFER_R` is to be
+            calibrated by: held through a window against flattened for one,
+            against the trades no guard saw (#238).
         broker: Broker name, so a change of execution venue is visible in the
             record when spreads and fills change with it.
         notes: Free text from the post-market review. The plan asks for the
@@ -318,6 +333,7 @@ class TradeRecord:
     agreed_with_bias: bool = True
     followed_plan: bool = True
     blackout_check: BlackoutCheck = BlackoutCheck.NOT_RUN
+    guard_action: OpenPositionAction | None = None
     broker: str = ""
     notes: str = ""
     tags: tuple[str, ...] = ()
@@ -325,10 +341,15 @@ class TradeRecord:
 
 @dataclass(frozen=True, slots=True)
 class ConvictionStats:
-    """Performance of every trade taken at one conviction level.
+    """Performance of one group of closed trades.
+
+    The figures for one group of closed trades, with no key of their own: the
+    mapping that holds them says which group. `evaluate` keys them by conviction
+    and `evaluate_by_guard_action` by the guard's instruction, and a guard group
+    spans every conviction level, so a conviction field here would be false for
+    it. The name is older than the second grouping (#238).
 
     Attributes:
-        conviction: The bucket these figures describe.
         trades: Number of closed trades in the bucket.
         wins: Trades with ``r_multiple`` strictly above zero. ``trades`` is
             not necessarily ``wins`` plus the losers: a trade closed exactly at
@@ -365,7 +386,6 @@ class ConvictionStats:
 
     """
 
-    conviction: Conviction
     trades: int
     wins: int
     hit_rate: float
@@ -505,8 +525,13 @@ def _checked(record: TradeRecord) -> None:
         let alone keep it.
 
     """
+    optional = {item.name for item in fields(TradeRecord) if item.default is None}
     for name, enum_type in ENUM_FIELDS.items():
         value = getattr(record, name)
+        if value is None and name in optional:
+            # An absence the field declares, such as ``guard_action`` when no
+            # guard was consulted, written as null and read back as None.
+            continue
         if not isinstance(value, enum_type):
             raise ValueError(
                 f"{name} is {value!r}, not a {enum_type.__name__}. Writing it "
@@ -612,6 +637,7 @@ ENUM_FIELDS: Mapping[str, type[Enum]] = {
     "direction": Direction,
     "conviction": Conviction,
     "blackout_check": BlackoutCheck,
+    "guard_action": OpenPositionAction,
 }
 """`TradeRecord` fields written as an enum value and read back as the member.
 
@@ -878,31 +904,80 @@ def evaluate(records: Sequence[TradeRecord]) -> Mapping[Conviction, ConvictionSt
         give the same answer and no stored number can leak into a thin bucket.
 
     """
-    closed: dict[Conviction, list[tuple[datetime, float]]] = {}
+    return _grouped(records, lambda record: record.conviction)
+
+
+def evaluate_by_guard_action(
+    records: Sequence[TradeRecord],
+) -> Mapping[OpenPositionAction | None, ConvictionStats]:
+    """Group closed trades by the calendar guard's last instruction.
+
+    The measurement `fbe.calendar_guard.TIGHTEN_BUFFER_R` is to be calibrated
+    by: what holding through a release window cost or saved, against
+    flattening for it, against the trades no guard saw. It compares groups, so
+    it needs all of them. A grouping that kept only the flattened trades would
+    have nothing to compare them with.
+
+    A second function rather than a parameter on `evaluate`, ruled on #238: one
+    function whose keys are convictions or guard instructions depending on an
+    argument is one return type with two meanings.
+
+    Args:
+        records: Journal records, typically from `load`. The same exclusions as
+            `evaluate`: open trades and trades with no ``r_multiple`` are left
+            out, never counted as losses.
+
+    Returns:
+        One `ConvictionStats` per ``guard_action`` present among the closed
+        trades. ``None`` is a key, not a filter: those trades are the control
+        group. Each group spans conviction levels, which is why the statistics
+        carry no conviction of their own. Groups with no closed trades are
+        omitted, so an empty group cannot read as a losing one, and the same
+        sample-size caveat applies as for `evaluate`: every group carries
+        ``below_evidence_threshold`` and the interval around its hit rate.
+
+    """
+    return _grouped(records, lambda record: record.guard_action)
+
+
+_Key = TypeVar("_Key", bound=Hashable | None)
+
+
+def _grouped(
+    records: Sequence[TradeRecord],
+    key: Callable[[TradeRecord], _Key],
+) -> Mapping[_Key, ConvictionStats]:
+    """Bucket the closed trades by ``key`` and reduce each bucket.
+
+    The one place the exclusion is written, for both groupings: a trade still
+    open, or closed with no ``r_multiple``, has no realised figure to
+    contribute, and counting it as a loss would be the plausible wrong answer.
+
+    Args:
+        records: Journal records.
+        key: What a record is grouped by. ``None`` is a valid key and is kept.
+
+    Returns:
+        One `ConvictionStats` per key present among the closed trades. A key
+        with no closed trade is absent rather than reported as zeros.
+
+    """
+    closed: dict[_Key, list[tuple[datetime, float]]] = {}
     for record in records:
         if record.closed_at is None or record.r_multiple is None:
             continue
-        closed.setdefault(record.conviction, []).append(
-            (record.closed_at, record.r_multiple)
-        )
-    return {
-        conviction: _bucket(conviction, outcomes)
-        for conviction, outcomes in closed.items()
-    }
+        closed.setdefault(key(record), []).append((record.closed_at, record.r_multiple))
+    return {group: _bucket(outcomes) for group, outcomes in closed.items()}
 
 
-def _bucket(
-    conviction: Conviction,
-    outcomes: Sequence[tuple[datetime, float]],
-) -> ConvictionStats:
-    """Reduce one conviction's closed outcomes to its figures.
+def _bucket(outcomes: Sequence[tuple[datetime, float]]) -> ConvictionStats:
+    """Reduce one group's closed outcomes to its figures.
 
     Args:
-        conviction: The bucket being described.
         outcomes: ``(closed_at, r_multiple)`` for each closed trade in the
             bucket, in whatever order the caller held them, sorted here for the
             drawdown and nowhere else. Narrowed to concrete values by
-            `evaluate` rather than filtered a second time here: the same
+            `_grouped` rather than filtered a second time here: the same
             exclusion written twice is one that can be deleted from one place
             and still appear to work, which is how a test stops being able to
             see it.
@@ -925,7 +1000,6 @@ def _bucket(
     trades = len(multiples)
     low, high = hit_rate_interval(len(wins), trades)
     return ConvictionStats(
-        conviction=conviction,
         trades=trades,
         wins=len(wins),
         hit_rate=len(wins) / trades,
