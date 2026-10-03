@@ -406,6 +406,9 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
                   {{ item.source }} <span class="num">{{ item.series_id }}</span></li>
                 {% endfor %}
               </ul>
+              {%- if line.omitted %}
+              <p>{{ line.omitted }} earlier {{ 'reading' if line.omitted == 1 else 'readings' }} not listed. The report's JSON sidecar holds every one.</p>
+              {%- endif %}
             </td>
           </tr>
           {%- endif %}
