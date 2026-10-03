@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -312,6 +313,124 @@ def test_an_observation_with_no_release_date_says_so(report: BiasReport) -> None
     page = render_dashboard(replace(report, currencies=tuple(scores)))
 
     assert "release date not recorded" in detail_for(page, "EURUSD")
+
+
+def with_history(
+    report: BiasReport, readings: int, currencies: tuple[str, ...] = ("EUR",)
+) -> BiasReport:
+    """The same run with each pillar's first input stretched into a daily history.
+
+    A live run stores every reading a pillar consumed: the 2 October 2026 run
+    held 5,541 daily policy-rate readings behind USD's monetary pillar alone.
+    The fixture holds one reading per pillar, which is why the page it renders
+    never came near the size ceiling and the live one did.
+    """
+    start = date(2020, 1, 1)
+    scores = []
+    for row in report.currencies:
+        if row.currency not in currencies:
+            scores.append(row)
+            continue
+        pillars = {
+            name: replace(
+                score,
+                inputs=tuple(
+                    replace(
+                        score.inputs[0],
+                        period=start + timedelta(days=day),
+                        value=70000.0 + day,
+                    )
+                    for day in range(readings)
+                ),
+            )
+            for name, score in row.pillars.items()
+            if score.inputs
+        }
+        scores.append(replace(row, pillars={**row.pillars, **pillars}))
+    return replace(report, currencies=tuple(scores))
+
+
+def test_a_series_with_a_history_shows_its_newest_reading_once(
+    report: BiasReport,
+) -> None:
+    """One line per series, and it is the reading the score was built on.
+
+    Listing every reading put 28 copies of five years of daily data on one page
+    and took it to 107 MB, over the ceiling, so the dashboard refused to build
+    on the mornings it was needed. The newest reading is the one a reader
+    checks a score against.
+    """
+    page = render_dashboard(with_history(report, readings=30))
+    body = detail_for(page, "EURUSD")
+    series = report_series(report, "EUR", PillarName.MONETARY)
+
+    assert body.count(f'<span class="num">{series}</span>') == 1
+    assert "70029" in body
+    assert "2020-01-30" in body
+    assert "2020-01-01" not in body
+
+
+def test_the_row_says_how_many_earlier_readings_it_left_out(
+    report: BiasReport,
+) -> None:
+    """Shortening the list without saying so reads as a pillar built on less.
+
+    The count points the reader at the JSON sidecar, which still holds every
+    reading, so the audit trail is one file away rather than gone.
+    """
+    page = render_dashboard(with_history(report, readings=30))
+
+    assert "29 earlier readings not listed" in detail_for(page, "EURUSD")
+    assert "earlier reading" not in detail_for(page, "GBPUSD")
+
+
+def test_the_latest_revision_of_a_period_is_the_one_shown(
+    report: BiasReport,
+) -> None:
+    """Two readings of one period are a first print and its revision.
+
+    The revision replaced the first print, so showing the first print beside a
+    score built on the revision would put the wrong number next to it.
+    """
+    scores = []
+    for row in report.currencies:
+        if row.currency == "EUR":
+            score = row.pillars[PillarName.MONETARY]
+            first = replace(score.inputs[0], value=81111.0, revision=0)
+            revised = replace(score.inputs[0], value=82222.0, revision=1)
+            pillars = {
+                **row.pillars,
+                PillarName.MONETARY: replace(score, inputs=(revised, first)),
+            }
+            row = replace(row, pillars=pillars)
+        scores.append(row)
+
+    body = detail_for(
+        render_dashboard(replace(report, currencies=tuple(scores))), "EURUSD"
+    )
+
+    assert "82222" in body
+    assert "81111" not in body
+
+
+def test_a_live_sized_history_stays_under_the_size_ceiling(
+    report: BiasReport,
+) -> None:
+    """The failure as it happened: every pillar of every leg with years of data.
+
+    Two thousand daily readings per pillar is about the live shape. The page
+    has to pass every publishing check, not just render.
+    """
+    codes = tuple(row.currency for row in report.currencies)
+    page = render_dashboard(with_history(report, readings=2000, currencies=codes))
+
+    assert check_constraints(page) == []
+
+
+def report_series(report: BiasReport, currency: str, pillar: PillarName) -> str:
+    """The series id behind one pillar of one currency in the fixture."""
+    row = next(row for row in report.currencies if row.currency == currency)
+    return row.pillars[pillar].inputs[0].series_id
 
 
 # --- criterion 6: the expansion is in the page ------------------------------

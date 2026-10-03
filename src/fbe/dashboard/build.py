@@ -296,7 +296,18 @@ class _PillarRow:
 
     @property
     def inputs(self) -> tuple[Observation, ...]:
-        """Every observation behind this row, base leg first.
+        """The newest reading of each series behind this row, base leg first.
+
+        A pillar's inputs hold every reading it consumed, which on a live run
+        is years of daily data. Printing all of it, for both legs of all 28
+        pairs, took the 2 October 2026 page to 107 MB and over the size
+        ceiling, so the dashboard refused to build. The newest reading is the
+        one a reader checks a score against, and `omitted` says how many were
+        left out, so the shorter list does not read as a pillar built on less.
+
+        Newest means the latest period, then the highest revision within it:
+        a revision replaces its first print. Each leg is reduced on its own,
+        so a global series both legs read still shows once per leg, as before.
 
         The observations carry their own currency, which is not always the
         leg's: the RISK pillar reads global series, and a reader who sees
@@ -307,8 +318,41 @@ class _PillarRow:
             item
             for score in (self.base, self.quote)
             if score is not None
-            for item in score.inputs
+            for item in _newest_per_series(score.inputs)
         )
+
+    @property
+    def omitted(self) -> int:
+        """How many readings behind this row `inputs` leaves out.
+
+        Zero when every series has one reading. The JSON sidecar still holds
+        every one, so the count tells the reader where the rest are.
+        """
+        total = sum(
+            len(score.inputs) for score in (self.base, self.quote) if score is not None
+        )
+        return total - len(self.inputs)
+
+
+def _newest_per_series(
+    observations: Sequence[Observation],
+) -> tuple[Observation, ...]:
+    """Keep the latest period and revision of each series, in first-seen order.
+
+    A series is its source, series id, indicator and currency together: one
+    provider id can feed two indicators, and a global id can be filed under
+    more than one currency.
+    """
+    newest: dict[tuple[str, str, str, str], Observation] = {}
+    for item in observations:
+        key = (item.source, item.series_id, item.indicator, item.currency)
+        held = newest.get(key)
+        if held is None or (item.period, item.revision) > (
+            held.period,
+            held.revision,
+        ):
+            newest[key] = item
+    return tuple(newest.values())
 
 
 @dataclass(frozen=True, slots=True)

@@ -151,13 +151,22 @@ cache writability, entry count and age against `cache_ttl_hours`;
 whether a previous report exists to diff against; and what the trade journal
 holds. Each check prints its own verdict, so one failure does not hide the rest.
 
+The reports check compares the config digest of the newest report, chosen by
+the as-of date in its name rather than by sorting names, so neither
+`bias-20260101.json` nor `bias-backup.json` is mistaken for the newest (#293). A
+name with no date is never compared. Every other report is checked from its
+first and last bytes only, which must be `{` and `}`: reports run to tens of
+megabytes, and the damage they suffer is a write cut short. Each damaged one is
+named on its own warning line, because that morning will be missing from the
+evaluation while the record line still counts it present. A file corrupted in
+the middle with both ends intact is not caught.
+
 The reports check prints a second line for the forward record: the weekdays
 between the earliest report on disk and today that have no report, counted, or
 `forward record unbroken` with the span it covers. Presence is read from the
 filename alone, so a report that exists but cannot be decoded still counts as
-that morning rather than as a missing one. Note what that does not say: the
-digest line decodes the newest sidecar only, so a damaged older one is reported
-by neither line. Weekends are not gaps; public holidays are, because the engine
+that morning rather than as a missing one. A damaged older one is named on its
+own line, as above. Weekends are not gaps; public holidays are, because the engine
 carries no holiday calendar. Today is never reported as missing, since `doctor`
 runs before the morning's report as often as after it. A long gap prints a
 count and the first eight days rather than one line each. An empty reports
@@ -1198,6 +1207,13 @@ Single column, in the order the trading day needs it:
    the spread, and the observations behind them with their period, release date
    and series id. This is the Phase 5 criterion that the dashboard shows its
    working.
+
+   Each series shows once, at its newest reading: the latest period, then the
+   latest revision of it. A pillar's inputs hold every reading it consumed,
+   which on a live run is years of daily data, and listing all of it for both
+   legs of 28 pairs took the 2 October 2026 page to 107 MB and over the size
+   ceiling. A row that left readings out says how many, and the JSON sidecar
+   still holds every one.
 
    A pillar the run could not score on a leg prints `.` rather than `0.00`, for
    the reason the diagonal does. Native `<details>` rather than script, so the
