@@ -525,9 +525,15 @@ which is a change to `PairBias` and therefore to `src/fbe/types.py`, so it is
 named here as a gap rather than taken. It costs nothing today because no
 horizon guard is wired in yet, and it costs a confusing tier the day one is.
 
-**The journal records which of the three happened.** `TradeRecord.blackout_check`
-holds `clear`, `unknown` or `not_run`, and `unknown` on a record means the trade
-was entered while the guard was blind. That is the count proposal #2 asks for:
+**The journal records which of four things happened.** `TradeRecord.blackout_check`
+holds `clear`, `unknown`, `not_run` or `inside_window`, and `fbe journal add` sets
+it from the cached calendar at the recorded entry time (#336). `unknown` on a
+record means the trade was entered while the guard was blind, including an entry
+older than the cached week, which the feed no longer holds. `inside_window`
+means the entry was inside a release window on one of the pair's legs: the
+command names the release and when the window reopened, and records the trade
+rather than refusing it, because the journal says what happened. A correction
+keeps the answer recorded at entry. That is the count proposal #2 asks for:
 if the override is most of the runs on which the state fired, the guard has been
 converted into a prompt and this policy needs revisiting. A boolean could not
 produce that count, which is why it was replaced.

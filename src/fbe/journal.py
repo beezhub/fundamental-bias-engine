@@ -141,7 +141,7 @@ loosened, not that the market got better.
 class BlackoutCheck(StrEnum):
     """What the calendar guard managed to say before a trade was entered.
 
-    Three states rather than the boolean this replaced, because that boolean
+    Four states rather than the boolean this replaced, because that boolean
     collapsed the middle one into the other two and the middle one is the only
     one worth counting. `docs/decisions/0002-representing-not-known.md` rule 1
     is the general form: absence is a value in the contract, never a value
@@ -163,17 +163,19 @@ class BlackoutCheck(StrEnum):
         default, because a record that says nothing about the calendar must not
         read as one that says the calendar was clear.
 
-    A trade forced through a blackout the guard could *see* is a fourth fact
-    and is not here. `fbe.cli.size` is still scaffolded, so nothing can record
-    it yet, and inventing the value before the command that writes it exists
-    would put a member in this vocabulary that nothing ever sets. Issue #45
-    scopes the unknown case; the visible-blackout override belongs with the
-    command.
+        `INSIDE_WINDOW`: the guard ran, reached the moment, and the entry was
+        inside a high-impact release window on one of the pair's legs. The
+        fourth fact, a trade placed through a blackout the guard could see.
+        It waited for a command that writes it, and `fbe journal add` does
+        since #336, checking the recorded entry time. The trade is recorded,
+        not refused: the journal says what happened. A count of these against
+        `CLEAR` is how the owner sees how often the news rule was broken.
     """
 
     CLEAR = "clear"
     UNKNOWN = "unknown"
     NOT_RUN = "not_run"
+    INSIDE_WINDOW = "inside_window"
 
 
 @dataclass(frozen=True, slots=True)

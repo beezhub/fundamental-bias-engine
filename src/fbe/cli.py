@@ -104,6 +104,8 @@ from fbe.calendar_guard import (
     DailyCalendar,
     blackout_windows,
     coverage_gap,
+    is_blacked_out,
+    next_clear_time,
 )
 from fbe.dashboard.build import DASHBOARD_FORMAT, build_dashboard
 from fbe.datasources import ALL_SOURCES, CalendarSource
@@ -122,6 +124,7 @@ from fbe.evaluation import Evaluation, ForwardRow, GroupStats, join_reports
 from fbe.evaluation import evaluate as evaluate_record
 from fbe.journal import (
     EVIDENCE_THRESHOLD_TRADES,
+    BlackoutCheck,
     TradeRecord,
     load,
 )
@@ -4694,6 +4697,10 @@ def journal_add(
     moment = _opened_moment(opened_at)
     trade_id = f"{normalised}-{moment:%Y%m%dT%H%M}"
     view = _entry_view(config, normalised, direction, moment.date(), trade_id)
+    if view.blackout_check is None:
+        blackout_check, blackout_notice = _entry_blackout(config, normalised, moment)
+    else:
+        blackout_check, blackout_notice = view.blackout_check, None
     units = lots * config.broker.contract_size
     risk_amount, outcome, absence = _realised_money(
         config, normalised, entry, stop, exit_price, direction, units
@@ -4733,6 +4740,7 @@ def journal_add(
         broker=config.broker.name,
         notes=note or "",
         tags=tuple(tag or ()),
+        blackout_check=blackout_check,
     )
 
     try:
@@ -4750,6 +4758,8 @@ def journal_add(
         absence,
         risk_fraction_for(record.conviction, config.risk) * config.risk.account_balance,
     )
+    if blackout_notice is not None:
+        typer.echo(blackout_notice)
 
 
 def _journal_path(config: Config) -> Path:
@@ -4769,6 +4779,75 @@ def _journal_path(config: Config) -> Path:
 
     """
     return config.data.journal_dir / journal_module.JOURNAL_FILENAME
+
+
+def _entry_blackout(
+    config: Config, pair: str, moment: datetime
+) -> tuple[BlackoutCheck, str | None]:
+    """Check a recorded entry time against the news windows.
+
+    The owner's rule is to avoid placing a trade inside a high-impact release
+    window. The morning report lists the windows and blocks nothing (#335);
+    this is the check at the moment the trade was placed (#336). It records,
+    never refuses: the journal says what happened.
+
+    Read from the cache only, as the rest of ``journal add`` is. The feed holds
+    the current week, so an entry earlier than the first release in the cached
+    week is a trade from a week the cache does not have: unknown, never clear.
+    The upper bound is `fbe.calendar_guard.coverage_gap`'s, through
+    `is_blacked_out`.
+
+    Args:
+        config: The effective config.
+        pair: Six-character pair, upper case.
+        moment: The entry time, aware UTC.
+
+    Returns:
+        ``(state, notice)``. ``CLEAR`` with no notice. ``INSIDE_WINDOW`` with a
+        notice naming the release and, from `next_clear_time`, when the window
+        reopened. ``UNKNOWN`` with a notice saying why the entry could not be
+        checked.
+
+    """
+    source = CalendarSource(replace(config.data, offline=True))
+    try:
+        week = tuple(
+            source.events(
+                list(G10),
+                moment - timedelta(days=8),
+                moment + timedelta(days=8),
+                min_impact=Impact.LOW.value,
+            )
+        )
+    except SourceError as error:
+        return BlackoutCheck.UNKNOWN, (
+            f"Calendar not read ({error}), so the entry time was not checked "
+            "against the news windows. Recorded as unknown."
+        )
+    earliest = min((event.scheduled_for for event in week), default=None)
+    if earliest is None or moment < earliest:
+        return BlackoutCheck.UNKNOWN, (
+            "The cached calendar does not reach back to the entry time, so it "
+            "was not checked against the news windows. Recorded as unknown."
+        )
+    coverage = CalendarCoverage(events=week, covers_through=source.horizon())
+    blocked, reason = is_blacked_out(pair, moment, coverage, config.data)
+    if blocked is None:
+        return BlackoutCheck.UNKNOWN, (
+            f"The entry time could not be checked against the news windows "
+            f"({reason}). Recorded as unknown."
+        )
+    if not blocked:
+        return BlackoutCheck.CLEAR, None
+    reopened = next_clear_time(pair, coverage, config.data, after=moment)
+    when = (
+        f"The window reopened at {reopened:%H:%M} UTC."
+        if reopened is not None
+        else "When the window reopened is not known from the cached calendar."
+    )
+    return BlackoutCheck.INSIDE_WINDOW, (
+        f"Entered inside a news window: {reason}. {when} Recorded, not refused."
+    )
 
 
 def _checked_journal_pair(pair: str) -> tuple[str, str]:
@@ -4869,6 +4948,7 @@ class _EntryView:
     config_digest: str
     agreed_with_bias: bool
     direction: Direction | None
+    blackout_check: BlackoutCheck | None = None
 
 
 def _entry_view(
@@ -4943,6 +5023,9 @@ def _entry_view(
             config_digest=existing.config_digest,
             agreed_with_bias=existing.agreed_with_bias,
             direction=None,
+            # Carried for the reason the bias is: a close appended days later
+            # must not recheck the entry against a different week (#336).
+            blackout_check=existing.blackout_check,
         )
 
     base, quote = split_pair(pair)

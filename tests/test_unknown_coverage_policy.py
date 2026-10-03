@@ -444,13 +444,14 @@ def test_the_unknown_prefix_is_read_from_bias_rather_than_copied(
 # --- the journal, which is where the override has to be countable ------------
 
 
-def test_the_three_blackout_states_are_three_values() -> None:
-    """Checked and clear, checked and blind, and no guard at all.
+def test_the_blackout_states_are_four_distinct_values() -> None:
+    """Checked and clear, checked and blind, no guard at all, and since #336
+    checked and inside a window.
 
-    A boolean holds two of the three, and the one it loses is the one proposal
-    #2 asks to be counted.
+    A boolean holds two of these, and the one it loses first is the one
+    proposal #2 asks to be counted.
     """
-    assert len(set(BlackoutCheck)) == 3
+    assert len(set(BlackoutCheck)) == 4
     assert BlackoutCheck.CLEAR is not BlackoutCheck.UNKNOWN
     assert BlackoutCheck.UNKNOWN is not BlackoutCheck.NOT_RUN
 

@@ -235,3 +235,31 @@ def no_calendar_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(cli, "_daily_calendar", lambda config, run_date: None)
     monkeypatch.setattr(cli, "_refresh_calendar", lambda config: None)
+
+
+def _real_entry_blackout() -> object:
+    from fbe import cli
+
+    return cli._entry_blackout
+
+
+REAL_ENTRY_BLACKOUT = _real_entry_blackout()
+"""``journal add``'s real entry-time check, for the tests that switch it on."""
+
+
+@pytest.fixture(autouse=True)
+def no_entry_check_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``journal add`` records ``not_run`` unless a test asks for the check.
+
+    Since #336 the command reads the cached calendar to check the entry time.
+    The tests written before it assert on a record the guard never saw, and a
+    check that read whatever calendar a developer's cache held would make them
+    depend on the machine. ``tests/test_entry_blackout_check.py`` switches the
+    real check back on over built events.
+    """
+    from fbe import cli
+    from fbe.journal import BlackoutCheck
+
+    monkeypatch.setattr(
+        cli, "_entry_blackout", lambda config, pair, when: (BlackoutCheck.NOT_RUN, None)
+    )
