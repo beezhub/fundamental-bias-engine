@@ -75,7 +75,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
 from fbe.types import Frequency, PillarName
-from fbe.universe import G10
+from fbe.universe import G10, GLOBAL
 
 __all__ = [
     "ABSOLUTE_MIN_HISTORY",
@@ -270,10 +270,6 @@ and a cycle of one would zero every yield on a Monday. Irregular takes the
 monthly figure, which is the cadence the irregular series here approximate.
 """
 
-GLOBAL = "GLOBAL"
-"""Pseudo-currency for cross-market series such as VIX. Matches the convention
-`Observation.currency` documents: a series that describes the whole market, not
-one economy, is filed under ``"GLOBAL"`` rather than duplicated eight times."""
 
 SOURCE_FRED = "fred"
 SOURCE_OECD = "oecd"

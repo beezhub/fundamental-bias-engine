@@ -37,7 +37,7 @@ from math import isfinite
 
 from fbe.config import BLACKOUT_IMPACTS, DataConfig
 from fbe.types import CalendarEvent
-from fbe.universe import G10, split_pair
+from fbe.universe import G10, GLOBAL, split_pair
 
 __all__ = [
     "HIGH_IMPACT_KEYWORDS",
@@ -49,6 +49,7 @@ __all__ = [
     "is_high_impact",
     "blackout_windows",
     "is_blacked_out",
+    "global_events",
     "next_clear_time",
     "action_for_open_position",
 ]
@@ -308,7 +309,7 @@ def _describe(event: CalendarEvent) -> str:
         was closed early.
 
     Raises:
-        ValueError: If ``scheduled_for`` is naive. Both callers already check
+        ValueError: If ``scheduled_for`` is naive. Every caller already checks
             every event's shape before they reach here, so this never fires
             today. It is checked anyway because ``astimezone`` on a naive value
             assumes the *system* zone: a naive 09:00 read on the owner's
@@ -742,13 +743,15 @@ def is_blacked_out(
     unknown, including moments that are genuinely answerable, so the fix belongs
     to the ``covers_through`` contract rather than to this function.
 
-    **A global event never blocks.** An event whose currency is ``GLOBAL``,
-    which is how `fbe.datasources.calendar` records the feed's "All" country,
-    matches neither leg. That makes `HIGH_IMPACT_KEYWORDS["geopolitical"]`
-    unreachable on real input, since a G20 summit arrives global rather than
-    attributed to a currency. Whether a global event should block every pair is
-    a decision rather than an oversight, and it is recorded as one rather than
-    taken here.
+    **A global event never blocks a pair.** An event whose currency is
+    ``GLOBAL``, which is how `fbe.datasources.calendar` records the feed's
+    "All" country, matches neither leg. A global event never blocks a pair. It
+    is named on every pair as `event:global`, and whether to stand aside for it
+    is the owner's judgement. `global_events` answers that separate question,
+    and is what makes `HIGH_IMPACT_KEYWORDS["geopolitical"]` reachable: a G20
+    or BRICS summit arrives global rather than attributed to a currency. Ruled
+    on #227, because the plan's item 10 stays a human judgement
+    (``docs/data-sources.md``).
 
     **The reason names the first blocking event, not the nearest.** First in
     ``calendar.events`` order, base leg before quote. The string reaches
@@ -810,6 +813,56 @@ def is_blacked_out(
                 if opens <= when <= closes:
                     return True, _describe(event)
     return False, None
+
+
+def global_events(
+    when: datetime,
+    calendar: CalendarCoverage,
+    config: DataConfig,
+) -> tuple[str, ...]:
+    """Name the high-impact global events whose window contains ``when``.
+
+    A global event never blocks a pair: `is_blacked_out` matches events by leg
+    and ``GLOBAL`` is neither leg of any pair. This answers the other half of
+    the ruling on #227, which is that such an event is still named, so a G20
+    or BRICS summit reaches the trader as ``event:global`` on every pair rather
+    than vanishing. Standing aside for it is the owner's judgement, because the
+    plan's item 10 is a judgement the feed covers too thinly to enforce.
+
+    The same qualification and the same windows as a leg event:
+    `blackout_windows` applies `is_high_impact`, so the keyword half of that
+    test, `HIGH_IMPACT_KEYWORDS["geopolitical"]`, is what qualifies a summit
+    the feed itself rates low.
+
+    Args:
+        when: The moment being asked about, timezone-aware UTC.
+        calendar: The coverage the leg check reads. Coverage is not checked
+            here: when it does not reach ``when``, `is_blacked_out` already
+            answers unknown for every pair, and that marker is the one a reader
+            needs.
+        config: Supplies the blackout minutes.
+
+    Returns:
+        One reason per qualifying global event, in ``calendar.events`` order,
+        each in the leg reason's shape: ``"GLOBAL <title> at <date> <time>
+        UTC"``. Empty when none is in window. Never a block: nothing returned
+        here makes a pair untradeable.
+
+    Raises:
+        ValueError: If ``when`` or a global event's ``scheduled_for`` is naive.
+
+    """
+    _require_aware(when, "when")
+    named: list[str] = []
+    for event in calendar.events:
+        if event.currency != GLOBAL:
+            continue
+        _require_aware(event.scheduled_for, f"{event.currency} {event.title}")
+        for opens, closes in blackout_windows([event], config):
+            if opens <= when <= closes:
+                named.append(_describe(event))
+                break
+    return tuple(named)
 
 
 def next_clear_time(
@@ -914,7 +967,8 @@ def action_for_open_position(
     **A global event never acts.** An event whose currency is ``GLOBAL``,
     which is how `fbe.datasources.calendar` records the feed's "All" country,
     matches neither leg, exactly as in `is_blacked_out`. A G20 summit inside
-    the window leaves a position up 0.1R on HOLD.
+    the window leaves a position up 0.1R on HOLD. The summit is named by
+    `global_events` instead, and acting on it is the owner's judgement (#227).
 
     **The reason names the first event in range, not the nearest.** Base leg
     before quote, and within a leg first in ``events`` order. The action is the

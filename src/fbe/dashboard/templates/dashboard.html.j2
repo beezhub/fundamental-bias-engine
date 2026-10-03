@@ -250,7 +250,7 @@ ul.notes { margin: 0; padding-left: 18px; color: var(--text-secondary); }
   <p class="meta run-conditions">
     Run conditions:
     {% for row in view.blocker_counts %}
-    <span class="condition">{{ row.kind }}, {{ row.count }} of {{ row.total }}</span>{% if not loop.last %} &middot;{% endif %}
+    <span class="condition">{{ row.kind }}{% if row.universal and row.reasons %}: {{ row.reasons | join("; ") }}{% endif %}, {{ row.count }} of {{ row.total }}</span>{% if not loop.last %} &middot;{% endif %}
     {%- endfor %}
     <br>Any condition carried by every pair is named here only, and not
     repeated on the cells below.

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 __all__ = [
     "CurrencyMeta",
     "G10",
+    "GLOBAL",
     "CURRENCIES",
     "MAJORS",
     "ALL_PAIRS",
@@ -57,6 +58,19 @@ class CurrencyMeta:
 G10: tuple[str, ...] = ("USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD")
 """Scored universe. Note this is the FX-market "G10 majors" convention minus
 SEK and NOK, which carry materially wider retail spreads."""
+
+GLOBAL: str = "GLOBAL"
+"""Pseudo-currency for whatever describes the whole market rather than one
+economy: a cross-market series such as VIX, filed once rather than eight times,
+and a calendar event the feed publishes under "All", such as a G20 summit. Not
+a member of `G10` and never a leg of a pair.
+
+Defined here rather than in `fbe.datasources.registry`, where it began, because
+`fbe.calendar_guard` and `fbe.bias` both need it and neither may import the
+data-source package: the guard's safety argument is that it imports nothing
+that could act on an account, and `fbe.datasources` brings an HTTP client with
+it (#227). The registry imports it from here.
+"""
 
 
 CURRENCIES: Mapping[str, CurrencyMeta] = {

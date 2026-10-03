@@ -47,6 +47,7 @@ from fbe.calendar_guard import (
     _merge,
     blackout_windows,
     coverage_gap,
+    global_events,
     is_blacked_out,
     is_high_impact,
 )
@@ -268,25 +269,23 @@ def test_every_high_rated_row_in_the_committed_feed_qualifies() -> None:
         assert is_high_impact(built) is True, row["title"]
 
 
-def test_a_global_event_never_blocks_a_pair_today() -> None:
-    """Pinned as it behaves, because nothing pinned it in either direction.
+def test_a_global_event_is_named_and_never_blocks_a_pair() -> None:
+    """Pinned as ruled on #227, where it was once pinned only as it behaved.
 
-    `fbe.datasources.calendar` maps the feed's "All" country to ``GLOBAL`` and
-    hands those events to every request, on the stated grounds that an event
-    with no single currency can move any of them. This function matches events
-    by leg, so it drops every one of them, which makes
-    ``HIGH_IMPACT_KEYWORDS["geopolitical"]`` unreachable on real input: the
-    committed capture's one such row is a BRICS summit, published under "All".
-
-    Whether a global event should block every pair is a decision rather than an
-    oversight, and it is filed rather than taken here. This test exists so the
-    behaviour is stated somewhere rather than merely happening, and so that
-    changing it has to change a test that says why.
+    `fbe.datasources.calendar` maps the feed's "All" country to ``GLOBAL``.
+    This function matches events by leg, so a global event never blocks: the
+    plan's item 10 stays a human judgement. What changed is that it is no longer
+    dropped. `global_events` names it, which makes
+    ``HIGH_IMPACT_KEYWORDS["geopolitical"]`` reachable on real input, and
+    `tests/test_global_event_marker.py` follows it to every pair on the
+    committed capture's BRICS row.
     """
     summit = event("GLOBAL", WHEN, title="BRICS Summit", impact="Low")
 
     assert is_high_impact(summit) is True, "the keyword half rates it high"
     assert is_blacked_out("EURUSD", WHEN, covering(summit), CONFIG) == (False, None)
+    (named,) = global_events(WHEN, covering(summit), CONFIG)
+    assert "BRICS Summit" in named
 
 
 # --- blackout_windows --------------------------------------------------------

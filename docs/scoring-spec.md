@@ -1294,21 +1294,23 @@ The table below is every kind of blocker the engine emits. `fbe.bias.BLOCKERS`
 is the same list in code, and `tests/test_blockers.py` asserts the two match, so
 a blocker cannot be added to one and not the other.
 
-Kinds, not literal strings, because of two rows. Six of the eight are emitted
+Kinds, not literal strings, because of three rows. Six of the nine are emitted
 as the name given here. `event` is emitted as `"event: <reason>"`, where the
 reason is the one the guard returns, naming the event, its currency and its
 scheduled time, so that a reader sees "event: EUR CPI y/y at 2026-09-14 09:00
 UTC" rather than a bare flag. `event:unknown` is emitted the same way, as
 `"event:unknown: <reason>"`, where the reason names why the guard could not
 check: a failed calendar fetch, a cached week that ends before the run's date,
-or a date beyond the horizon of the data supplied.
+or a date beyond the horizon of the data supplied. `event:global` is emitted as
+`"event:global: <reason>"`, where the reason names the global event in the same
+shape as a blocked one.
 
 Anything reading `blockers` should therefore not match on exact equality for
-either of those two rows, and must take the **longest** key that prefixes a
-string rather than the first one that matches. Four of the emitted strings
+any of those three rows, and must take the **longest** key that prefixes a
+string rather than the first one that matches. Five of the emitted strings
 begin with a shorter key than their own: `cost:unchecked` starts with `cost`,
-and `event:unchecked`, `event:unknown: ...` and `event: ...` all start with
-`event`. Taking the first match reads three non-blocking markers as hard blocks
+and `event:unchecked`, `event:unknown: ...`, `event:global: ...` and
+`event: ...` all start with `event`. Taking the first match reads three non-blocking markers as hard blocks
 and refuses every pair in an offline run.
 
 The two prefixes above are fixed and `tests/test_pair_filters.py` holds
@@ -1340,6 +1342,7 @@ or wait for the feed to publish the week.
 | `cost:unchecked` | no | No `cost_ratio` was supplied | The check did not run, so its silence is not an all-clear |
 | `event:unchecked` | no | No `CalendarGuard` was supplied | The same, for the calendar |
 | `event:unknown` | no | A `CalendarGuard` was supplied and could not determine either leg's status | A check that ran and failed is a different fact from a check that never ran, and the trader's response differs |
+| `event:global` | no | The guard names a high-impact event with no single currency, such as a G20 or BRICS summit | Named on every pair for the owner to judge, never enforced: the plan's item 10 stays a human judgement (#227) |
 
 **The two `:unchecked` markers do not block, and neither does `event:unknown`.**
 An offline run has no calendar and no cost input, and refusing to produce biases
