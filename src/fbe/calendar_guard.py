@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from math import isfinite
 
@@ -50,6 +50,7 @@ __all__ = [
     "blackout_windows",
     "is_blacked_out",
     "global_events",
+    "DailyCalendar",
     "next_clear_time",
     "action_for_open_position",
 ]
@@ -863,6 +864,148 @@ def global_events(
                 named.append(_describe(event))
                 break
     return tuple(named)
+
+
+@dataclass(frozen=True, slots=True)
+class DailyCalendar:
+    """The week's calendar, answering a morning run's per-day questions.
+
+    `fbe.bias.apply_filters` takes a guard and a window lister keyed by
+    currency and date, while every other function here answers for a pair at
+    a moment. This is the bridge, and it carries the owner's rule from the
+    review of #334: there is news on most days, so a morning run must not block
+    a pair because a release is due later that day. A leg's release is listed
+    as a window and never blocks here. Blocking belongs to the entry moment,
+    where `is_blacked_out` answers for the time a trade is actually placed
+    (#336).
+
+    `fbe.bias` never imports this module, and this class does not import it
+    either: the two methods have the shapes `fbe.bias.CalendarGuard` and
+    `fbe.bias.CalendarWindows` describe, and the caller wires them together.
+
+    Attributes:
+        calendar: The fetched week, or a failed fetch, as `CalendarCoverage`.
+        config: Supplies the blackout minutes.
+        asked_at: When the run asks, timezone-aware. The calendar must cover
+            this moment, or the start of the day asked about if that is later,
+            for the day to be answered at all.
+
+    Why the run's moment and not the end of the day. `CalendarSource.horizon`
+    is the last release the feed's week holds, so on the week's last day of
+    releases the coverage ends partway through it, every week. Requiring the
+    whole day would mark every pair unknown every Friday, and a warning that
+    fires weekly is one the owner learns to skip. What the coverage check has
+    to catch is a failed fetch or a cache from an earlier week, and both fail
+    at the run's moment. A release later than the week's last one is one the
+    feed has not published, which no reading of the feed could show.
+
+    """
+
+    calendar: CalendarCoverage
+    config: DataConfig
+    asked_at: datetime
+
+    def _day(self, on: date) -> tuple[datetime, datetime]:
+        start = datetime(on.year, on.month, on.day, tzinfo=UTC)
+        return start, start + timedelta(days=1)
+
+    def _gap(self, on: date) -> str | None:
+        """Why the calendar cannot answer for ``on``, or ``None``.
+
+        Judged at `asked_at`, or the start of ``on`` when that is later, for
+        the reason the class docstring gives.
+        """
+        start, _ = self._day(on)
+        gap = coverage_gap(self.calendar, max(self.asked_at, start))
+        if gap is None:
+            return None
+        category, detail = gap
+        return f"{category.value}: {detail}"
+
+    def _touching(
+        self, currency: str, on: date
+    ) -> list[tuple[CalendarEvent, datetime, datetime]]:
+        start, end = self._day(on)
+        found: list[tuple[CalendarEvent, datetime, datetime]] = []
+        for event in self.calendar.events:
+            if event.currency != currency:
+                continue
+            _require_aware(event.scheduled_for, f"{event.currency} {event.title}")
+            # `blackout_windows` applies `is_high_impact`, so a release that does
+            # not qualify yields no window here and is not listed.
+            for opens, closes in blackout_windows([event], self.config):
+                if opens < end and closes >= start:
+                    found.append((event, opens, closes))
+        return found
+
+    def guard(self, currency: str, on: date) -> tuple[tuple[str, ...], str | None]:
+        """Answer `fbe.bias.CalendarGuard`'s question for one currency and day.
+
+        Args:
+            currency: An ISO code, or ``GLOBAL`` for the feed's "All" rows.
+            on: The run's date, read as a UTC day.
+
+        Returns:
+            ``((), reason)`` when the calendar cannot answer, a failed fetch or
+            a cache that does not reach the run's moment, so every pair carries
+            ``event:unknown`` and none reads as clear.
+            Otherwise ``((), None)`` for a currency, because a leg's release
+            never blocks a morning run, and for ``GLOBAL`` the global events
+            whose window touches the day, each named, which `apply_filters`
+            records as the non-blocking ``event:global``.
+
+        """
+        reason = self._gap(on)
+        if reason is not None:
+            return (), reason
+        if currency != GLOBAL:
+            return (), None
+        return tuple(
+            _describe(event) for event, _, _ in self._touching(GLOBAL, on)
+        ), None
+
+    def windows(self, currency: str, on: date) -> tuple[str, ...]:
+        """List one currency's no-entry windows touching ``on``.
+
+        Args:
+            currency: An ISO code.
+            on: The run's date, read as a UTC day.
+
+        Returns:
+            One note per qualifying release whose window touches the day, in
+            calendar order, as ``"<CCY> <title> at <date> <time> UTC, no
+            entries HH:MM to HH:MM UTC"``. Empty when the calendar cannot
+            answer: `guard` reports that, and listing nothing is then not a
+            claim that the day is quiet.
+
+        """
+        if self._gap(on) is not None:
+            return ()
+        return tuple(
+            f"{_describe(event)}, no entries {opens:%H:%M} to {closes:%H:%M} UTC"
+            for event, opens, closes in self._touching(currency, on)
+        )
+
+    def events_on(self, on: date) -> tuple[CalendarEvent, ...]:
+        """List the qualifying releases whose window touches ``on``.
+
+        Args:
+            on: The run's date, read as a UTC day.
+
+        Returns:
+            Every G10 and ``GLOBAL`` release that `is_high_impact` qualifies and
+            whose window touches the day, in calendar order. Empty when the
+            calendar cannot answer.
+
+        """
+        if self._gap(on) is not None:
+            return ()
+        seen: list[CalendarEvent] = []
+        for currency in (*G10, GLOBAL):
+            for event, _, _ in self._touching(currency, on):
+                if event not in seen:
+                    seen.append(event)
+        return tuple(sorted(seen, key=lambda event: event.scheduled_for))
 
 
 def next_clear_time(

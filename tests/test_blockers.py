@@ -40,6 +40,7 @@ from fbe.bias import (
     GLOBAL_SUFFIX,
     UNCHECKED_SUFFIX,
     UNKNOWN_SUFFIX,
+    WINDOW_SUFFIX,
     blocking,
     kind_of,
 )
@@ -183,11 +184,12 @@ def test_only_the_suffixed_markers_are_non_blocking() -> None:
     `UNKNOWN_SUFFIX` is the second name added under that rule, for a check
     that ran and could not tell, distinct from `UNCHECKED_SUFFIX`'s check that
     did not run at all. `GLOBAL_SUFFIX` is the third, for a notice about the
-    whole run that is named and never enforced (#227).
+    whole run that is named and never enforced (#227), and `WINDOW_SUFFIX`
+    the fourth, for a leg's release window listed for the trader (#335).
     """
     for blocker, blocks in BLOCKERS.items():
         is_non_blocking = blocker.endswith(
-            (UNCHECKED_SUFFIX, UNKNOWN_SUFFIX, GLOBAL_SUFFIX)
+            (UNCHECKED_SUFFIX, UNKNOWN_SUFFIX, GLOBAL_SUFFIX, WINDOW_SUFFIX)
         )
         assert blocks is not is_non_blocking, blocker
 

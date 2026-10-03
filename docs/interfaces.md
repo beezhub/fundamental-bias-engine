@@ -400,12 +400,21 @@ reconcile, which is why USDJPY is demoted to low conviction despite carrying
 the widest spread in the run. JPY's coverage is 71% and its pillars disagree at
 a dispersion of 1.31, and `conviction_for` demotes on each.
 
-Every row carries `cost:unchecked` and `event:unchecked`, and every run of this
-command does. The command passes no `CalendarGuard` and no dealing cost,
-because no command yet builds a guard from the calendar feed and no execution
-layer supplies a cost, so `apply_filters` records that both checks were skipped rather than
-leaving the row silent. A row with an empty Notes column would mean every check
-ran and every check passed, which cannot happen today.
+Every row carries `cost:unchecked`, because no execution layer supplies a
+dealing cost yet. Since #335 the command reads the news calendar for today: each
+pair lists its own release windows as a non-blocking `event:window`, for example
+`event:window: USD CPI y/y at 2026-10-05 12:30 UTC, no entries 12:00 to 13:30
+UTC`, and a calendar that could not be read gives `event:unknown` with the
+reason. A release later in the day never blocks a pair or lowers its tier: there
+is news on most days, and the owner's rule is to avoid entering inside the
+window, which is checked at the entry moment. A run for any date other than
+today reads no calendar and carries `event:unchecked`, because the feed holds
+the current week only. The 24-hour conviction cap (`EventHorizonGuard`) is not
+wired: it would demote most pairs most days. A row is never silent about a
+check: `cost:unchecked` says the cost was not checked, and a row with no calendar
+marker on a run that read the calendar has no window that day. A row with an
+empty Notes column would mean every check ran and every check passed, which
+cannot happen until a dealing cost is supplied.
 
 The closing note says the same thing about the check that leaves no marker.
 `build_pair_biases` caps conviction for a release inside 24 hours, and with no
@@ -721,8 +730,9 @@ treated as no baseline: a run that asked for a specific baseline and printed
 path, so moving the data tree moves the reports with it.
 
 Three things are thin until the layers behind them land, and each says so on the
-page rather than rendering empty. The calendar is always empty because no
-command yet reads the calendar feed into the run, and the warnings carry one line per run
+page rather than rendering empty. The calendar lists the day's qualifying
+releases when the run is for today and the feed could be read, and is empty
+otherwise, and the warnings carry one line per run
 saying the blackout filter and the 24-hour conviction cap did not run. Shortlist
 entries carry no size, because a size needs an entry and a stop from the chart,
 and each entry names the `fbe size` call that would attach one. They carry no

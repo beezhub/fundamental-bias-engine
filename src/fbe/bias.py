@@ -43,6 +43,8 @@ __all__ = [
     "UNCHECKED_SUFFIX",
     "UNKNOWN_SUFFIX",
     "GLOBAL_SUFFIX",
+    "WINDOW_SUFFIX",
+    "CalendarWindows",
     "CalendarGuard",
     "EventHorizonGuard",
 ]
@@ -87,6 +89,19 @@ for the reason `UNCHECKED_SUFFIX` gives: a reader can tell a marker does not
 block from its name alone.
 """
 
+WINDOW_SUFFIX: str = ":window"
+"""Suffix marking a release window on one of the pair's legs, listed and never
+blocking.
+
+``event:window`` names a high-impact release on the pair's own currencies that
+day and the minutes either side of it in which no entry should be placed. The
+owner's rule, set on review of #334, is to avoid entering inside such a window,
+and there is news on most days, so a morning run lists the window rather than
+blocking the pair for the whole day. Blocking happens at the entry moment
+(#336). A suffix, for the reason `UNCHECKED_SUFFIX` gives: the name alone says
+it does not block.
+"""
+
 BLOCKERS: Mapping[str, bool] = {
     "no_edge": True,
     "cost": True,
@@ -97,35 +112,37 @@ BLOCKERS: Mapping[str, bool] = {
     "event" + UNCHECKED_SUFFIX: False,
     "event" + UNKNOWN_SUFFIX: False,
     "event" + GLOBAL_SUFFIX: False,
+    "event" + WINDOW_SUFFIX: False,
 }
 """Every kind of blocker `apply_filters` can append, and whether it blocks.
 
 ``True`` means the blocker sets ``PairBias.tradeable = False``. ``False`` means
 it is recorded and the pair stays tradeable, which is the `UNCHECKED_SUFFIX`,
-`UNKNOWN_SUFFIX` and `GLOBAL_SUFFIX` cases, the last a notice rather than a
-check that failed. Of the first two: an offline run, and a run whose
-calendar fetch failed, both still produce biases, and both say which checks
+`UNKNOWN_SUFFIX`, `GLOBAL_SUFFIX` and `WINDOW_SUFFIX` cases, the last two
+notices rather than checks that failed. Of the first two: an offline run, and a
+run whose calendar fetch failed, both still produce biases, and both say which checks
 they could not perform or complete. Whether unknown calendar coverage should
 keep this pair tradeable at all is not settled: `apply_filters` marks this
 provisional pending issue #24 and the child of #41 that consumes its ruling.
 
-Kinds rather than literal strings, and the distinction matters for three
-entries. Six of these nine are emitted as the key itself. ``event`` is not:
+Kinds rather than literal strings, and the distinction matters for four
+entries. Six of these ten are emitted as the key itself. ``event`` is not:
 `CalendarGuard` returns a reason naming the event, its currency and its
 scheduled time, so the shortlist can say why an obvious setup was skipped, and
 `apply_filters` appends
 that reason as ``"event: <reason>"``. ``event:unknown`` is not either: it carries
 why the guard could not check, as ``"event:unknown: <reason>"``, from
 `calendar_guard.CoverageGap`'s categories. ``event:global`` carries the event
-it names, as ``"event:global: <reason>"``. So a run's ``blockers`` can hold
+it names, as ``"event:global: <reason>"``, and ``event:window`` the release and
+its window, as ``"event:window: <note>"``. So a run's ``blockers`` can hold
 strings this mapping does not contain verbatim, and a consumer matching on
 exact equality will miss the blocked case, the unknown case and the notice.
 
 A consumer mapping a string back to its kind must take the **longest** key that
-prefixes it. Five of the emitted strings begin with a shorter key than their
+prefixes it. Six of the emitted strings begin with a shorter key than their
 own: ``"cost:unchecked"`` starts with ``"cost"``, and ``"event:unchecked"``,
-``"event:unknown: ..."``, ``"event:global: ..."`` and ``"event: ..."`` all start
-with ``"event"``. Taking
+``"event:unknown: ..."``, ``"event:global: ..."``, ``"event:window: ..."`` and
+``"event: ..."`` all start with ``"event"``. Taking
 the first key that matches reads three non-blocking markers as hard blocks and
 refuses every pair in an offline run, which is the outcome the two suffixes
 exist to avoid. `apply_filters` sidesteps the question by carrying each kind
@@ -213,6 +230,19 @@ for it is recorded on every pair as ``"event:global: <reason>"`` and never
 blocks, per #227: a summit is named for the owner to judge rather than enforced.
 An ``unknown_reason`` for ``GLOBAL`` adds nothing, because the legs carry the
 same calendar and already say it could not be read.
+"""
+
+CalendarWindows = Callable[[str, date], Sequence[str]]
+"""Injected hook listing one currency's release windows on one date.
+
+Each string names a high-impact release and the minutes either side of it in
+which no entry should be placed, and `apply_filters` records it on the pair as
+``"event:window: <note>"``, which never blocks (#335). Separate from
+`CalendarGuard` because the two answer different questions: the guard says
+whether the calendar could be read and what blocks, and this says what to avoid
+and when. An empty answer means no window that day, so a caller supplying this
+must also supply a guard, whose unknown answer is what says the day could not be
+read.
 """
 
 EventHorizonGuard = Callable[[str, date], bool | None]
@@ -873,6 +903,7 @@ def apply_filters(
     asof: date,
     calendar_guard: CalendarGuard | None = None,
     cost_ratio: float | None = None,
+    calendar_windows: CalendarWindows | None = None,
 ) -> PairBias:
     """Apply the hard filters and record why a pair is not tradeable.
 
@@ -904,6 +935,11 @@ def apply_filters(
             the bias horizon, supplied by the execution layer, which owns the ATR
             and the broker's spread table. ``None`` records
             ``"cost:unchecked"`` without blocking.
+        calendar_windows: Optional `CalendarWindows` listing each leg's release
+            windows on ``asof``. Each is recorded as a non-blocking
+            ``"event:window: <note>"``, base leg first. ``None`` lists nothing,
+            and says nothing about the calendar: ``calendar_guard`` is what
+            records whether it was read.
 
     Returns:
         A new `PairBias` with ``tradeable`` and ``blockers`` set. Frozen input,
@@ -1036,6 +1072,15 @@ def apply_filters(
         entries.append(_unchecked("event"))
     else:
         entries.extend(_calendar_entries(bias, calendar_guard, asof))
+    if calendar_windows is not None:
+        # Listed, never blocking: the owner avoids the window at entry, and a
+        # release later in the day must not take the pair off the morning's
+        # chart (#335).
+        marker = "event" + WINDOW_SUFFIX
+        for leg in (bias.base, bias.quote):
+            entries.extend(
+                (marker, f"{marker}: {note}") for note in calendar_windows(leg, asof)
+            )
 
     return replace(
         bias,
