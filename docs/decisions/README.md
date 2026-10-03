@@ -37,3 +37,4 @@ gap shows on the first record that strands rather than the fifth.
 | [0015](0015-a-series-inside-a-source-is-a-named-gap.md) | A series inside a source is a named gap, and the collector asks for it alone | Accepted |
 | [0016](0016-a-source-declines-a-ref-before-it-is-routed.md) | A source declines a ref it cannot serve before the collector routes it | Accepted |
 | [0017](0017-the-implementation-lanes-claim-key-has-a-fallback.md) | The implementation lanes' claim key has a fallback for the day the roadmap pool is shut | Accepted |
+| [0018](0018-a-local-api-and-angular-app-drive-the-pipeline.md) | A local API and an Angular app drive the pipeline, and compute nothing | Accepted |
