@@ -75,6 +75,21 @@ def event(
     )
 
 
+def calendar_of(events: object) -> CalendarCoverage:
+    """Wrap events in coverage that reaches well past every moment asked about.
+
+    Since #199 `action_for_open_position` takes a `CalendarCoverage`, so a
+    failed fetch can be told from a quiet calendar. Every test here that is not
+    about coverage asks with data that comfortably vouches for the moment, and
+    the events are passed through as given, so a generator stays a generator.
+    """
+    return CalendarCoverage(
+        events=events,  # type: ignore[arg-type]
+        covers_through=WHEN + timedelta(days=2),
+        fetch_ok=True,
+    )
+
+
 ABOVE = TIGHTEN_BUFFER_R + 0.5
 BELOW = TIGHTEN_BUFFER_R - 0.5
 """Either side of the buffer, derived from it rather than written out.
@@ -112,7 +127,10 @@ def test_every_action_is_an_instruction_a_person_carries_out() -> None:
 def test_a_position_with_no_event_in_range_is_held() -> None:
     """The common case, and the one the reason is allowed to be absent on."""
     action, reason = action_for_open_position(
-        "EURUSD", WHEN, [event(scheduled_for=WHEN + timedelta(days=1))], CONFIG
+        "EURUSD",
+        WHEN,
+        calendar_of([event(scheduled_for=WHEN + timedelta(days=1))]),
+        CONFIG,
     )
 
     assert action is OpenPositionAction.HOLD
@@ -122,12 +140,12 @@ def test_a_position_with_no_event_in_range_is_held() -> None:
 def test_an_empty_calendar_holds_rather_than_closing() -> None:
     """A position is not closed because nothing was scheduled.
 
-    This function answers from the windows it can see. Whether the calendar
-    could see anything is `coverage_gap`'s question and `is_blacked_out`'s to
-    ask, and a guard that flattened on an empty sequence would close every
-    position on the first failed fetch.
+    The calendar here was read and covers the moment, so an empty one is a
+    quiet morning and the answer is HOLD. A failed fetch is a different answer
+    since #199, unknown rather than HOLD, and `tests/test_next_clear_time.py`
+    covers it.
     """
-    action, reason = action_for_open_position("EURUSD", WHEN, [], CONFIG)
+    action, reason = action_for_open_position("EURUSD", WHEN, calendar_of([]), CONFIG)
 
     assert action is OpenPositionAction.HOLD
     assert reason is None
@@ -146,7 +164,7 @@ def test_a_one_pass_sequence_of_events_is_answered_in_full() -> None:
     events = (release for release in [event("EUR", title="CPI y/y")])
 
     action, reason = action_for_open_position(
-        "EURUSD", WHEN, events, CONFIG, unrealised_r=BELOW
+        "EURUSD", WHEN, calendar_of(events), CONFIG, unrealised_r=BELOW
     )
 
     assert action is OpenPositionAction.FLATTEN
@@ -157,7 +175,7 @@ def test_a_one_pass_sequence_of_events_is_answered_in_full() -> None:
 def test_an_event_that_does_not_qualify_leaves_the_position_alone() -> None:
     """`is_high_impact` decides, in one place. A second filter here would drift."""
     action, _ = action_for_open_position(
-        "EURUSD", WHEN, [event(title=QUIET_TITLE, impact="Low")], CONFIG
+        "EURUSD", WHEN, calendar_of([event(title=QUIET_TITLE, impact="Low")]), CONFIG
     )
 
     assert action is OpenPositionAction.HOLD
@@ -165,7 +183,9 @@ def test_an_event_that_does_not_qualify_leaves_the_position_alone() -> None:
 
 def test_an_event_on_neither_leg_leaves_the_position_alone() -> None:
     """A yen release is not a reason to touch a euro-dollar position."""
-    action, _ = action_for_open_position("EURUSD", WHEN, [event("JPY")], CONFIG)
+    action, _ = action_for_open_position(
+        "EURUSD", WHEN, calendar_of([event("JPY")]), CONFIG
+    )
 
     assert action is OpenPositionAction.HOLD
 
@@ -176,7 +196,7 @@ def test_an_event_on_neither_leg_leaves_the_position_alone() -> None:
 def test_a_position_with_enough_buffer_is_tightened() -> None:
     """At or above the buffer the trade survives a full stop-distance spike."""
     action, reason = action_for_open_position(
-        "EURUSD", WHEN, [event()], CONFIG, unrealised_r=ABOVE
+        "EURUSD", WHEN, calendar_of([event()]), CONFIG, unrealised_r=ABOVE
     )
 
     assert action is OpenPositionAction.TIGHTEN
@@ -185,7 +205,7 @@ def test_a_position_with_enough_buffer_is_tightened() -> None:
 
 def test_a_position_without_enough_buffer_is_flattened() -> None:
     action, reason = action_for_open_position(
-        "EURUSD", WHEN, [event()], CONFIG, unrealised_r=BELOW
+        "EURUSD", WHEN, calendar_of([event()]), CONFIG, unrealised_r=BELOW
     )
 
     assert action is OpenPositionAction.FLATTEN
@@ -200,7 +220,7 @@ def test_the_buffer_itself_is_tightened_and_not_flattened() -> None:
     value and the docstring says which.
     """
     action, _ = action_for_open_position(
-        "EURUSD", WHEN, [event()], CONFIG, unrealised_r=TIGHTEN_BUFFER_R
+        "EURUSD", WHEN, calendar_of([event()]), CONFIG, unrealised_r=TIGHTEN_BUFFER_R
     )
 
     assert action is OpenPositionAction.TIGHTEN
@@ -217,7 +237,7 @@ def test_a_position_in_modest_profit_is_still_flattened() -> None:
     assert 0.0 < 0.5 < TIGHTEN_BUFFER_R
 
     action, _ = action_for_open_position(
-        "EURUSD", WHEN, [event()], CONFIG, unrealised_r=0.5
+        "EURUSD", WHEN, calendar_of([event()]), CONFIG, unrealised_r=0.5
     )
 
     assert action is OpenPositionAction.FLATTEN
@@ -225,14 +245,14 @@ def test_a_position_in_modest_profit_is_still_flattened() -> None:
 
 def test_breakeven_is_the_default_and_is_flattened() -> None:
     """A caller that does not track open profit gets the conservative answer."""
-    action, _ = action_for_open_position("EURUSD", WHEN, [event()], CONFIG)
+    action, _ = action_for_open_position("EURUSD", WHEN, calendar_of([event()]), CONFIG)
 
     assert action is OpenPositionAction.FLATTEN
 
 
 def test_a_losing_position_is_flattened() -> None:
     action, _ = action_for_open_position(
-        "EURUSD", WHEN, [event()], CONFIG, unrealised_r=-2.0
+        "EURUSD", WHEN, calendar_of([event()]), CONFIG, unrealised_r=-2.0
     )
 
     assert action is OpenPositionAction.FLATTEN
@@ -250,7 +270,7 @@ def test_the_threshold_is_read_from_the_module_and_not_hardcoded(
     monkeypatch.setattr("fbe.calendar_guard.TIGHTEN_BUFFER_R", 3.0)
 
     action, _ = action_for_open_position(
-        "EURUSD", WHEN, [event()], CONFIG, unrealised_r=2.0
+        "EURUSD", WHEN, calendar_of([event()]), CONFIG, unrealised_r=2.0
     )
 
     assert action is OpenPositionAction.FLATTEN
@@ -262,7 +282,7 @@ def test_the_threshold_is_read_from_the_module_and_not_hardcoded(
 def test_an_event_on_the_base_leg_reaches_the_position() -> None:
     """Both halves of a ratio move it. The base leg is the easy one to miss."""
     action, reason = action_for_open_position(
-        "EURUSD", WHEN, [event("EUR")], CONFIG, unrealised_r=BELOW
+        "EURUSD", WHEN, calendar_of([event("EUR")]), CONFIG, unrealised_r=BELOW
     )
 
     assert action is OpenPositionAction.FLATTEN
@@ -272,7 +292,7 @@ def test_an_event_on_the_base_leg_reaches_the_position() -> None:
 
 def test_an_event_on_the_quote_leg_reaches_the_position() -> None:
     action, reason = action_for_open_position(
-        "EURUSD", WHEN, [event("USD")], CONFIG, unrealised_r=BELOW
+        "EURUSD", WHEN, calendar_of([event("USD")]), CONFIG, unrealised_r=BELOW
     )
 
     assert action is OpenPositionAction.FLATTEN
@@ -290,7 +310,7 @@ def test_the_window_opens_before_the_release_and_the_guard_acts_then() -> None:
     action, _ = action_for_open_position(
         "EURUSD",
         WHEN,
-        [event(scheduled_for=WHEN + timedelta(minutes=20))],
+        calendar_of([event(scheduled_for=WHEN + timedelta(minutes=20))]),
         CONFIG,
         unrealised_r=BELOW,
     )
@@ -310,7 +330,7 @@ def test_the_exact_edges_of_the_window_are_inside_it() -> None:
 
     for moment in (opens, closes):
         action, _ = action_for_open_position(
-            "EURUSD", moment, [event(scheduled_for=release)], CONFIG
+            "EURUSD", moment, calendar_of([event(scheduled_for=release)]), CONFIG
         )
         assert action is OpenPositionAction.FLATTEN, moment
 
@@ -320,7 +340,10 @@ def test_a_moment_outside_the_window_by_a_minute_is_held() -> None:
     opens = release - timedelta(minutes=CONFIG.calendar_blackout_before_min)
 
     action, reason = action_for_open_position(
-        "EURUSD", opens - timedelta(minutes=1), [event(scheduled_for=release)], CONFIG
+        "EURUSD",
+        opens - timedelta(minutes=1),
+        calendar_of([event(scheduled_for=release)]),
+        CONFIG,
     )
 
     assert action is OpenPositionAction.HOLD
@@ -332,12 +355,12 @@ def test_the_window_widths_come_from_config() -> None:
     wide = DataConfig(calendar_blackout_before_min=120, calendar_blackout_after_min=60)
     moment = WHEN - timedelta(minutes=90)
 
-    assert action_for_open_position("EURUSD", moment, [event()], CONFIG)[0] is (
-        OpenPositionAction.HOLD
-    )
-    assert action_for_open_position("EURUSD", moment, [event()], wide)[0] is (
-        OpenPositionAction.FLATTEN
-    )
+    assert action_for_open_position("EURUSD", moment, calendar_of([event()]), CONFIG)[
+        0
+    ] is (OpenPositionAction.HOLD)
+    assert action_for_open_position("EURUSD", moment, calendar_of([event()]), wide)[
+        0
+    ] is (OpenPositionAction.FLATTEN)
 
 
 # --- the reason ---------------------------------------------------------------
@@ -363,7 +386,7 @@ def test_the_reason_names_the_event_its_currency_and_its_time(
     action, reason = action_for_open_position(
         "EURUSD",
         WHEN,
-        [event("EUR", title="CPI y/y")],
+        calendar_of([event("EUR", title="CPI y/y")]),
         CONFIG,
         unrealised_r=unrealised_r,
     )
@@ -385,7 +408,11 @@ def test_the_reason_reports_the_release_time_in_utc() -> None:
     berlin = datetime(2026, 9, 14, 11, 0, tzinfo=timezone(timedelta(hours=2)))
 
     _, reason = action_for_open_position(
-        "EURUSD", WHEN, [event("EUR", scheduled_for=berlin)], CONFIG, unrealised_r=BELOW
+        "EURUSD",
+        WHEN,
+        calendar_of([event("EUR", scheduled_for=berlin)]),
+        CONFIG,
+        unrealised_r=BELOW,
     )
 
     assert reason is not None
@@ -412,7 +439,9 @@ def test_with_both_legs_in_window_the_base_leg_is_the_one_named(
     action, reason = action_for_open_position(
         "EURUSD",
         WHEN,
-        [event("USD", title="Non-Farm Payrolls"), event("EUR", title="CPI y/y")],
+        calendar_of(
+            [event("USD", title="Non-Farm Payrolls"), event("EUR", title="CPI y/y")]
+        ),
         CONFIG,
         unrealised_r=unrealised_r,
     )
@@ -435,10 +464,14 @@ def test_with_two_events_on_one_leg_the_first_in_sequence_is_named() -> None:
     _, reason = action_for_open_position(
         "EURUSD",
         WHEN,
-        [
-            event("EUR", scheduled_for=WHEN + timedelta(minutes=10), title="CPI y/y"),
-            event("EUR", scheduled_for=WHEN, title="Retail Sales"),
-        ],
+        calendar_of(
+            [
+                event(
+                    "EUR", scheduled_for=WHEN + timedelta(minutes=10), title="CPI y/y"
+                ),
+                event("EUR", scheduled_for=WHEN, title="Retail Sales"),
+            ]
+        ),
         CONFIG,
         unrealised_r=BELOW,
     )
@@ -461,7 +494,7 @@ def test_a_global_event_does_not_reach_either_leg() -> None:
     action, reason = action_for_open_position(
         "EURUSD",
         WHEN,
-        [event("GLOBAL", title="G20 Meetings")],
+        calendar_of([event("GLOBAL", title="G20 Meetings")]),
         CONFIG,
         unrealised_r=BELOW,
     )
@@ -480,10 +513,14 @@ def test_the_reason_names_the_event_whose_window_contains_the_moment() -> None:
     _, reason = action_for_open_position(
         "EURUSD",
         WHEN,
-        [
-            event("EUR", scheduled_for=WHEN - timedelta(hours=6), title="Retail Sales"),
-            event("EUR", scheduled_for=WHEN, title="CPI y/y"),
-        ],
+        calendar_of(
+            [
+                event(
+                    "EUR", scheduled_for=WHEN - timedelta(hours=6), title="Retail Sales"
+                ),
+                event("EUR", scheduled_for=WHEN, title="CPI y/y"),
+            ]
+        ),
         CONFIG,
         unrealised_r=BELOW,
     )
@@ -501,7 +538,7 @@ def test_a_naive_decision_time_is_refused() -> None:
     naive = datetime(2026, 9, 14, 9, 0)
 
     with pytest.raises(ValueError, match="naive"):
-        action_for_open_position("EURUSD", naive, [event()], CONFIG)
+        action_for_open_position("EURUSD", naive, calendar_of([event()]), CONFIG)
 
 
 def test_a_naive_event_time_is_refused() -> None:
@@ -513,7 +550,7 @@ def test_a_naive_event_time_is_refused() -> None:
     )
 
     with pytest.raises(ValueError, match="naive"):
-        action_for_open_position("EURUSD", WHEN, [naive], CONFIG)
+        action_for_open_position("EURUSD", WHEN, calendar_of([naive]), CONFIG)
 
 
 def test_a_naive_event_is_refused_on_a_currency_the_pair_does_not_hold() -> None:
@@ -539,7 +576,7 @@ def test_a_naive_event_is_refused_on_a_currency_the_pair_does_not_hold() -> None
     )
 
     with pytest.raises(ValueError, match="naive"):
-        action_for_open_position("EURUSD", WHEN, [naive], CONFIG)
+        action_for_open_position("EURUSD", WHEN, calendar_of([naive]), CONFIG)
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
@@ -557,10 +594,14 @@ def test_an_open_profit_that_is_not_a_number_is_refused(value: float) -> None:
     it would otherwise have fallen into.
     """
     with pytest.raises(ValueError, match="finite"):
-        action_for_open_position("EURUSD", WHEN, [event()], CONFIG, unrealised_r=value)
+        action_for_open_position(
+            "EURUSD", WHEN, calendar_of([event()]), CONFIG, unrealised_r=value
+        )
 
     with pytest.raises(ValueError, match="finite"):
-        action_for_open_position("EURUSD", WHEN, [], CONFIG, unrealised_r=value)
+        action_for_open_position(
+            "EURUSD", WHEN, calendar_of([]), CONFIG, unrealised_r=value
+        )
 
 
 def test_the_reason_formatter_refuses_a_naive_event_of_its_own() -> None:
@@ -594,7 +635,7 @@ def test_a_pair_of_the_wrong_length_is_refused(pair: str) -> None:
     quoting convention is enforced.
     """
     with pytest.raises(ValueError, match="six-character"):
-        action_for_open_position(pair, WHEN, [event()], CONFIG)
+        action_for_open_position(pair, WHEN, calendar_of([event()]), CONFIG)
 
 
 @pytest.mark.parametrize("pair", ["EURXYZ", "XYZUSD"])
@@ -605,13 +646,13 @@ def test_a_leg_that_is_not_a_currency_is_refused(pair: str) -> None:
     an instruction to keep a position through a release nobody checked for.
     """
     with pytest.raises(ValueError, match="not a G10 currency"):
-        action_for_open_position(pair, WHEN, [event()], CONFIG)
+        action_for_open_position(pair, WHEN, calendar_of([event()]), CONFIG)
 
 
 def test_a_lowercase_pair_is_answered_rather_than_refused() -> None:
     """Hand-typed from the pre-trade check, as `is_blacked_out` already allows."""
     action, _ = action_for_open_position(
-        "eurusd", WHEN, [event()], CONFIG, unrealised_r=BELOW
+        "eurusd", WHEN, calendar_of([event()]), CONFIG, unrealised_r=BELOW
     )
 
     assert action is OpenPositionAction.FLATTEN
@@ -639,7 +680,7 @@ def test_the_open_position_answer_differs_from_the_entry_answer() -> None:
     """
     blocked, entry_reason = is_blacked_out("EURUSD", WHEN, covering(event()), CONFIG)
     action, held_reason = action_for_open_position(
-        "EURUSD", WHEN, [event()], CONFIG, unrealised_r=ABOVE
+        "EURUSD", WHEN, calendar_of([event()]), CONFIG, unrealised_r=ABOVE
     )
 
     assert blocked is True
@@ -657,7 +698,7 @@ def test_the_two_agree_when_there_is_no_buffer() -> None:
     """
     blocked, _ = is_blacked_out("EURUSD", WHEN, covering(event()), CONFIG)
     action, _ = action_for_open_position(
-        "EURUSD", WHEN, [event()], CONFIG, unrealised_r=BELOW
+        "EURUSD", WHEN, calendar_of([event()]), CONFIG, unrealised_r=BELOW
     )
 
     assert blocked is True
@@ -683,9 +724,11 @@ def test_the_guard_returns_an_instruction_and_changes_nothing() -> None:
     events = [event()]
     before = list(events)
 
-    first = action_for_open_position("EURUSD", WHEN, events, CONFIG, unrealised_r=BELOW)
+    first = action_for_open_position(
+        "EURUSD", WHEN, calendar_of(events), CONFIG, unrealised_r=BELOW
+    )
     second = action_for_open_position(
-        "EURUSD", WHEN, events, CONFIG, unrealised_r=BELOW
+        "EURUSD", WHEN, calendar_of(events), CONFIG, unrealised_r=BELOW
     )
 
     assert first == second
