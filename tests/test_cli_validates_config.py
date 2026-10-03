@@ -143,6 +143,7 @@ def refuse_collect(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         raise AssertionError("the guard let the command reach the data layer")
 
     monkeypatch.setattr("fbe.cli.collect", fake_collect)
+    monkeypatch.setattr("fbe.pipeline.collect", fake_collect)
     return calls
 
 
@@ -161,7 +162,9 @@ def allow_run(monkeypatch: pytest.MonkeyPatch) -> None:
         return UNIVERSE
 
     monkeypatch.setattr("fbe.cli.collect", fake_collect)
+    monkeypatch.setattr("fbe.pipeline.collect", fake_collect)
     monkeypatch.setattr("fbe.cli.score_currencies", fake_score_currencies)
+    monkeypatch.setattr("fbe.pipeline.score_currencies", fake_score_currencies)
 
 
 # ----------------------------------------------------------------------

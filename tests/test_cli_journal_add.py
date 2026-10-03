@@ -313,9 +313,13 @@ def add(
         return replace(bias_row, conviction=DEMOTED[bias_row.conviction])
 
     monkeypatch.setattr("fbe.cli.collect", fake_collect)
+    monkeypatch.setattr("fbe.pipeline.collect", fake_collect)
     monkeypatch.setattr("fbe.cli.score_currencies", fake_score_currencies)
+    monkeypatch.setattr("fbe.pipeline.score_currencies", fake_score_currencies)
     monkeypatch.setattr("fbe.cli.build_pair_biases", fake_build_pair_biases)
+    monkeypatch.setattr("fbe.pipeline.build_pair_biases", fake_build_pair_biases)
     monkeypatch.setattr("fbe.cli.apply_filters", fake_apply_filters)
+    monkeypatch.setattr("fbe.pipeline.apply_filters", fake_apply_filters)
 
     result = runner.invoke(app, ["--config", str(config_path), "journal", "add", *args])
     output = result.output

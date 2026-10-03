@@ -12,7 +12,7 @@ would not show up on the morning it happened:
   fail on a connection, and a report that refetched mid-session would not be
   reproducible from the cache it claims to have used.
 
-`fbe.cli.collect`, the scorer and the bias layer are replaced in every test, so
+`fbe.pipeline.collect`, the scorer and the bias layer are replaced in every test, so
 no source is constructed and no socket is opened. Every test writes under
 ``tmp_path``.
 """
@@ -164,10 +164,10 @@ def run(
         filtered.append((bias_in.pair, tuple(sorted(scores_in)), asof_in))
         return bias_in
 
-    monkeypatch.setattr("fbe.cli.collect", fake_collect)
-    monkeypatch.setattr("fbe.cli.score_currencies", fake_score_currencies)
-    monkeypatch.setattr("fbe.cli.build_pair_biases", fake_build_pair_biases)
-    monkeypatch.setattr("fbe.cli.apply_filters", fake_apply_filters)
+    monkeypatch.setattr("fbe.pipeline.collect", fake_collect)
+    monkeypatch.setattr("fbe.pipeline.score_currencies", fake_score_currencies)
+    monkeypatch.setattr("fbe.pipeline.build_pair_biases", fake_build_pair_biases)
+    monkeypatch.setattr("fbe.pipeline.apply_filters", fake_apply_filters)
     return runner.invoke(app, ["report", "--asof", ASOF.isoformat(), *args]), captured
 
 
@@ -411,7 +411,7 @@ def test_a_future_asof_is_refused(
         captured["called"] = True
         return CollectionResult(observations=(), outcomes=(), gaps={})
 
-    monkeypatch.setattr("fbe.cli.collect", fake_collect)
+    monkeypatch.setattr("fbe.pipeline.collect", fake_collect)
     result = runner.invoke(
         app, ["report", "--asof", "2099-01-01", "--out", str(tmp_path)]
     )
