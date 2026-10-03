@@ -1035,8 +1035,11 @@ def test_the_report_is_loaded_rather_than_recomputed(
         raise AssertionError("fbe dashboard recomputed the run")
 
     monkeypatch.setattr("fbe.cli.collect", refuse)
+    monkeypatch.setattr("fbe.pipeline.collect", refuse)
     monkeypatch.setattr("fbe.cli.score_currencies", refuse)
+    monkeypatch.setattr("fbe.pipeline.score_currencies", refuse)
     monkeypatch.setattr("fbe.cli.build_pair_biases", refuse)
+    monkeypatch.setattr("fbe.pipeline.build_pair_biases", refuse)
 
     result = run_command(monkeypatch, reports)
 

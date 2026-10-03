@@ -281,9 +281,9 @@ def real_daily_calendar(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[object
         asked.append(min_impact)
         return (release("USD"),)
 
-    monkeypatch.setattr("fbe.cli.CalendarSource.events", events)
+    monkeypatch.setattr("fbe.pipeline.CalendarSource.events", events)
     monkeypatch.setattr(
-        "fbe.cli.CalendarSource.horizon",
+        "fbe.pipeline.CalendarSource.horizon",
         lambda self: at(23, 0, DAY + timedelta(days=4)),
     )
     yield asked
@@ -313,10 +313,10 @@ def test_a_historical_run_does_not_read_this_week_s_calendar(
 
 
 def test_the_commands_pass_the_calendar_to_every_pair() -> None:
-    """`_filtered` is what `fbe bias` and `fbe report` call."""
-    from fbe import cli
+    """`filtered_pairs` is what `fbe bias` and `fbe report` call."""
+    from fbe import pipeline
 
-    pairs = cli._filtered(
+    pairs = pipeline.filtered_pairs(
         [_bias("EURUSD"), _bias("EURJPY")], _scores(), Config(), DAY, week(release())
     )
 
@@ -326,18 +326,18 @@ def test_the_commands_pass_the_calendar_to_every_pair() -> None:
 
 
 def test_without_a_calendar_the_commands_say_unchecked() -> None:
-    from fbe import cli
+    from fbe import pipeline
 
-    (row,) = cli._filtered([_bias("EURUSD")], _scores(), Config(), DAY, None)
+    (row,) = pipeline.filtered_pairs([_bias("EURUSD")], _scores(), Config(), DAY, None)
 
     assert "event:unchecked" in row.blockers
 
 
 def test_the_run_note_says_whether_the_calendar_was_read() -> None:
-    from fbe import cli
+    from fbe import pipeline
 
-    (read,) = cli._bias_notes(consulted=True)
-    (unread,) = cli._bias_notes(consulted=False)
+    (read,) = pipeline.bias_notes(consulted=True)
+    (unread,) = pipeline.bias_notes(consulted=False)
 
     assert "event:window" in read and "Nothing here is blocked" in read
     assert "No calendar was consulted" in unread
@@ -351,10 +351,11 @@ def test_refresh_caches_the_week_and_says_so(
 
     monkeypatch.setattr("fbe.cli._now", lambda: at(6))
     monkeypatch.setattr(
-        "fbe.cli.CalendarSource.events", lambda self, *a, **k: (release(), release())
+        "fbe.pipeline.CalendarSource.events",
+        lambda self, *a, **k: (release(), release()),
     )
     monkeypatch.setattr(
-        "fbe.cli.CalendarSource.horizon",
+        "fbe.pipeline.CalendarSource.horizon",
         lambda self: at(23, 0, DAY + timedelta(days=4)),
     )
 
@@ -376,7 +377,7 @@ def test_refresh_reports_a_failed_calendar_without_failing(
         raise SourceError("Request Denied")
 
     monkeypatch.setattr("fbe.cli._now", lambda: at(6))
-    monkeypatch.setattr("fbe.cli.CalendarSource.events", refused)
+    monkeypatch.setattr("fbe.pipeline.CalendarSource.events", refused)
 
     REAL_REFRESH_CALENDAR(Config())  # type: ignore[operator]
 
@@ -391,7 +392,7 @@ def test_refresh_fetches_nothing_offline(monkeypatch: pytest.MonkeyPatch) -> Non
     from tests.conftest import REAL_REFRESH_CALENDAR
 
     monkeypatch.setattr(
-        "fbe.cli.CalendarSource.events",
+        "fbe.pipeline.CalendarSource.events",
         lambda self, *a, **k: pytest.fail("an offline refresh fetched the calendar"),
     )
     offline = replace(Config(), data=replace(Config().data, offline=True))

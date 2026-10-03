@@ -207,9 +207,13 @@ def run(
         return bias_in
 
     monkeypatch.setattr("fbe.cli.collect", fake_collect)
+    monkeypatch.setattr("fbe.pipeline.collect", fake_collect)
     monkeypatch.setattr("fbe.cli.score_currencies", fake_score_currencies)
+    monkeypatch.setattr("fbe.pipeline.score_currencies", fake_score_currencies)
     monkeypatch.setattr("fbe.cli.build_pair_biases", fake_build_pair_biases)
+    monkeypatch.setattr("fbe.pipeline.build_pair_biases", fake_build_pair_biases)
     monkeypatch.setattr("fbe.cli.apply_filters", fake_apply_filters)
+    monkeypatch.setattr("fbe.pipeline.apply_filters", fake_apply_filters)
     return runner.invoke(app, ["bias", *args]), captured
 
 
@@ -1247,7 +1251,9 @@ def run_for_real(
         return g10_scores(composites)
 
     monkeypatch.setattr("fbe.cli.collect", fake_collect)
+    monkeypatch.setattr("fbe.pipeline.collect", fake_collect)
     monkeypatch.setattr("fbe.cli.score_currencies", fake_score_currencies)
+    monkeypatch.setattr("fbe.pipeline.score_currencies", fake_score_currencies)
     return runner.invoke(app, ["bias", "--asof", "2026-09-09", *args])
 
 
@@ -1768,7 +1774,9 @@ def test_the_published_bias_example_is_the_published_score_example_run(
         return CollectionResult(observations=(OBSERVATION,), outcomes=(), gaps={})
 
     monkeypatch.setattr("fbe.cli.collect", fake_collect)
+    monkeypatch.setattr("fbe.pipeline.collect", fake_collect)
     monkeypatch.setattr("fbe.cli.score_currencies", lambda *a, **k: scores)
+    monkeypatch.setattr("fbe.pipeline.score_currencies", lambda *a, **k: scores)
 
     result = runner.invoke(
         app,
@@ -1812,7 +1820,9 @@ def test_the_published_matrix_example_is_the_published_score_example_run(
         return CollectionResult(observations=(OBSERVATION,), outcomes=(), gaps={})
 
     monkeypatch.setattr("fbe.cli.collect", fake_collect)
+    monkeypatch.setattr("fbe.pipeline.collect", fake_collect)
     monkeypatch.setattr("fbe.cli.score_currencies", lambda *a, **k: scores)
+    monkeypatch.setattr("fbe.pipeline.score_currencies", lambda *a, **k: scores)
 
     result = runner.invoke(app, ["bias", "--asof", ASOF.isoformat(), "--matrix"])
     assert result.exit_code == EXIT_OK

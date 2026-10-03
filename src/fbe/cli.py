@@ -97,7 +97,6 @@ from fbe.bias import (
     at_least,
     blocking,
     build_pair_biases,
-    shortlist,
 )
 from fbe.calendar_guard import (
     CalendarCoverage,
@@ -131,6 +130,15 @@ from fbe.journal import (
 )
 from fbe.pillar_audit import audit_run
 from fbe.pillars import default_pillars
+from fbe.pipeline import (
+    UnusableRunError,
+    bias_notes,
+    build_run,
+    coverage_collapsed,
+    daily_calendar,
+    filtered_pairs,
+    score_notes,
+)
 from fbe.risk import MissingRateError, pip_size, pip_value, risk_fraction_for
 from fbe.scoring import score_currencies
 from fbe.types import (
@@ -141,7 +149,6 @@ from fbe.types import (
     Direction,
     PairBias,
     PillarName,
-    TradeIdea,
 )
 from fbe.universe import G10, MAJORS, split_pair
 
@@ -1928,7 +1935,7 @@ def score(
         typer.echo(_score_json(rows, order, run_date, config.digest()))
     elif output_format is OutputFormat.CSV:
         typer.echo(_score_csv(rows, order, run_date, config.digest()))
-        for note in (*_score_notes(rows), *_score_working(rows)):
+        for note in (*score_notes(rows), *_score_working(rows)):
             # CSV has nowhere to put a run-level warning, and dropping it would
             # leave a run on six pillars looking like a run on seven. It goes
             # to stderr so `fbe score --format csv > monday.csv` still writes a
@@ -1947,28 +1954,12 @@ def score(
             nl=False,
         )
 
-    if _coverage_collapsed(scores):
+    if coverage_collapsed(scores):
         # Every currency scored on nothing. The rows still print, with 0% and
         # the reasons, because the issue asks for the absence to be visible
         # rather than hidden. The exit code is what a script reads, and
         # `docs/interfaces.md` reserves 1 for coverage collapsing.
         raise typer.Exit(EXIT_UNUSABLE)
-
-
-def _coverage_collapsed(scores: Sequence[CurrencyScore]) -> bool:
-    """Whether the run scored nothing at all.
-
-    Args:
-        scores: Every currency the scorer returned, before any row filter.
-
-    Returns:
-        True when no currency held any usable pillar weight. Judged on the
-        whole run rather than on the printed rows: ``--currency JPY`` on a
-        currency with no data is a thin currency in a working run, and the run
-        is what the exit code describes.
-
-    """
-    return bool(scores) and all(row.coverage <= 0.0 for row in scores)
 
 
 def _requested_currencies(currency: Sequence[str] | None) -> tuple[str, ...] | None:
@@ -2096,53 +2087,6 @@ def _share_percent(share: float) -> int:
     return math.floor(share * 100.0 + SHARE_EPSILON)
 
 
-def _score_notes(rows: Sequence[CurrencyScore]) -> tuple[str, ...]:
-    """Collect the reasons pillars could not score, in first-seen order.
-
-    Args:
-        rows: The rows being printed.
-
-    Returns:
-        Each distinct non-empty note, once, from the pillars that could not
-        score, in first-seen order.
-
-        Only the unscored ones, and the distinction is what this function is
-        for. `fbe.scoring.score_currencies` catches a pillar that raises and
-        records why on each currency's copy of that score, so the same sentence
-        arrives eight times and is worth printing once; dropping it would leave
-        a run on six pillars looking like a run on seven, with only the
-        coverage column hinting at it. That is a run-level fact and it belongs
-        here, under the table and in the JSON ``warnings`` key.
-
-        A pillar that *did* score writes something different into the same
-        field: `BasePillar._notes` puts the working behind that currency's
-        headline number there, which is per currency by nature and never
-        repeats. Collected here it would publish eight lines of ordinary
-        working as warnings on a healthy run, growing to fifty-six once every
-        pillar has the hook, and a script reading the JSON key would find a
-        run where nothing went wrong indistinguishable from one where six
-        pillars failed.
-
-        An earlier version of this docstring argued the opposite, on the
-        grounds that `compute` puts the blend divisor path and the assumed-lag
-        count on the notes of scored pillars. It does not, and had not since
-        issue #51: both live in `PillarScore.blend_divisor_path` and
-        `PillarScore.diagnostics` precisely so that nothing has to read them
-        out of prose.
-
-        ``z is None`` is the test rather than the absence of a score, because
-        that is the marker every other consumer in the package uses for the
-        same question.
-
-    """
-    seen: list[str] = []
-    for row in rows:
-        for score in row.pillars.values():
-            if score.z is None and score.notes and score.notes not in seen:
-                seen.append(score.notes)
-    return tuple(seen)
-
-
 def _score_working(rows: Sequence[CurrencyScore]) -> tuple[str, ...]:
     """Collect the working behind the pillars that did score, row by row.
 
@@ -2152,7 +2096,7 @@ def _score_working(rows: Sequence[CurrencyScore]) -> tuple[str, ...]:
     Returns:
         Each distinct non-empty note from a scored pillar, in first-seen order.
 
-        Separate from `_score_notes` because the two answer different
+        Separate from `fbe.pipeline.score_notes` because the two answer different
         questions. A note from an unscored pillar says something went wrong
         with the run and repeats identically across the universe. A note from a
         scored pillar is `BasePillar._notes`, the working behind that one
@@ -2245,7 +2189,7 @@ def _render_score(
     typer.echo(_score_columns(order))
     for score in rows:
         typer.echo(_score_line(score, order))
-    notes = _score_notes(rows)
+    notes = score_notes(rows)
     working = _score_working(rows)
     if notes or working:
         typer.echo("")
@@ -2288,7 +2232,7 @@ def _score_json(
             "asof": asof.isoformat(),
             "config_digest": digest,
             "currencies": _score_payload(rows, order),
-            "warnings": list(_score_notes(rows)),
+            "warnings": list(score_notes(rows)),
             "working": list(_score_working(rows)),
         },
         indent=2,
@@ -2536,7 +2480,7 @@ def bias(
     # blockers, because --majors is a change of view and the hidden list below
     # states why each pair went.
     daily = _daily_calendar(config, run_date)
-    filtered = _filtered(
+    filtered = filtered_pairs(
         build_pair_biases(scores, config, run_date),
         by_currency,
         config,
@@ -2544,7 +2488,7 @@ def bias(
         daily,
     )
     shown, hidden = _bias_rows(filtered, majors, min_conviction, tradeable_only)
-    notes = _bias_notes(consulted=daily is not None)
+    notes = bias_notes(consulted=daily is not None)
 
     if matrix:
         grid = report_module._grid(shown)
@@ -2570,7 +2514,7 @@ def bias(
     else:
         _render_bias(shown, hidden, top, majors, run_date, config.digest(), notes)
 
-    if _coverage_collapsed(scores):
+    if coverage_collapsed(scores):
         # Every currency scored on nothing, so every spread is a difference
         # between two zeros and every pair prints +0.00 with a direction of
         # neutral. The rows still print, because the absence is what there is
@@ -2581,129 +2525,22 @@ def bias(
         raise typer.Exit(EXIT_UNUSABLE)
 
 
-def _bias_notes(*, consulted: bool) -> tuple[str, ...]:
-    """Say what the run did with the calendar, and which checks did not run.
-
-    Args:
-        consulted: Whether `_daily_calendar` read the calendar for this run.
-
-    Returns:
-        One line. When the calendar was read, it says each pair lists its
-        no-entry windows and that the morning run blocks nothing for them, so
-        the entry time is the trader's to check against them (#335). When it
-        was not read, the line it has always printed.
-
-        `apply_filters` records ``cost:unchecked`` and ``event:unchecked`` on
-        every pair, so the blackout and the dealing cost announce their own
-        absence on the row. The 24-hour conviction cap does not: passing no
-        `fbe.bias.EventHorizonGuard` leaves `build_pair_biases` assuming no
-        event, and the tier it prints is the uncapped one with nothing beside
-        it saying so. A pair can print ``high`` on an FOMC evening and look
-        exactly like a pair checked and cleared.
-
-        The cap is never applied, even when the calendar is read: with news
-        on most days it would demote most pairs most days (#334). So the tier
-        is not adjusted for a release, and the line says so rather than
-        leaving the reader to assume a check ran. Absence with a name, never a
-        plausible default.
-
-    """
-    if consulted:
-        return (
-            "Calendar read: each pair lists its no-entry windows for today as "
-            "event:window. Nothing here is blocked or demoted for a release "
-            "later in the day, so check your entry time against the windows.",
-        )
-    return (
-        "No calendar was consulted: the blackout filter and the 24-hour "
-        "conviction cap did not run, so no tier here is capped for an "
-        "imminent release. Check the calendar by hand before acting on a row.",
-    )
-
-
 def _daily_calendar(config: Config, run_date: date) -> DailyCalendar | None:
-    """Read the calendar for a morning run, or say it was not read.
+    """Read the day's calendar with the CLI's clock, `_now`.
+
+    The reader every morning command hands to `fbe.pipeline`. It stays here,
+    rather than each command binding the clock itself, so a test can switch the
+    network fetch off for every command at once by replacing this one name.
 
     Args:
-        config: The effective config. ``config.data.offline`` makes the source
-            read its cache rather than the feed, which is what a report run
-            after ``fbe refresh`` does.
-        run_date: The run's date.
-
-    Returns:
-        ``None`` when ``run_date`` is not today, in UTC or in the local zone
-        that ``date.today()`` gives the commands' default: the feed carries the
-        current week only, so reading it for an older date would find nothing
-        and print that day as clear. ``None`` leaves every pair at
-        ``event:unchecked``. Otherwise the day, with every impact level
-        fetched so `fbe.calendar_guard.is_high_impact` decides what qualifies,
-        and with a failed fetch carried as a failed `CalendarCoverage`, which
-        marks every pair ``event:unknown`` rather than clear.
-
-    """
-    if run_date not in (_now().date(), date.today()):
-        return None
-    start = datetime(run_date.year, run_date.month, run_date.day, tzinfo=UTC)
-    before = timedelta(minutes=config.data.calendar_blackout_before_min)
-    after = timedelta(minutes=config.data.calendar_blackout_after_min)
-    source = CalendarSource(config.data)
-    try:
-        events = tuple(
-            source.events(
-                list(G10),
-                start - after,
-                start + timedelta(days=1) + before,
-                min_impact=Impact.LOW.value,
-            )
-        )
-    except SourceError as error:
-        coverage = CalendarCoverage(
-            events=(),
-            covers_through=source.horizon(),
-            fetch_ok=False,
-            fetch_error=str(error),
-        )
-    else:
-        coverage = CalendarCoverage(events=events, covers_through=source.horizon())
-    return DailyCalendar(coverage, config.data, _now())
-
-
-def _filtered(
-    biases: Sequence[PairBias],
-    by_currency: Mapping[str, CurrencyScore],
-    config: Config,
-    run_date: date,
-    daily: DailyCalendar | None,
-) -> tuple[PairBias, ...]:
-    """Apply the filters, with the calendar's hooks when it was read.
-
-    Args:
-        biases: Every pair, unfiltered.
-        by_currency: The run's scores.
         config: The effective config.
         run_date: The run's date.
-        daily: From `_daily_calendar`. ``None`` passes no hooks, which records
-            ``event:unchecked``.
 
     Returns:
-        The filtered pairs, in the order given.
+        What `fbe.pipeline.daily_calendar` returns for ``run_date`` at `_now`.
 
     """
-    if daily is None:
-        return tuple(
-            apply_filters(row, by_currency, config, run_date) for row in biases
-        )
-    return tuple(
-        apply_filters(
-            row,
-            by_currency,
-            config,
-            run_date,
-            calendar_guard=daily.guard,
-            calendar_windows=daily.windows,
-        )
-        for row in biases
-    )
+    return daily_calendar(config, run_date, _now())
 
 
 def _refresh_calendar(config: Config) -> None:
@@ -4126,9 +3963,10 @@ def report(
 
     Two sections of the report are thin today and say so rather than reading
     as empty. ``events`` is always empty because `fbe.calendar_guard` is
-    scaffolded, and `_bias_notes` puts that in the warnings on every run. Each
-    shortlist entry carries no size, because a size needs an entry and a stop
-    from the chart, and the template points at ``fbe size`` where one would go.
+    scaffolded, and `fbe.pipeline.bias_notes` puts that in the warnings on
+    every run. Each shortlist entry carries no size, because a size needs an
+    entry and a stop from the chart, and the template points at ``fbe size``
+    where one would go.
 
     Raises:
         typer.BadParameter: With exit code 2 when ``--asof`` is in the future,
@@ -4161,8 +3999,10 @@ def report(
             param_hint="--asof",
         )
 
+    # Checked here, before anything runs, so an unusable setting exits 2 as an
+    # argument error. `build_run` derives the same window again.
     try:
-        start = lookback_start(run_date, config.scoring.lookback_years)
+        lookback_start(run_date, config.scoring.lookback_years)
     except ValueError as error:
         raise typer.BadParameter(
             f"scoring.lookback_years is unusable: {error}",
@@ -4172,68 +4012,14 @@ def report(
     out_dir = out if out is not None else config.data.reports_dir
     baseline_path = _baseline_path(compare, out_dir, run_date)
 
-    # Cache only, for the reason `score` gives at the same call: a rolled-over
-    # TTL refetching mid-session would let two runs at the same --asof and the
-    # same digest write two different reports with nothing in either to
-    # explain it. That matters more here, because these files are the record.
-    result = collect(
-        replace(config.data, offline=True),
-        start=start,
-        end=run_date,
-        sources=ALL_SOURCES,
-    )
-    if not result.usable:
-        typer.echo(
-            "No observations in the cache for this window, so there is nothing "
-            "to report. Run fbe refresh to fill it, or fbe doctor to find out "
-            "why it is empty."
-        )
-        raise typer.Exit(EXIT_UNUSABLE)
-
-    scores = score_currencies(
-        result.observations,
-        default_pillars(config.scoring),
-        config.scoring,
-        run_date,
-    )
-    if _coverage_collapsed(scores):
-        # `score` and `bias` print their rows first and exit 1, because the
-        # rows carry the reasons. This one writes nothing. A report of a run
-        # that scored on no data is 28 neutral pairs and eight composites of
-        # zero, it goes into the committed audit trail, and tomorrow's
-        # --compare last reads it as a baseline and calls a data outage a
-        # one-day fundamental move on every currency.
-        typer.echo(
-            "Every currency scored on no usable data, so there is nothing to "
-            "record. Run fbe score to see which pillars came up short, and "
-            "fbe doctor to find out why."
-        )
-        raise typer.Exit(EXIT_UNUSABLE)
-
-    by_currency = {score.currency: score for score in scores}
-    daily = _daily_calendar(config, run_date)
-    pairs = _filtered(
-        build_pair_biases(scores, config, run_date),
-        by_currency,
-        config,
-        run_date,
-        daily,
-    )
-    run = BiasReport(
-        asof=run_date,
-        generated_at=datetime.now(UTC),
-        currencies=tuple(scores),
-        pairs=pairs,
-        events=() if daily is None else daily.events_on(run_date),
-        # The cap lives in RiskConfig and nowhere else: there is no purpose in
-        # shortlisting more trades than the risk rules permit to be open.
-        shortlist=tuple(
-            TradeIdea(bias=row)
-            for row in shortlist(pairs, config.risk.max_concurrent_positions)
-        ),
-        warnings=(*_score_notes(scores), *_bias_notes(consulted=daily is not None)),
-        config_digest=config.digest(),
-    )
+    try:
+        run = build_run(config, run_date, read_calendar=_daily_calendar)
+    except UnusableRunError as error:
+        # Nothing is written. The report is the committed audit trail and it is
+        # also tomorrow's baseline, so a report of an outage would become a
+        # fundamental move overnight.
+        typer.echo(str(error))
+        raise typer.Exit(EXIT_UNUSABLE) from error
 
     baseline = (
         report_module.load_report(baseline_path) if baseline_path is not None else None
@@ -5204,7 +4990,7 @@ def _engine_view(
         config.scoring,
         run_date,
     )
-    if _coverage_collapsed(scores):
+    if coverage_collapsed(scores):
         typer.echo(
             f"Every currency scored on no data for {run_date}, so every "
             "composite is zero and every spread is a difference between two "
