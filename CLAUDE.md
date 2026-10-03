@@ -65,7 +65,7 @@ the repository root so the row can be checked against the file it names, which
 | `src/fbe/risk.py` | Implemented. Sizing, the conviction ladder, and the per-limit report. |
 | `src/fbe/journal.py` | Implemented. The append-only record, the conviction split and the discipline flags. |
 | `src/fbe/evaluation.py` | Implemented. The forward-record join, and the weight-sensitivity run. |
-| `src/fbe/calendar_guard.py` | In progress |
+| `src/fbe/calendar_guard.py` | Implemented. The blackout windows, the coverage check, the entry and open-position answers, global events and the next clear time. |
 | `src/fbe/report.py` | Implemented. The dated Markdown, its JSON sidecar and the run-to-run diff. |
 | `src/fbe/pillar_audit.py` | Implemented. The cross-section diagnostic behind `fbe score --audit`. |
 | `src/fbe/dashboard/*` | Implemented. The page, the publishing checks and the one file it writes. |

@@ -559,6 +559,14 @@ The distinction is buffer, measured against `TIGHTEN_BUFFER_R`, which is
   precisely the loss the news rule exists to prevent. Close it and re-enter
   after the window if the setup survives.
 
+When the calendar cannot be read, a position already on is not told to hold.
+`action_for_open_position` runs the same coverage check as an entry first, so a
+failed fetch or a cache that ends before the moment answers unknown with the
+reason, and HOLD means the calendar was read and is clear (#199). The same check
+runs first in `next_clear_time`, which turns a blocked pair into the time it is
+next clear, and it answers unknown rather than a time when the data cannot
+vouch for the end of the window.
+
 The comparison is inclusive: exactly 1.0R tightens. Open profit is measured in R
 against `realised_risk_amount`, the same denominator the journal uses, so the
 number on the screen and the number in the file mean the same thing. 1.0R is a

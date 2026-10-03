@@ -867,7 +867,7 @@ def global_events(
 
 def next_clear_time(
     pair: str,
-    events: Sequence[CalendarEvent],
+    calendar: CalendarCoverage,
     config: DataConfig,
     after: datetime | None = None,
 ) -> datetime | None:
@@ -884,41 +884,66 @@ def next_clear_time(
 
     Args:
         pair: Six-character pair.
-        events: Calendar events. Only events on either leg are considered.
+        calendar: The coverage available. Only events on either leg are
+            considered: a global event is named by `global_events` and never
+            shuts a pair (#227).
         config: Supplies the blackout minutes.
         after: Start the search here. Defaults to the current UTC time.
 
     Returns:
         The clear time in UTC, or ``None`` when the supplied calendar does not
         extend far enough to find one. ``None`` means unknown, not clear, and
-        must not be treated as permission to trade.
+        must not be treated as permission to trade. Containment is inclusive at
+        both ends, as in `is_blacked_out`, so a moment exactly at a window's
+        close answers with that moment.
 
     Raises:
-        ValueError: If ``after`` is naive.
+        ValueError: If ``after`` is naive, ``pair`` is malformed, or an event
+            carries a naive ``scheduled_for``.
 
     This function's ``None`` and `is_blacked_out`'s ``(None, reason)`` describe
-    the same gap and must not describe it two different ways. Both mean "the
-    data does not reach far enough to answer", and this function has meant
-    that since before `is_blacked_out` grew a matching third outcome. It still
-    takes a bare ``Sequence[CalendarEvent]`` rather than a `CalendarCoverage`,
-    so unlike `is_blacked_out` it cannot distinguish *why* the search ran out,
-    only that it did; a caller holding a `CalendarCoverage` should read
-    `coverage_gap` for the reason and treat this function's ``None`` as
-    confirmation, not as a second source of truth.
+    the same gap in the same way: both come from `coverage_gap`, so a caller
+    wanting the reason reads that function, and this ``None`` is never a second
+    opinion about it. Ruled on #199, reading B, which is why this takes a
+    `CalendarCoverage` rather than a bare sequence.
+
+    It is ``None`` in two cases. The data does not reach ``after``, which is
+    `coverage_gap`'s answer at that moment. Or ``after`` is inside a run whose
+    end the data cannot vouch for: a release scheduled up to
+    ``calendar_blackout_before_min`` after the run closes would open a window
+    touching it and extend the run, so coverage must reach that far past the
+    close for the close to be the answer. Coverage that stops short of it is
+    the "does not extend far enough" of the return above.
 
     """
-    raise NotImplementedError(
-        "fbe.calendar_guard.next_clear_time is scaffolded; see docs/roadmap.md Phase 4"
-    )
+    base, quote = _checked_legs(pair)
+    moment = datetime.now(UTC) if after is None else after
+    events = tuple(calendar.events)
+    for event in events:
+        _require_aware(event.scheduled_for, f"{event.currency} {event.title}")
+    # `coverage_gap` makes the naive check of ``moment``, first, as it does
+    # for `is_blacked_out`.
+    if coverage_gap(calendar, moment) is not None:
+        return None
+    moment = moment.astimezone(UTC)
+    legs = [event for event in events if event.currency in (base, quote)]
+    # Already merged, touching windows included, so a run ends where it ends.
+    for opens, closes in blackout_windows(legs, config):
+        if opens <= moment <= closes:
+            reach = closes + timedelta(minutes=config.calendar_blackout_before_min)
+            if coverage_gap(calendar, reach) is not None:
+                return None
+            return closes
+    return moment
 
 
 def action_for_open_position(
     pair: str,
     when: datetime,
-    events: Sequence[CalendarEvent],
+    calendar: CalendarCoverage,
     config: DataConfig,
     unrealised_r: float = 0.0,
-) -> tuple[OpenPositionAction, str | None]:
+) -> tuple[OpenPositionAction | None, str | None]:
     """Decide what to do with an open position in ``pair`` as ``when`` nears.
 
     Holding through an event and entering into one are different decisions and
@@ -950,19 +975,18 @@ def action_for_open_position(
     event are the same signal, and the plan already says to close a stalled
     trade before its time expires.
 
-    Three limits come with the signature, stated here because a reader holding
-    ``(HOLD, None)`` cannot see any of them in the value.
+    Three limits come with the answer, stated here because a reader holding
+    ``(HOLD, None)`` cannot see all of them in the value.
 
-    **A bare sequence cannot say whether it was ever fetched.** Unlike
-    `is_blacked_out` this takes a ``Sequence[CalendarEvent]`` rather than a
-    `CalendarCoverage`, so an empty sequence from a failed scrape and a
-    genuinely quiet morning both return ``(HOLD, None)``. That is a fail-open
-    policy, and `docs/decisions/0002-representing-not-known.md` declines to
-    choose the direction while requiring the two cases to be tellable apart.
-    Here they are not. A caller holding a `CalendarCoverage` must read
-    `coverage_gap` itself before acting on HOLD. Whether the signature should
-    change is on issue #199 beside the `next_clear_time` question rather than
-    decided here.
+    **A failed fetch is not a quiet morning.** This takes a `CalendarCoverage`
+    and runs `coverage_gap` first, as `is_blacked_out` does, so a scrape that
+    failed or data that does not reach ``when`` answers ``(None, reason)``
+    rather than HOLD. Before #199 it took a bare sequence of events, and an
+    empty one from a failed scrape and a genuinely quiet morning both returned
+    ``(HOLD, None)``, which `docs/decisions/0002-representing-not-known.md`
+    forbids: it declines to choose fail-open or fail-closed, and requires the
+    two cases to be tellable apart. They now are. What to do with an unknown
+    answer stays the trader's call, the same as for an entry.
 
     **A global event never acts.** An event whose currency is ``GLOBAL``,
     which is how `fbe.datasources.calendar` records the feed's "All" country,
@@ -980,7 +1004,8 @@ def action_for_open_position(
         pair: Six-character pair the position is in.
         when: Time of the decision, timezone-aware UTC. Normally now, or the
             moment the next window opens.
-        events: Calendar events on either leg.
+        calendar: The coverage available. `coverage_gap` decides whether it
+            reaches ``when`` before a single event on either leg is read.
         config: Supplies the blackout minutes.
         unrealised_r: Open profit in R multiples, positive for profit, measured
             against the position's ``realised_risk_amount`` so it matches what
@@ -998,8 +1023,10 @@ def action_for_open_position(
         ``(action, reason)``. The reason names the event whenever one is in
         range, in the shape `is_blacked_out` uses, so an early exit can be
         explained later from the same string. It is ``None`` for
-        `OpenPositionAction.HOLD`, which, per the first limit above, covers
-        both a clear calendar and one that was never fetched.
+        `OpenPositionAction.HOLD`, which now means the calendar was read and
+        is clear. ``(None, reason)`` is the third answer: the guard could not
+        tell, and ``reason`` names why in `CoverageGap`'s categories, the shape
+        `is_blacked_out` returns for the same gap.
         The action itself is recorded on the trade as
         `fbe.journal.TradeRecord.guard_action`, beside rather than inside
         ``exit_reason``, and `fbe.journal.evaluate_by_guard_action` groups on
@@ -1031,17 +1058,21 @@ def action_for_open_position(
         )
 
     # Materialised before it is read, as `blackout_windows` does and for the
-    # same reason: this function walks ``events`` once per leg after walking it
-    # once for shape, and a generator would leave the later passes empty. The
-    # answer would be HOLD on a morning holding two high-impact releases.
-    events = tuple(events)
-
+    # same reason: this function walks the events once per leg after walking
+    # them once for shape, and a generator would leave the later passes empty.
+    # The answer would be HOLD on a morning holding two high-impact releases.
+    events = tuple(calendar.events)
     # Every event's shape, before any of them is matched against a leg. A naive
     # time is a broken feed rather than a fact about this pair, the same
     # ordering `is_blacked_out` uses and for the same reason.
     for event in events:
         _require_aware(event.scheduled_for, f"{event.currency} {event.title}")
-
+    # Then whether the data can answer at all, before a single leg is read, so
+    # a failed scrape is never mistaken for a quiet morning (#199).
+    gap = coverage_gap(calendar, when)
+    if gap is not None:
+        category, detail = gap
+        return None, f"{category.value}: {detail}"
     for leg in (base, quote):
         for event in events:
             if event.currency != leg:
@@ -1059,7 +1090,5 @@ def action_for_open_position(
                         return OpenPositionAction.TIGHTEN, reason
                     return OpenPositionAction.FLATTEN, reason
 
-    # Nothing in range. Not "the calendar said nothing", which is
-    # `coverage_gap`'s question and `is_blacked_out`'s to ask: flattening on an
-    # empty sequence would close every position the first time a fetch failed.
+    # Nothing in range, on data `coverage_gap` has already vouched for.
     return OpenPositionAction.HOLD, None

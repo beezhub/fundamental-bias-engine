@@ -402,8 +402,8 @@ a dispersion of 1.31, and `conviction_for` demotes on each.
 
 Every row carries `cost:unchecked` and `event:unchecked`, and every run of this
 command does. The command passes no `CalendarGuard` and no dealing cost,
-because `fbe.calendar_guard` is scaffolded and no execution layer supplies a
-cost yet, so `apply_filters` records that both checks were skipped rather than
+because no command yet builds a guard from the calendar feed and no execution
+layer supplies a cost, so `apply_filters` records that both checks were skipped rather than
 leaving the row silent. A row with an empty Notes column would mean every check
 ran and every check passed, which cannot happen today.
 
@@ -721,8 +721,8 @@ treated as no baseline: a run that asked for a specific baseline and printed
 path, so moving the data tree moves the reports with it.
 
 Three things are thin until the layers behind them land, and each says so on the
-page rather than rendering empty. The calendar is always empty because
-`fbe.calendar_guard` is scaffolded, and the warnings carry one line per run
+page rather than rendering empty. The calendar is always empty because no
+command yet reads the calendar feed into the run, and the warnings carry one line per run
 saying the blackout filter and the 24-hour conviction cap did not run. Shortlist
 entries carry no size, because a size needs an entry and a stop from the chart,
 and each entry names the `fbe size` call that would attach one. They carry no
