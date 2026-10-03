@@ -26,7 +26,7 @@ from typing import Literal
 
 from fbe.config import Config, ScoringConfig
 from fbe.types import Conviction, CurrencyScore, Direction, PairBias
-from fbe.universe import ALL_PAIRS, split_pair
+from fbe.universe import ALL_PAIRS, GLOBAL, split_pair
 
 __all__ = [
     "build_pair_biases",
@@ -42,6 +42,7 @@ __all__ = [
     "kind_of",
     "UNCHECKED_SUFFIX",
     "UNKNOWN_SUFFIX",
+    "GLOBAL_SUFFIX",
     "CalendarGuard",
     "EventHorizonGuard",
 ]
@@ -73,6 +74,19 @@ is not a choice, and a trader reading the report needs to be able to tell
 which one happened from the marker's name alone.
 """
 
+GLOBAL_SUFFIX: str = ":global"
+"""Suffix marking a notice about the whole run that never blocks a pair.
+
+``event:global`` names a high-impact event the feed publishes with no single
+currency, a G20 or BRICS summit, which `calendar_guard.global_events` reports
+and which reaches every pair at once. It is a fact about the pair's world
+rather than a check the engine could not perform, so it shares neither
+`UNCHECKED_SUFFIX` nor `UNKNOWN_SUFFIX`, and it never blocks: the plan's item
+10 stays a human judgement, ruled on #227. A suffix rather than a bare name
+for the reason `UNCHECKED_SUFFIX` gives: a reader can tell a marker does not
+block from its name alone.
+"""
+
 BLOCKERS: Mapping[str, bool] = {
     "no_edge": True,
     "cost": True,
@@ -82,31 +96,36 @@ BLOCKERS: Mapping[str, bool] = {
     "cost" + UNCHECKED_SUFFIX: False,
     "event" + UNCHECKED_SUFFIX: False,
     "event" + UNKNOWN_SUFFIX: False,
+    "event" + GLOBAL_SUFFIX: False,
 }
 """Every kind of blocker `apply_filters` can append, and whether it blocks.
 
 ``True`` means the blocker sets ``PairBias.tradeable = False``. ``False`` means
-it is recorded and the pair stays tradeable, which is both the
-`UNCHECKED_SUFFIX` and `UNKNOWN_SUFFIX` cases: an offline run, and a run whose
+it is recorded and the pair stays tradeable, which is the `UNCHECKED_SUFFIX`,
+`UNKNOWN_SUFFIX` and `GLOBAL_SUFFIX` cases, the last a notice rather than a
+check that failed. Of the first two: an offline run, and a run whose
 calendar fetch failed, both still produce biases, and both say which checks
 they could not perform or complete. Whether unknown calendar coverage should
 keep this pair tradeable at all is not settled: `apply_filters` marks this
 provisional pending issue #24 and the child of #41 that consumes its ruling.
 
-Kinds rather than literal strings, and the distinction matters for two entries.
-Six of these eight are emitted as the key itself. ``event`` is not: `CalendarGuard`
-returns a reason naming the event, its currency and its scheduled time, so the
-shortlist can say why an obvious setup was skipped, and `apply_filters` appends
+Kinds rather than literal strings, and the distinction matters for three
+entries. Six of these nine are emitted as the key itself. ``event`` is not:
+`CalendarGuard` returns a reason naming the event, its currency and its
+scheduled time, so the shortlist can say why an obvious setup was skipped, and
+`apply_filters` appends
 that reason as ``"event: <reason>"``. ``event:unknown`` is not either: it carries
 why the guard could not check, as ``"event:unknown: <reason>"``, from
-`calendar_guard.CoverageGap`'s categories. So a run's ``blockers`` can hold
+`calendar_guard.CoverageGap`'s categories. ``event:global`` carries the event
+it names, as ``"event:global: <reason>"``. So a run's ``blockers`` can hold
 strings this mapping does not contain verbatim, and a consumer matching on
-exact equality will miss both the blocked case and the unknown case.
+exact equality will miss the blocked case, the unknown case and the notice.
 
 A consumer mapping a string back to its kind must take the **longest** key that
-prefixes it. Four of the emitted strings begin with a shorter key than their
+prefixes it. Five of the emitted strings begin with a shorter key than their
 own: ``"cost:unchecked"`` starts with ``"cost"``, and ``"event:unchecked"``,
-``"event:unknown: ..."`` and ``"event: ..."`` all start with ``"event"``. Taking
+``"event:unknown: ..."``, ``"event:global: ..."`` and ``"event: ..."`` all start
+with ``"event"``. Taking
 the first key that matches reads three non-blocking markers as hard blocks and
 refuses every pair in an offline run, which is the outcome the two suffixes
 exist to avoid. `apply_filters` sidesteps the question by carrying each kind
@@ -187,6 +206,13 @@ checked and found a genuinely quiet day were the same value, which is the
 ambiguity issue #43 removes. `apply_filters` reads ``unknown_reason`` and
 appends ``"event:unknown: <reason>"`` rather than treating the currency as
 clear.
+
+`apply_filters` also asks the guard about ``universe.GLOBAL``, the pseudo-currency
+`fbe.datasources.calendar` gives the feed's "All" rows. What the guard returns
+for it is recorded on every pair as ``"event:global: <reason>"`` and never
+blocks, per #227: a summit is named for the owner to judge rather than enforced.
+An ``unknown_reason`` for ``GLOBAL`` adds nothing, because the legs carry the
+same calendar and already say it could not be read.
 """
 
 EventHorizonGuard = Callable[[str, date], bool | None]
@@ -1133,6 +1159,12 @@ def _calendar_entries(
             entries.append((marker, f"{marker}: {unknown_reason}"))
             continue
         entries.extend(("event", f"event: {reason}") for reason in found)
+    # One more question, about the events with no single currency. Asked once
+    # per pair rather than once per run, because this function answers for
+    # one pair and the guard is the caller's to cache. Never blocking (#227).
+    notices, _ = calendar_guard(GLOBAL, asof)
+    marker = "event" + GLOBAL_SUFFIX
+    entries.extend((marker, f"{marker}: {reason}") for reason in notices)
     return entries
 
 

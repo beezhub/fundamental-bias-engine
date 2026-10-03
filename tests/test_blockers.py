@@ -35,7 +35,14 @@ import pytest
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 import fbe
-from fbe.bias import BLOCKERS, UNCHECKED_SUFFIX, UNKNOWN_SUFFIX, blocking, kind_of
+from fbe.bias import (
+    BLOCKERS,
+    GLOBAL_SUFFIX,
+    UNCHECKED_SUFFIX,
+    UNKNOWN_SUFFIX,
+    blocking,
+    kind_of,
+)
 from fbe.dashboard.build import render_dashboard
 from fbe.report import _calendar_unread, render_report
 from fbe.types import BiasReport, Conviction, Direction, PairBias, TradeIdea
@@ -175,13 +182,14 @@ def test_only_the_suffixed_markers_are_non_blocking() -> None:
     which is what lets ADR 0002 rule 4 add one without editing consumers.
     `UNKNOWN_SUFFIX` is the second name added under that rule, for a check
     that ran and could not tell, distinct from `UNCHECKED_SUFFIX`'s check that
-    did not run at all.
+    did not run at all. `GLOBAL_SUFFIX` is the third, for a notice about the
+    whole run that is named and never enforced (#227).
     """
     for blocker, blocks in BLOCKERS.items():
-        is_provisional = blocker.endswith(UNCHECKED_SUFFIX) or blocker.endswith(
-            UNKNOWN_SUFFIX
+        is_non_blocking = blocker.endswith(
+            (UNCHECKED_SUFFIX, UNKNOWN_SUFFIX, GLOBAL_SUFFIX)
         )
-        assert blocks is not is_provisional, blocker
+        assert blocks is not is_non_blocking, blocker
 
 
 def test_the_kind_of_a_marker_is_its_longest_matching_prefix() -> None:

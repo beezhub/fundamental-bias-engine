@@ -391,6 +391,18 @@ is the one above. Feeds mislabel. An
 unscheduled ECB remark tagged medium impact still moves a pair forty pips. The
 keyword match catches those.
 
+**Geopolitical events are named, not enforced.** The feed publishes summits and
+similar events under "All", which the calendar source records as `GLOBAL`, and
+`GLOBAL` is neither leg of any pair, so the leg check cannot match one. A global
+event never blocks a pair. It is named on every pair as `event:global`, and
+whether to stand aside for it is the owner's judgement. Item 10 stays a human
+judgement. The feed covers scheduled political events too thinly to enforce the
+plan's tenth category, so `calendar_guard.global_events` names the event, for
+example "GLOBAL BRICS Summit at 2026-09-13 08:15 UTC", and the report and the
+dashboard show it rather than standing aside for it. Because it is true of every
+pair, the dashboard prints it once as a run condition with the event named
+(#227).
+
 **Which rating counts is one decision in one place.** `BLACKOUT_IMPACTS` holds
 it, `DEFAULT_MIN_IMPACT` is derived from it so the source returns what the
 guard blocks, and `is_high_impact` reads it rather than naming a level of its

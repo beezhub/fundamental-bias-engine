@@ -232,6 +232,15 @@ class _BlockerCount:
             two of one kind counts once, because the figure answers how many
             pairs are affected.
         total: Pairs in the run, normally 28.
+        reasons: What the markers of this kind say after the kind, distinct and
+            in first-seen order, so a run condition can name the event rather
+            than leave the owner to look a bare kind up: ``event:global`` reads
+            "BRICS Summit at 2026-09-13 08:15 UTC", not just its kind (#227).
+            Empty for a kind emitted as its bare name, ``event:unchecked`` for
+            one, which has nothing to add. The page prints them only for a
+            `universal` kind: that is the one kind dropped from the cells, so
+            without them its reason would appear nowhere, while a kind on some
+            pairs is already named on each of their cells.
 
     The count is printed against the total rather than alone, so
     ``event:unchecked`` on 3 of 28 and the same key on 28 of 28 read
@@ -243,6 +252,7 @@ class _BlockerCount:
     kind: str
     count: int
     total: int
+    reasons: tuple[str, ...] = ()
 
     @property
     def universal(self) -> bool:
@@ -735,11 +745,23 @@ def _blocker_counts(pairs: Sequence[PairBias]) -> tuple[_BlockerCount, ...]:
 
     """
     counts: dict[str, int] = {}
+    reasons: dict[str, list[str]] = {}
     for row in pairs:
         for kind in {kind_of(marker) for marker in row.blockers}:
             counts[kind] = counts.get(kind, 0) + 1
+        for marker in row.blockers:
+            kind = kind_of(marker)
+            reason = marker[len(kind) :].lstrip(": ").strip()
+            seen = reasons.setdefault(kind, [])
+            if reason and reason not in seen:
+                seen.append(reason)
     return tuple(
-        _BlockerCount(kind=kind, count=count, total=len(pairs))
+        _BlockerCount(
+            kind=kind,
+            count=count,
+            total=len(pairs),
+            reasons=tuple(reasons.get(kind, ())),
+        )
         for kind, count in sorted(counts.items(), key=lambda row: (-row[1], row[0]))
     )
 

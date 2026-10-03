@@ -39,6 +39,7 @@ from fbe.bias import (
     apply_filters,
 )
 from fbe.config import Config, ScoringConfig
+from fbe.datasources.registry import GLOBAL
 from fbe.types import Conviction, CurrencyScore, Direction, PairBias
 
 ASOF = date(2026, 9, 9)
@@ -585,7 +586,8 @@ def test_the_guard_is_asked_about_both_legs_on_the_runs_own_date() -> None:
         bias(), legs(), CONFIG, ASOF, calendar_guard=recording, cost_ratio=0.01
     )
 
-    assert asked == [("EUR", ASOF), ("USD", ASOF)]
+    # Both legs, then the events with no single currency (#227).
+    assert asked == [("EUR", ASOF), ("USD", ASOF), (GLOBAL, ASOF)]
 
 
 # --- accumulation and the untouched view ------------------------------------
@@ -1034,7 +1036,7 @@ def test_the_filters_read_the_pair_s_own_legs() -> None:
         cost_ratio=0.01,
     )
 
-    assert asked == ["AUD", "JPY"]
+    assert asked == ["AUD", "JPY", GLOBAL]
     assert "event: AUD RBA at 04:30 UTC" in result.blockers
     assert "coverage" in result.blockers
     assert result.tradeable is False
@@ -1064,7 +1066,8 @@ def test_the_guard_is_asked_about_the_runs_date_not_the_bias_s() -> None:
         cost_ratio=0.01,
     )
 
-    assert asked == [("EUR", ASOF), ("USD", ASOF)]
+    # Both legs, then the events with no single currency (#227).
+    assert asked == [("EUR", ASOF), ("USD", ASOF), (GLOBAL, ASOF)]
 
 
 # --- boundaries and refusals nothing else reaches ---------------------------
