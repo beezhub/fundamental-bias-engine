@@ -1208,6 +1208,13 @@ Single column, in the order the trading day needs it:
    and series id. This is the Phase 5 criterion that the dashboard shows its
    working.
 
+   Each series shows once, at its newest reading: the latest period, then the
+   latest revision of it. A pillar's inputs hold every reading it consumed,
+   which on a live run is years of daily data, and listing all of it for both
+   legs of 28 pairs took the 2 October 2026 page to 107 MB and over the size
+   ceiling. A row that left readings out says how many, and the JSON sidecar
+   still holds every one.
+
    A pillar the run could not score on a leg prints `.` rather than `0.00`, for
    the reason the diagonal does. Native `<details>` rather than script, so the
    panel opens on a page whose script was blocked; the data is inlined at build
