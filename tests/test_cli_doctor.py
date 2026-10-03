@@ -2243,3 +2243,117 @@ def test_the_journal_line_reads_the_configured_directory(
     moved = _run(path)
 
     assert str(elsewhere) in " ".join(_journal_lines(moved))
+
+
+# --- every sidecar is checked, and the newest is chosen by date (#293) -----------
+
+
+@respx.mock
+def test_a_damaged_report_that_is_not_the_newest_is_named(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """The issue's own case: the middle of three is cut short. Before #293 only
+    the newest was decoded, so the next morning's report silenced the damage."""
+    path = _config_file(tmp_path)
+    reports = _record(path, tmp_path, "2026-09-22", "2026-09-23", "2026-09-24")
+    damaged = reports / "bias-2026-09-23.json"
+    damaged.write_text(damaged.read_text()[:20])
+
+    block = _block(_run(path), "reports")
+
+    assert block[0][LABEL_WIDTH:].startswith("ok")
+    named = [line for line in block if "bias-2026-09-23.json" in line]
+    assert len(named) == 1
+    assert "damaged" in named[0]
+    assert named[0][LABEL_WIDTH:].startswith("warn")
+
+
+@respx.mock
+def test_an_empty_report_is_damaged_too(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    path = _config_file(tmp_path)
+    reports = _record(path, tmp_path, "2026-09-22", "2026-09-24")
+    (reports / "bias-2026-09-23.json").write_text("")
+
+    block = _block(_run(path), "reports")
+
+    assert any("bias-2026-09-23.json" in line and "damaged" in line for line in block)
+
+
+@respx.mock
+def test_each_damaged_report_gets_its_own_line(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    path = _config_file(tmp_path)
+    reports = _record(
+        path, tmp_path, "2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24"
+    )
+    for day in ("2026-09-21", "2026-09-22"):
+        (reports / f"bias-{day}.json").write_text('{"asof": "')
+
+    block = _block(_run(path), "reports")
+
+    assert sum("damaged" in line for line in block) == 2
+
+
+@respx.mock
+def test_the_newest_report_is_chosen_by_date_not_by_name(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """``'0' > '-'``, so ``bias-20260101.json`` sorts after every extended-format
+    name. It is dated 1 January, so it is not the newest, and its stale digest
+    must not be the one compared."""
+    path = _config_file(tmp_path)
+    reports = _record(path, tmp_path, "2026-09-24")
+    (reports / "bias-20260101.json").write_text(
+        json.dumps({"asof": "2026-01-01", "config_digest": "stale0digest"})
+    )
+
+    first = _block(_run(path), "reports")[0]
+
+    assert "last report 2026-09-24, config digest matches" in first
+
+
+@respx.mock
+def test_a_name_that_sorts_after_every_date_is_not_taken_as_the_newest(
+    tmp_path: Path, only_scaffolded: None, today_is_fixed: None
+) -> None:
+    """``bias-backup.json`` sorts after all of them. It carries no date, so it is
+    named by the record line and never compared."""
+    path = _config_file(tmp_path)
+    reports = _record(path, tmp_path, "2026-09-24")
+    (reports / "bias-backup.json").write_text(
+        json.dumps({"asof": "2026-01-01", "config_digest": "stale0digest"})
+    )
+
+    block = _block(_run(path), "reports")
+
+    assert "last report 2026-09-24, config digest matches" in block[0]
+    assert any("bias-backup.json is not dated" in line for line in block)
+    assert not any("stale0digest" in line for line in block)
+
+
+@respx.mock
+def test_only_the_newest_report_is_decoded_in_full(
+    tmp_path: Path,
+    only_scaffolded: None,
+    today_is_fixed: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A report runs to tens of megabytes, so decoding every one would make
+    doctor slow on a full directory. The others are checked from their ends."""
+    path = _config_file(tmp_path)
+    _record(path, tmp_path, "2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24")
+    decoded: list[str] = []
+    real = json.loads
+
+    def counting(text: str | bytes, *args: object, **kwargs: object) -> object:
+        decoded.append(text[:40] if isinstance(text, str) else repr(text[:40]))
+        return real(text, *args, **kwargs)
+
+    monkeypatch.setattr("fbe.cli.json.loads", counting)
+
+    _run(path)
+
+    assert len([text for text in decoded if "config_digest" in text]) == 1

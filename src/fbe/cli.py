@@ -76,6 +76,7 @@ import io
 import json
 import logging
 import math
+import os
 import time
 import webbrowser
 from collections.abc import Mapping, Sequence
@@ -983,15 +984,27 @@ def _check_sources(config: Config, timeout: float) -> list[CheckLine]:
 
 
 def _check_reports(config: Config) -> list[CheckLine]:
-    """Say whether a previous report exists and whether its digest still matches.
+    """Report the newest report's digest and name any damaged report on disk.
 
-    Reads only the ``config_digest`` out of the newest JSON sidecar rather than
-    reconstructing a report through `fbe.report.load_report`. That one raises
-    on a sidecar it cannot decode, and this check exists to report a damaged
-    report rather than to fail on it. The filename convention comes from
-    `fbe.report.SIDECAR_GLOB` so it is not restated here. The two keys this
-    reads, ``asof`` and ``config_digest``, are the only shape it assumes of the
-    sidecar, and Phase 5 should keep both at the top level or update this.
+    The newest report is the one with the latest as-of date in its name, read
+    through `fbe.report.asof_in`, as `fbe.report.latest_report` chooses it. Not
+    the last name in a sort: ``'0' > '-'``, so ``bias-20260101.json`` sorts
+    after every extended-format name, and ``bias-backup.json`` after all of
+    them (#293). A name carrying no date is never compared; the record line
+    below names it.
+
+    From the newest it decodes the whole file but uses only ``config_digest``
+    and ``asof``, rather than reconstructing a report through
+    `fbe.report.load_report`, which raises on a sidecar it cannot decode where
+    this check exists to report one. Those two keys are the only shape it
+    assumes, and Phase 5 should keep both at the top level or update this.
+
+    Every other sidecar is checked from its ends only: the first and last
+    non-blank bytes must be ``{`` and ``}``. A report runs to tens of megabytes,
+    so decoding every one would make this command slow on a full directory, and
+    the damage that happens to these files is a write cut short, which the last
+    byte shows. A file corrupted in the middle with both ends intact is not
+    caught, and is the cost of reading kilobytes instead of gigabytes.
 
     Args:
         config: The effective config.
@@ -1000,7 +1013,10 @@ def _check_reports(config: Config) -> list[CheckLine]:
         An ``ok`` line saying there is nothing to diff against when the
         directory is empty, which is the normal state of a fresh checkout. A
         digest that no longer matches is a warning, because the weights have
-        moved since and the two runs are not comparable.
+        moved since and the two runs are not comparable. Then one warning line
+        per damaged sidecar other than the newest, each named, because that
+        morning will be missing from the Phase 6 evaluation while the record
+        line counts it present. Then the record lines.
 
     """
     directory = config.data.reports_dir
@@ -1022,7 +1038,29 @@ def _check_reports(config: Config) -> list[CheckLine]:
     # contents, the other about which days have a file at all.
     record = _check_record(sidecars, _now().date())
 
-    newest = sidecars[-1]
+    dated: list[tuple[date, Path]] = []
+    for sidecar in sidecars:
+        try:
+            dated.append((report_module.asof_in(sidecar), sidecar))
+        except ValueError:
+            continue  # named by the record line, never compared
+    if not dated:
+        return [
+            CheckLine("reports", CheckStatus.OK, "no dated report to diff"),
+            *record,
+        ]
+    newest = max(dated, key=lambda item: (item[0], item[1].name))[1]
+    damaged = [
+        CheckLine(
+            "",
+            CheckStatus.WARN,
+            f"{sidecar.name} is damaged, cut short or empty, so that morning "
+            "will be missing from the evaluation",
+        )
+        for sidecar in sidecars
+        if sidecar != newest and not _sidecar_looks_whole(sidecar)
+    ]
+
     try:
         payload = json.loads(newest.read_text(encoding="utf-8"))
         recorded = str(payload["config_digest"])
@@ -1033,6 +1071,7 @@ def _check_reports(config: Config) -> list[CheckLine]:
                 CheckStatus.WARN,
                 f"{newest.name} could not be read ({type(error).__name__})",
             ),
+            *damaged,
             *record,
         ]
 
@@ -1042,6 +1081,7 @@ def _check_reports(config: Config) -> list[CheckLine]:
             CheckLine(
                 "reports", CheckStatus.OK, f"last report {asof}, config digest matches"
             ),
+            *damaged,
             *record,
         ]
     return [
@@ -1050,8 +1090,38 @@ def _check_reports(config: Config) -> list[CheckLine]:
             CheckStatus.WARN,
             f"last report {asof} used digest {recorded}, not comparable",
         ),
+        *damaged,
         *record,
     ]
+
+
+SIDECAR_END_BYTES = 64
+"""How many bytes `_sidecar_looks_whole` reads from each end of a sidecar.
+Enough to pass any whitespace a writer leaves around the braces, and a fixed
+cost however large the report grows."""
+
+
+def _sidecar_looks_whole(sidecar: Path) -> bool:
+    """Whether a sidecar starts with ``{`` and ends with ``}``.
+
+    Args:
+        sidecar: A path matching `fbe.report.SIDECAR_GLOB`.
+
+    Returns:
+        False for an empty file, a file cut short mid-write, or one that cannot
+        be opened. True does not prove the middle decodes; `_check_reports`
+        says why that is the trade it makes.
+
+    """
+    try:
+        with sidecar.open("rb") as handle:
+            head = handle.read(SIDECAR_END_BYTES).lstrip()
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - SIDECAR_END_BYTES))
+            tail = handle.read().rstrip()
+    except OSError:
+        return False
+    return head.startswith(b"{") and tail.endswith(b"}")
 
 
 def _weekdays(start: date, end: date) -> list[date]:
