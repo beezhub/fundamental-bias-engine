@@ -179,8 +179,10 @@ No qualifying events for the {{ report.pairs | length - calendar_unread }} pairs
 {% endfor %}
 
 The plan says to stand aside around high-impact news. Each event above expands
-into a blackout window using the configured minutes either side; pairs touched
-by an active window are marked not tradeable in section 2.
+into a no-entry window using the configured minutes either side, and each pair
+lists its own windows as `event:window` in section 2. A window blocks nothing
+here, because the report is written in the morning and an entry is placed
+later: check the entry time against the window.
 {% endif %}
 
 ## 5. Data coverage and warnings

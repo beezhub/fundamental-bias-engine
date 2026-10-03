@@ -208,3 +208,30 @@ def never_the_real_journal(monkeypatch: pytest.MonkeyPatch) -> None:
         real_append(record, path)  # type: ignore[arg-type]
 
     monkeypatch.setattr(journal, "append", guarded)
+
+
+def _real_calendar_hooks() -> tuple[object, object]:
+    from fbe import cli
+
+    return cli._daily_calendar, cli._refresh_calendar
+
+
+REAL_DAILY_CALENDAR, REAL_REFRESH_CALENDAR = _real_calendar_hooks()
+"""The commands' real calendar readers, for the tests that switch them back on."""
+
+
+@pytest.fixture(autouse=True)
+def no_calendar_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The morning commands read no calendar unless a test asks them to.
+
+    Since #335, ``fbe bias``, ``fbe report`` and ``fbe refresh`` read the news
+    calendar, which is a network fetch on any run that is not offline. Tests
+    must not reach the network, and the many tests written before #335 assert
+    on a run that read no calendar. A test that wants the real reader sets
+    ``fbe.cli._daily_calendar`` back to `REAL_DAILY_CALENDAR` and replaces the
+    source, as ``tests/test_daily_calendar.py`` does.
+    """
+    from fbe import cli
+
+    monkeypatch.setattr(cli, "_daily_calendar", lambda config, run_date: None)
+    monkeypatch.setattr(cli, "_refresh_calendar", lambda config: None)

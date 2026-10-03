@@ -101,6 +101,7 @@ from fbe.bias import (
 from fbe.calendar_guard import (
     CalendarCoverage,
     CoverageGap,
+    DailyCalendar,
     blackout_windows,
     coverage_gap,
 )
@@ -1534,6 +1535,7 @@ def refresh(
         raise typer.BadParameter(str(error), param_hint="--source") from error
 
     _render_refresh(result, config, today)
+    _refresh_calendar(config)
 
     if not result.usable:
         raise typer.Exit(EXIT_UNUSABLE)
@@ -2460,12 +2462,16 @@ def bias(
     # the printed ones. A pair hidden by --majors still has to carry its real
     # blockers, because --majors is a change of view and the hidden list below
     # states why each pair went.
-    filtered = tuple(
-        apply_filters(bias_row, by_currency, config, run_date)
-        for bias_row in build_pair_biases(scores, config, run_date)
+    daily = _daily_calendar(config, run_date)
+    filtered = _filtered(
+        build_pair_biases(scores, config, run_date),
+        by_currency,
+        config,
+        run_date,
+        daily,
     )
     shown, hidden = _bias_rows(filtered, majors, min_conviction, tradeable_only)
-    notes = _bias_notes()
+    notes = _bias_notes(consulted=daily is not None)
 
     if matrix:
         grid = report_module._grid(shown)
@@ -2502,11 +2508,17 @@ def bias(
         raise typer.Exit(EXIT_UNUSABLE)
 
 
-def _bias_notes() -> tuple[str, ...]:
-    """Say which checks did not run, on every run, until they can.
+def _bias_notes(*, consulted: bool) -> tuple[str, ...]:
+    """Say what the run did with the calendar, and which checks did not run.
+
+    Args:
+        consulted: Whether `_daily_calendar` read the calendar for this run.
 
     Returns:
-        One line per check this command cannot yet perform.
+        One line. When the calendar was read, it says each pair lists its
+        no-entry windows and that the morning run blocks nothing for them, so
+        the entry time is the trader's to check against them (#335). When it
+        was not read, the line it has always printed.
 
         `apply_filters` records ``cost:unchecked`` and ``event:unchecked`` on
         every pair, so the blackout and the dealing cost announce their own
@@ -2516,17 +2528,143 @@ def _bias_notes() -> tuple[str, ...]:
         it saying so. A pair can print ``high`` on an FOMC evening and look
         exactly like a pair checked and cleared.
 
-        `fbe.calendar_guard` is scaffolded, so there is no guard to pass yet.
-        That makes this the honest half of the fix: the tier is not adjusted
-        for something nobody looked at, and the run says which look was not
-        taken. Absence with a name, never a plausible default.
+        The cap is never applied, even when the calendar is read: with news
+        on most days it would demote most pairs most days (#334). So the tier
+        is not adjusted for a release, and the line says so rather than
+        leaving the reader to assume a check ran. Absence with a name, never a
+        plausible default.
 
     """
+    if consulted:
+        return (
+            "Calendar read: each pair lists its no-entry windows for today as "
+            "event:window. Nothing here is blocked or demoted for a release "
+            "later in the day, so check your entry time against the windows.",
+        )
     return (
         "No calendar was consulted: the blackout filter and the 24-hour "
         "conviction cap did not run, so no tier here is capped for an "
         "imminent release. Check the calendar by hand before acting on a row.",
     )
+
+
+def _daily_calendar(config: Config, run_date: date) -> DailyCalendar | None:
+    """Read the calendar for a morning run, or say it was not read.
+
+    Args:
+        config: The effective config. ``config.data.offline`` makes the source
+            read its cache rather than the feed, which is what a report run
+            after ``fbe refresh`` does.
+        run_date: The run's date.
+
+    Returns:
+        ``None`` when ``run_date`` is not today, in UTC or in the local zone
+        that ``date.today()`` gives the commands' default: the feed carries the
+        current week only, so reading it for an older date would find nothing
+        and print that day as clear. ``None`` leaves every pair at
+        ``event:unchecked``. Otherwise the day, with every impact level
+        fetched so `fbe.calendar_guard.is_high_impact` decides what qualifies,
+        and with a failed fetch carried as a failed `CalendarCoverage`, which
+        marks every pair ``event:unknown`` rather than clear.
+
+    """
+    if run_date not in (_now().date(), date.today()):
+        return None
+    start = datetime(run_date.year, run_date.month, run_date.day, tzinfo=UTC)
+    before = timedelta(minutes=config.data.calendar_blackout_before_min)
+    after = timedelta(minutes=config.data.calendar_blackout_after_min)
+    source = CalendarSource(config.data)
+    try:
+        events = tuple(
+            source.events(
+                list(G10),
+                start - after,
+                start + timedelta(days=1) + before,
+                min_impact=Impact.LOW.value,
+            )
+        )
+    except SourceError as error:
+        coverage = CalendarCoverage(
+            events=(),
+            covers_through=source.horizon(),
+            fetch_ok=False,
+            fetch_error=str(error),
+        )
+    else:
+        coverage = CalendarCoverage(events=events, covers_through=source.horizon())
+    return DailyCalendar(coverage, config.data, _now())
+
+
+def _filtered(
+    biases: Sequence[PairBias],
+    by_currency: Mapping[str, CurrencyScore],
+    config: Config,
+    run_date: date,
+    daily: DailyCalendar | None,
+) -> tuple[PairBias, ...]:
+    """Apply the filters, with the calendar's hooks when it was read.
+
+    Args:
+        biases: Every pair, unfiltered.
+        by_currency: The run's scores.
+        config: The effective config.
+        run_date: The run's date.
+        daily: From `_daily_calendar`. ``None`` passes no hooks, which records
+            ``event:unchecked``.
+
+    Returns:
+        The filtered pairs, in the order given.
+
+    """
+    if daily is None:
+        return tuple(
+            apply_filters(row, by_currency, config, run_date) for row in biases
+        )
+    return tuple(
+        apply_filters(
+            row,
+            by_currency,
+            config,
+            run_date,
+            calendar_guard=daily.guard,
+            calendar_windows=daily.windows,
+        )
+        for row in biases
+    )
+
+
+def _refresh_calendar(config: Config) -> None:
+    """Fetch this week's calendar into the cache and say what it holds.
+
+    So a report run ``--offline`` after the morning refresh reads the same
+    week. A failure is printed, not raised: the series refresh has already
+    succeeded or failed on its own terms, and the report marks every pair
+    ``event:unknown`` when it cannot read the week.
+
+    Args:
+        config: The effective config. Nothing is fetched offline.
+
+    """
+    if config.data.offline:
+        return
+    source = CalendarSource(config.data)
+    now = _now()
+    try:
+        events = source.events(
+            list(G10),
+            now - timedelta(days=1),
+            now + timedelta(days=7),
+            min_impact=Impact.LOW.value,
+        )
+    except SourceError as error:
+        typer.echo(
+            f"Calendar: not cached ({error}). A report today marks every pair "
+            "event:unknown until it can be read."
+        )
+        return
+    horizon = source.horizon()
+    through = f", through {horizon:%Y-%m-%d %H:%M} UTC" if horizon else ""
+    typer.echo(f"Calendar: {len(events)} events cached{through}.")
 
 
 def _bias_rows(
@@ -4000,23 +4138,27 @@ def report(
         raise typer.Exit(EXIT_UNUSABLE)
 
     by_currency = {score.currency: score for score in scores}
-    pairs = tuple(
-        apply_filters(bias_row, by_currency, config, run_date)
-        for bias_row in build_pair_biases(scores, config, run_date)
+    daily = _daily_calendar(config, run_date)
+    pairs = _filtered(
+        build_pair_biases(scores, config, run_date),
+        by_currency,
+        config,
+        run_date,
+        daily,
     )
     run = BiasReport(
         asof=run_date,
         generated_at=datetime.now(UTC),
         currencies=tuple(scores),
         pairs=pairs,
-        events=(),
+        events=() if daily is None else daily.events_on(run_date),
         # The cap lives in RiskConfig and nowhere else: there is no purpose in
         # shortlisting more trades than the risk rules permit to be open.
         shortlist=tuple(
             TradeIdea(bias=row)
             for row in shortlist(pairs, config.risk.max_concurrent_positions)
         ),
-        warnings=(*_score_notes(scores), *_bias_notes()),
+        warnings=(*_score_notes(scores), *_bias_notes(consulted=daily is not None)),
         config_digest=config.digest(),
     )
 
