@@ -926,20 +926,46 @@ problem waiting to become a loss.
 
 ```console
 $ fbe journal review --days 7
-7 days to 2026-09-09: 6 trades, 5 closed, 1 open
+7 days to 2026-10-06: 5 trades, 4 closed, 1 open
 
-Closed P&L        ZAR +38.20      Win rate  60%      Average  +0.41R
-Largest loss      ZAR -23.20      Largest win  ZAR +41.54
+Closed P&L  ZAR +30.00   Win rate 50% (15% to 85%)   Average +0.38R   4 trades  record
 R-multiples are measured against realised risk, after lot rounding.
 
-Followed the plan   4 trades   ZAR +61.40   avg +0.92R
-Broke the plan      1 trade    ZAR -23.20   avg -1.16R
-With engine bias    4 trades   ZAR +52.00   avg +0.78R
-Against the bias    1 trade    ZAR -13.80   avg -0.69R
+Followed the plan   3 trades   ZAR +50.00    avg +0.83R  record
+Broke the plan      1 trade    ZAR -20.00    avg -1.00R  record
+With engine bias    3 trades   ZAR -10.00    avg -0.17R  record
+Against the bias    1 trade    ZAR +40.00    avg +2.00R  record
 
-Open: GBPUSD long from 1.3120, stop 1.3068, 2 days held.
-The single plan break was the single worst trade of the week.
+By conviction
+high    1 trade    win 100% (21% to 100%)   avg +1.50R  record
+medium  2 trades   win 0% (0% to 66%)       avg -1.00R  record
+low     1 trade    win 100% (21% to 100%)   avg +2.00R  record
+
+Every row marked record rests on fewer than 30 closed trades: a record of what happened, not evidence about what will.
+
+Open: EURGBP long from 1.0850, stop 1.0825, opened 2026-10-05.
+
+Discipline flags
+- against_bias: entered USDJPY long against the engine's lean, flagged so the overrides can be counted and read as their own group
 ```
+
+Every statistic comes from `fbe.journal`: `summarise` for the opening line,
+`evaluate_by_plan` and `evaluate_by_bias_agreement` for the two splits,
+`evaluate` for the conviction bands and `discipline_flags` for the flags. The
+command selects the trades and formats what it is given, and computes nothing
+itself (#265). `--days` keeps trades opened in the window, and `--pair`, `--tag`
+and `--open-only` narrow that further.
+
+Every row carries its trade count, and a row resting on fewer than thirty closed
+trades says `record`: what happened, not evidence about what will. On a journal
+that started this month, that is every row. The win rate carries the interval
+around it, because three winners from four could come from a 30% trader or a
+90% one. `ZAR unknown` replaces a money total whenever any trade in the row has
+no realised rand figure, because a sum of the rest would read as the total.
+
+An empty journal prints one sentence saying so, and so does a window with no
+trades in it. Both exit 0, and neither prints a zero that could read as a
+result. `--format json` and `--format csv` carry the same figures as the table.
 
 ### `fbe evaluate`
 
