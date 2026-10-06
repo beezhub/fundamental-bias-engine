@@ -80,7 +80,7 @@ import os
 import time
 import webbrowser
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -5228,13 +5228,319 @@ def journal_review(
         open_only: Show only trades still open.
         output_format: table, json or csv.
 
+    Every statistic comes from `fbe.journal`: `summarise`, `evaluate`,
+    `evaluate_by_plan`, `evaluate_by_bias_agreement` and `discipline_flags`.
+    This command selects the records and formats what it is handed, and
+    computes nothing, ruled on #265. Selection is the window, through
+    `fbe.journal.load`'s ``since``, then the pair, tag and open-only filters.
+
     Raises:
-        NotImplementedError: Always, until `fbe.journal` lands.
+        typer.Exit: With `EXIT_UNUSABLE` when the journal exists and cannot be
+            read. An empty or absent journal is not an error: it is the normal
+            state of a fresh clone, and it is printed as such.
 
     """
-    raise NotImplementedError(
-        "fbe.cli.journal_review is scaffolded; see docs/roadmap.md Phase 6"
+    config = _effective_config(ctx)
+    path = _journal_path(config)
+    today = _now().date()
+    since = today - timedelta(days=days)
+    try:
+        everything = journal_module.load(path=path)
+        windowed = journal_module.load(since=since, path=path)
+    except (OSError, ValueError) as error:
+        typer.echo(f"The journal at {path} could not be read: {error}", err=True)
+        raise typer.Exit(EXIT_UNUSABLE) from error
+    pairs = {code.upper() for code in pair or ()}
+    tags = set(tag or ())
+    selected = [
+        record
+        for record in windowed
+        if (not pairs or record.pair in pairs)
+        and (not tags or tags & set(record.tags))
+        and (not open_only or record.closed_at is None)
+    ]
+    review = _Review(
+        days=days,
+        today=today,
+        path=path,
+        journal_empty=not everything,
+        records=selected,
+        summary=journal_module.summarise(selected),
+        by_conviction=journal_module.evaluate(selected),
+        by_plan=journal_module.evaluate_by_plan(selected),
+        by_bias=journal_module.evaluate_by_bias_agreement(selected),
+        flags=journal_module.discipline_flags(selected, config.risk),
     )
+    if output_format is OutputFormat.JSON:
+        typer.echo(_review_json(review))
+    elif output_format is OutputFormat.CSV:
+        typer.echo(_review_csv(review), nl=False)
+    else:
+        typer.echo(_review_table(review))
+
+
+@dataclass(frozen=True, slots=True)
+class _Review:
+    """What `journal_review` selected and what `fbe.journal` computed from it.
+
+    Attributes:
+        days: The window, in days back from ``today``.
+        today: The run's date, UTC.
+        path: The journal file read.
+        journal_empty: Whether the journal holds no trade at all, as opposed
+            to none in the window. The two print differently.
+        records: The selected records.
+        summary: `fbe.journal.summarise` over them, ``None`` with none closed.
+        by_conviction: `fbe.journal.evaluate`.
+        by_plan: `fbe.journal.evaluate_by_plan`.
+        by_bias: `fbe.journal.evaluate_by_bias_agreement`.
+        flags: `fbe.journal.discipline_flags`.
+
+    """
+
+    days: int
+    today: date
+    path: Path
+    journal_empty: bool
+    records: Sequence[TradeRecord]
+    summary: journal_module.ConvictionStats | None
+    by_conviction: Mapping[Conviction, journal_module.ConvictionStats]
+    by_plan: Mapping[bool, journal_module.ConvictionStats]
+    by_bias: Mapping[bool, journal_module.ConvictionStats]
+    flags: Sequence[journal_module.DisciplineFlag]
+
+    @property
+    def open_records(self) -> list[TradeRecord]:
+        return [record for record in self.records if record.closed_at is None]
+
+
+REVIEW_SPLITS: tuple[tuple[str, str, bool, str], ...] = (
+    ("plan", "followed", True, "Followed the plan"),
+    ("plan", "broke", False, "Broke the plan"),
+    ("bias", "with", True, "With engine bias"),
+    ("bias", "against", False, "Against the bias"),
+)
+"""The two splits, in print order: (group, key, value, label). One table so the
+table, JSON and CSV name the same rows."""
+
+
+def _review_trades(count: int) -> str:
+    """``1 trade`` or ``n trades``."""
+    return f"{count} trade{'' if count == 1 else 's'}"
+
+
+def _review_price(pair: str, price: float) -> str:
+    """Format a price to the pair's pip, so 1.0850 does not print as 1.085."""
+    return f"{price:.{round(-math.log10(pip_size(pair)))}f}"
+
+
+def _review_zar(stats: journal_module.ConvictionStats) -> str:
+    """Format the bucket's money in the account currency, or say it is unknown."""
+    return "ZAR unknown" if stats.total_zar is None else f"ZAR {stats.total_zar:+.2f}"
+
+
+def _review_marker(stats: journal_module.ConvictionStats) -> str:
+    """Mark a bucket under the evidence threshold, on its own row."""
+    return "  record" if stats.below_evidence_threshold else ""
+
+
+def _review_split(
+    review: _Review, group: str, value: bool
+) -> journal_module.ConvictionStats | None:
+    return (review.by_plan if group == "plan" else review.by_bias).get(value)
+
+
+def _review_table(review: _Review) -> str:
+    """Render the review for a terminal.
+
+    Args:
+        review: What was selected and computed.
+
+    Returns:
+        The plain numbers, the two splits, the conviction bands, the evidence
+        caveat when any bucket is thin, the open trades and the discipline
+        flags. Every row carries its trade count, and a thin one says
+        ``record``. An empty journal or window is one sentence, never zeros.
+
+    """
+    if review.journal_empty:
+        return f"The journal at {review.path} holds no trades yet."
+    if not review.records:
+        return (
+            f"No trades opened in the {review.days} days to {review.today.isoformat()}."
+        )
+    closed = len(review.records) - len(review.open_records)
+    lines = [
+        f"{review.days} days to {review.today.isoformat()}: "
+        f"{_review_trades(len(review.records))}, {closed} closed, "
+        f"{len(review.open_records)} open",
+    ]
+    if review.summary is not None:
+        whole = review.summary
+        lines += [
+            "",
+            f"Closed P&L  {_review_zar(whole)}   Win rate "
+            f"{whole.hit_rate:.0%} ({whole.hit_rate_low:.0%} to "
+            f"{whole.hit_rate_high:.0%})   Average {whole.expectancy_r:+.2f}R   "
+            f"{_review_trades(whole.trades)}{_review_marker(whole)}",
+            "R-multiples are measured against realised risk, after lot rounding.",
+            "",
+        ]
+        for group, _, value, label in REVIEW_SPLITS:
+            stats = _review_split(review, group, value)
+            if stats is None:
+                continue
+            lines.append(
+                f"{label:<20}{_review_trades(stats.trades):<11}"
+                f"{_review_zar(stats):<14}avg {stats.expectancy_r:+.2f}R"
+                f"{_review_marker(stats)}"
+            )
+        lines += ["", "By conviction"]
+        for band in reversed(Conviction):
+            stats = review.by_conviction.get(band)
+            if stats is None:
+                continue
+            win = (
+                f"win {stats.hit_rate:.0%} ({stats.hit_rate_low:.0%} to "
+                f"{stats.hit_rate_high:.0%})"
+            )
+            lines.append(
+                f"{band.value:<8}{_review_trades(stats.trades):<11}{win:<25}"
+                f"avg {stats.expectancy_r:+.2f}R{_review_marker(stats)}"
+            )
+        if whole.below_evidence_threshold:
+            lines += [
+                "",
+                f"Every row marked record rests on fewer than "
+                f"{journal_module.EVIDENCE_THRESHOLD_TRADES} closed trades: a "
+                "record of what happened, not evidence about what will.",
+            ]
+    if review.open_records:
+        lines.append("")
+        lines += [
+            f"Open: {record.pair} {record.direction.value} from "
+            f"{_review_price(record.pair, record.entry)}, stop "
+            f"{_review_price(record.pair, record.stop)}, opened "
+            f"{record.opened_at.date().isoformat()}."
+            for record in review.open_records
+        ]
+    if review.flags:
+        lines += ["", "Discipline flags"]
+        lines += [f"- {flag.kind}: {flag.detail}" for flag in review.flags]
+    return "\n".join(lines)
+
+
+def _review_json(review: _Review) -> str:
+    """Render the review as JSON carrying the table's numbers.
+
+    Args:
+        review: What was selected and computed.
+
+    Returns:
+        The window, the counts, each bucket as its `ConvictionStats` fields,
+        the open trades and the flags. ``summary`` is ``null`` when nothing in
+        the window is closed.
+
+    """
+    closed = len(review.records) - len(review.open_records)
+    payload: dict[str, object] = {
+        "window": {"days": review.days, "to": review.today.isoformat()},
+        "journal": str(review.path),
+        "trades": len(review.records),
+        "closed": closed,
+        "open": len(review.open_records),
+        "summary": None if review.summary is None else asdict(review.summary),
+        "by_plan": {},
+        "by_bias": {},
+        "by_conviction": {
+            band.value: asdict(stats) for band, stats in review.by_conviction.items()
+        },
+        "open_trades": [
+            {
+                "trade_id": record.trade_id,
+                "pair": record.pair,
+                "direction": record.direction.value,
+                "entry": record.entry,
+                "stop": record.stop,
+                "opened_at": record.opened_at.isoformat(),
+            }
+            for record in review.open_records
+        ],
+        "flags": [
+            {
+                "kind": flag.kind,
+                "trade_id": flag.trade_id,
+                "occurred_at": flag.occurred_at.isoformat(),
+                "detail": flag.detail,
+            }
+            for flag in review.flags
+        ],
+    }
+    for group, key, value, _ in REVIEW_SPLITS:
+        stats = _review_split(review, group, value)
+        if stats is not None:
+            target = payload["by_plan" if group == "plan" else "by_bias"]
+            assert isinstance(target, dict)
+            target[key] = asdict(stats)
+    return json.dumps(payload, indent=2)
+
+
+REVIEW_CSV_FIELDS: tuple[str, ...] = (
+    "trades",
+    "wins",
+    "hit_rate",
+    "hit_rate_low",
+    "hit_rate_high",
+    "below_evidence_threshold",
+    "expectancy_r",
+    "avg_win_r",
+    "avg_loss_r",
+    "total_r",
+    "max_drawdown_r",
+    "total_zar",
+)
+"""The `ConvictionStats` fields the CSV carries, in column order."""
+
+
+def _review_csv(review: _Review) -> str:
+    """Render the review's buckets as CSV, one row per bucket.
+
+    Args:
+        review: What was selected and computed.
+
+    Returns:
+        A header, then ``summary/all``, the four split rows and one row per
+        conviction band present, each with the table's figures. An empty value
+        is an unknown one, never zero.
+
+    """
+    rows: list[tuple[str, str, journal_module.ConvictionStats]] = []
+    if review.summary is not None:
+        rows.append(("summary", "all", review.summary))
+    for group, key, value, _ in REVIEW_SPLITS:
+        stats = _review_split(review, group, value)
+        if stats is not None:
+            rows.append((group, key, stats))
+    for band in reversed(Conviction):
+        stats = review.by_conviction.get(band)
+        if stats is not None:
+            rows.append(("conviction", band.value, stats))
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(("group", "key", *REVIEW_CSV_FIELDS))
+    for group, key, stats in rows:
+        fields = asdict(stats)
+        writer.writerow(
+            (
+                group,
+                key,
+                *(
+                    "" if fields[name] is None else fields[name]
+                    for name in REVIEW_CSV_FIELDS
+                ),
+            )
+        )
+    return buffer.getvalue()
 
 
 EVIDENCE_CAVEAT = (

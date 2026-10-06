@@ -54,6 +54,9 @@ __all__ = [
     "load",
     "evaluate",
     "evaluate_by_guard_action",
+    "evaluate_by_plan",
+    "evaluate_by_bias_agreement",
+    "summarise",
     "discipline_flags",
     "hit_rate_interval",
 ]
@@ -399,6 +402,12 @@ class ConvictionStats:
     avg_loss_r: float | None
     total_r: float
     max_drawdown_r: float
+    total_zar: float | None
+    """The bucket's realised profit and loss in the account currency: the sum
+    of ``outcome_zar`` over its closed trades. ``None`` when any of them has no
+    ``outcome_zar``, which happens when the conversion to the account currency
+    was missing at entry: a sum of the trades that did convert would read as
+    the bucket's total and be short by an unknown amount (#265)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -942,6 +951,63 @@ def evaluate_by_guard_action(
     return _grouped(records, lambda record: record.guard_action)
 
 
+def evaluate_by_plan(records: Sequence[TradeRecord]) -> Mapping[bool, ConvictionStats]:
+    """Split closed trades by whether they followed the trading plan.
+
+    The discipline half of the weekly review (#265): a winning week full of
+    trades that broke the plan is a problem waiting to become a loss, and the
+    same total cannot show it. Keyed by ``TradeRecord.followed_plan``, through
+    `_grouped`, so the exclusions are `evaluate`'s.
+
+    Args:
+        records: Journal records, typically from `load`.
+
+    Returns:
+        ``True`` for trades that followed the plan and ``False`` for those that
+        broke it, each present only when it holds a closed trade.
+
+    """
+    return _grouped(records, lambda record: record.followed_plan)
+
+
+def evaluate_by_bias_agreement(
+    records: Sequence[TradeRecord],
+) -> Mapping[bool, ConvictionStats]:
+    """Split closed trades by whether they agreed with the engine's bias.
+
+    The model half of the weekly review (#265): a losing week where every
+    trade agreed with the bias is a model problem, not a discipline one. Keyed
+    by ``TradeRecord.agreed_with_bias``, through `_grouped`.
+
+    Args:
+        records: Journal records, typically from `load`.
+
+    Returns:
+        ``True`` for trades taken with the bias and ``False`` for those taken
+        against it, each present only when it holds a closed trade.
+
+    """
+    return _grouped(records, lambda record: record.agreed_with_bias)
+
+
+def summarise(records: Sequence[TradeRecord]) -> ConvictionStats | None:
+    """Reduce every closed trade given to one set of figures.
+
+    The plain performance numbers the weekly review opens with. The same
+    figures and the same exclusions as each bucket of `evaluate`, over all of
+    them at once.
+
+    Args:
+        records: Journal records, typically from `load`.
+
+    Returns:
+        The figures, or ``None`` when no record given is closed with an
+        ``r_multiple``, so an empty window is never a row of zeros.
+
+    """
+    return _grouped(records, lambda record: True).get(True)
+
+
 _Key = TypeVar("_Key", bound=Hashable | None)
 
 
@@ -964,19 +1030,24 @@ def _grouped(
         with no closed trade is absent rather than reported as zeros.
 
     """
-    closed: dict[_Key, list[tuple[datetime, float]]] = {}
+    closed: dict[_Key, list[tuple[datetime, float, float | None]]] = {}
     for record in records:
         if record.closed_at is None or record.r_multiple is None:
             continue
-        closed.setdefault(key(record), []).append((record.closed_at, record.r_multiple))
+        closed.setdefault(key(record), []).append(
+            (record.closed_at, record.r_multiple, record.outcome_zar)
+        )
     return {group: _bucket(outcomes) for group, outcomes in closed.items()}
 
 
-def _bucket(outcomes: Sequence[tuple[datetime, float]]) -> ConvictionStats:
+def _bucket(
+    outcomes: Sequence[tuple[datetime, float, float | None]],
+) -> ConvictionStats:
     """Reduce one group's closed outcomes to its figures.
 
     Args:
-        outcomes: ``(closed_at, r_multiple)`` for each closed trade in the
+        outcomes: ``(closed_at, r_multiple, outcome_zar)`` for each closed
+            trade in the
             bucket, in whatever order the caller held them, sorted here for the
             drawdown and nowhere else. Narrowed to concrete values by
             `_grouped` rather than filtered a second time here: the same
@@ -990,7 +1061,8 @@ def _bucket(outcomes: Sequence[tuple[datetime, float]]) -> ConvictionStats:
         nothing here divides money by anything.
 
     """
-    multiples = [value for _, value in outcomes]
+    multiples = [value for _, value, _ in outcomes]
+    money = [zar for _, _, zar in outcomes]
     wins = [value for value in multiples if value > 0.0]
     # Strictly below zero, because `ConvictionStats.wins` is documented as
     # strictly above it. A trade closed exactly at breakeven is neither, so it
@@ -1015,7 +1087,14 @@ def _bucket(outcomes: Sequence[tuple[datetime, float]]) -> ConvictionStats:
         avg_win_r=sum(wins) / len(wins) if wins else None,
         avg_loss_r=sum(losses) / len(losses) if losses else None,
         total_r=sum(multiples),
-        max_drawdown_r=_max_drawdown(_in_close_order(outcomes)),
+        max_drawdown_r=_max_drawdown(
+            _in_close_order([(closed_at, value) for closed_at, value, _ in outcomes])
+        ),
+        # Unknown rather than partial: one unconverted trade makes the sum a
+        # figure for a different set of trades than the bucket names.
+        total_zar=None
+        if any(zar is None for zar in money)
+        else sum(zar for zar in money if zar is not None),
     )
 
 
