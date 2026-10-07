@@ -287,19 +287,12 @@ def test_the_derived_change_indicators_follow_the_level() -> None:
         assert ref.series_id == TWO_YEAR
 
 
-def test_seven_of_eight_two_year_yields_are_fetchable() -> None:
-    """The coverage figure the docs publish. CHF is the one that remains."""
+def test_all_eight_two_year_yields_are_fetchable() -> None:
+    """CHF was the one that remained until the SNB source served it (#351)."""
     series = registry.INDICATORS["yield_2y"].series
-    assert {code for code, ref in series.items() if ref.fetchable} == {
-        "USD",
-        "EUR",
-        "GBP",
-        "JPY",
-        "CAD",
-        "AUD",
-        "NZD",
-    }
-    assert series["CHF"].source == registry.SOURCE_MANUAL
+    assert {code for code, ref in series.items() if ref.fetchable} == set(series)
+    assert len(series) == 8
+    assert series["CHF"].source == registry.SOURCE_SNB
 
 
 def test_rbnz_is_a_curve_source_with_a_fetcher() -> None:

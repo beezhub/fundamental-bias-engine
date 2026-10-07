@@ -706,15 +706,26 @@ YIELD_2Y = IndicatorSpec(
                 "downloads; both are needed."
             ),
         ),
-        "CHF": _manual(
-            "yield_2y",
+        "CHF": _ref(
+            SOURCE_SNB,
+            "rendeiduebd/CHF.2J",
             "percent",
             Frequency.DAILY,
-            "the SNB publishes a Confederation spot curve and the endpoint is "
-            "verified (cube 'rendoblid', dimension '2J'), but it stopped at "
-            "2025-07-31 while the rest of the SNB portal stayed current. No "
-            "free replacement found. Enter by hand or accept that the Swiss "
-            "franc runs the monetary pillar without a front end.",
+            date(2026, 8, 31),
+            note=(
+                "Swiss Confederation spot curve, 2-year point: SNB cube "
+                "'rendeiduebd', D0 'CHF' (the Confederation), D1 '2J' (#351). "
+                "It replaced cube 'rendoblid', which stopped at 2025-07-31. "
+                "lag: 35 days; the SNB publishes the cube monthly, a whole "
+                "month at once on the first working day of the next "
+                "(PublishingDate 2026-10-01 carried 2026-09-01 to 2026-09-30, "
+                "read live on 2026-10-07). A month's first session therefore "
+                "waits up to 31 days plus a holiday-delayed first working day, "
+                "as in a January after 1 and 2 January, so 35 admits no "
+                "session before it was published. A live run reads the yield "
+                "as it stood about five weeks earlier."
+            ),
+            lag=35,
         ),
         "CAD": _ref(
             SOURCE_BOC,

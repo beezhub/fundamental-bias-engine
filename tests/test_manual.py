@@ -892,8 +892,9 @@ def test_refs_is_derived_from_the_registry(source: ManualSource) -> None:
 def test_refs_is_not_empty(source: ManualSource) -> None:
     """Guards the test above, which would pass vacuously against a `refs` that
     returns nothing whatever the registry says."""
-    # 16 manual refs since the RBNZ took NZD's three yield legs off this list.
-    assert len(source.refs()) >= 16
+    # The eight PMI legs stay manual whatever else is fetched (#351, #352), so
+    # fewer than eight means `refs` is broken rather than that a gap closed.
+    assert len(source.refs()) >= 8
 
 
 def test_refs_names_no_other_source(source: ManualSource) -> None:
@@ -929,7 +930,7 @@ def test_the_empty_directory_report_covers_pmi_for_all_eight(
     reported = source.missing(ASOF)
 
     assert set(reported[PMI]) == set(G10)
-    assert set(reported["yield_2y"]) == {"CHF"}
+    assert "yield_2y" not in reported
 
 
 def test_a_current_entry_clears_its_pair(
@@ -1549,17 +1550,18 @@ def test_fetch_returns_observations_in_a_stable_order(
     assert keys == sorted(keys)
 
 
-def test_the_refused_differenced_refs_are_still_on_the_to_do_list(
+def test_no_refused_differenced_ref_is_left_on_the_to_do_list(
     source: ManualSource, manual_dir: Path
 ) -> None:
-    """The two behaviours are in tension on purpose and neither is an
-    accident: `missing` reports two entries that `load_file` will not accept.
-    Pinned together so a later change cannot quietly drop one side. There were
-    four until the RBNZ took NZD's two off the manual route."""
+    """`missing` used to report two entries that `load_file` will not accept,
+    CHF's one- and three-month yield changes, a tension kept on purpose while
+    the Swiss two-year had no source. The RBNZ took NZD's two off the manual
+    route and the SNB took CHF's (#351), so the to-do list no longer asks for
+    anything the loader refuses."""
     reported = source.missing(ASOF)
 
-    assert set(reported["yield_2y_chg_1m"]) == {"CHF"}
-    assert set(reported["yield_2y_chg_3m"]) == {"CHF"}
+    assert "yield_2y_chg_1m" not in reported
+    assert "yield_2y_chg_3m" not in reported
 
 
 # --- template ---------------------------------------------------------------

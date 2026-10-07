@@ -576,11 +576,12 @@ def test_a_failing_provider_substitutes_nobody_elses_curve(
 def test_fetch_requests_nothing_for_a_currency_this_issue_does_not_serve(
     source: CurvesSource,
 ) -> None:
-    """CHF routes to manual. Asking for it must not reach a provider."""
+    """USD's two-year comes from FRED. Asking this source for it must not
+    reach a provider."""
     route = respx.get(url__startswith=BOC_BASE_URL).mock(
         return_value=httpx.Response(200, text=BOC_BODY)
     )
-    assert source.fetch(["yield_2y"], ["CHF"], START, END) == []
+    assert source.fetch(["yield_2y"], ["USD"], START, END) == []
     assert route.call_count == 0
 
 

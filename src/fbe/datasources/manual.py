@@ -233,16 +233,6 @@ SUGGESTED_FILES: Mapping[str, str] = {
         "S&P Global and ISM, so on no free API. The largest single manual "
         "burden and the one worth automating first if a licence is ever bought."
     ),
-    "yields.yaml": (
-        "The two-year government bond yield for CHF only. The other seven "
-        "are fetched: the ECB, the Bank of Canada, the RBA, the Bank of "
-        "England, the Japanese Ministry of Finance and the Reserve Bank of "
-        "New Zealand each publish their own. This one carries the front end "
-        "of the monetary pillar for the Swiss franc, which is the heaviest "
-        "pillar in `ScoringConfig`, so it matters more than its count "
-        "suggests. A deliberate one-off entry, not a daily routine: see "
-        "docs/data-sources.md on why daily manual entry was rejected."
-    ),
     "zz-overrides.yaml": (
         "Ad-hoc corrections. Named to sort last, so it wins over everything "
         "above. Use it to patch one bad value without editing a whole topic "
@@ -255,10 +245,11 @@ review at a glance.
 
 The override file is named ``zz-overrides.yaml`` rather than
 ``overrides.yaml`` because precedence is filename order and nothing else.
-``overrides.yaml`` sorts ahead of both ``pmi.yaml`` and ``yields.yaml``, so
-under the name it used to carry it would have been overridden by the two files
-it exists to override, and the mistake would have shown as the original value
-quietly surviving the correction."""
+``overrides.yaml`` sorts ahead of ``pmi.yaml``, so under the name it used to
+carry it would have been overridden by the file it exists to override, and the
+mistake would have shown as the original value quietly surviving the
+correction. A ``yields.yaml`` for the CHF two-year was suggested here until the
+SNB source served it (#351)."""
 
 GUIDANCE_TONE_KEY = "cb_guidance_tone"
 """Not in the registry, because it maps to no external series. Read directly by
