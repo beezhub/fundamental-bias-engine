@@ -90,7 +90,6 @@ Captured 2026-09-14, no credential on any of them.
 | `boe_iadb_bank_rate.csv` | `https://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp?csv.x=yes&Datefrom=01/Sep/2026&Dateto=11/Sep/2026&SeriesCodes=IUDBEDR&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N` | 302 then 200 |
 | `boe_yield_curve.zip` | `https://www.bankofengland.co.uk/-/media/boe/files/statistics/yield-curves/latest-yield-curve-data.zip` | 200 |
 | `boe_yield_curve_history.zip` | `https://www.bankofengland.co.uk/-/media/boe/files/statistics/yield-curves/glcnominalddata.zip` | 200 |
-| `snb_rendoblid.csv` | `https://data.snb.ch/api/cube/rendoblid/data/csv/en` | 200 |
 
 `jgbcme.csv` and `boe_iadb_bank_rate.csv` are byte-exact. The other three are
 truncated or narrowed, and nothing in any of them was typed:
@@ -113,10 +112,6 @@ truncated or narrowed, and nothing in any of them was typed:
   the three real rows for 2026-08-26 to 2026-08-28, narrowed to the first 27
   columns. With `boe_yield_curve.zip`, whose first row is 2026-09-01, it spans a
   month boundary (#323). The live archive is about 39 MB in eight members.
-- `snb_rendoblid.csv` keeps the real two metadata lines, the real header, one
-  real blank-valued row from 1988 and the four most recent real rows. The cube
-  is frozen where the module docstring says it is: last observation
-  2025-07-31, `PublishingDate` 2025-09-01.
 
 Two things these captures settled that the spec did not. The workbook's
 2-year maturity header is `1.999999920000001`, not `2.0`, so the column is
@@ -124,6 +119,27 @@ found by nearest-within-tolerance rather than by equality. And column A arrives
 as a `datetime` rather than an Excel serial, because `openpyxl` converts
 date-formatted cells; the serial path is still implemented and tested, because
 a workbook written another way would need it.
+
+## Swiss National Bank
+
+Captured 2026-10-07, no credential. Both are the bodies as served, UTF-8 byte
+order mark included, except that the SNB serves CRLF line endings and the
+repository stores LF (#351). The parser reads either.
+
+| File | Request | Status |
+| --- | --- | --- |
+| `snb_rendeiduebd.csv` | `https://data.snb.ch/api/cube/rendeiduebd/data/csv/en?fromDate=2026-09-29` | 200 |
+| `snb_rendeiduebd_chf_2y.csv` | `https://data.snb.ch/api/cube/rendeiduebd/data/csv/en?dimSel=D0(CHF),D1(2J)&fromDate=2025-12-01` | 200 |
+
+- `snb_rendeiduebd.csv` is every bond category and maturity for two sessions,
+  so the `2J` tenor appears under ten categories and only one is the
+  Confederation's. `PublishingDate` 2026-10-01, newest session 2026-09-30.
+- `snb_rendeiduebd_chf_2y.csv` is what the fetcher actually requests: the
+  Confederation's 2-year from 2025-12-01, with real blank values on Swiss
+  holidays, 2025-12-25 among them, and negative yields in December 2025.
+
+The cube this replaced, `rendoblid`, stopped at 2025-07-31; its capture was
+removed with it.
 
 ## Reserve Bank of New Zealand
 

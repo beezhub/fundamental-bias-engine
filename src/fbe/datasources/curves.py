@@ -89,15 +89,19 @@ metadata rows before the data, with the series IDs on the row labelled
 offset. Dates are ``DD-Mon-YYYY``. Verified live, current.
 
 **Swiss National Bank** (CHF). ``https://data.snb.ch/api/cube/{cube}/data/csv/``
-``en``, no key. Cube ``rendoblid`` is the daily Confederation spot curve, with
-maturity in dimension ``D0`` where ``2J`` is the 2-year point. Semicolon
-delimited, with two metadata lines before the header.
+``en``, no key. Cube ``rendeiduebd`` holds daily spot rates for several bond
+categories: dimension ``D0`` is the category, where ``CHF`` is the Swiss
+Confederation, and ``D1`` is the maturity, where ``2J`` is the 2-year point.
+The same ``2J`` appears under nine other categories, euro-area governments,
+cantons and banks among them, so a row is matched on both. Semicolon delimited,
+with two metadata lines before the header. A blank value is a Swiss holiday,
+never a zero yield.
 
-  Verified as an endpoint and **frozen as data**. The cube's own
-  ``PublishingDate`` is 2025-09-01 and its last observation is 2025-07-31,
-  while other SNB cubes on the same portal are current to 2026-09-01. This is
-  not an outage on our side and not a URL error. The Swiss franc has no free
-  current 2-year yield, and the registry routes it to the manual source.
+  Verified live on 2026-10-07, current to 2026-09-30 (#351). The SNB publishes
+  it monthly: ``PublishingDate`` 2026-10-01 carried the whole of September. The
+  cube answers about the last month unless asked ``fromDate``, so every request
+  sends one. The older cube ``rendoblid`` stopped at 2025-07-31, which is why
+  CHF ran on the manual source until this one was found.
 
 **Reserve Bank of New Zealand** (NZD). Statistical table B2, daily wholesale
 interest rates, as the workbook at `RBNZ_B2_URL`. Sheet ``Data`` carries five
@@ -186,6 +190,7 @@ __all__ = [
     "RBNZ_UNIT",
     "RBNZ_UNIT_ROW_LABEL",
     "SNB_BASE_URL",
+    "SNB_CONFEDERATION",
     "SNB_CUBE_URL",
     "TWO_YEAR_REFS",
     "USER_AGENT",
@@ -344,8 +349,17 @@ SNB_CUBE_URL = f"{SNB_BASE_URL}{{cube}}/data/csv/en"
 """Verified live as an endpoint. See the module docstring on why the bond
 cubes cannot currently be used."""
 
-SNB_BOND_CUBE = "rendoblid"
+SNB_BOND_CUBE = "rendeiduebd"
+SNB_CONFEDERATION = "CHF"
 SNB_TENOR_2Y = "2J"
+"""The cube, and its ``D0`` and ``D1`` values for the Swiss Confederation's
+2-year point. ``D0`` is the bond category, not a currency: ``CHF`` is the
+Confederation, and the cantons and banks quote the same tenor in the same cube.
+"""
+
+SNB_DIMENSION_SEPARATOR = "."
+"""Joins the dimension values in an SNB series id, ``rendeiduebd/CHF.2J``. The
+values are matched in order against the cube's ``D0``, ``D1`` columns."""
 
 POLICY_RATE_CODES: Mapping[str, str] = {
     "GBP": "IUDBEDR",
@@ -365,13 +379,15 @@ TWO_YEAR_REFS: Mapping[str, tuple[str, str]] = {
     "CAD": ("boc", "BD.CDN.2YR.DQ.YLD"),
     "AUD": ("rba", "FCMYGBAG2D"),
     "NZD": ("rbnz", "INM.DG102.NZZCF"),
+    "CHF": (
+        "snb",
+        f"{SNB_BOND_CUBE}/{SNB_CONFEDERATION}{SNB_DIMENSION_SEPARATOR}{SNB_TENOR_2Y}",
+    ),
 }
-"""The six non-US 2-year yields this module can fetch. Five were verified live
+"""The seven non-US 2-year yields this module can fetch. Six were verified live
 against their provider; the RBNZ one was verified from the owner's own
 connection, which is the only kind that can reach it. USD comes from FRED's
-``DGS2``. CHF is absent for the reason in the module docstring, and the
-registry routes it to the manual source rather than substituting something
-that is nearly right."""
+``DGS2``."""
 
 PROVIDER_FOR_CURRENCY: Mapping[str, str] = {
     "EUR": "ecb",
@@ -382,9 +398,8 @@ PROVIDER_FOR_CURRENCY: Mapping[str, str] = {
     "AUD": "rba",
     "NZD": "rbnz",
 }
-"""Which provider owns which currency. CHF is listed because the provider is
-correct even though its data is frozen; that distinction is what lets a health
-check tell "the SNB stopped publishing" apart from "we lost the URL"."""
+"""Which provider owns which currency, so a health check can name the
+currencies a provider's failure costs."""
 
 ECB_TIME_COLUMN = "TIME_PERIOD"
 ECB_VALUE_COLUMN = "OBS_VALUE"
@@ -481,6 +496,11 @@ SNB_DELIMITER = ";"
 SNB_HEADER_FIRST_FIELD = "Date"
 """The cube opens with two metadata lines and a blank one before this header."""
 
+SNB_VALUE_COLUMN = "Value"
+"""The value's header name. Found by name, like the dimension columns, because
+the column count is one per dimension plus the date and the value, and differs
+between cubes."""
+
 
 def _is_jgb_session(cell: str) -> bool:
     """Say whether a Ministry of Finance first column holds a session date.
@@ -503,7 +523,7 @@ HEALTH_PROBES: Mapping[str, str] = {
     "rba": TWO_YEAR_REFS["AUD"][1],
     "mof_jp": TWO_YEAR_REFS["JPY"][1],
     "boe": TWO_YEAR_REFS["GBP"][1],
-    "snb": f"{SNB_BOND_CUBE}/{SNB_TENOR_2Y}",
+    "snb": TWO_YEAR_REFS["CHF"][1],
     "rbnz": TWO_YEAR_REFS["NZD"][1],
 }
 """One series per provider for `provider_health` to ask about, each in the
@@ -917,12 +937,14 @@ class CurvesSource(BaseDataSource):
                 ) from error
             return self.fetch_boe_curve(maturity_years, start, end)
         if provider == "snb":
-            cube, separator, tenor = series_id.partition("/")
-            if not (cube and separator and tenor):
+            cube, separator, dimensions = series_id.partition("/")
+            values = tuple(dimensions.split(SNB_DIMENSION_SEPARATOR))
+            if not (cube and separator and all(values)):
                 raise SourceError(
-                    f"snb series id {series_id!r} is not in the form cube/tenor"
+                    f"snb series id {series_id!r} is not in the form "
+                    f"cube/D0{SNB_DIMENSION_SEPARATOR}D1"
                 )
-            return self.fetch_snb(cube, tenor, start, end)
+            return self.fetch_snb(cube, values, start, end)
         fetcher = getattr(self, PROVIDER_FETCHERS[provider])
         return fetcher(series_id, start, end)
 
@@ -1533,29 +1555,40 @@ class CurvesSource(BaseDataSource):
         return parsed
 
     def fetch_snb(
-        self, cube: str, tenor: str, start: date, end: date
+        self, cube: str, dimensions: Sequence[str], start: date, end: date
     ) -> Sequence[tuple[date, float]]:
-        """Fetch one tenor from an SNB data portal cube.
+        """Fetch one series from an SNB data portal cube.
 
-        Kept implemented-shaped although the registry does not currently use
-        it: the endpoint is correct and the data is frozen, and if the SNB
-        resumes publishing this becomes a one-line registry change rather than
-        a rediscovery.
+        The request selects the series with ``dimSel`` and sends ``fromDate``,
+        because without it the cube answers about the last month only and the
+        3-month yield change needs more. The rows are still matched on every
+        dimension: a cube answering without the selection carries the same
+        tenor for the cantons and the banks, each a plausible Swiss yield.
 
         Args:
-            cube: Cube id, e.g. ``"rendoblid"``.
-            tenor: Dimension ``D0`` value, e.g. ``"2J"``.
-            start: Earliest date wanted.
+            cube: Cube id, e.g. ``"rendeiduebd"``.
+            dimensions: The ``D0``, ``D1``, ... values in order, e.g.
+                ``("CHF", "2J")`` for the Confederation's 2-year point.
+            start: Earliest date wanted, sent as ``fromDate``.
             end: Latest date wanted.
 
         Returns:
-            ``(date, yield)`` pairs, oldest first.
+            ``(date, yield)`` pairs in percent per annum, oldest first. A
+            blank value, which is how the cube marks a Swiss holiday, is left
+            out rather than read as zero.
 
         Raises:
-            SourceError: On repeated request failure or an unreadable body.
+            SourceError: On repeated request failure, an unreadable body, or a
+                header that lacks a dimension column asked for or ``Value``.
 
         """
-        raw = self._request(self._path(SNB_CUBE_URL.format(cube=cube)), {})
+        selection = ",".join(
+            f"D{index}({value})" for index, value in enumerate(dimensions)
+        )
+        raw = self._request(
+            self._path(SNB_CUBE_URL.format(cube=cube)),
+            {"dimSel": selection, "fromDate": start.isoformat()},
+        )
         if not isinstance(raw, bytes):
             raise SourceError(f"{self.name} decoded the cube into something unusable")
         text = raw.decode("utf-8-sig", errors="replace")
@@ -1569,14 +1602,27 @@ class CurvesSource(BaseDataSource):
                 f"snb cube {cube} carries no {SNB_HEADER_FIRST_FIELD!r} header "
                 "past its metadata lines"
             )
+        names = [cell.strip() for cell in header]
+        wanted = [f"D{index}" for index in range(len(dimensions))]
+        missing = [name for name in (*wanted, SNB_VALUE_COLUMN) if name not in names]
+        if missing:
+            raise SourceError(
+                f"snb cube {cube} has no {', '.join(missing)} column; its header "
+                f"is {';'.join(names)}"
+            )
+        columns = [names.index(name) for name in wanted]
+        value_column = names.index(SNB_VALUE_COLUMN)
         parsed: list[tuple[date, float]] = []
         for row in rows[rows.index(header) + 1 :]:
-            if len(row) < 3 or row[1].strip() != tenor:
+            if len(row) != len(names) or any(
+                row[column].strip() != value
+                for column, value in zip(columns, dimensions, strict=True)
+            ):
                 continue
             session = self._session(row[0], "snb", "iso")
             if not start <= session <= end:
                 continue
-            value = self._reading(row[2], "snb", row[0].strip())
+            value = self._reading(row[value_column], "snb", row[0].strip())
             if value is not None:
                 parsed.append((session, value))
         parsed.sort()
@@ -1977,22 +2023,22 @@ class RbaSource(CurvesSource):
 
 
 class SnbSource(CurvesSource):
-    """The Swiss National Bank's cube API.
-
-    Listed although the registry routes no series to it today: the cube is
-    frozen, so CHF's two-year comes from the manual source. The collector
-    reports this source as "no series routed to it", which is true, and
-    `provider_health` still asks it for the frozen cube so an operator can see
-    the date it stopped on.
-    """
+    """The Swiss National Bank's cube API, the Swiss two-year (#351)."""
 
     name = "snb"
     base_url = SNB_BASE_URL
     providers = frozenset({"snb"})
 
     def probe_request(self) -> ProbeRequest:
-        """Ask for the bond cube, frozen or not: reachable is the question."""
-        return self._probe_for(SNB_CUBE_URL.format(cube=SNB_BOND_CUBE), {})
+        """Ask for the Confederation's 2-year point, about the last month of it.
+
+        No ``fromDate``, so the cube answers its default month, which keeps
+        the probe small.
+        """
+        return self._probe_for(
+            SNB_CUBE_URL.format(cube=SNB_BOND_CUBE),
+            {"dimSel": f"D0({SNB_CONFEDERATION}),D1({SNB_TENOR_2Y})"},
+        )
 
 
 class RbnzSource(CurvesSource):

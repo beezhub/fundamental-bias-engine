@@ -1,7 +1,7 @@
 """Tests for the three awkward curve providers: MoF, Bank of England and SNB.
 
 Split from `tests/test_curves.py` the way #59 is split from #58: a Shift-JIS
-CSV pair, a workbook inside a ZIP behind a redirect, and a frozen cube are
+CSV pair, a workbook inside a ZIP behind a redirect, and a multi-category cube are
 three different parsing problems that happen to share a module.
 
 What each one can get quietly wrong:
@@ -13,8 +13,9 @@ What each one can get quietly wrong:
 * The yield curve workbook's 2-year header is ``1.999999920000001``, and the
   maturity grid has been re-cut before, so a column found by position or by
   equality returns a different tenor without saying so.
-* The SNB cube is frozen. Serving its last value as though it were current is
-  the failure `provider_health` exists to make visible.
+* The SNB cube quotes the same 2-year tenor for ten bond categories, the
+  Confederation, cantons and banks, each a plausible Swiss yield, and marks a
+  Swiss holiday with a blank value rather than leaving the row out.
 
 No test reaches the network. Every body is a live capture whose provenance is
 recorded in ``tests/fixtures/README.md``.
@@ -50,8 +51,10 @@ from fbe.datasources.curves import (
     RBNZ_B2_URL,
     SERVED_TRANSFORMS,
     SNB_BOND_CUBE,
+    SNB_CONFEDERATION,
     SNB_CUBE_URL,
     SNB_TENOR_2Y,
+    TWO_YEAR_REFS,
     CurvesSource,
 )
 
@@ -61,7 +64,8 @@ JGB_HISTORY = (FIXTURES / "jgbcme_all.csv").read_bytes()
 IADB_BODY = (FIXTURES / "boe_iadb_bank_rate.csv").read_text()
 YIELD_CURVE_ZIP = (FIXTURES / "boe_yield_curve.zip").read_bytes()
 YIELD_CURVE_HISTORY_ZIP = (FIXTURES / "boe_yield_curve_history.zip").read_bytes()
-SNB_BODY = (FIXTURES / "snb_rendoblid.csv").read_bytes()
+SNB_BODY = (FIXTURES / "snb_rendeiduebd_chf_2y.csv").read_bytes()
+SNB_EVERY_CATEGORY = (FIXTURES / "snb_rendeiduebd.csv").read_bytes()
 
 SNB_URL = SNB_CUBE_URL.format(cube=SNB_BOND_CUBE)
 
@@ -77,7 +81,10 @@ JGB_DASH_DAY = date(1978, 5, 22)
 IADB_LAST = (date(2026, 9, 11), 3.75)
 CURVE_FIRST = (date(2026, 9, 1), 4.385949119079563)
 CURVE_HISTORY_LAST = (date(2026, 8, 28), 4.319050757790268)
-SNB_LAST = (date(2025, 7, 31), -0.083)
+SNB_LAST = (date(2026, 9, 30), 0.287)
+SNB_NEGATIVE = (date(2025, 12, 23), -0.043)
+SNB_HOLIDAY = date(2025, 12, 25)
+SNB_DIMENSIONS = (SNB_CONFEDERATION, SNB_TENOR_2Y)
 
 
 @pytest.fixture
@@ -550,7 +557,7 @@ def test_the_sheet_named_in_the_constant_is_the_one_read(
 
 
 # ---------------------------------------------------------------------------
-# fetch_snb, and the frozen cube
+# fetch_snb: the Confederation's 2-year from cube rendeiduebd (#351)
 # ---------------------------------------------------------------------------
 
 
@@ -561,93 +568,135 @@ def test_the_snb_cube_parses_past_its_metadata_lines(
     """Two metadata lines, a blank, then a semicolon-delimited header."""
     respx.get(SNB_URL).mock(return_value=httpx.Response(200, content=SNB_BODY))
     returned = dict(
-        source.fetch_snb(
-            SNB_BOND_CUBE, SNB_TENOR_2Y, date(2025, 1, 1), date(2025, 12, 31)
-        )
+        source.fetch_snb(SNB_BOND_CUBE, SNB_DIMENSIONS, date(2025, 1, 1), END)
     )
     assert returned[SNB_LAST[0]] == SNB_LAST[1]
 
 
 @respx.mock
-def test_the_swiss_two_year_is_negative_and_stays_negative(
+def test_the_request_selects_the_series_and_asks_from_the_start(
     source: CurvesSource,
 ) -> None:
-    """Swiss front-end yields are below zero. A sign dropped here is a real number."""
-    respx.get(SNB_URL).mock(return_value=httpx.Response(200, content=SNB_BODY))
-    returned = dict(
-        source.fetch_snb(
-            SNB_BOND_CUBE, SNB_TENOR_2Y, date(2025, 1, 1), date(2025, 12, 31)
-        )
-    )
-    assert returned[SNB_LAST[0]] < 0
-    assert returned[SNB_LAST[0]] == -0.083
+    """Without ``fromDate`` the cube answers about a month, too little for the
+    3-month change, so the start of the window is always sent."""
+    route = respx.get(SNB_URL).mock(return_value=httpx.Response(200, content=SNB_BODY))
+    source.fetch_snb(SNB_BOND_CUBE, SNB_DIMENSIONS, date(2025, 12, 1), END)
+
+    params = route.calls.last.request.url.params
+    assert params["dimSel"] == "D0(CHF),D1(2J)"
+    assert params["fromDate"] == "2025-12-01"
 
 
 @respx.mock
-def test_only_the_requested_tenor_is_returned(source: CurvesSource) -> None:
-    """The cube carries every tenor and every rating class in one file.
-
-    The capture holds twenty-two dimension values for the two sessions it
-    keeps, so a parser that ignores the tenor returns a mixture of maturities
-    and credit ratings under one label.
-    """
+def test_a_negative_swiss_yield_keeps_its_sign(source: CurvesSource) -> None:
+    """Swiss front-end yields were below zero in December 2025. A dropped sign
+    is a real-looking number."""
     respx.get(SNB_URL).mock(return_value=httpx.Response(200, content=SNB_BODY))
-    returned = source.fetch_snb(
-        SNB_BOND_CUBE, SNB_TENOR_2Y, date(1980, 1, 1), date(2025, 12, 31)
+    returned = dict(
+        source.fetch_snb(SNB_BOND_CUBE, SNB_DIMENSIONS, date(2025, 12, 1), END)
     )
-    assert len(returned) == 2
-    assert dict(returned) == {date(2025, 7, 30): -0.118, date(2025, 7, 31): -0.083}
+    assert returned[SNB_NEGATIVE[0]] == SNB_NEGATIVE[1]
 
 
-def test_the_snb_capture_carries_more_than_one_tenor() -> None:
-    """Guards the fixture: a single-tenor body cannot test a tenor filter."""
-    rows = SNB_BODY.decode("utf-8-sig").splitlines()[4:]
-    tenors = {row.split(";")[1].strip('"') for row in rows if row.count(";") >= 2}
-    assert len(tenors) > 5
-    assert "2J" in tenors
+@respx.mock
+def test_only_the_confederation_is_returned_from_every_category(
+    source: CurvesSource,
+) -> None:
+    """The cube quotes ``2J`` for ten bond categories. Matching the tenor
+    alone returns a canton's or a bank's yield as the Swiss two-year."""
+    respx.get(SNB_URL).mock(
+        return_value=httpx.Response(200, content=SNB_EVERY_CATEGORY)
+    )
+    returned = source.fetch_snb(SNB_BOND_CUBE, SNB_DIMENSIONS, date(2026, 9, 29), END)
+    assert dict(returned) == {date(2026, 9, 29): 0.345, date(2026, 9, 30): 0.287}
+
+
+def test_the_every_category_capture_carries_the_tenor_more_than_once() -> None:
+    """Guards the fixture: a body with one category cannot test the filter."""
+    rows = SNB_EVERY_CATEGORY.decode("utf-8-sig").splitlines()[4:]
+    two_year = {row.split(";")[1] for row in rows if row.split(";")[2] == '"2J"'}
+    assert len(two_year) > 5
+    assert '"CHF"' in two_year
+
+
+@respx.mock
+def test_a_swiss_holiday_is_dropped_not_zeroed(source: CurvesSource) -> None:
+    """The cube writes a row with no value on Christmas Day."""
+    assert f'"{SNB_HOLIDAY}";"CHF";"2J";\r\n'.encode() in SNB_BODY or (
+        f'"{SNB_HOLIDAY}";"CHF";"2J";\n'.encode() in SNB_BODY
+    )
+    respx.get(SNB_URL).mock(return_value=httpx.Response(200, content=SNB_BODY))
+    returned = dict(
+        source.fetch_snb(SNB_BOND_CUBE, SNB_DIMENSIONS, date(2025, 12, 1), END)
+    )
+    assert SNB_HOLIDAY not in returned
+    assert 0.0 not in returned.values()
 
 
 @respx.mock
 def test_a_cube_with_no_header_raises(source: CurvesSource) -> None:
     """Two metadata lines and a blank precede the header, so it is found by name."""
-    body = '"CubeId";"rendoblid"\n"PublishingDate";"2025-09-01 14:29"\n\n'
+    body = '"CubeId";"rendeiduebd"\n"PublishingDate";"2026-10-01 14:30"\n\n'
     respx.get(SNB_URL).mock(return_value=httpx.Response(200, text=body))
     with pytest.raises(SourceError) as excinfo:
-        source.fetch_snb(SNB_BOND_CUBE, SNB_TENOR_2Y, date(1980, 1, 1), END)
+        source.fetch_snb(SNB_BOND_CUBE, SNB_DIMENSIONS, date(1980, 1, 1), END)
     assert SNB_BOND_CUBE in str(excinfo.value)
 
 
 @respx.mock
-def test_a_blank_snb_value_is_dropped_not_zeroed(source: CurvesSource) -> None:
-    respx.get(SNB_URL).mock(return_value=httpx.Response(200, content=SNB_BODY))
-    returned = dict(
-        source.fetch_snb(
-            SNB_BOND_CUBE, SNB_TENOR_2Y, date(1980, 1, 1), date(2025, 12, 31)
-        )
-    )
-    assert date(1988, 1, 1) not in returned
-    assert 0.0 not in returned.values()
-
-
-# ---------------------------------------------------------------------------
-# The Swiss franc stays on the manual route, and provider_health says why
-# ---------------------------------------------------------------------------
-
-
-@respx.mock
-def test_fetch_emits_no_swiss_two_year(source: CurvesSource) -> None:
-    """The registry routes CHF yield_2y to manual, and a frozen 2025 number
-    competing with an operator's entry is the whole reason it does."""
-    respx.get(SNB_URL).mock(return_value=httpx.Response(200, content=SNB_BODY))
-    emitted = source.fetch(["yield_2y"], ["CHF"], START, END)
-    assert emitted == []
-
-
-@respx.mock
-def test_provider_health_reports_the_frozen_swiss_date(
+def test_a_header_missing_a_dimension_asked_for_raises_naming_it(
     source: CurvesSource,
 ) -> None:
-    """Frozen is a date, not an absence: it tells the SNB stopping apart from us."""
+    """The old cube had one dimension. Read by position, a ``D0`` value in the
+    place of ``D1`` would be matched against the wrong column."""
+    body = (
+        '"CubeId";"rendoblid"\n"PublishingDate";"2025-09-01 14:29"\n\n'
+        '"Date";"D0";"Value"\n"2025-07-31";"2J";"-0.083"\n'
+    )
+    respx.get(SNB_URL).mock(return_value=httpx.Response(200, text=body))
+    with pytest.raises(SourceError, match="D1"):
+        source.fetch_snb(SNB_BOND_CUBE, SNB_DIMENSIONS, date(1980, 1, 1), END)
+
+
+# ---------------------------------------------------------------------------
+# The Swiss franc's two-year now comes from the SNB, and provider_health says so
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_fetch_emits_the_swiss_two_year(source: CurvesSource) -> None:
+    """Through `fetch` and the registry, not `fetch_snb` with typed arguments."""
+    respx.get(SNB_URL).mock(return_value=httpx.Response(200, content=SNB_BODY))
+    emitted = source.fetch(["yield_2y"], ["CHF"], START, END)
+
+    by_period = {o.period: o for o in emitted}
+    assert by_period[SNB_LAST[0]].value == SNB_LAST[1]
+    assert {o.source for o in emitted} == {"snb"}
+    assert {o.series_id for o in emitted} == {"rendeiduebd/CHF.2J"}
+
+
+def test_the_registry_routes_the_swiss_two_year_to_the_snb() -> None:
+    ref = registry.INDICATORS["yield_2y"].series["CHF"]
+    assert (ref.source, ref.series_id) == TWO_YEAR_REFS["CHF"]
+    assert ref.fetchable
+
+
+def test_the_swiss_two_year_waits_a_month_and_stays_at_full_weight() -> None:
+    """Published once a month, the whole month at once. September's first
+    session appeared on 1 October, 30 days later, so a lag shorter than that
+    lets a backtest read it early. And the newest session a run can see is
+    always about the lag old, so the full-weight age must reach past it or the
+    Swiss two-year would never count at full weight."""
+    ref = registry.INDICATORS["yield_2y"].series["CHF"]
+    lag = registry.publication_lag(ref, ref.frequency)
+    assert lag >= (date(2026, 10, 1) - date(2026, 9, 1)).days
+    assert registry.full_weight_age(ref, ref.frequency) > lag
+
+
+@respx.mock
+def test_provider_health_reports_the_newest_swiss_date(
+    source: CurvesSource,
+) -> None:
     _mof_routes()
     respx.get(SNB_URL).mock(return_value=httpx.Response(200, content=SNB_BODY))
     respx.get(url__startswith=BOE_IADB_URL).mock(
@@ -659,14 +708,13 @@ def test_provider_health_reports_the_frozen_swiss_date(
     respx.route().mock(return_value=httpx.Response(503, text="down"))
     health = source.provider_health()
     assert health["snb"] == SNB_LAST[0]
-    assert health["snb"] is not None
 
 
 @respx.mock
 def test_provider_health_reports_none_for_a_provider_that_failed(
     source: CurvesSource, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """None means unreachable. A frozen provider reports its date instead."""
+    """None means unreachable. A provider that answers reports its newest date."""
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
     respx.route().mock(return_value=httpx.Response(503, text="down"))
     health = source.provider_health()
@@ -714,7 +762,8 @@ def test_the_fixture_provenance_is_recorded() -> None:
         "jgbcme_all.csv",
         "boe_iadb_bank_rate.csv",
         "boe_yield_curve.zip",
-        "snb_rendoblid.csv",
+        "snb_rendeiduebd.csv",
+        "snb_rendeiduebd_chf_2y.csv",
     ):
         assert name in readme
 
@@ -763,6 +812,7 @@ def _serve_every_provider() -> None:
             200, content=(FIXTURES / "rbnz_hb2_daily_close.xlsx").read_bytes()
         )
     )
+    respx.get(SNB_URL).mock(return_value=httpx.Response(200, content=SNB_BODY))
 
 
 @respx.mock
@@ -815,37 +865,23 @@ def test_every_registry_curve_ref_round_trips_through_fetch(
 
 
 @respx.mock
-def test_an_snb_ref_names_cube_and_tenor_in_its_series_id(
-    source: CurvesSource,
+@pytest.mark.parametrize(
+    "series_id", [SNB_BOND_CUBE, f"{SNB_BOND_CUBE}/", f"{SNB_BOND_CUBE}/CHF..2J"]
+)
+def test_an_snb_ref_that_does_not_name_cube_and_dimensions_is_refused(
+    source: CurvesSource, series_id: str
 ) -> None:
-    """Nothing routes to the SNB today, so the rule is tested on a hand-built
-    ref: the dispatcher splits ``cube/tenor`` the way it splits the BoE's
-    ``prefix/maturity``, and a ref that does not fit is refused by name."""
-    respx.get(SNB_URL).mock(return_value=httpx.Response(200, content=SNB_BODY))
+    """The dispatcher splits ``cube/D0.D1`` the way it splits the BoE's
+    ``prefix/maturity``. A ref that does not fit is refused by name rather
+    than sent as a selection the cube would answer with some other series."""
     ref = registry.SeriesRef(
         source="snb",
-        series_id=f"{SNB_BOND_CUBE}/{SNB_TENOR_2Y}",
+        series_id=series_id,
         unit="percent",
         frequency=registry.Frequency.DAILY,
     )
-
-    returned = dict(
-        source._from_provider(ref, "CHF", date(2025, 1, 1), date(2025, 12, 31))
-    )
-    assert returned[SNB_LAST[0]] == SNB_LAST[1]
-
     with pytest.raises(SourceError, match="snb"):
-        source._from_provider(
-            registry.SeriesRef(
-                source="snb",
-                series_id=SNB_BOND_CUBE,
-                unit="percent",
-                frequency=registry.Frequency.DAILY,
-            ),
-            "CHF",
-            date(2025, 1, 1),
-            date(2025, 12, 31),
-        )
+        source._from_provider(ref, "CHF", date(2025, 1, 1), END)
 
 
 def test_a_boe_curve_id_without_a_numeric_maturity_is_refused_by_name(
