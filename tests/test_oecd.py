@@ -47,6 +47,7 @@ from fbe.datasources.oecd import (
     FLOW_VERSIONS,
     THROTTLE_MARKER,
     OecdSource,
+    frequency_position,
 )
 from fbe.types import Frequency
 
@@ -919,7 +920,11 @@ def test_every_key_asks_for_the_cadence_the_registry_records() -> None:
         for indicator, spec in registry.INDICATORS.items()
         for currency, ref in spec.series.items()
         if ref.source == registry.SOURCE_OECD
-        and letters.get(ref.series_id.split("/", 1)[1].split(".")[1])
+        and letters.get(
+            ref.series_id.split("/", 1)[1].split(".")[
+                frequency_position(ref.series_id.split("/", 1)[0])
+            ]
+        )
         is not ref.frequency
     ]
 
@@ -1057,4 +1062,102 @@ def test_the_kei_fixture_provenance_is_recorded() -> None:
     assert "oecd_nzl_kei_retail_quarterly.csv" in readme
     for indicator, currency in (("indpro_yoy", "EUR"), ("retail_sales_yoy", "NZD")):
         ref = registry.INDICATORS[indicator].series[currency]
+        assert ref.series_id.split("/")[1] in readme
+
+
+# ---------------------------------------------------------------------------
+# The balance-of-payments flow: the current account (#353)
+# ---------------------------------------------------------------------------
+
+BOP_FLOW = "DSD_BOP@DF_BOP"
+CHE_BOP = (FIXTURES / "oecd_che_bop_current_account.csv").read_text()
+EA20_BOP = (FIXTURES / "oecd_ea20_bop_current_account.csv").read_text()
+
+
+def test_every_current_account_leg_reads_the_bop_flow() -> None:
+    series = registry.INDICATORS["current_account_gdp"].series
+    assert len(series) == 8
+    for currency, ref in series.items():
+        assert ref.source == registry.SOURCE_OECD, currency
+        assert ref.series_id.startswith(f"{BOP_FLOW}/"), currency
+        assert ref.series_id.endswith(".WXD.CA.B.T.Q.PT_B1GQ.Y"), currency
+        assert ref.fetchable, currency
+    assert series["EUR"].series_id == f"{BOP_FLOW}/EA20.WXD.CA.B.T.Q.PT_B1GQ.Y"
+
+
+def test_the_bop_flow_version_and_agency_match_the_captured_body() -> None:
+    row = next(csv.DictReader(io.StringIO(CHE_BOP)))
+    agency, _, rest = row["DATAFLOW"].partition(":")
+    flow, _, version = rest.rstrip(")").partition("(")
+    assert flow == BOP_FLOW
+    assert FLOW_VERSIONS[BOP_FLOW] == version
+    assert FLOW_AGENCIES[BOP_FLOW] == agency
+
+
+def test_the_bop_dimensions_are_the_captured_body_s_columns() -> None:
+    header = CHE_BOP.splitlines()[0].split(",")
+    assert tuple(header[1 : header.index("TIME_PERIOD")]) == DIMENSIONS["DSD_BOP"]
+
+
+def test_the_bop_frequency_is_the_sixth_segment() -> None:
+    """Every other structure here puts ``FREQ`` second. Read second on this
+    one, the letter is ``WXD``, and no period could be parsed."""
+    assert frequency_position(BOP_FLOW) == 5
+    assert frequency_position(FINMARK_FLOW) == 1
+    assert frequency_position(PRICES_FLOW) == 1
+    assert frequency_position(CORE_CPI_FLOW["GBP"]) == 1
+
+
+@respx.mock
+def test_a_bop_body_parses_to_quarter_start_periods(source: OecdSource) -> None:
+    """The euro area, captured 2026-10-07, out of order as the API sends it."""
+    _route().mock(return_value=httpx.Response(200, text=EA20_BOP))
+    emitted = source.fetch(
+        ["current_account_gdp"], ["EUR"], date(2025, 1, 1), date(2026, 10, 7)
+    )
+    assert {o.period: o.value for o in emitted} == {
+        date(2025, 1, 1): 1.647232,
+        date(2025, 4, 1): 1.952547,
+        date(2025, 7, 1): 1.41954,
+        date(2025, 10, 1): 1.554832,
+        date(2026, 1, 1): 1.917209,
+        date(2026, 4, 1): 1.904941,
+    }
+    assert all(o.unit == "percent_of_gdp" for o in emitted)
+
+
+@respx.mock
+def test_a_bop_fetch_composes_the_key_the_registry_holds(source: OecdSource) -> None:
+    route = _route().mock(return_value=httpx.Response(200, text=EA20_BOP))
+    source.fetch(["current_account_gdp"], ["EUR"], date(2025, 1, 1), date(2026, 10, 7))
+    ref = registry.INDICATORS["current_account_gdp"].series["EUR"]
+    flow, key = source.split_series_id(ref.series_id)
+    assert str(route.calls.last.request.url).startswith(
+        f"{BASE_URL}data/OECD.SDD.TPS,{BOP_FLOW},1.0/{key}?"
+    )
+    assert len(key.split(".")) == len(DIMENSIONS["DSD_BOP"])
+
+
+@respx.mock
+def test_the_swiss_gold_swing_arrives_unsmoothed(source: OecdSource) -> None:
+    """0.14 in 2025-Q4 and 10.02 in 2026-Q1: gold trade through Swiss
+    refiners, not a change in the economy. Smoothing it is a scoring question
+    and is not taken here, so the source serves the published numbers."""
+    _route().mock(return_value=httpx.Response(200, text=CHE_BOP))
+    emitted = source.fetch(
+        ["current_account_gdp"], ["CHF"], date(2025, 1, 1), date(2026, 10, 7)
+    )
+    by_period = {o.period: o.value for o in emitted}
+    assert by_period[date(2025, 10, 1)] == 0.1449953
+    assert by_period[date(2026, 1, 1)] == 10.02279
+    note = registry.INDICATORS["current_account_gdp"].series["CHF"].note
+    assert "gold" in note
+
+
+def test_the_bop_fixture_provenance_is_recorded() -> None:
+    readme = (FIXTURES / "README.md").read_text()
+    assert "oecd_che_bop_current_account.csv" in readme
+    assert "oecd_ea20_bop_current_account.csv" in readme
+    for currency in ("CHF", "EUR"):
+        ref = registry.INDICATORS["current_account_gdp"].series[currency]
         assert ref.series_id.split("/")[1] in readme

@@ -555,6 +555,15 @@ _OECD_FRESHER = (
     "material, which runs two months behind"
 )
 
+_BOP_FLOW = "DSD_BOP@DF_BOP"
+_BOP_CURRENT_ACCOUNT = "WXD.CA.B.T.Q.PT_B1GQ.Y"
+"""The OECD balance-of-payments flow and the current account key after the
+reference area (#353): counterpart the world (``WXD``), current account
+(``CA``), balance (``B``), total (``T``), quarterly, percent of GDP
+(``PT_B1GQ``), seasonally adjusted (``Y``). ``FREQ`` is the sixth dimension in
+this structure, not the second; see `fbe.datasources.oecd.frequency_position`.
+"""
+
 _KEI_FLOW = "DSD_KEI@DF_KEI"
 _KEI_INDPRO = "PRVM.GR.BTE.Y.GY"
 _KEI_RETAIL = "TOVM.GR.G47.Y.GY"
@@ -2028,42 +2037,43 @@ CURRENT_ACCOUNT_GDP = IndicatorSpec(
     ),
     series={
         code: _ref(
-            SOURCE_FRED,
-            series_id,
+            SOURCE_OECD,
+            f"{_BOP_FLOW}/{area}.{_BOP_CURRENT_ACCOUNT}",
             "percent_of_gdp",
             Frequency.QUARTERLY,
-            date(2024, 10, 1),
+            date(2026, 4, 1),
             note=(
-                "DISCONTINUED at 2024Q4, as is every leg of this family. No "
-                "free replacement was found: the OECD API's balance of "
-                "payments dataflows cover trade in services and merchandise, "
-                "not the quarterly current account balance. Unverified since "
-                "#222: 708 days old on VERIFIED_ON against a measured "
-                "first-appearance lag under 300, so it is dead rather than late."
+                f"{note}OECD balance of payments, current account balance "
+                "with the world as a share of GDP, seasonally adjusted "
+                "(#353). Replaces FRED's B6BLTT02 family, which stopped at "
+                "2024Q4. lag: 189 days, the 2026-Q2 print's age on "
+                "2026-10-07, when the OECD API carried nothing newer; the "
+                "API gives no release date, so this is the business-survey "
+                "convention (_BTS_LAG_DAYS)."
             ),
-            verified=False,
+            lag=189,
         )
-        for code, series_id in (
-            ("USD", "USAB6BLTT02STSAQ"),
-            ("EUR", "DEUB6BLTT02STSAQ"),
-            ("GBP", "GBRB6BLTT02STSAQ"),
-            ("JPY", "JPNB6BLTT02STSAQ"),
-            ("CHF", "CHEB6BLTT02STSAQ"),
-            ("CAD", "CANB6BLTT02STSAQ"),
-            ("AUD", "AUSB6BLTT02STSAQ"),
-            ("NZD", "NZLB6BLTT02STSAQ"),
+        for code, area, note in (
+            ("USD", "USA", ""),
+            ("EUR", "EA20", "The euro area itself, not Germany. "),
+            ("GBP", "GBR", ""),
+            ("JPY", "JPN", ""),
+            (
+                "CHF",
+                "CHE",
+                "Swings with gold trade through Swiss refiners: 0.14 in "
+                "2025-Q4, then 10.02 in 2026-Q1, read live on 2026-10-07. "
+                "Not smoothed here; whether to is a scoring question. ",
+            ),
+            ("CAD", "CAN", ""),
+            ("AUD", "AUS", ""),
+            ("NZD", "NZL", ""),
         )
     },
 )
-"""The 210-day allowance is what a quarterly balance-of-payments release
-honestly justifies: the quarter has to end, the statistics office needs about
-two months, and the next quarter is then already half over. It is deliberately
-not set high enough to let the frozen 2024Q4 data through. Setting it to 700
-would make the indicator report as covered while feeding the model numbers two
-years old, which is the exact failure this registry exists to prevent. As it
-stands the indicator correctly reports zero coverage until a live source is
-found, and the external pillar leans on `trade_balance`, which is current for
-all eight."""
+"""Read from the OECD's balance-of-payments flow since #353, quarterly for all
+eight, the euro leg as the bloc. FRED's B6BLTT02 family, used before, stopped
+at 2024Q4 and gave the indicator zero coverage."""
 
 
 COT_NET_PCT_OI = IndicatorSpec(
