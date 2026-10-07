@@ -121,7 +121,7 @@ parser would meet prose in place of rows.
 | 2. Pre-market, durable record | `fbe report`, `fbe dashboard` |
 | 3. Trading session, at the moment of entry | `fbe calendar --pair EURUSD --hours 4`, `fbe size EURUSD --entry ... --stop ...` |
 | 4. Trade management, position open | `fbe calendar --hours 6` |
-| 5. Post-market review, 7. evening journal | `fbe journal add ...`, `fbe journal review --days 7` |
+| 5. Post-market review, 7. evening journal | `fbe journal import <export>`, `fbe journal add ...`, `fbe journal review --days 7` |
 | Anything looks wrong, any time | `fbe doctor` |
 
 A whole morning is four commands:
@@ -857,7 +857,9 @@ read afterwards as an engine with no opinion rather than as an outage.
 | `--stop`, `-s` | required | Stop price at entry. |
 | `--exit`, `-x` | open | Exit price. Omit while the trade is still open. |
 | `--lots` | required | Size actually traded, in lots. No default: the record's money figures come from it, and sizing the trade here would put a position in the book the account never held. |
-| `--opened` | now | `YYYY-MM-DD` or `YYYY-MM-DD HH:MM`, read as UTC. It also fixes the trade id, which a correction has to repeat. |
+| `--opened` | now | `YYYY-MM-DD` or `YYYY-MM-DD HH:MM`, read as UTC. Without `--ticket` it also fixes the trade id, which a correction has to repeat. |
+| `--ticket` | none | The broker's ticket, used as the trade id. Without it the id is the pair and the minute opened, which two trades in one pair and one minute share, so the second overwrote the first (#348). |
+| `--target` | none | Take-profit level as planned. |
 | `--closed` | now | Exit fill time, same formats, recorded only with `--exit`. |
 | `--setup` | none | Technical setup label, for example `channel-low-bounce`. |
 | `--followed-plan` / `--broke-plan` | followed | Whether the trade obeyed the plan, independent of whether it made money. |
@@ -903,11 +905,68 @@ stop turns that into 0.0789 lots. The broker's 0.01 step rounds it down to 0.07,
 so 26.60 is what the account actually carried. Dividing by 30.00 would report
 +1.38R for a trade that earned +1.55R.
 
-A second add carrying the same `--opened` records the close, and the line that
-survives keeps the bias recorded at entry rather than re-deriving it. Its last
+A second add carrying the same `--opened`, or the same `--ticket` where the
+first carried one, records the close, and the line that survives keeps the bias
+recorded at entry rather than re-deriving it. Its last
 line then reads `Engine at entry, carried: medium conviction, spread -2.31`,
 without the engine's own side, because the record does not store it. A
 correction that changes `--direction` is refused for the same reason.
+
+### `fbe journal import`
+
+Reads the broker's open-positions export into the journal (#348). The owner
+places every trade by hand, and the export carries the ticket, open time, side,
+size, symbol and entry, but not the stop loss or take profit, which the platform
+shows on screen and does not export. So the command reads the file and asks for
+those, one trade at a time.
+
+| Argument | Meaning |
+|---|---|
+| `PATH` | The open-positions CSV as downloaded. Its header must be exactly `ticket,opening_time_utc,type,original_position_size,symbol,opening_price,commission`. |
+
+- **The header is the contract.** A file whose header differs is refused before
+  anything is asked, naming the missing and unexpected columns, so a renamed
+  column can never be read as a price. So is a row whose symbol is not one of
+  the 28 pairs, or whose `type` is neither `buy` nor `sell`, naming the row.
+- **The symbol loses its account suffix**: `EURAUDm` is `EURAUD`. `buy` is long
+  and `sell` is short, on the base currency. The open time is read as UTC.
+- **The ticket is the trade id.** A trade already in the journal is skipped, so
+  the command is safe to run on every new download.
+- **Enter at the stop prompt skips a trade**, to be asked again on the next
+  import. A stop on the wrong side of the entry, above a buy or below a sell, is
+  refused and asked again.
+- **The risk is shown before anything is saved**: the stop in pips, and when the
+  cache holds the rate into the account currency, the amount and its share of
+  the balance, so a mistyped stop is visible.
+- **Each trade is recorded through the same path as `fbe journal add`**: the
+  bias at entry, the entry-time news check, the account currency and the
+  broker. Imported trades are recorded as having followed the plan, which is
+  what `journal add` assumes too. Record a plan break with `fbe journal add
+  --ticket <ticket> --broke-plan` and the same details.
+
+```console
+$ fbe journal import open-positions.csv
+2 open positions in the file, 0 already in the journal.
+
+EURAUD sell 0.01 at 1.61196, ticket 1000000003, opened 2026-10-06 16:43 UTC
+  Stop loss (Enter to skip this trade): 1.61500
+  1R = 30.4 pips. The amount it risks is not known from the cache.
+  Take profit (optional): 1.60500
+Recorded EURAUD short, 0.01 lots, 30.4 pip stop.
+No money figures: no rate from AUD to USD: [...]
+Engine that day: short, low conviction, spread -1.76. Aligned.
+
+USDJPY buy 0.01 at 158.062, ticket 1000000002, opened 2026-10-06 15:37 UTC
+  Stop loss (Enter to skip this trade):
+  Skipped. It will be asked again on the next import.
+```
+
+That run used made-up tickets against the cache of 2026-10-07, which held no
+AUD to USD rate, so the risk line gives pips only. With the rate in the cache it
+continues with the amount in the account currency and the share of the balance.
+
+Closing trades from the broker's closed-positions export is not here yet. It
+waits for that file's format.
 
 ### `fbe journal review`
 
