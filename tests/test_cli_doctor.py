@@ -1596,6 +1596,7 @@ def test_the_real_registry_reports_every_source_offline(tmp_path: Path) -> None:
     for name in (
         "fred",
         "oecd",
+        "eurostat",
         "ecb",
         "boc",
         "mof_jp",

@@ -90,6 +90,7 @@ __all__ = [
     "SOURCE_BOE",
     "SOURCE_CFTC",
     "SOURCE_ECB",
+    "SOURCE_EUROSTAT",
     "SOURCE_FRED",
     "SOURCE_MANUAL",
     "SOURCE_MOF_JP",
@@ -273,6 +274,7 @@ monthly figure, which is the cadence the irregular series here approximate.
 
 SOURCE_FRED = "fred"
 SOURCE_OECD = "oecd"
+SOURCE_EUROSTAT = "eurostat"
 SOURCE_CFTC = "cftc"
 SOURCE_STOOQ = "stooq"
 SOURCE_MANUAL = "manual"
@@ -1419,13 +1421,24 @@ EMPLOYMENT_CHG = IndicatorSpec(
             transform="diff",
             note="total nonfarm payrolls; the differenced level is the NFP headline",
         ),
-        "EUR": _manual(
-            "employment_chg",
-            "persons",
+        "EUR": _ref(
+            SOURCE_EUROSTAT,
+            "namq_10_pe?geo=EA20&unit=THS_PER&na_item=EMP_DC&s_adj=SCA",
+            "thousands_of_persons",
             Frequency.QUARTERLY,
-            "no live euro-area or German employment level on FRED "
-            "(LFEMTTTTEZQ647S stopped at 2022-10); take the Eurostat quarterly "
-            "employment release by hand",
+            date(2026, 4, 1),
+            transform="diff",
+            note=(
+                "Euro-area total employment, domestic concept, seasonally and "
+                "calendar adjusted, from Eurostat's quarterly national accounts "
+                "(#354). EA20, the fixed twenty members, not EA, whose "
+                "composition steps by about 3.6 million at 2026-Q1 when "
+                "Bulgaria joined. FRED's LFEMTTTTEZQ647S stopped at 2022-10. "
+                "lag: 189 days, the 2026-Q2 print's age on 2026-10-07 when "
+                "nothing newer was published, the business-survey convention "
+                "(_BTS_LAG_DAYS)"
+            ),
+            lag=189,
         ),
         "GBP": _ref(
             SOURCE_FRED,
@@ -1497,8 +1510,8 @@ def _employment_level_series() -> Mapping[str, SeriesRef]:
         flow through ``diff``, identical to it in ``source``, ``series_id``,
         ``unit``, ``frequency``, ``verified`` and ``last_observed``, and
         differing only in ``transform`` and ``note``. Currencies whose flow is
-        not derived from a published level are absent, which today means EUR
-        alone.
+        not derived from a published level are absent, which since #354 means
+        none: EUR's flow is Eurostat's level under ``diff`` like the rest.
 
     ``last_observed`` is inherited rather than re-measured, and that is correct
     rather than convenient: a ``diff`` transform drops the *first* observation
@@ -1518,18 +1531,12 @@ def _employment_level_series() -> Mapping[str, SeriesRef]:
     is in range and plausible. `_yield_change_series` exists for the same reason
     in the other direction.
 
-    Why EUR is filtered rather than listed. Its flow is a manual entry carrying
-    ``transform="level"``: the euro-area employment level stopped publishing at
-    2022-10 and the number is keyed in from the Eurostat release by hand, so
-    there is no series to take a stock from. The filter is on the transform
-    rather than on the currency code so that a EUR flow sourced from a published
-    level in future gains its stock here without anyone remembering to add it.
-
-    No substitute is invented for EUR. `blend_components` renormalises over the
-    sub-weight present and `MIN_COMPONENT_WEIGHT` decides what is left, which
-    for EMPLOYMENT's two equal components means the pillar is absent for that
-    currency. A German level is current and is deliberately not used: EUR's flow
-    is a euro-area figure and dividing it by one member state's workforce would
+    Why the filter is on the transform. Until #354 EUR's flow was a manual
+    entry with no published level behind it, so it had no stock and EMPLOYMENT
+    was absent for the euro. Filtering on ``diff`` rather than on the currency
+    code is what let the Eurostat ref gain its stock here without anyone
+    remembering to add it. A German level was current then and was deliberately
+    not used: dividing a euro-area flow by one member state's workforce would
     overstate hiring by roughly a factor of four.
 
     """
@@ -1566,8 +1573,7 @@ EMPLOYMENT_LEVEL = IndicatorSpec(
         "Derived from `employment_chg`'s own refs rather than sourced "
         "separately; see `_employment_level_series`. Coverage, freshness and "
         "verification are therefore identical to `employment_chg`'s currency by "
-        "currency, with one exception: EUR has no entry here at all, because "
-        "its flow is keyed in by hand and has no published level behind it.\n"
+        "currency, all eight since #354 gave EUR a published level.\n"
         "\n"
         "The allowance is `employment_chg`'s 270 days, and necessarily so: the "
         "same publication carries both, so a stock judged on a tighter "

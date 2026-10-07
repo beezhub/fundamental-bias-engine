@@ -528,9 +528,10 @@ of thousands and a New Zealand quarterly change is in the thousands, so a
 cross-sectional z-score of the raw count ranks the size of the economies.
 `employment_level` supplies the denominator and is derived from
 `employment_chg`'s own refs, so the two describe the same population and their
-units cancel. EUR has no level, so it has no momentum component, and with two
-components at 0.50 that leaves the pillar absent for the euro. Issue #157 and
-its ruling record why no substitute is invented.
+units cancel. Until #354 EUR had no level, so it had no momentum component
+and, with two components at 0.50, no EMPLOYMENT pillar; issue #157 and its
+ruling record why no substitute was invented. Eurostat now publishes the
+euro-area level, and both keys read it.
 
 Both windows are measured in calendar months rather than in observations, and
 the two components do not share a cadence. The unemployment rate is quarterly
@@ -874,7 +875,6 @@ pillar on any given run.
 | Pillar | Series | Currencies | Why |
 | --- | --- | --- | --- |
 | GROWTH | `retail_sales_yoy` | AUD | Discontinued at 2025Q2, on FRED and on the OECD API alike; the substitute is the ABS household spending indicator (#355). `indpro_yoy` was on this table for EUR, CHF, AUD and NZD until #352 read all four from the OECD. |
-| EMPLOYMENT | `employment_chg` | EUR | No live euro-area or German employment level on FRED. |
 | EXTERNAL | `commodity_price` | NZD | No dairy price index on FRED. The GlobalDairyTrade index is the right series and is not freely available, so New Zealand's terms-of-trade component is the one commodity link the pillar cannot follow. |
 
 `current_account_gdp` was on this table for all eight currencies, the whole of

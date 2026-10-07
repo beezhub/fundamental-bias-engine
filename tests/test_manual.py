@@ -1209,7 +1209,7 @@ def test_a_null_required_field_is_reported_as_missing_not_as_a_bad_type(
 
 
 def test_the_staleness_allowance_moves_with_the_indicator(
-    source: ManualSource, manual_dir: Path
+    source: ManualSource, manual_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two indicators whose allowances differ by an order of magnitude, aged to
     the same day, so no single hardcoded number can satisfy both.
@@ -1217,6 +1217,11 @@ def test_the_staleness_allowance_moves_with_the_indicator(
     The earlier version of this test used `pmi_composite` alone and read its
     allowance out of the registry before asserting against it, so a literal in
     the loader passed it.
+
+    The quarterly leg was EUR's employment change, a manual ref until #354
+    gave it Eurostat, and no quarterly manual ref remains once #352 lands. So
+    the test routes that leg through this source itself: what it checks is that
+    `missing` reads each leg's own allowance, not which legs are manual today.
     """
     pmi = series_for(PMI, "USD")
     chg = series_for("employment_chg", "GBP")
@@ -1227,7 +1232,11 @@ def test_the_staleness_allowance_moves_with_the_indicator(
     assert staleness_allowance(chg, chg.frequency) == 380
     euro_chg = series_for("employment_chg", "EUR")
     assert euro_chg is not None
-    assert staleness_allowance(euro_chg, euro_chg.frequency) == 304
+    # Quarterly with the 189-day lag measured on Eurostat: 189 + 2 * 92.
+    assert staleness_allowance(euro_chg, euro_chg.frequency) == 373
+    manual_refs = dict(source.refs())
+    manual_refs[("employment_chg", "EUR")] = euro_chg
+    monkeypatch.setattr(source, "refs", lambda: manual_refs)
     aged = ASOF - timedelta(days=150)
     _write(
         manual_dir,
@@ -1247,7 +1256,7 @@ def test_the_staleness_allowance_moves_with_the_indicator(
     reported = source.missing(ASOF)
 
     # 150 days is past the euro PMI leg's 107 and inside the euro
-    # employment leg's 304, which is quarterly rather than monthly.
+    # employment leg's 373, which is quarterly rather than monthly.
     assert "EUR" in reported[PMI]
     assert "employment_chg" not in reported
 

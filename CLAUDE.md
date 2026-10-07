@@ -61,7 +61,7 @@ the repository root so the row can be checked against the file it names, which
 | `src/fbe/config.py` | Implemented. Defaults, file and environment. |
 | `src/fbe/scoring.py`, `src/fbe/bias.py` | Implemented. Composite and pair rows. |
 | `src/fbe/pipeline.py` | Implemented. The one run every front end builds its report from. |
-| `src/fbe/datasources/*` | Implemented. Seven sources, the registry, the cache. |
+| `src/fbe/datasources/*` | Implemented. Every source, Eurostat's among them, the registry, the cache. |
 | `src/fbe/pillars/*` | Implemented. All seven, and the base class they share. |
 | `src/fbe/risk.py` | Implemented. Sizing, the conviction ladder, and the per-limit report. |
 | `src/fbe/journal.py` | Implemented. The append-only record, the conviction split and the discipline flags. |

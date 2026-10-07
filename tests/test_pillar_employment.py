@@ -226,20 +226,22 @@ def test_the_level_reuses_the_flows_own_refs() -> None:
         assert origin.transform == "diff", currency
 
 
-def test_the_euro_has_no_employment_level_and_is_given_no_substitute() -> None:
-    """Criterion: a currency with a flow and no verified level gets no stand-in.
+def test_the_euro_s_level_and_change_are_one_euro_area_series() -> None:
+    """The euro's change and level describe the same population (#354).
 
-    EUR's `employment_chg` is a manual entry with no live source behind it: the
-    euro-area level stopped publishing and the registry records that. There is
-    no level to derive, so there is no EUR ref here. A German series is current
-    and is deliberately not used, because EUR's flow is a euro-area figure and
-    dividing it by a German level would compare a bloc's hiring with one
-    member's workforce, which is roughly a factor of four and entirely
-    plausible-looking.
+    Until #354 EUR's `employment_chg` was a manual entry with no level behind
+    it, so it had no level and no stand-in: a German level was current, and
+    dividing a bloc's hiring by one member's workforce would be wrong by about
+    a factor of four and plausible-looking. Eurostat now publishes the bloc
+    itself, so both keys read that one series, at the fixed ``EA20``
+    composition.
     """
-    assert "EUR" not in INDICATORS[LEVEL].series
-    assert "EUR" in INDICATORS[CHG].series
-    assert INDICATORS[CHG].series["EUR"].verified is False
+    level = INDICATORS[LEVEL].series["EUR"]
+    change = INDICATORS[CHG].series["EUR"]
+    assert level.series_id == change.series_id
+    assert (level.transform, change.transform) == ("level", "diff")
+    assert "geo=EA20" in change.series_id
+    assert level.verified and change.verified
 
 
 def test_the_level_is_consumed_rather_than_declared_unconsumed() -> None:
@@ -950,32 +952,36 @@ def test_a_mixed_cadence_currency_reads_each_series_on_its_own(
 
 
 def test_the_level_table_is_filtered_on_the_transform_not_the_currency() -> None:
-    """EUR is the only non-``diff`` flow today, so the two filters agree today.
+    """A hand-keyed flow gets no level, whatever its currency.
 
-    `_employment_level_series` says it filters on the transform so that a EUR
-    flow sourced from a published level would gain its stock without anyone
-    remembering to add it. Replacing that with ``code != "EUR"`` passes the
-    whole suite. The filters part company the moment a second manual flow
-    exists, and then a currency-code filter would hand it a level derived from a
-    hand-keyed number, so `employment_trend` would divide a hand-keyed flow by a
-    hand-keyed flow.
+    `_employment_level_series` filters on the transform, which is how EUR
+    gained its stock when #354 gave it a published level under ``diff``. A
+    filter on currency codes would have passed the suite then and would hand a
+    hand-keyed flow a level derived from a hand-keyed number, so
+    `employment_trend` would divide one typed figure by another. The manual
+    ``level`` flow below stands in for any such currency.
     """
     from dataclasses import replace
 
     from fbe.datasources import registry
 
     flow = INDICATORS[CHG]
+    keyed = replace(
+        flow.series["EUR"],
+        source=registry.SOURCE_MANUAL,
+        transform="level",
+        verified=False,
+    )
     with pytest.MonkeyPatch.context() as patched:
         patched.setattr(
             registry,
             "EMPLOYMENT_CHG",
-            replace(flow, series={**flow.series, "SEK": flow.series["EUR"]}),
+            replace(flow, series={**flow.series, "SEK": keyed}),
         )
         derived = registry._employment_level_series()
 
-    assert "EUR" not in derived
     assert "SEK" not in derived
-    assert set(derived) == {"USD", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"}
+    assert set(derived) == {"USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"}
 
 
 def test_moving_one_currency_moves_a_currency_that_did_not_move(
