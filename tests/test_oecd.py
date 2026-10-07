@@ -924,3 +924,137 @@ def test_every_key_asks_for_the_cadence_the_registry_records() -> None:
     ]
 
     assert disagreeing == []
+
+
+# ---------------------------------------------------------------------------
+# The key short-term indicators flow: industrial production and retail (#352)
+# ---------------------------------------------------------------------------
+
+KEI_FLOW = "DSD_KEI@DF_KEI"
+EA20_KEI_INDPRO = (FIXTURES / "oecd_ea20_kei_indpro_monthly.csv").read_text()
+NZL_KEI_RETAIL = (FIXTURES / "oecd_nzl_kei_retail_quarterly.csv").read_text()
+
+KEI_LEGS = {
+    ("indpro_yoy", "EUR"),
+    ("indpro_yoy", "CHF"),
+    ("indpro_yoy", "AUD"),
+    ("indpro_yoy", "NZD"),
+    ("retail_sales_yoy", "EUR"),
+    ("retail_sales_yoy", "JPY"),
+    ("retail_sales_yoy", "NZD"),
+}
+
+
+def _kei_refs() -> dict[tuple[str, str], registry.SeriesRef]:
+    return {
+        (indicator, currency): ref
+        for indicator, spec in registry.INDICATORS.items()
+        for currency, ref in spec.series.items()
+        if ref.source == registry.SOURCE_OECD
+        and ref.series_id.startswith(f"{KEI_FLOW}/")
+    }
+
+
+def test_the_kei_legs_are_the_seven_gaps_the_issue_names() -> None:
+    assert set(_kei_refs()) == KEI_LEGS
+    assert all(ref.fetchable for ref in _kei_refs().values())
+
+
+def test_the_kei_flow_version_and_agency_match_the_captured_body() -> None:
+    """From the fixture's own ``DATAFLOW`` column, not a literal."""
+    row = next(csv.DictReader(io.StringIO(EA20_KEI_INDPRO)))
+    agency, _, rest = row["DATAFLOW"].partition(":")
+    flow, _, version = rest.rstrip(")").partition("(")
+    assert flow == KEI_FLOW
+    assert FLOW_VERSIONS[KEI_FLOW] == version
+    assert FLOW_AGENCIES[KEI_FLOW] == agency
+
+
+def test_the_kei_dimensions_are_the_captured_body_s_columns() -> None:
+    """The CSV carries one column per dimension, between ``DATAFLOW`` and
+    ``TIME_PERIOD``. Too many key segments answers 404 ``NoRecordsFound``,
+    which reads as a dead series, so the count is pinned to the API's answer."""
+    header = EA20_KEI_INDPRO.splitlines()[0].split(",")
+    assert tuple(header[1 : header.index("TIME_PERIOD")]) == DIMENSIONS["DSD_KEI"]
+
+
+def test_every_kei_key_carries_one_segment_per_dimension() -> None:
+    for leg, ref in _kei_refs().items():
+        key = ref.series_id.split("/", 1)[1]
+        assert len(key.split(".")) == len(DIMENSIONS["DSD_KEI"]), leg
+
+
+def test_one_measure_per_indicator_on_every_kei_leg() -> None:
+    """Mixing a value measure with a volume one, or total industry with
+    manufacturing, would score a definition rather than an economy."""
+    measures: dict[str, set[str]] = {}
+    for (indicator, _currency), ref in _kei_refs().items():
+        key = ref.series_id.split("/", 1)[1]
+        measures.setdefault(indicator, set()).add(key.split(".", 2)[2])
+    assert measures == {
+        "indpro_yoy": {"PRVM.GR.BTE.Y.GY"},
+        "retail_sales_yoy": {"TOVM.GR.G47.Y.GY"},
+    }
+
+
+def test_the_euro_reads_the_bloc_not_germany() -> None:
+    for indicator in ("indpro_yoy", "retail_sales_yoy"):
+        ref = registry.INDICATORS[indicator].series["EUR"]
+        assert ref.series_id.split("/", 1)[1].startswith("EA20.")
+
+
+@respx.mock
+def test_a_monthly_kei_body_parses_to_first_day_stamped_periods(
+    source: OecdSource,
+) -> None:
+    """Euro-area industrial production, captured 2026-10-07. The body arrives
+    out of order, as every OECD body has. Negative growth keeps its sign."""
+    _route().mock(return_value=httpx.Response(200, text=EA20_KEI_INDPRO))
+    emitted = source.fetch(["indpro_yoy"], ["EUR"], date(2025, 1, 1), date(2026, 10, 7))
+    by_period = {o.period: o.value for o in emitted}
+    assert len(emitted) == 19
+    assert by_period[date(2026, 7, 1)] == -0.20283975659251
+    assert by_period[date(2025, 3, 1)] == 4.53141091658167
+    assert all(o.unit == "percent" for o in emitted)
+
+
+@respx.mock
+def test_a_kei_fetch_composes_the_key_the_registry_holds(source: OecdSource) -> None:
+    """`_route()` matches any URL, so the key sent is checked separately."""
+    route = _route().mock(return_value=httpx.Response(200, text=EA20_KEI_INDPRO))
+    source.fetch(["indpro_yoy"], ["EUR"], date(2025, 1, 1), date(2026, 10, 7))
+    ref = registry.INDICATORS["indpro_yoy"].series["EUR"]
+    flow, key = source.split_series_id(ref.series_id)
+    assert str(route.calls.last.request.url).startswith(
+        f"{BASE_URL}data/OECD.SDD.STES,{KEI_FLOW},4.0/{key}?"
+    )
+    assert key == "EA20.M.PRVM.GR.BTE.Y.GY"
+
+
+@respx.mock
+def test_a_quarterly_kei_body_stamps_the_first_day_of_the_quarter(
+    source: OecdSource,
+) -> None:
+    """New Zealand retail volume, captured 2026-10-07. ``2026-Q2`` is
+    2026-04-01; the quarter end would make it look three months fresher."""
+    _route().mock(return_value=httpx.Response(200, text=NZL_KEI_RETAIL))
+    emitted = source.fetch(
+        ["retail_sales_yoy"], ["NZD"], date(2025, 1, 1), date(2026, 10, 7)
+    )
+    assert {o.period: o.value for o in emitted} == {
+        date(2025, 1, 1): 0.674103753009025,
+        date(2025, 4, 1): 2.36515825481405,
+        date(2025, 7, 1): 4.46585617682242,
+        date(2025, 10, 1): 4.331718207777,
+        date(2026, 1, 1): 4.53427586787885,
+        date(2026, 4, 1): 3.22858167045041,
+    }
+
+
+def test_the_kei_fixture_provenance_is_recorded() -> None:
+    readme = (FIXTURES / "README.md").read_text()
+    assert "oecd_ea20_kei_indpro_monthly.csv" in readme
+    assert "oecd_nzl_kei_retail_quarterly.csv" in readme
+    for indicator, currency in (("indpro_yoy", "EUR"), ("retail_sales_yoy", "NZD")):
+        ref = registry.INDICATORS[indicator].series[currency]
+        assert ref.series_id.split("/")[1] in readme

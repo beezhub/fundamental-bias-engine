@@ -555,6 +555,49 @@ _OECD_FRESHER = (
     "material, which runs two months behind"
 )
 
+_KEI_FLOW = "DSD_KEI@DF_KEI"
+_KEI_INDPRO = "PRVM.GR.BTE.Y.GY"
+_KEI_RETAIL = "TOVM.GR.G47.Y.GY"
+"""The OECD short-term indicators flow and the two measures read from it
+(#352). Industrial production is volume, total industry excluding construction
+(``BTE``); retail is trade volume (``G47``). Both are seasonally adjusted
+(``Y``) and growth on the same period a year earlier (``GY``), in percent. One
+measure per indicator on every leg that reads this flow, so the legs are
+measured the same way."""
+
+_KEI_LAG = (
+    "the newest print's age on 2026-10-07, when the OECD API carried nothing "
+    "newer. The API gives no release date, so this is the business-survey "
+    "convention (_BTS_LAG_DAYS): long enough that the newest print is at full "
+    "weight, and longer rather than shorter, because a short lag flatters a "
+    "backtest"
+)
+
+
+def _kei(
+    area: str,
+    freq: str,
+    measure: str,
+    frequency: Frequency,
+    last_observed: date,
+    lag: int,
+    note: str,
+) -> SeriesRef:
+    """Build one `_KEI_FLOW` ref, so the flow and measure are typed once.
+
+    ``lag`` is measured as `_KEI_LAG` says and recorded in the note, which
+    ``tests/test_publication_lag.py`` requires of every override.
+    """
+    return _ref(
+        SOURCE_OECD,
+        f"{_KEI_FLOW}/{area}.{freq}.{measure}",
+        "percent",
+        frequency,
+        last_observed,
+        note=f"{note} lag: {lag} days, {_KEI_LAG}.",
+        lag=lag,
+    )
+
 
 POLICY_RATE = IndicatorSpec(
     key="policy_rate",
@@ -1558,17 +1601,15 @@ RETAIL_SALES_YOY = IndicatorSpec(
             ),
             lag=136,
         ),
-        "EUR": _ref(
-            SOURCE_FRED,
-            "DEUSLRTTO01GYSAM",
-            "percent",
+        "EUR": _kei(
+            "EA20",
+            "M",
+            _KEI_RETAIL,
             Frequency.MONTHLY,
-            date(2026, 5, 1),
-            note=(
-                f"{_EA_AGGREGATE_DEAD}: EA19SLRTTO01GYSAM stopped at 2023-10. "
-                f"lag: 106 days, {_FRED_LAG}"
-            ),
-            lag=106,
+            date(2026, 7, 1),
+            98,
+            "Euro-area retail trade volume, the bloc itself at its 2026 "
+            "composition, replacing the German stand-in FRED forced (#352).",
         ),
         "GBP": _ref(
             SOURCE_FRED,
@@ -1579,14 +1620,15 @@ RETAIL_SALES_YOY = IndicatorSpec(
             note=(f"lag: 77 days, {_FRED_LAG}"),
             lag=77,
         ),
-        "JPY": _ref(
-            SOURCE_FRED,
-            "JPNSLRTTO01GYSAM",
-            "percent",
+        "JPY": _kei(
+            "JPN",
+            "M",
+            _KEI_RETAIL,
             Frequency.MONTHLY,
-            date(2026, 5, 1),
-            note=(f"lag: 134 days, {_FRED_LAG}"),
-            lag=134,
+            date(2026, 6, 1),
+            128,
+            "Japanese retail trade volume from the OECD API, which needs no "
+            "key, replacing FRED's JPNSLRTTO01GYSAM (#352).",
         ),
         "CHF": _ref(
             SOURCE_FRED,
@@ -1620,14 +1662,16 @@ RETAIL_SALES_YOY = IndicatorSpec(
             ),
             verified=False,
         ),
-        "NZD": _ref(
-            SOURCE_FRED,
-            "SLRTTO01NZQ659S",
-            "percent",
+        "NZD": _kei(
+            "NZL",
+            "Q",
+            _KEI_RETAIL,
             Frequency.QUARTERLY,
-            date(2026, 1, 1),
-            note=(f"2026Q1. lag: 284 days, {_FRED_LAG}"),
-            lag=284,
+            date(2026, 4, 1),
+            189,
+            "New Zealand retail trade volume, quarterly as Stats NZ publishes "
+            "it, from the OECD API rather than FRED's SLRTTO01NZQ659S, whose "
+            "measured lag was 284 days (#352).",
         ),
     },
 )
@@ -1642,10 +1686,11 @@ INDPRO_YOY = IndicatorSpec(
     unit="percent",
     frequency=Frequency.MONTHLY,
     description=(
-        "Industrial production, year on year. Coverage here is the worst of the "
-        "growth inputs: four of eight are live. Weight it accordingly, or the "
-        "growth pillar ends up scoring the countries that happen to publish "
-        "rather than the countries that happen to be growing."
+        "Industrial production, year on year. Four of eight were live until "
+        "#352 read the euro area, Switzerland, Australia and New Zealand from "
+        "the OECD short-term indicators flow; all eight are now fetched. "
+        "Switzerland, Australia and New Zealand are quarterly, so their legs "
+        "move less often than the monthly ones."
     ),
     series={
         "USD": _ref(
@@ -1661,19 +1706,15 @@ INDPRO_YOY = IndicatorSpec(
             ),
             lag=106,
         ),
-        "EUR": _ref(
-            SOURCE_FRED,
-            "DEUPRINTO01GYSAM",
-            "percent",
+        "EUR": _kei(
+            "EA20",
+            "M",
+            _KEI_INDPRO,
             Frequency.MONTHLY,
-            date(2023, 12, 1),
-            note=(
-                f"DISCONTINUED at 2023-12. {_EA_AGGREGATE_DEAD}, and the "
-                "German proxy has now stopped too. Unverified since #222: the "
-                "newest print was first carried on 2024-04-10 and nothing has "
-                "followed, so dead rather than late."
-            ),
-            verified=False,
+            date(2026, 7, 1),
+            98,
+            "Euro-area industrial production, the bloc itself. Replaces FRED's "
+            "German proxy DEUPRINTO01GYSAM, which stopped at 2023-12 (#352).",
         ),
         "GBP": _ref(
             SOURCE_FRED,
@@ -1693,11 +1734,17 @@ INDPRO_YOY = IndicatorSpec(
             note=(f"lag: 108 days, {_FRED_LAG}"),
             lag=108,
         ),
-        "CHF": _manual(
-            "indpro_yoy",
-            "percent",
+        "CHF": _kei(
+            "CHE",
+            "Q",
+            _KEI_INDPRO,
             Frequency.QUARTERLY,
-            "no Swiss industrial production series on FRED in any live form",
+            date(2026, 4, 1),
+            189,
+            "Swiss industrial production, quarterly (#352). The OECD also "
+            "serves a monthly CHE series, but the Federal Statistical Office "
+            "publishes a quarter's months together, so a monthly read would "
+            "need this same lag and would add nothing.",
         ),
         "CAD": _ref(
             SOURCE_FRED,
@@ -1708,17 +1755,25 @@ INDPRO_YOY = IndicatorSpec(
             note=(f"lag: 139 days, {_FRED_LAG}"),
             lag=139,
         ),
-        "AUD": _manual(
-            "indpro_yoy",
-            "percent",
+        "AUD": _kei(
+            "AUS",
+            "Q",
+            _KEI_INDPRO,
             Frequency.QUARTERLY,
-            "no Australian industrial production series on FRED",
+            date(2026, 4, 1),
+            189,
+            "Australian industrial production, quarterly, which FRED does not "
+            "carry (#352).",
         ),
-        "NZD": _manual(
-            "indpro_yoy",
-            "percent",
+        "NZD": _kei(
+            "NZL",
+            "Q",
+            _KEI_INDPRO,
             Frequency.QUARTERLY,
-            "no New Zealand industrial production series on FRED",
+            date(2026, 4, 1),
+            189,
+            "New Zealand industrial production, quarterly, which FRED does not "
+            "carry (#352).",
         ),
     },
 )

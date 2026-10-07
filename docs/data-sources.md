@@ -1027,8 +1027,8 @@ carry a dead series fails on the next verification rather than passing quietly.
 | `unemployment_rate` | 8/8 | 8/8 | good |
 | `employment_chg` | 7/8 | 7/8 | EUR manual |
 | `employment_level` | 7/8 | 7/8 | EUR absent; derived from `employment_chg`'s refs |
-| `retail_sales_yoy` | 7/8 | 7/8 | AUD frozen at 2025Q2, unverified since #222 |
-| `indpro_yoy` | 4/8 | 4/8 | worst of the growth inputs; EUR frozen at 2023-12, unverified since #222 |
+| `retail_sales_yoy` | 7/8 | 7/8 | AUD frozen at 2025Q2, unverified since #222; EUR, JPY and NZD from the OECD since #352 (2026-10-07) |
+| `indpro_yoy` | 4/8 | 4/8 | 4/8 on this date; 8/8 since #352 (2026-10-07), EUR, CHF, AUD and NZD from the OECD |
 | `pmi_composite` | 0/8 | 0/8 | licensed, entirely manual; **consumed by no pillar** since ADR 0005, see below |
 | `business_confidence_mfg` | 8/8 | 8/8 | free; carries 0.30 of GROWTH since ADR 0005, see below |
 | `trade_balance` | 8/8 | 8/8 | good |
@@ -1080,13 +1080,17 @@ coverage, correctly, and the external pillar leans on `trade_balance`, which is
 current for all eight. Finding a live source for this is a good follow-up; the
 IMF and national central banks both publish it.
 
-**4. Industrial production** for CHF, AUD and NZD, and the euro-area proxy,
-which stopped at 2023-12. Four of eight live. Weight it accordingly, or the
-growth pillar scores the countries that happen to publish rather than the
-countries that happen to be growing.
+**4. Industrial production. Closed by #352 (2026-10-07).** The euro area,
+Switzerland, Australia and New Zealand now come from the OECD's key short-term
+indicators flow, `DSD_KEI@DF_KEI`, as total industry excluding construction
+(`BTE`), volume, growth on a year earlier. The euro leg is the bloc (`EA20`),
+replacing the German proxy that stopped at 2023-12. The Swiss, Australian and
+New Zealand legs are quarterly, so they move less often than the monthly ones.
 
 **5. AUD retail sales**, frozen at 2025Q2. Australia has no live retail series
-on FRED and none was found on the OECD API either.
+on FRED, and the OECD's (`AUS.Q.TOVM.GR.G47.Y.GY` in the same flow) stops at
+2025-Q2 too: the Bureau of Statistics replaced its retail survey with a
+household spending indicator, which needs a source of its own (#355).
 
 **6. EUR employment change.** No live euro-area or German employment level; the
 FRED series stopped at 2022-10.
@@ -1104,9 +1108,10 @@ a free lunch, and it is biased in a knowable direction on at least one
 indicator: Germany runs a structural trade surplus larger than the bloc's, so
 the proxy flatters the euro on `trade_balance`.
 
-Affected: `unemployment_rate`, `retail_sales_yoy`,
-`indpro_yoy`, `trade_balance`, `current_account_gdp`,
+Affected: `unemployment_rate`, `trade_balance`, `current_account_gdp`,
 `equity_index`, and `yield_10y` where the Bund stands in for the euro curve.
+`retail_sales_yoy` and `indpro_yoy` were on this list until #352 read the bloc
+itself (`EA20`) from the OECD's key short-term indicators flow.
 
 ### Manual fallback per gap
 
@@ -1381,30 +1386,30 @@ Pillar: **growth**. Canonical unit: `percent`. Staleness allowance: 270 days. Fr
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | USD | fred | `USASLRTTO01GYSAM` | percent | monthly | level | yes | 2026-05-01 | OECD retail volume growth, chosen over the fresher US-only RSAFS so the eight legs are measured the same way |
-| EUR | fred | `DEUSLRTTO01GYSAM` | percent | monthly | level | yes | 2026-05-01 | euro-area aggregate stopped updating; German national series used as the euro-area proxy: EA19SLRTTO01GYSAM stopped at 2023-10. |
+| EUR | oecd | `DSD_KEI@DF_KEI/EA20.M.TOVM.GR.G47.Y.GY` | percent | monthly | level | yes | 2026-07-01 | euro-area retail trade volume, the bloc itself; OECD key short-term indicators, `DSD_KEI@DF_KEI` (#352) |
 | GBP | fred | `GBRSLRTTO01GYSAM` | percent | monthly | level | yes | 2026-06-01 | - |
-| JPY | fred | `JPNSLRTTO01GYSAM` | percent | monthly | level | yes | 2026-05-01 | - |
+| JPY | oecd | `DSD_KEI@DF_KEI/JPN.M.TOVM.GR.G47.Y.GY` | percent | monthly | level | yes | 2026-06-01 | OECD key short-term indicators, `DSD_KEI@DF_KEI` (#352), no key needed |
 | CHF | fred | `CHESLRTTO01GYSAM` | percent | monthly | level | yes | 2026-05-01 | - |
 | CAD | fred | `CANSLRTTO01GYSAM` | percent | monthly | level | yes | 2026-04-01 | - |
 | AUD | fred | `SLRTTO01AUQ659S` | percent | quarterly | level | yes | **2025-04-01** (stale) | DISCONTINUED at 2025Q2. Australia has no live retail series on FRED and none was found on the OECD API either. |
-| NZD | fred | `SLRTTO01NZQ659S` | percent | quarterly | level | yes | 2026-01-01 | 2026Q1 |
+| NZD | oecd | `DSD_KEI@DF_KEI/NZL.Q.TOVM.GR.G47.Y.GY` | percent | quarterly | level | yes | 2026-04-01 | OECD key short-term indicators, `DSD_KEI@DF_KEI` (#352); FRED's mirror lagged 284 days |
 
 #### `indpro_yoy`
 
-Industrial production, year on year. Coverage here is the worst of the growth inputs: four of eight are live. Weight it accordingly, or the growth pillar ends up scoring the countries that happen to publish rather than the countries that happen to be growing.
+Industrial production, year on year. Four of eight were live until #352 read the euro area, Switzerland, Australia and New Zealand from the OECD short-term indicators flow; all eight are now fetched. Switzerland, Australia and New Zealand are quarterly, so their legs move less often than the monthly ones.
 
 Pillar: **growth**. Canonical unit: `percent`. Staleness allowance: 180 days. Fresh coverage: 50%.
 
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | USD | fred | `USAPRINTO01GYSAM` | percent | monthly | level | yes | 2026-06-01 | OECD basis for cross-country comparability; INDPRO is the fresher US-only alternative |
-| EUR | fred | `DEUPRINTO01GYSAM` | percent | monthly | level | yes | **2023-12-01** (stale) | DISCONTINUED at 2023-12. euro-area aggregate stopped updating; German national series used as the euro-area proxy, and the German proxy has now stopped too. |
+| EUR | oecd | `DSD_KEI@DF_KEI/EA20.M.PRVM.GR.BTE.Y.GY` | percent | monthly | level | yes | 2026-07-01 | euro-area industrial production, the bloc itself, replacing the German proxy that stopped at 2023-12; OECD key short-term indicators, `DSD_KEI@DF_KEI` (#352) |
 | GBP | fred | `GBRPRINTO01GYSAM` | percent | monthly | level | yes | 2026-05-01 | - |
 | JPY | fred | `JPNPRINTO01GYSAM` | percent | monthly | level | yes | 2026-05-01 | - |
-| CHF | manual | `indpro_yoy` | percent | quarterly | level | **no** | **unknown** | no Swiss industrial production series on FRED in any live form |
+| CHF | oecd | `DSD_KEI@DF_KEI/CHE.Q.PRVM.GR.BTE.Y.GY` | percent | quarterly | level | yes | 2026-04-01 | quarterly, as the Federal Statistical Office publishes it; OECD key short-term indicators, `DSD_KEI@DF_KEI` (#352) |
 | CAD | fred | `CANPRINTO01GYSAM` | percent | monthly | level | yes | 2026-04-01 | - |
-| AUD | manual | `indpro_yoy` | percent | quarterly | level | **no** | **unknown** | no Australian industrial production series on FRED |
-| NZD | manual | `indpro_yoy` | percent | quarterly | level | **no** | **unknown** | no New Zealand industrial production series on FRED |
+| AUD | oecd | `DSD_KEI@DF_KEI/AUS.Q.PRVM.GR.BTE.Y.GY` | percent | quarterly | level | yes | 2026-04-01 | OECD key short-term indicators, `DSD_KEI@DF_KEI` (#352) |
+| NZD | oecd | `DSD_KEI@DF_KEI/NZL.Q.PRVM.GR.BTE.Y.GY` | percent | quarterly | level | yes | 2026-04-01 | OECD key short-term indicators, `DSD_KEI@DF_KEI` (#352) |
 
 #### `pmi_composite`
 

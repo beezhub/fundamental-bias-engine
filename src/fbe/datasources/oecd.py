@@ -186,10 +186,20 @@ DIMENSIONS: Mapping[str, tuple[str, ...]] = {
         "TIME_HORIZ",
         "METHODOLOGY",
     ),
+    "DSD_KEI": (
+        "REF_AREA",
+        "FREQ",
+        "MEASURE",
+        "UNIT_MEASURE",
+        "ACTIVITY",
+        "ADJUSTMENT",
+        "TRANSFORMATION",
+    ),
 }
-"""Dimension order for the two structures used, read from their datastructure
+"""Dimension order for the three structures used, read from their datastructure
 definitions. The key in a data request must supply exactly this many segments.
-Eight for prices, nine for short-term statistics."""
+Eight for prices, nine for short-term statistics, seven for the key short-term
+indicators (``DSD_KEI``, read live on 2026-10-07 for #352)."""
 
 REF_AREA: Mapping[str, str] = {
     "USD": "USA",
@@ -210,9 +220,10 @@ the registry uses Eurostat through FRED instead, which is why euro CPI does not
 come from this module at all."""
 
 EA_REF_AREA = "EA20"
-"""The euro-area aggregate, valid in ``DSD_STES@DF_FINMARK`` and not in the
-price flows. Kept for the rates and share price series, where it is a genuine
-bloc number rather than a German proxy."""
+"""The euro-area aggregate, valid in ``DSD_STES@DF_FINMARK`` and
+``DSD_KEI@DF_KEI`` and not in the price flows. Kept for the rates and share
+price series, and used for euro industrial production and retail (#352), where
+it is a genuine bloc number rather than a German proxy."""
 
 CPI_FLOW: Mapping[str, str] = {
     "GBP": "DSD_PRICES@DF_PRICES_ALL",
