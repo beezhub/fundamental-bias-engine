@@ -491,7 +491,7 @@ here.
 **GROWTH is absent for a currency holding exactly half its sub-weight.** Any one
 0.30 component plus one 0.20 component sums to 0.50, which is at the floor of
 section 2.3 and therefore absent rather than scored. Before the substitution this
-was live for three currencies: `indpro_yoy` is manual-only for CHF, AUD and NZD
+was live for three currencies: `indpro_yoy` was manual-only for CHF, AUD and NZD (until #352)
 and the manual PMI file held no values, so those three held GDP plus retail sales
 and GROWTH was absent for all three. The substitution is what rescues them, since
 `business_confidence_mfg` is verified 8 of 8.
@@ -873,8 +873,7 @@ pillar on any given run.
 
 | Pillar | Series | Currencies | Why |
 | --- | --- | --- | --- |
-| GROWTH | `indpro_yoy` | EUR, CHF, AUD, NZD | The euro-area aggregate was discontinued at 2023-12. Switzerland, Australia and New Zealand publish no industrial production series FRED carries in any live form. |
-| GROWTH | `retail_sales_yoy` | AUD | Discontinued at 2025Q2, with no live Australian retail series on FRED. |
+| GROWTH | `retail_sales_yoy` | AUD | Discontinued at 2025Q2, on FRED and on the OECD API alike; the substitute is the ABS household spending indicator (#355). `indpro_yoy` was on this table for EUR, CHF, AUD and NZD until #352 read all four from the OECD. |
 | EMPLOYMENT | `employment_chg` | EUR | No live euro-area or German employment level on FRED. |
 | EXTERNAL | `current_account_gdp` | all eight | Discontinued at 2024Q4 across every leg of the family, with no free replacement found. This is the whole of EXTERNAL's 0.40 level component, for the entire universe. |
 | EXTERNAL | `commodity_price` | NZD | No dairy price index on FRED. The GlobalDairyTrade index is the right series and is not freely available, so New Zealand's terms-of-trade component is the one commodity link the pillar cannot follow. |
