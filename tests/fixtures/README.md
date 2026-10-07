@@ -122,8 +122,9 @@ a workbook written another way would need it.
 
 ## Swiss National Bank
 
-Captured 2026-10-07, no credential. Both byte-exact, CRLF line endings and the
-UTF-8 byte order mark as served (#351).
+Captured 2026-10-07, no credential. Both are the bodies as served, UTF-8 byte
+order mark included, except that the SNB serves CRLF line endings and the
+repository stores LF (#351). The parser reads either.
 
 | File | Request | Status |
 | --- | --- | --- |
