@@ -466,9 +466,10 @@ hand, or from the wire where the RBNZ allows it.**
 
 *The drop-in file.* Download
 `https://www.rbnz.govt.nz/-/media/project/sites/rbnz/files/statistics/series/b/b2/hb2-daily-close.xlsx`
-in a browser and save it as `data/manual/rbnz-hb2-daily-close.xlsx`. While
-that file exists `RbnzSource` reads it on every run, offline or not, and makes
-no request. It is git-ignored: public data, reproducible by one download, not
+in a browser and save it in `data/manual/`, either under the browser's own name,
+`hb2-daily-close.xlsx`, or as `rbnz-hb2-daily-close.xlsx`, which wins when both
+are there (#350). While either file exists `RbnzSource` reads it on every run,
+offline or not, and makes no request. It is git-ignored: public data, reproducible by one download, not
 the audit trail. Refresh it weekly, or whenever you want a fresher number. A
 file whose newest session is older, at the run's as-of date, than the
 registry's staleness allowance for the NZD two-year (`staleness_allowance`,

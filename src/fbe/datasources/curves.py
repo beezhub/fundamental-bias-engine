@@ -185,6 +185,7 @@ __all__ = [
     "RBNZ_BASE_URL",
     "RBNZ_DATA_SHEET",
     "RBNZ_DROP_IN_FILENAME",
+    "RBNZ_DROP_IN_NAMES",
     "RBNZ_SERIES_ID_ROW_LABEL",
     "RBNZ_UNIT",
     "RBNZ_UNIT_ROW_LABEL",
@@ -323,6 +324,14 @@ handshake from the owner's own connection, while a browser on the same
 connection is served, so the file is the one route the number reliably has.
 Git-ignored: it is public data reproducible by one download, and 430 kilobytes
 that change weekly are not the audit trail."""
+
+RBNZ_DROP_IN_NAMES: tuple[str, ...] = (RBNZ_DROP_IN_FILENAME, "hb2-daily-close.xlsx")
+"""Every name the drop-in is read under, in order of preference. The second is
+what the browser saves the RBNZ's download as. On 2026-10-07 that was the only
+file in ``data/manual``: the prefixed name was all the source looked for, so it
+fell through to the request the RBNZ refuses, and NZD lost its interest-rate
+pillar with the data on disk (#350). The prefixed name stays first, so a
+deliberate copy beats a stray download when both are there."""
 
 RBNZ_DATA_SHEET = "Data"
 RBNZ_SERIES_ID_ROW_LABEL = "Series Id"
@@ -1736,8 +1745,10 @@ class CurvesSource(BaseDataSource):
     def _rbnz_workbook(self) -> tuple[bytes, Path | None]:
         """Return the B2 workbook's bytes, and where they came from.
 
-        The drop-in file under ``DataConfig.manual_dir`` wins whenever it
-        exists, and no request is made. Predictable beats adaptive: reading
+        The drop-in file under ``DataConfig.manual_dir``, under any of
+        `RBNZ_DROP_IN_NAMES`, wins whenever it exists, and no request is made.
+        The path returned is the file actually read, so every message about it
+        names that file. Predictable beats adaptive: reading
         the file only when the RBNZ refused would make a run's behaviour
         depend on the provider's mood that morning, and an operator could not
         say from the output which route produced the number. The file is not
@@ -1756,8 +1767,10 @@ class CurvesSource(BaseDataSource):
                 request the RBNZ will refuse.
 
         """
-        drop_in = Path(self.config.manual_dir) / RBNZ_DROP_IN_FILENAME
-        if drop_in.exists():
+        for name in RBNZ_DROP_IN_NAMES:
+            drop_in = Path(self.config.manual_dir) / name
+            if not drop_in.exists():
+                continue
             try:
                 return drop_in.read_bytes(), drop_in
             except OSError as error:
