@@ -29,12 +29,13 @@ staleness allowance, so a frozen mirror shows up as a gap rather than as a
 score.
 ---
 
-## The seven sources
+## The eight sources
 
 | Source | Backs | Key | Cost | Cadence |
 | --- | --- | --- | --- | --- |
 | FRED | MONETARY, GROWTH, EMPLOYMENT, EXTERNAL, US and euro-area INFLATION | yes, free | free | daily to quarterly by series |
 | OECD SDMX | INFLATION for six currencies, plus rates and equity indices | no | free | monthly, ~1 month behind |
+| Eurostat | EMPLOYMENT for the euro area | no | free | quarterly |
 | Central banks and debt offices | the 2-year yields at the heart of MONETARY | no | free | daily |
 | CFTC COT | POSITIONING | no | free | weekly, Friday 15:30 ET, 3-day lag |
 | Stooq | RISK price proxies, daily | no | free | daily |
@@ -51,6 +52,7 @@ the refresh output names the scope's unit when it fails (ADR 0013, ADR 0015).
 | --- | --- | --- |
 | FRED | series | that one `(indicator, currency)`, named on its own line; the other series are served and the source reads `partial`. A ref FRED cannot serve, today the two-year change transforms, is declined before it is routed and appears only as a registry gap (ADR 0016) |
 | OECD SDMX | series | that one `(indicator, currency)`, named on its own line; the other series are served and the source reads `partial`. A series that answers with nothing is a failure only where the window could judge it, see below |
+| Eurostat | series | that one `(indicator, currency)`; it serves the euro's employment change and level, each its own request |
 | Central banks and debt offices | source, one per provider | that provider's currency; each institution is its own source since #218 |
 | CFTC COT | source | every contract; the dollar is derived from the other seven, so the series are not independent and series scope is not ruled on |
 | Stooq | source | every price proxy; not ruled on |
@@ -339,6 +341,27 @@ Zealand dollar: FRED's equivalents stopped at 2024-03 and 2024-12.
 non-commercial use with attribution to the OECD. As with FRED, redistributing
 the numbers is a different question from using them.
 ---
+
+## Eurostat
+
+`https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/`, no key,
+JSON-stat 2.0. Added for one series (#354): euro-area total employment from the
+quarterly national accounts, `namq_10_pe?geo=EA20&unit=THS_PER&na_item=EMP_DC&s_adj=SCA`, which both EMPLOYMENT keys read,
+the change under `diff` and the level under `level`.
+
+- **`EA20`, not `EA`.** `EA` is the euro area at its composition on each date,
+  so Bulgaria joining on 1 January 2026 adds about 3.6 million people at
+  2026-Q1 (176,250 thousand against `EA20`'s 172,640, read live on
+  2026-10-07). Differenced, that is a hiring boom that never happened. `EA20` is
+  the twenty members of 2023-2025 throughout.
+- **A filter that matches nothing answers HTTP 200** with an empty `value` and a
+  zero in `size`. The source treats that as a dead or mis-keyed series over a
+  window wide enough to judge, never as no data.
+- **The change skips holes.** A quarter missing from the level leaves the
+  change for it and the next quarter missing, rather than a change over two
+  quarters.
+- **Lag:** 189 days, the 2026-Q2 print's age on 2026-10-07 when nothing newer
+  was out. The API gives no release date.
 
 ## Central banks and debt offices
 
@@ -1025,8 +1048,8 @@ carry a dead series fails on the next verification rather than passing quietly.
 | `core_cpi_yoy` | 8/8 | 8/8 | good, was 2/8 |
 | `gdp_yoy` | 8/8 | 8/8 | good |
 | `unemployment_rate` | 8/8 | 8/8 | good |
-| `employment_chg` | 7/8 | 7/8 | EUR manual |
-| `employment_level` | 7/8 | 7/8 | EUR absent; derived from `employment_chg`'s refs |
+| `employment_chg` | 7/8 | 7/8 | EUR manual on this date; from Eurostat since #354 (2026-10-07) |
+| `employment_level` | 7/8 | 7/8 | EUR absent on this date, from Eurostat since #354; derived from `employment_chg`'s refs |
 | `retail_sales_yoy` | 7/8 | 7/8 | AUD frozen at 2025Q2, unverified since #222; EUR, JPY and NZD from the OECD since #352 (2026-10-07) |
 | `indpro_yoy` | 4/8 | 4/8 | 4/8 on this date; 8/8 since #352 (2026-10-07), EUR, CHF, AUD and NZD from the OECD |
 | `pmi_composite` | 0/8 | 0/8 | licensed, entirely manual; **consumed by no pillar** since ADR 0005, see below |
@@ -1094,8 +1117,10 @@ on FRED, and the OECD's (`AUS.Q.TOVM.GR.G47.Y.GY` in the same flow) stops at
 2025-Q2 too: the Bureau of Statistics replaced its retail survey with a
 household spending indicator, which needs a source of its own (#355).
 
-**6. EUR employment change.** No live euro-area or German employment level; the
-FRED series stopped at 2022-10.
+**6. EUR employment change. Closed by #354 (2026-10-07).** FRED's euro-area
+level stopped at 2022-10. Eurostat's quarterly national accounts carry the bloc
+itself, so the euro has both the change and the level, and its EMPLOYMENT
+pillar scores. See the Eurostat section above.
 
 ### The euro-area substitution
 
@@ -1121,7 +1146,6 @@ itself (`EA20`) from the OECD's key short-term indicators flow.
 | --- | --- | --- |
 | PMIs, all eight (optional, read by no pillar) | `pmi.yaml` | S&P Global releases, ISM for the US |
 | Retail sales AUD | `zz-overrides.yaml` | ABS monthly retail turnover |
-| Employment change EUR | `zz-overrides.yaml` | Eurostat quarterly employment release |
 | Industrial production CHF, AUD, NZD | `pmi.yaml` or its own file | the registry carries manual refs for all three, so `ManualSource.missing()` lists them. Entering them is optional and leaving them out is a visible gap rather than a broken run; what is not acceptable is inventing a figure. |
 | Current account, all eight | none for now | leave the gap visible; find a live source |
 | NZD commodity link | `zz-overrides.yaml` | GlobalDairyTrade index, fortnightly, globaldairytrade.info |
@@ -1349,7 +1373,7 @@ Pillar: **employment**. Canonical unit: `persons`. Staleness allowance: 270 days
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | USD | fred | `PAYEMS` | thousands_of_persons | monthly | diff | yes | 2026-08-01 | total nonfarm payrolls; the differenced level is the NFP headline |
-| EUR | manual | `employment_chg` | persons | quarterly | level | **no** | **unknown** | no live euro-area or German employment level on FRED (LFEMTTTTEZQ647S stopped at 2022-10); take the Eurostat quarterly employment release by hand |
+| EUR | eurostat | `namq_10_pe?geo=EA20&unit=THS_PER&na_item=EMP_DC&s_adj=SCA` | thousands_of_persons | quarterly | diff | yes | 2026-04-01 | euro-area total employment, fixed EA20 composition (#354) |
 | GBP | fred | `LFEMTTTTGBQ647S` | persons | quarterly | diff | yes | 2026-01-01 | 2026Q1 |
 | JPY | fred | `LFEMTTTTJPM647S` | persons | monthly | diff | yes | 2026-06-01 | - |
 | CHF | fred | `LFEMTTTTCHQ647S` | persons | quarterly | diff | yes | 2026-01-01 | 2026Q1 |
@@ -1361,17 +1385,18 @@ Pillar: **employment**. Canonical unit: `persons`. Staleness allowance: 270 days
 
 Number of people employed. The stock that `employment_chg` is the flow of, and it exists for one purpose: `employment_trend` is specified as an annualised percent of the employment level, and without a denominator the component would score a raw count. A US payrolls print is in the hundreds of thousands and a New Zealand quarterly change is in the thousands, so a cross-sectional z-score of the count ranks the size of the economies. Section 3.4 of `docs/scoring-spec.md` rejects that explicitly.
 
-Not sourced separately. The seven refs are `employment_chg`'s own, under `level` instead of `diff`; see `_employment_level_series` in the registry. Coverage, freshness and verification are therefore identical to `employment_chg`'s currency by currency, and the two cannot drift apart, which matters because a count divided by a different population's level is a plausible number that is wrong by whatever the two populations differ by.
+Not sourced separately. The eight refs are `employment_chg`'s own, under `level` instead of `diff`; see `_employment_level_series` in the registry. Coverage, freshness and verification are therefore identical to `employment_chg`'s currency by currency, and the two cannot drift apart, which matters because a count divided by a different population's level is a plausible number that is wrong by whatever the two populations differ by.
 
-**EUR has no entry.** Its flow is a manual figure keyed in from the Eurostat release with no published level behind it, so there is no stock to take. No substitute is invented: EUR loses the momentum component, and with EMPLOYMENT's two components at 0.50 each that leaves the pillar absent for the euro. A German level is current on FRED and is deliberately not used, because EUR's flow is a euro-area figure and dividing it by one member state's workforce would overstate hiring by roughly a factor of four.
+**EUR has had an entry since #354.** Before it, the euro's flow was a manual figure with no published level behind it, so EUR had no stock and its EMPLOYMENT pillar was absent. A German level was current on FRED and was deliberately not used, because dividing a euro-area flow by one member state's workforce would overstate hiring by roughly a factor of four. Eurostat now publishes the bloc's level, and both keys read it.
 
 USD arrives in `thousands_of_persons` while the canonical unit is `persons`, inherited from `PAYEMS` through `employment_chg`. The only component that reads this key is a ratio of two numbers from that same series, so the scale cancels and the mismatch cannot reach a score. It is recorded because a reader comparing this level with another currency's would otherwise find the United States a thousand times smaller than Japan.
 
-Pillar: **employment**. Canonical unit: `persons`. Staleness allowance: 270 days. Fresh coverage: 88%.
+Pillar: **employment**. Canonical unit: `persons`. Staleness allowance: 270 days. Fresh coverage: 88% on 2026-09-09, before #354.
 
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | USD | fred | `PAYEMS` | thousands_of_persons | monthly | level | yes | 2026-08-01 | total nonfarm payrolls; the differenced level is the NFP headline; the level `employment_chg` is differenced from |
+| EUR | eurostat | `namq_10_pe?geo=EA20&unit=THS_PER&na_item=EMP_DC&s_adj=SCA` | thousands_of_persons | quarterly | level | yes | 2026-04-01 | the level `employment_chg` is differenced from (#354) |
 | GBP | fred | `LFEMTTTTGBQ647S` | persons | quarterly | level | yes | 2026-01-01 | 2026Q1; the level `employment_chg` is differenced from |
 | JPY | fred | `LFEMTTTTJPM647S` | persons | monthly | level | yes | 2026-06-01 | the level `employment_chg` is differenced from |
 | CHF | fred | `LFEMTTTTCHQ647S` | persons | quarterly | level | yes | 2026-01-01 | 2026Q1; the level `employment_chg` is differenced from |
@@ -1609,6 +1634,7 @@ What is worth refetching, and how often.
 | Policy rates, 10y yields, equity indices | OECD | monthly, ~1 month behind | weekly |
 | CPI, core CPI | OECD, FRED | monthly or quarterly | weekly |
 | Unemployment, retail sales, IP, trade balance | FRED | monthly | weekly |
+| Euro-area employment | Eurostat | quarterly | weekly |
 | GDP | FRED | quarterly | weekly |
 | COT positioning | CFTC | weekly, Friday 15:30 ET | Saturday, or Monday morning |
 | Economic calendar | Forex Factory | weekly, current week only | Monday, then cached all week |

@@ -63,6 +63,24 @@ status differs, and it may differ because of the network this was captured
 from. Nothing depends on which it is: any 4xx outside `RetryPolicy.retry_on_status`
 raises without being retried.
 
+## Eurostat
+
+Captured 2026-10-07 against
+`https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/`, no
+credential (#354). Both bodies are byte-exact as returned.
+
+| File | Request | Status |
+| --- | --- | --- |
+| `eurostat_ea20_employment.json` | `namq_10_pe?geo=EA20&unit=THS_PER&na_item=EMP_DC&s_adj=SCA&sinceTimePeriod=2024-Q1` | 200 |
+| `eurostat_no_match.json` | the same request with `geo=XX99` | 200 |
+
+The second is how this API reports a filter that matches nothing: HTTP 200, an
+empty `value` and a zero in `size`, not an error status. The same request with
+`geo=EA` instead of `EA20` returned identical levels to 2025-Q4 and then
+176,250.23 thousand at 2026-Q1 against `EA20`'s 172,639.7: Bulgaria joining.
+That body is not committed; the test that guards against it reads the
+registry's `geo` filter.
+
 ## Curve providers
 
 Captured 2026-09-14, no credential on any of them.

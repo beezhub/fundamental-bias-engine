@@ -1,6 +1,6 @@
 """Data sources: everything that turns the outside world into `Observation`s.
 
-Thirteen sources, mapped onto the seven pillars:
+Fourteen sources, mapped onto the seven pillars:
 
 ===============  ==========================================  ==================
 Source           Backs                                       Credential
@@ -17,6 +17,7 @@ Source           Backs                                       Credential
 `RbaSource`,     (ADR 0013). `CurvesSource` is their shared
 `SnbSource`,     base and is not itself a source in a run.
 `RbnzSource`
+`EurostatSource` EMPLOYMENT for the euro area                none
 `CotSource`      POSITIONING                                 none
 `PricesSource`   RISK, EXTERNAL commodity proxies            none
 `CalendarSource` no pillar; feeds the news blackout          none
@@ -68,6 +69,7 @@ from fbe.datasources.curves import (
     RbnzSource,
     SnbSource,
 )
+from fbe.datasources.eurostat import EurostatSource
 from fbe.datasources.fred import FredSource
 from fbe.datasources.manual import ManualSource
 from fbe.datasources.oecd import OecdSource
@@ -97,6 +99,7 @@ __all__ = [
     "CurvesSource",
     "DiskCache",
     "EcbSource",
+    "EurostatSource",
     "FredSource",
     "GLOBAL",
     "INDICATORS",
@@ -124,6 +127,7 @@ __all__ = [
 ALL_SOURCES: tuple[type[BaseDataSource], ...] = (
     FredSource,
     OecdSource,
+    EurostatSource,
     *PROVIDER_SOURCES,
     CotSource,
     PricesSource,
