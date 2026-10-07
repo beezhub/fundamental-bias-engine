@@ -19,8 +19,10 @@ credential, `Accept: application/vnd.sdmx.data+csv`.
 | `oecd_arity_error.txt` | the same monthly key with seven segments instead of eight | 403 |
 | `oecd_deu_bts_monthly.csv` | `data/OECD.SDD.STES,DSD_STES@DF_BTS,4.0/DEU.M.BCICP.PB.C.Y...?startPeriod=2026-05-01&endPeriod=2026-08-31` | 200 |
 | `oecd_aus_bts_quarterly.csv` | `data/OECD.SDD.STES,DSD_STES@DF_BTS,4.0/AUS.Q.BCICP.PB.C.Y...?startPeriod=2025-01-01&endPeriod=2026-06-30` | 200 |
+| `oecd_ea20_kei_indpro_monthly.csv` | `data/OECD.SDD.STES,DSD_KEI@DF_KEI,4.0/EA20.M.PRVM.GR.BTE.Y.GY?startPeriod=2025-01-01&endPeriod=2026-10-07`, captured 2026-10-07 (#352) | 200 |
+| `oecd_nzl_kei_retail_quarterly.csv` | `data/OECD.SDD.STES,DSD_KEI@DF_KEI,4.0/NZL.Q.TOVM.GR.G47.Y.GY?startPeriod=2025-01-01&endPeriod=2026-10-07`, captured 2026-10-07 (#352) | 200 |
 
-All four CSV bodies are byte-exact as returned. The monthly CPI one arrives out
+All six CSV bodies are byte-exact as returned. The monthly CPI one arrives out
 of order (June, May, July), which is why the parser is not allowed to assume the
 API sorts. Both BTS bodies arrive out of order too, from a second flow, so that
 is the API's habit rather than one flow's quirk.
