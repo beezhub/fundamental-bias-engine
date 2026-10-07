@@ -918,7 +918,7 @@ Optional: `unit`, `frequency`, `released_at`, `revision`, `meta`.
 | File | Contents |
 | --- | --- |
 | `pmi.yaml` | Manufacturing and services PMIs for all eight. **Optional:** no pillar reads `pmi_composite` since ADR 0005, so nothing typed here changes a score. `ManualSource.missing()` still lists the eight gaps because the key stays registered; skip them. |
-| `zz-overrides.yaml` | Ad-hoc corrections and the one-off gaps: AUD retail sales, EUR employment change, NZD dairy. Named to sort last, so it wins: precedence is filename order and nothing else, and `overrides.yaml` would sort ahead of `pmi.yaml` and be overridden by the file it exists to override. |
+| `zz-overrides.yaml` | Ad-hoc corrections and the one-off gaps: AUD retail sales, NZD dairy. Named to sort last, so it wins: precedence is filename order and nothing else, and `overrides.yaml` would sort ahead of `pmi.yaml` and be overridden by the file it exists to override. |
 
 An `inflation.yaml` used to be needed for six currencies. It no longer is: the
 OECD API supplies headline and core CPI for all eight. If you have one from an
