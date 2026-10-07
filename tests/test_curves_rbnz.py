@@ -390,6 +390,41 @@ def test_the_drop_in_file_is_read_and_no_request_is_made(
     assert {o.source for o in emitted} == {"rbnz"}
 
 
+BROWSER_NAME = "hb2-daily-close.xlsx"
+"""What the browser saves the RBNZ's download as. On 2026-10-07 this was the
+only file in ``data/manual``, so NZD lost its whole interest-rate pillar and
+fell to 57% coverage while the data sat on disk (#350)."""
+
+
+@respx.mock
+def test_the_browser_s_default_name_is_read_too(
+    rbnz: RbnzSource, tmp_path: Path
+) -> None:
+    (tmp_path / "manual" / BROWSER_NAME).write_bytes(WORKBOOK)
+    route = respx.route().mock(return_value=httpx.Response(403, text=BLOCK_PAGE))
+
+    emitted = rbnz.fetch(["yield_2y"], ["NZD"], START, END)
+
+    assert route.call_count == 0
+    assert {o.period: o.value for o in emitted} == PUBLISHED_CLOSES
+
+
+@respx.mock
+def test_the_prefixed_name_wins_when_both_are_present(
+    rbnz: RbnzSource, tmp_path: Path
+) -> None:
+    """The prefixed name is the one the docs give, so a deliberate copy beats a
+    stray download. The stray one here is not a workbook, so reading it would
+    raise."""
+    _drop_in(tmp_path)
+    (tmp_path / "manual" / BROWSER_NAME).write_bytes(b"not a workbook")
+    respx.route().mock(return_value=httpx.Response(403, text=BLOCK_PAGE))
+
+    emitted = rbnz.fetch(["yield_2y"], ["NZD"], START, END)
+
+    assert {o.period: o.value for o in emitted} == PUBLISHED_CLOSES
+
+
 @respx.mock
 def test_without_the_file_the_wire_is_fetched_as_before(rbnz: RbnzSource) -> None:
     route = respx.get(RBNZ_B2_URL).mock(
