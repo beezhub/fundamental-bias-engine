@@ -1032,7 +1032,7 @@ carry a dead series fails on the next verification rather than passing quietly.
 | `pmi_composite` | 0/8 | 0/8 | licensed, entirely manual; **consumed by no pillar** since ADR 0005, see below |
 | `business_confidence_mfg` | 8/8 | 8/8 | free; carries 0.30 of GROWTH since ADR 0005, see below |
 | `trade_balance` | 8/8 | 8/8 | good |
-| `current_account_gdp` | 0/8 | 0/8 | all eight frozen at 2024Q4, unverified since #222 |
+| `current_account_gdp` | 0/8 | 0/8 | all eight frozen at 2024Q4 on this date; 8/8 from the OECD since #353 (2026-10-07) |
 | `gdp_nominal_usd` | 8/8 | 8/8 | annual; one year behind on every leg by design |
 | `cot_net_pct_oi` | 8/8 | 8/8 | good, 8-10 days stale by design |
 | `equity_index` | 8/8 | 8/8 | USD and JPY daily, rest monthly; **consumed by no pillar**, see below |
@@ -1068,17 +1068,19 @@ pillar reads `pmi_composite`: GROWTH's leading component is
 PMIs is optional. The key stays registered so re-adopting it is a one-line
 change if a licence is ever bought.
 
-**3. Current account, all eight.** Every leg of the FRED `B6BLTT02` family
-stopped at 2024Q4 and no free replacement was found; the OECD API's balance of
-payments dataflows cover trade in services and merchandise, not the quarterly
-current account balance.
+**3. Current account, all eight. Closed by #353 (2026-10-07).** Every leg of
+the FRED `B6BLTT02` family stopped at 2024Q4. This section used to say the
+OECD's balance-of-payments flows carried no current account balance; that was
+wrong. `OECD.SDD.TPS,DSD_BOP@DF_BOP,1.0` carries it as a share of GDP, key
+`{AREA}.WXD.CA.B.T.Q.PT_B1GQ.Y`, for all eight areas through 2026-Q2, with
+`EA20` for the euro. Two things to know:
 
-The allowance is set to 210 days, which is what a quarterly
-balance-of-payments release honestly justifies. It is deliberately not set high
-enough to let two-year-old data through. The indicator therefore reports zero
-coverage, correctly, and the external pillar leans on `trade_balance`, which is
-current for all eight. Finding a live source for this is a good follow-up; the
-IMF and national central banks both publish it.
+- In this structure `FREQ` is the sixth key segment, not the second as in every
+  other OECD flow here. `fbe.datasources.oecd.frequency_position` reads it from
+  `DIMENSIONS`.
+- The Swiss leg swings with gold trade through Swiss refiners: 0.14% of GDP in
+  2025-Q4, then 10.02% in 2026-Q1. It is served as published. Whether to smooth
+  it is a scoring question and is not taken here.
 
 **4. Industrial production. Closed by #352 (2026-10-07).** The euro area,
 Switzerland, Australia and New Zealand now come from the OECD's key short-term
@@ -1480,14 +1482,14 @@ Pillar: **external**. Canonical unit: `percent_of_gdp`. Staleness allowance: 210
 
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| USD | fred | `USAB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
-| EUR | fred | `DEUB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
-| GBP | fred | `GBRB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
-| JPY | fred | `JPNB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
-| CHF | fred | `CHEB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
-| CAD | fred | `CANB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
-| AUD | fred | `AUSB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
-| NZD | fred | `NZLB6BLTT02STSAQ` | percent_of_gdp | quarterly | level | yes | **2024-10-01** (stale) | DISCONTINUED at 2024Q4, as is every leg of this family. No free replacement was found: the OECD API's balance of payments dataflows cover trade in services and merchandise, not the quarterly current account balance. |
+| USD | oecd | `DSD_BOP@DF_BOP/USA.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353) |
+| EUR | oecd | `DSD_BOP@DF_BOP/EA20.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353); the euro area itself |
+| GBP | oecd | `DSD_BOP@DF_BOP/GBR.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353) |
+| JPY | oecd | `DSD_BOP@DF_BOP/JPN.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353) |
+| CHF | oecd | `DSD_BOP@DF_BOP/CHE.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353); swings with gold trade, served unsmoothed |
+| CAD | oecd | `DSD_BOP@DF_BOP/CAN.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353) |
+| AUD | oecd | `DSD_BOP@DF_BOP/AUS.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353) |
+| NZD | oecd | `DSD_BOP@DF_BOP/NZL.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353) |
 
 #### `gdp_nominal_usd`
 
@@ -1708,8 +1710,8 @@ a missing PMI cannot lower coverage.
 That is them working. `identifier_coverage()` at 1.0 with `coverage_report()` at
 0.0 means every identifier is correct and the source stopped publishing, which
 is a data problem to solve at the source. Both at 0.0 means the registry has no
-source at all, which is a wiring problem. `current_account_gdp` is the standing
-example of the first.
+source at all, which is a wiring problem. `current_account_gdp` was the standing
+example of the first until #353 moved it to the OECD.
 
 **A currency's monetary pillar is missing entirely**
 Check `yield_2y` first. The monetary pillar draws most of its sub-weight from

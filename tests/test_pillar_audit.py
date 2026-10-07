@@ -902,18 +902,18 @@ def test_the_spec_documents_every_dead_series() -> None:
         assert f"| MONETARY | `{key}`" not in section
 
 
-def test_the_spec_names_the_external_component_that_is_gone_for_everyone() -> None:
-    """The row worth reading twice, pinned so a trim cannot lose it.
-
-    `current_account_gdp` is not one currency short of a component. It is the
-    whole of EXTERNAL's largest component, absent for all eight, which changes
-    what the pillar is rather than how well it is fed.
+def test_the_current_account_is_no_longer_dead_and_the_spec_says_so() -> None:
+    """It was the row worth reading twice: EXTERNAL's largest component,
+    absent for all eight. #353 read it from the OECD's balance of payments, so
+    the registry carries no dead leg for it and the spec must not claim one.
     """
     dead = _dead_series()
 
-    assert set(dead["current_account_gdp"]) == set(G10)
+    assert "current_account_gdp" not in dead
 
     spec = (
         Path(__file__).resolve().parents[1] / "docs" / "scoring-spec.md"
     ).read_text()
-    assert "every currency short of the component" in spec
+    start = spec.index("### 3.8 What a pillar cannot score")
+    section = spec[start : spec.index("## 4. Aggregation", start)]
+    assert "| EXTERNAL | `current_account_gdp`" not in section

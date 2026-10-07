@@ -125,6 +125,7 @@ __all__ = [
     "RATE_LIMIT",
     "REF_AREA",
     "THROTTLE_MARKER",
+    "frequency_position",
     "OecdSource",
 ]
 
@@ -151,6 +152,7 @@ FLOW_VERSIONS: Mapping[str, str] = {
     "DSD_STES@DF_FINMARK": "4.0",
     "DSD_STES@DF_BTS": "4.0",
     "DSD_KEI@DF_KEI": "4.0",
+    "DSD_BOP@DF_BOP": "1.0",
 }
 """Flow to version, all verified live. Versions are part of the URL and are not
 interchangeable: ``DF_FINMARK`` answers at 4.0 and 404s at 4.1 and 1.0."""
@@ -162,6 +164,7 @@ FLOW_AGENCIES: Mapping[str, str] = {
     "DSD_STES@DF_FINMARK": "OECD.SDD.STES",
     "DSD_STES@DF_BTS": "OECD.SDD.STES",
     "DSD_KEI@DF_KEI": "OECD.SDD.STES",
+    "DSD_BOP@DF_BOP": "OECD.SDD.TPS",
 }
 
 DIMENSIONS: Mapping[str, tuple[str, ...]] = {
@@ -195,11 +198,23 @@ DIMENSIONS: Mapping[str, tuple[str, ...]] = {
         "ADJUSTMENT",
         "TRANSFORMATION",
     ),
+    "DSD_BOP": (
+        "REF_AREA",
+        "COUNTERPART_AREA",
+        "MEASURE",
+        "ACCOUNTING_ENTRY",
+        "FS_ENTRY",
+        "FREQ",
+        "UNIT_MEASURE",
+        "ADJUSTMENT",
+    ),
 }
-"""Dimension order for the three structures used, read from their datastructure
+"""Dimension order for the four structures used, read from their datastructure
 definitions. The key in a data request must supply exactly this many segments.
 Eight for prices, nine for short-term statistics, seven for the key short-term
-indicators (``DSD_KEI``, read live on 2026-10-07 for #352)."""
+indicators (``DSD_KEI``, read live on 2026-10-07 for #352), and eight for the
+balance of payments (``DSD_BOP``, read live on 2026-10-07 for #353), the one
+structure here that does not put ``FREQ`` second."""
 
 REF_AREA: Mapping[str, str] = {
     "USD": "USA",
@@ -218,6 +233,26 @@ the financial market flow, but not for national CPI, where the OECD serves
 member states rather than the bloc. Where a true euro-area aggregate exists,
 the registry uses Eurostat through FRED instead, which is why euro CPI does not
 come from this module at all."""
+
+
+def frequency_position(flow: str) -> int:
+    """Return where ``FREQ`` sits in a key for ``flow``, counting from zero.
+
+    Read from `DIMENSIONS` for the flow's structure, the part of the flow id
+    before ``@``. A structure `DIMENSIONS` does not list is a price flow on
+    the COICOP 2018 structure, which puts ``FREQ`` second like ``DSD_PRICES``.
+
+    Args:
+        flow: Dataflow id, e.g. ``"DSD_BOP@DF_BOP"``.
+
+    Returns:
+        The index of the ``FREQ`` segment: 1 for every structure here but the
+        balance of payments, where it is 5.
+
+    """
+    dimensions = DIMENSIONS.get(flow.partition("@")[0])
+    return dimensions.index("FREQ") if dimensions else 1
+
 
 EA_REF_AREA = "EA20"
 """The euro-area aggregate, valid in ``DSD_STES@DF_FINMARK`` and
@@ -603,7 +638,7 @@ class OecdSource(BaseDataSource):
             if currency not in wanted_currencies:
                 continue
             flow, key = self.split_series_id(ref.series_id)
-            frequency = self._key_frequency(key, ref.series_id)
+            frequency = self._key_frequency(flow, key, ref.series_id)
             served = 0
             for period, value in self.fetch_key(flow, key, start, end):
                 emitted.append(
@@ -636,14 +671,20 @@ class OecdSource(BaseDataSource):
                 )
         return emitted
 
-    def _key_frequency(self, key: str, series_id: str) -> str:
+    def _key_frequency(self, flow: str, key: str, series_id: str) -> str:
         """Read the ``FREQ`` segment out of a dimension key.
 
         The key is what was actually asked of the API, so it is what decides
         how to read the periods that come back, rather than the ref's own
         ``frequency`` field.
 
+        The segment's position comes from `frequency_position`, because the
+        balance-of-payments structure puts ``FREQ`` sixth (#353). Read second
+        there, as every other structure here has it, the letter would be
+        ``WXD``, a counterpart area.
+
         Args:
+            flow: Dataflow id, which names its structure.
             key: Dot-separated dimension key.
             series_id: The whole registry identifier, named in any error.
 
@@ -657,7 +698,8 @@ class OecdSource(BaseDataSource):
 
         """
         segments = key.split(".")
-        frequency = segments[1] if len(segments) > 1 else ""
+        position = frequency_position(flow)
+        frequency = segments[position] if len(segments) > position else ""
         if not frequency:
             raise SourceError(
                 f"{self.name} cannot read periods for {series_id} because its "

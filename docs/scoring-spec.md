@@ -875,15 +875,11 @@ pillar on any given run.
 | --- | --- | --- | --- |
 | GROWTH | `retail_sales_yoy` | AUD | Discontinued at 2025Q2, on FRED and on the OECD API alike; the substitute is the ABS household spending indicator (#355). `indpro_yoy` was on this table for EUR, CHF, AUD and NZD until #352 read all four from the OECD. |
 | EMPLOYMENT | `employment_chg` | EUR | No live euro-area or German employment level on FRED. |
-| EXTERNAL | `current_account_gdp` | all eight | Discontinued at 2024Q4 across every leg of the family, with no free replacement found. This is the whole of EXTERNAL's 0.40 level component, for the entire universe. |
 | EXTERNAL | `commodity_price` | NZD | No dairy price index on FRED. The GlobalDairyTrade index is the right series and is not freely available, so New Zealand's terms-of-trade component is the one commodity link the pillar cannot follow. |
 
-The `current_account_gdp` row is the one worth reading twice. It is not one
-currency short of a component, it is every currency short of the component
-carrying the largest share of EXTERNAL, which means EXTERNAL scores on
-`trade_trend` and `terms_of_trade` alone until a replacement series is
-registered. Section 3.5's sub-weights describe the pillar as specified, not the
-pillar as fed.
+`current_account_gdp` was on this table for all eight currencies, the whole of
+EXTERNAL's 0.40 level component, until #353 read it from the OECD's balance of
+payments flow. Since then EXTERNAL is fed as section 3.5 specifies it.
 
 ### The one duplicated pair on the fixture
 
