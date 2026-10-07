@@ -427,7 +427,9 @@ def test_validate_is_called_from_exactly_two_places() -> None:
     assert _callers_of("validate") == {"_check_config", "_require_valid_config"}
 
 
-@pytest.mark.parametrize("command", ["score", "bias", "report", "journal_add"])
+@pytest.mark.parametrize(
+    "command", ["score", "bias", "report", "journal_add", "journal_import"]
+)
 def test_each_scoring_command_calls_the_guard(command: str) -> None:
     """Criterion 3, the half that says the guard is actually wired.
 
