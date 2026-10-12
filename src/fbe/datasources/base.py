@@ -662,8 +662,8 @@ class BaseDataSource(ABC):
                 last = f"HTTP {response.status_code}"
                 if response.status_code not in self.retry.retry_on_status:
                     raise SourceError(
-                        f"{self.name} refused {path}: {last}. The request "
-                        "itself is wrong, so it was not retried."
+                        f"{self.name} refused {path}: {last}. "
+                        f"{self._refusal_reason(response)}"
                     )
                 failed = response
 
@@ -675,6 +675,26 @@ class BaseDataSource(ABC):
             f"{self.name} could not fetch {path} after "
             f"{self.retry.attempts} attempts, last failure {last}"
         )
+
+    def _refusal_reason(self, response: httpx.Response) -> str:
+        """Say what a status outside ``retry_on_status`` means for this source.
+
+        The base reads every such status as the request being wrong, which is
+        true of most providers. A provider that answers "nothing here" and
+        "malformed" with the same status overrides this, because the message
+        is what an operator acts on: #363 spent a session on the wrong cause
+        after an OECD 404 was reported as a bad request.
+
+        Args:
+            response: The refused response. Its status is not retried whatever
+                this returns; only the wording changes.
+
+        Returns:
+            One or more sentences, appended after the status in the
+            `SourceError` message.
+
+        """
+        return "The request itself is wrong, so it was not retried."
 
     @staticmethod
     def _redact(text: str, secret: str | None) -> str:

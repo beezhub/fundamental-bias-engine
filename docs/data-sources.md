@@ -1096,8 +1096,18 @@ the FRED `B6BLTT02` family stopped at 2024Q4. This section used to say the
 OECD's balance-of-payments flows carried no current account balance; that was
 wrong. `OECD.SDD.TPS,DSD_BOP@DF_BOP,1.0` carries it as a share of GDP, key
 `{AREA}.WXD.CA.B.T.Q.PT_B1GQ.Y`, for all eight areas through 2026-Q2, with
-`EA20` for the euro. Two things to know:
+`EA` for the euro. Three things to know:
 
+- The euro code is `EA`, not `EA20`. The flow answered `EA20` on 2026-10-07
+  and dropped it by 2026-10-12, when its codelist listed `EA` and the `EA20`
+  key answered 404 (#363). It is a relabel, not a different series: `EA`
+  returned the same six values to the last digit for 2025-Q1 to 2026-Q2 that
+  `EA20` had five days earlier. The codelist names `EA` only "Euro area" and
+  keeps `EA00` for the evolving composition, so which membership `EA` will
+  follow when the bloc next grows is not stated by the OECD.
+- A 404 from the OECD does not mean the request is malformed. It answers 404
+  `NoRecordsFound` for a key it holds nothing under as well, and the refresh
+  message now says so rather than calling the request wrong.
 - In this structure `FREQ` is the sixth key segment, not the second as in every
   other OECD flow here. `fbe.datasources.oecd.frequency_position` reads it from
   `DIMENSIONS`.
@@ -1508,7 +1518,7 @@ Pillar: **external**. Canonical unit: `percent_of_gdp`. Staleness allowance: 210
 | Currency | Source | Series ID | Unit | Freq | Transform | Verified | Last obs | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | USD | oecd | `DSD_BOP@DF_BOP/USA.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353) |
-| EUR | oecd | `DSD_BOP@DF_BOP/EA20.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353); the euro area itself |
+| EUR | oecd | `DSD_BOP@DF_BOP/EA.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353); the euro area itself, `EA` since #363 |
 | GBP | oecd | `DSD_BOP@DF_BOP/GBR.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353) |
 | JPY | oecd | `DSD_BOP@DF_BOP/JPN.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353) |
 | CHF | oecd | `DSD_BOP@DF_BOP/CHE.WXD.CA.B.T.Q.PT_B1GQ.Y` | percent_of_gdp | quarterly | level | yes | 2026-04-01 | OECD balance of payments, current account with the world, share of GDP, seasonally adjusted (#353); swings with gold trade, served unsmoothed |

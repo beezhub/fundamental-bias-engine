@@ -1102,6 +1102,31 @@ def test_a_refused_request_names_what_failed(
     assert "testsrc" in message
     assert PATH in message
     assert "404" in message
+    assert "The request itself is wrong, so it was not retried." in message
+
+
+@respx.mock
+def test_a_source_can_explain_its_own_refusal(
+    data_config: DataConfig, no_sleep: list[float]
+) -> None:
+    """The reason is the subclass's, the status and path stay the base's."""
+
+    class _Explaining(_Source):
+        def _refusal_reason(self, response: httpx.Response) -> str:
+            return f"this provider says {response.text}"
+
+    respx.get(f"{BASE_URL}{PATH}").mock(
+        return_value=httpx.Response(404, text="NoRecordsFound")
+    )
+
+    with pytest.raises(SourceError) as raised:
+        _Explaining(data_config)._request(PATH, PARAMS)
+
+    message = str(raised.value)
+    assert PATH in message
+    assert "HTTP 404" in message
+    assert "this provider says NoRecordsFound" in message
+    assert "itself is wrong" not in message
 
 
 @respx.mock

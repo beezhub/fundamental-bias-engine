@@ -21,7 +21,7 @@ credential, `Accept: application/vnd.sdmx.data+csv`.
 | `oecd_aus_bts_quarterly.csv` | `data/OECD.SDD.STES,DSD_STES@DF_BTS,4.0/AUS.Q.BCICP.PB.C.Y...?startPeriod=2025-01-01&endPeriod=2026-06-30` | 200 |
 | `oecd_ea20_kei_indpro_monthly.csv` | `data/OECD.SDD.STES,DSD_KEI@DF_KEI,4.0/EA20.M.PRVM.GR.BTE.Y.GY?startPeriod=2025-01-01&endPeriod=2026-10-07`, captured 2026-10-07 (#352) | 200 |
 | `oecd_che_bop_current_account.csv` | `data/OECD.SDD.TPS,DSD_BOP@DF_BOP,1.0/CHE.WXD.CA.B.T.Q.PT_B1GQ.Y?startPeriod=2025-01-01&endPeriod=2026-10-07`, captured 2026-10-07 (#353) | 200 |
-| `oecd_ea20_bop_current_account.csv` | `data/OECD.SDD.TPS,DSD_BOP@DF_BOP,1.0/EA20.WXD.CA.B.T.Q.PT_B1GQ.Y?startPeriod=2025-01-01&endPeriod=2026-10-07`, captured 2026-10-07 (#353) | 200 |
+| `oecd_ea_bop_current_account.csv` | `data/OECD.SDD.TPS,DSD_BOP@DF_BOP,1.0/EA.WXD.CA.B.T.Q.PT_B1GQ.Y?startPeriod=2025-01-01&endPeriod=2026-10-12`, captured 2026-10-12 (#363). Replaces the `EA20` capture of 2026-10-07 (#353), whose six values it matches exactly; the same `EA20` URL answered 404 `NoRecordsFound` on 2026-10-12 | 200 |
 | `oecd_nzl_kei_retail_quarterly.csv` | `data/OECD.SDD.STES,DSD_KEI@DF_KEI,4.0/NZL.Q.TOVM.GR.G47.Y.GY?startPeriod=2025-01-01&endPeriod=2026-10-07`, captured 2026-10-07 (#352) | 200 |
 
 All eight CSV bodies are byte-exact as returned. The monthly CPI one arrives out

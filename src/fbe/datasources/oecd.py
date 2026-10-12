@@ -91,6 +91,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from types import MappingProxyType
 
+import httpx
+
 from fbe.config import DataConfig
 from fbe.datasources.base import (
     BaseDataSource,
@@ -473,6 +475,32 @@ class OecdSource(BaseDataSource):
 
         """
         super().__init__(config)
+
+    def _refusal_reason(self, response: httpx.Response) -> str:
+        """Say that a 404 may mean the OECD holds nothing, not a bad key.
+
+        The API answers ``NoRecordsFound`` with 404 both for a key with too
+        many segments and for a well-formed key it holds no data under, and
+        the second happens when a flow renames a code. ``DSD_BOP@DF_BOP``
+        dropped ``EA20`` for ``EA`` between 2026-10-07 and 2026-10-12 (#363),
+        and the base's "the request itself is wrong" sent the diagnosis the
+        wrong way. Every other status keeps the base's reading.
+
+        Args:
+            response: The refused response.
+
+        Returns:
+            The reason sentence for the `SourceError` message.
+
+        """
+        if response.status_code == 404:
+            return (
+                "The OECD holds no data under this key, which it also answers "
+                "for a key with the wrong number of segments. A key that used "
+                "to answer has usually had a code renamed in the flow, so "
+                "check the flow's codelist. Not retried."
+            )
+        return super()._refusal_reason(response)
 
     def _decode(self, body: bytes) -> object:
         """Parse an SDMX CSV body into ``(time_period, value)`` pairs.
