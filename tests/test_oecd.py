@@ -227,6 +227,34 @@ def test_an_arity_or_no_records_error_raises_naming_status_and_key(
 
 
 @respx.mock
+def test_a_404_does_not_claim_the_request_is_wrong(source: OecdSource) -> None:
+    """The OECD answers 404 for a key it holds nothing under, not only for a
+    malformed one. On 2026-10-12 the euro area current account 404'd under a
+    key that had answered 200 five days earlier, because the flow had renamed
+    ``EA20`` to ``EA`` (#363), and the log said the request was wrong."""
+    _route().mock(return_value=httpx.Response(404, text="NoRecordsFound"))
+    with pytest.raises(SourceError) as excinfo:
+        source.fetch_key(PRICES_FLOW, GBR_CPI_KEY, START, END)
+    message = str(excinfo.value)
+    assert "404" in message
+    assert GBR_CPI_KEY in message
+    assert "itself is wrong" not in message
+    assert "no data under this key" in message
+
+
+@pytest.mark.parametrize("status", [403, 422])
+@respx.mock
+def test_other_refusals_still_say_the_request_is_wrong(
+    source: OecdSource, status: int
+) -> None:
+    """Only 404 is ambiguous. 403 and 422 are the arity error, which is ours."""
+    _route().mock(return_value=httpx.Response(status, text=ARITY_ERROR))
+    with pytest.raises(SourceError) as excinfo:
+        source.fetch_key(PRICES_FLOW, GBR_CPI_KEY, START, END)
+    assert "itself is wrong" in str(excinfo.value)
+
+
+@respx.mock
 def test_a_no_records_404_is_not_retried(source: OecdSource) -> None:
     """Repeating a key the API has no records for cannot help."""
     route = _route().mock(return_value=httpx.Response(404, text="NoRecordsFound"))
@@ -1071,7 +1099,7 @@ def test_the_kei_fixture_provenance_is_recorded() -> None:
 
 BOP_FLOW = "DSD_BOP@DF_BOP"
 CHE_BOP = (FIXTURES / "oecd_che_bop_current_account.csv").read_text()
-EA20_BOP = (FIXTURES / "oecd_ea20_bop_current_account.csv").read_text()
+EA_BOP = (FIXTURES / "oecd_ea_bop_current_account.csv").read_text()
 
 
 def test_every_current_account_leg_reads_the_bop_flow() -> None:
@@ -1082,7 +1110,9 @@ def test_every_current_account_leg_reads_the_bop_flow() -> None:
         assert ref.series_id.startswith(f"{BOP_FLOW}/"), currency
         assert ref.series_id.endswith(".WXD.CA.B.T.Q.PT_B1GQ.Y"), currency
         assert ref.fetchable, currency
-    assert series["EUR"].series_id == f"{BOP_FLOW}/EA20.WXD.CA.B.T.Q.PT_B1GQ.Y"
+    # EA, not EA20: the flow dropped EA20 between 2026-10-07 and 2026-10-12
+    # and answers it with 404 NoRecordsFound (#363).
+    assert series["EUR"].series_id == f"{BOP_FLOW}/EA.WXD.CA.B.T.Q.PT_B1GQ.Y"
 
 
 def test_the_bop_flow_version_and_agency_match_the_captured_body() -> None:
@@ -1110,8 +1140,8 @@ def test_the_bop_frequency_is_the_sixth_segment() -> None:
 
 @respx.mock
 def test_a_bop_body_parses_to_quarter_start_periods(source: OecdSource) -> None:
-    """The euro area, captured 2026-10-07, out of order as the API sends it."""
-    _route().mock(return_value=httpx.Response(200, text=EA20_BOP))
+    """The euro area, captured 2026-10-12, out of order as the API sends it."""
+    _route().mock(return_value=httpx.Response(200, text=EA_BOP))
     emitted = source.fetch(
         ["current_account_gdp"], ["EUR"], date(2025, 1, 1), date(2026, 10, 7)
     )
@@ -1128,7 +1158,7 @@ def test_a_bop_body_parses_to_quarter_start_periods(source: OecdSource) -> None:
 
 @respx.mock
 def test_a_bop_fetch_composes_the_key_the_registry_holds(source: OecdSource) -> None:
-    route = _route().mock(return_value=httpx.Response(200, text=EA20_BOP))
+    route = _route().mock(return_value=httpx.Response(200, text=EA_BOP))
     source.fetch(["current_account_gdp"], ["EUR"], date(2025, 1, 1), date(2026, 10, 7))
     ref = registry.INDICATORS["current_account_gdp"].series["EUR"]
     flow, key = source.split_series_id(ref.series_id)
@@ -1157,7 +1187,7 @@ def test_the_swiss_gold_swing_arrives_unsmoothed(source: OecdSource) -> None:
 def test_the_bop_fixture_provenance_is_recorded() -> None:
     readme = (FIXTURES / "README.md").read_text()
     assert "oecd_che_bop_current_account.csv" in readme
-    assert "oecd_ea20_bop_current_account.csv" in readme
+    assert "oecd_ea_bop_current_account.csv" in readme
     for currency in ("CHF", "EUR"):
         ref = registry.INDICATORS["current_account_gdp"].series[currency]
         assert ref.series_id.split("/")[1] in readme

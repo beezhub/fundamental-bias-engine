@@ -2061,7 +2061,13 @@ CURRENT_ACCOUNT_GDP = IndicatorSpec(
         )
         for code, area, note in (
             ("USD", "USA", ""),
-            ("EUR", "EA20", "The euro area itself, not Germany. "),
+            (
+                "EUR",
+                "EA",
+                "The euro area itself, not Germany. EA, not EA20: this flow "
+                "relabelled EA20 as EA by 2026-10-12 and 404s the old code, "
+                "with the same values to the last digit (#363). ",
+            ),
             ("GBP", "GBR", ""),
             ("JPY", "JPN", ""),
             (
