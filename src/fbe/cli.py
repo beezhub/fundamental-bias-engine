@@ -98,6 +98,7 @@ from fbe.bias import (
     blocking,
     build_pair_biases,
 )
+from fbe.broker_export import ExportedPosition, ExportFormatError, read_open_positions
 from fbe.calendar_guard import (
     CalendarCoverage,
     CoverageGap,
@@ -4422,6 +4423,21 @@ def journal_add(
         list[str] | None,
         typer.Option("--tag", "-t", help="Labels for grouping in review."),
     ] = None,
+    ticket: Annotated[
+        str | None,
+        typer.Option(
+            "--ticket",
+            help=(
+                "The broker's ticket, used as the trade's ID. Without it the ID "
+                "is the pair and the minute opened, which two trades in one "
+                "minute share."
+            ),
+        ),
+    ] = None,
+    target: Annotated[
+        float | None,
+        typer.Option("--target", help="Take-profit level as planned."),
+    ] = None,
 ) -> None:
     """Record one trade in the journal.
 
@@ -4475,6 +4491,12 @@ def journal_add(
         followed_plan: Whether the trade obeyed the plan.
         note: Free text.
         tag: Labels for grouping.
+        ticket: The broker's ticket, used as the trade's ID when given (#348).
+            Without it the ID is ``{pair}-{opened:%Y%m%dT%H%M}``, which two
+            trades opened in one minute share, so the second overwrote the
+            first.
+        target: Take-profit level as planned, recorded as
+            ``TradeRecord.target``.
 
     Raises:
         typer.BadParameter: On a pair outside the universe, a stop equal to the
@@ -4487,6 +4509,58 @@ def journal_add(
     """
     config = _effective_config(ctx)
     _require_valid_config(config)
+    _add_trade(
+        config,
+        pair=pair,
+        direction=direction,
+        entry=entry,
+        stop=stop,
+        exit_price=exit_price,
+        lots=lots,
+        opened_at=opened_at,
+        closed_at=closed_at,
+        setup=setup,
+        followed_plan=followed_plan,
+        note=note,
+        tag=tag,
+        ticket=ticket,
+        target=target,
+    )
+
+
+def _add_trade(
+    config: Config,
+    *,
+    pair: str,
+    direction: Direction,
+    entry: float,
+    stop: float,
+    exit_price: float | None,
+    lots: float | None,
+    opened_at: datetime | None,
+    closed_at: datetime | None,
+    setup: str | None,
+    followed_plan: bool,
+    note: str | None,
+    tag: list[str] | None,
+    ticket: str | None,
+    target: float | None,
+) -> None:
+    """Validate and record one trade, for both ``journal add`` and ``import``.
+
+    One path, so an imported trade carries everything a hand-entered one does:
+    the same refusals, the bias snapshot at entry, the entry-time news check
+    and the account currency (#348). The arguments are `journal_add`'s, which
+    documents each.
+
+    The config is validated by the calling command, before anything is asked
+    or computed.
+
+    Raises:
+        typer.BadParameter: As `journal_add` documents.
+        typer.Exit: As `journal_add` documents.
+
+    """
     journal_path = _journal_path(config)
     if not journal_path.parent.is_dir():
         # Refused rather than created. `journal.append` would make the
@@ -4551,7 +4625,7 @@ def journal_add(
         raise typer.Exit(EXIT_UNUSABLE)
 
     moment = _opened_moment(opened_at)
-    trade_id = f"{normalised}-{moment:%Y%m%dT%H%M}"
+    trade_id = ticket or f"{normalised}-{moment:%Y%m%dT%H%M}"
     view = _entry_view(config, normalised, direction, moment.date(), trade_id)
     if view.blackout_check is None:
         blackout_check, blackout_notice = _entry_blackout(config, normalised, moment)
@@ -4569,6 +4643,7 @@ def journal_add(
         opened_at=moment,
         entry=entry,
         stop=stop,
+        target=target,
         units=units,
         lots=lots,
         risk_amount=risk_amount,
@@ -4616,6 +4691,176 @@ def journal_add(
     )
     if blackout_notice is not None:
         typer.echo(blackout_notice)
+
+
+@journal_app.command(
+    "import",
+    help=(
+        "Read the broker's open-positions export into the journal, asking only "
+        "for each trade's stop loss and, optionally, its take profit."
+    ),
+)
+def journal_import(
+    ctx: typer.Context,
+    path: Annotated[
+        Path,
+        typer.Argument(help="The open-positions CSV downloaded from the broker."),
+    ],
+) -> None:
+    """Record every position in a broker export, asking only for the stop.
+
+    The owner places trades by hand, and the export carries the ticket, open
+    time, side, size, symbol and entry, but not the stop loss or take profit.
+    So this reads the file and asks for those, one trade at a time, then
+    records each through `_add_trade`, the same path as ``journal add`` (#347,
+    #348). The ticket is the trade's ID, so a trade already in the journal is
+    skipped and the command is safe to run on each new download. Enter at the
+    stop prompt skips a trade, to be finished on a later run.
+
+    Imported trades are recorded as having followed the plan, as ``journal
+    add`` assumes by default. A plan break is recorded with ``journal add
+    --ticket <ticket> --broke-plan`` and the same details.
+
+    Args:
+        ctx: Typer context carrying the effective config.
+        path: The export.
+
+    Raises:
+        typer.Exit: With `EXIT_UNUSABLE` when the file is not an open-positions
+            export or the journal cannot be read, before anything is asked.
+
+    """
+    config = _effective_config(ctx)
+    _require_valid_config(config)
+    try:
+        positions = read_open_positions(path)
+    except (OSError, ExportFormatError) as error:
+        typer.echo(f"Could not import {path}: {error}", err=True)
+        raise typer.Exit(EXIT_UNUSABLE) from error
+    try:
+        recorded = {
+            record.trade_id
+            for record in journal_module.load(path=_journal_path(config))
+        }
+    except (OSError, ValueError) as error:
+        typer.echo(f"The journal could not be read: {error}", err=True)
+        raise typer.Exit(EXIT_UNUSABLE) from error
+    waiting = [position for position in positions if position.ticket not in recorded]
+    noun = "position" if len(positions) == 1 else "positions"
+    typer.echo(
+        f"{len(positions)} open {noun} in the file, "
+        f"{len(positions) - len(waiting)} already in the journal."
+    )
+    for position in waiting:
+        typer.echo("")
+        typer.echo(
+            f"{position.pair} {_IMPORT_SIDES[position.direction]} {position.lots} "
+            f"at {position.entry}, ticket {position.ticket}, opened "
+            f"{position.opened_at:%Y-%m-%d %H:%M} UTC"
+        )
+        stop = _ask_stop(position)
+        if stop is None:
+            typer.echo("  Skipped. It will be asked again on the next import.")
+            continue
+        typer.echo(f"  {_import_risk(config, position, stop)}")
+        target = _ask_price("  Take profit (optional): ")
+        _add_trade(
+            config,
+            pair=position.pair,
+            direction=position.direction,
+            entry=position.entry,
+            stop=stop,
+            exit_price=None,
+            lots=position.lots,
+            opened_at=position.opened_at,
+            closed_at=None,
+            setup=None,
+            followed_plan=True,
+            note=None,
+            tag=None,
+            ticket=position.ticket,
+            target=target,
+        )
+
+
+_IMPORT_SIDES: dict[Direction, str] = {Direction.LONG: "buy", Direction.SHORT: "sell"}
+"""The broker's words for the two sides, so the prompt reads like the platform."""
+
+
+def _ask_price(prompt: str) -> float | None:
+    """Ask for a price until one is given or the answer is left empty.
+
+    Returns:
+        The price, or ``None`` for an empty answer.
+
+    """
+    while True:
+        answer = typer.prompt(prompt, default="", show_default=False, prompt_suffix="")
+        if not answer.strip():
+            return None
+        try:
+            value = float(answer)
+        except ValueError:
+            typer.echo(f"  {answer!r} is not a price. Try again, or press Enter.")
+            continue
+        if math.isfinite(value) and value > 0.0:
+            return value
+        typer.echo(f"  {answer!r} is not a positive price. Try again.")
+
+
+def _ask_stop(position: ExportedPosition) -> float | None:
+    """Ask for a position's stop, refusing one on the wrong side of the entry.
+
+    A long's stop is below its entry and a short's above. A stop on the other
+    side is a slip, and recorded it would make the trade's risk and every
+    R-multiple wrong, so it is refused and asked again.
+
+    Returns:
+        The stop, or ``None`` when the answer is left empty, which skips the
+        trade.
+
+    """
+    while True:
+        stop = _ask_price("  Stop loss (Enter to skip this trade): ")
+        if stop is None:
+            return None
+        if position.direction is Direction.LONG and stop >= position.entry:
+            typer.echo("  A buy's stop is below the entry. Try again.")
+            continue
+        if position.direction is Direction.SHORT and stop <= position.entry:
+            typer.echo("  A sell's stop is above the entry. Try again.")
+            continue
+        return stop
+
+
+def _import_risk(config: Config, position: ExportedPosition, stop: float) -> str:
+    """Say what a stop risks, so a mistyped one is visible before it is saved.
+
+    Returns:
+        ``"1R = <pips> pips"``, and when the conversion to the account currency
+        is in the cache, what that is in the account currency and as a share of
+        the balance. The amount is `_realised_money`'s, the same figure the
+        record will carry.
+
+    """
+    pips = abs(position.entry - stop) / pip_size(position.pair)
+    risk_amount, _, _ = _realised_money(
+        config,
+        position.pair,
+        position.entry,
+        stop,
+        None,
+        position.direction,
+        position.lots * config.broker.contract_size,
+    )
+    line = f"1R = {pips:.1f} pips"
+    if risk_amount is None:
+        return f"{line}. The amount it risks is not known from the cache."
+    share = risk_amount / config.risk.account_balance
+    return (
+        f"{line}, {config.risk.account_currency} {risk_amount:.2f}, "
+        f"{share:.1%} of the balance."
+    )
 
 
 def _journal_path(config: Config) -> Path:
